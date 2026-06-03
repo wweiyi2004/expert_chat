@@ -52,7 +52,14 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         withData: true,
         type: FileType.custom,
         allowedExtensions: const [
-          'pdf', 'docx', 'xlsx', 'pptx', 'txt', 'md', 'csv', 'json',
+          'pdf',
+          'docx',
+          'xlsx',
+          'pptx',
+          'txt',
+          'md',
+          'csv',
+          'json',
         ],
       );
       if (result == null) return;
@@ -75,18 +82,18 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   }
 
   String _mimeFor(String? ext) => switch (ext?.toLowerCase()) {
-        'pdf' => 'application/pdf',
-        'docx' =>
-          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        'xlsx' =>
-          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        'pptx' =>
-          'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-        'csv' => 'text/csv',
-        'json' => 'application/json',
-        'md' => 'text/markdown',
-        _ => 'text/plain',
-      };
+    'pdf' => 'application/pdf',
+    'docx' =>
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'xlsx' =>
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'pptx' =>
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'csv' => 'text/csv',
+    'json' => 'application/json',
+    'md' => 'text/markdown',
+    _ => 'text/plain',
+  };
 
   void _removeAttachment(String id) {
     setState(() => _attachments.removeWhere((a) => a.id == id));
@@ -96,8 +103,9 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     if (convo == null || convo.messages.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-            content: Text('当前对话为空，无法导出'),
-            behavior: SnackBarBehavior.floating),
+          content: Text('当前对话为空，无法导出'),
+          behavior: SnackBarBehavior.floating,
+        ),
       );
       return;
     }
@@ -106,16 +114,18 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       if (path != null && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-              content: Text('已导出到 $path'),
-              behavior: SnackBarBehavior.floating),
+            content: Text('已导出到 $path'),
+            behavior: SnackBarBehavior.floating,
+          ),
         );
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-              content: Text('导出失败：$e'),
-              behavior: SnackBarBehavior.floating),
+            content: Text('导出失败：$e'),
+            behavior: SnackBarBehavior.floating,
+          ),
         );
       }
     }
@@ -157,9 +167,34 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         child: LayoutBuilder(
           builder: (context, constraints) {
             final twoPane = constraints.maxWidth >= _twoPaneBreakpoint;
+            final scheme = Theme.of(context).colorScheme;
             return Scaffold(
               appBar: AppBar(
-                title: const Text('Expert Chat'),
+                titleSpacing: twoPane ? 20 : 8,
+                title: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 28,
+                      height: 28,
+                      decoration: BoxDecoration(
+                        color: scheme.primary,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Icon(
+                        Icons.auto_awesome,
+                        size: 16,
+                        color: scheme.onPrimary,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    const Text('Expert Chat'),
+                  ],
+                ),
+                bottom: PreferredSize(
+                  preferredSize: const Size.fromHeight(1),
+                  child: Container(height: 1, color: scheme.outlineVariant),
+                ),
                 actions: [
                   IconButton(
                     tooltip: '新对话 (Ctrl+N)',
@@ -180,8 +215,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                   ),
                 ],
               ),
-              drawer:
-                  twoPane ? null : _HistoryDrawer(asyncState: asyncState),
+              drawer: twoPane ? null : _HistoryDrawer(asyncState: asyncState),
               body: Row(
                 children: [
                   if (twoPane)
@@ -220,33 +254,37 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         Expanded(
           child: messages.isEmpty
               ? const _EmptyState()
-              : ListView.builder(
-                  controller: _scroll,
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                  itemCount: messages.length,
-                  itemBuilder: (context, i) {
-                    final m = messages[i];
-                    final isLast = i == messages.length - 1;
-                    final isLastAssistant =
-                        isLast && m.role == MessageRole.assistant;
-                    final (bIdx, bCount) = convo!.branchInfo(m.id);
-                    return MessageBubble(
-                      message: m,
-                      isStreaming: state.isStreaming && isLastAssistant,
-                      onRegenerate: (isLastAssistant && !state.isStreaming)
-                          ? controller.regenerate
-                          : null,
-                      onEdit:
-                          (m.role == MessageRole.user && !state.isStreaming)
+              : Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 900),
+                    child: ListView.builder(
+                      controller: _scroll,
+                      padding: const EdgeInsets.fromLTRB(24, 18, 24, 28),
+                      itemCount: messages.length,
+                      itemBuilder: (context, i) {
+                        final m = messages[i];
+                        final isLast = i == messages.length - 1;
+                        final isLastAssistant =
+                            isLast && m.role == MessageRole.assistant;
+                        final (bIdx, bCount) = convo!.branchInfo(m.id);
+                        return MessageBubble(
+                          message: m,
+                          isStreaming: state.isStreaming && isLastAssistant,
+                          onRegenerate: (isLastAssistant && !state.isStreaming)
+                              ? controller.regenerate
+                              : null,
+                          onEdit:
+                              (m.role == MessageRole.user && !state.isStreaming)
                               ? (text) => controller.editMessage(m.id, text)
                               : null,
-                      branchIndex: bIdx,
-                      branchCount: bCount,
-                      onPrevBranch: () => controller.switchBranch(m.id, -1),
-                      onNextBranch: () => controller.switchBranch(m.id, 1),
-                    );
-                  },
+                          branchIndex: bIdx,
+                          branchCount: bCount,
+                          onPrevBranch: () => controller.switchBranch(m.id, -1),
+                          onNextBranch: () => controller.switchBranch(m.id, 1),
+                        );
+                      },
+                    ),
+                  ),
                 ),
         ),
         _Composer(
@@ -303,138 +341,200 @@ class _Composer extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return SafeArea(
-      top: false,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Attachment cards (parsed files awaiting send).
-            if (attachments.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
+    return Container(
+      decoration: BoxDecoration(
+        color: scheme.surface,
+        border: Border(top: BorderSide(color: scheme.outlineVariant)),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 900),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
+              child: Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: scheme.surfaceContainer,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: scheme.outlineVariant),
+                  boxShadow: [
+                    BoxShadow(
+                      color: scheme.shadow.withValues(alpha: 0.06),
+                      blurRadius: 18,
+                      offset: const Offset(0, 8),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    for (final a in attachments)
-                      AttachmentChip(
-                        attachment: a,
-                        onRemove: () => onRemoveAttachment(a.id),
+                    if (attachments.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            for (final a in attachments)
+                              AttachmentChip(
+                                attachment: a,
+                                onRemove: () => onRemoveAttachment(a.id),
+                              ),
+                          ],
+                        ),
                       ),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Expanded(
+                          child: CallbackShortcuts(
+                            bindings: {
+                              const SingleActivator(
+                                LogicalKeyboardKey.enter,
+                              ): () {
+                                if (!isStreaming) onSend();
+                              },
+                            },
+                            child: TextField(
+                              controller: controller,
+                              minLines: 1,
+                              maxLines: 6,
+                              textInputAction: TextInputAction.newline,
+                              decoration: const InputDecoration(
+                                hintText: '给 Expert Chat 发消息...',
+                                filled: false,
+                                border: InputBorder.none,
+                                enabledBorder: InputBorder.none,
+                                focusedBorder: InputBorder.none,
+                                contentPadding: EdgeInsets.symmetric(
+                                  horizontal: 4,
+                                  vertical: 8,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        isStreaming
+                            ? IconButton.filled(
+                                onPressed: onStop,
+                                icon: const Icon(Icons.stop),
+                                tooltip: '停止',
+                                style: IconButton.styleFrom(
+                                  fixedSize: const Size.square(40),
+                                  backgroundColor: scheme.errorContainer,
+                                  foregroundColor: scheme.onErrorContainer,
+                                ),
+                              )
+                            : IconButton.filled(
+                                onPressed: onSend,
+                                icon: const Icon(Icons.arrow_upward),
+                                tooltip: '发送',
+                                style: IconButton.styleFrom(
+                                  fixedSize: const Size.square(40),
+                                  backgroundColor: scheme.primary,
+                                  foregroundColor: scheme.onPrimary,
+                                ),
+                              ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 6,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        IconButton(
+                          onPressed: (isStreaming || picking)
+                              ? null
+                              : onPickFiles,
+                          tooltip: '上传文件（PDF / Word / Excel / PPT / 文本）',
+                          icon: picking
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(Icons.attach_file),
+                          style: IconButton.styleFrom(
+                            fixedSize: const Size.square(34),
+                            backgroundColor: scheme.surfaceContainerHighest,
+                            foregroundColor: scheme.primary,
+                          ),
+                        ),
+                        FilterChip(
+                          selected: deepThink,
+                          showCheckmark: false,
+                          avatar: Icon(
+                            Icons.psychology_outlined,
+                            size: 18,
+                            color: deepThink
+                                ? scheme.primary
+                                : scheme.onSurfaceVariant,
+                          ),
+                          label: const Text('深度思考'),
+                          tooltip: '开启后本次对话使用深度推理模型',
+                          onSelected: (_) => onToggleDeepThink(),
+                        ),
+                        FilterChip(
+                          selected: searchEnabled,
+                          showCheckmark: false,
+                          avatar: Icon(
+                            Icons.travel_explore,
+                            size: 18,
+                            color: searchEnabled
+                                ? scheme.primary
+                                : scheme.onSurfaceVariant,
+                          ),
+                          label: const Text('联网'),
+                          tooltip: '开启后允许模型按需调用 web_search（需在设置中配置搜索 Key）',
+                          onSelected: (_) => onToggleSearch(),
+                        ),
+                        if (isSearching)
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 6,
+                            ),
+                            decoration: BoxDecoration(
+                              color: scheme.surfaceContainerHighest,
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: scheme.outlineVariant),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                SizedBox(
+                                  width: 13,
+                                  height: 13,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: scheme.primary,
+                                  ),
+                                ),
+                                const SizedBox(width: 6),
+                                Text(
+                                  '正在联网搜索',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: scheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                      ],
+                    ),
                   ],
                 ),
               ),
-            // Mode toggles: 深度思考 (reasoner) and 联网 (web search).
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Wrap(
-                spacing: 8,
-                runSpacing: 4,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: [
-                  FilterChip(
-                    selected: deepThink,
-                    showCheckmark: false,
-                    avatar: Icon(
-                      Icons.psychology_outlined,
-                      size: 18,
-                      color: deepThink
-                          ? scheme.onSecondaryContainer
-                          : scheme.onSurfaceVariant,
-                    ),
-                    label: const Text('深度思考'),
-                    tooltip: '开启后本次对话使用深度推理模型',
-                    onSelected: (_) => onToggleDeepThink(),
-                  ),
-                  FilterChip(
-                    selected: searchEnabled,
-                    showCheckmark: false,
-                    avatar: Icon(
-                      Icons.travel_explore,
-                      size: 18,
-                      color: searchEnabled
-                          ? scheme.onSecondaryContainer
-                          : scheme.onSurfaceVariant,
-                    ),
-                    label: const Text('联网'),
-                    tooltip: '开启后先联网搜索再作答（需在设置中配置搜索 Key）',
-                    onSelected: (_) => onToggleSearch(),
-                  ),
-                  if (isSearching)
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const SizedBox(
-                          width: 14,
-                          height: 14,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        ),
-                        const SizedBox(width: 6),
-                        Text('正在联网搜索…',
-                            style: TextStyle(
-                                fontSize: 12,
-                                color: scheme.onSurfaceVariant)),
-                      ],
-                    ),
-                ],
-              ),
             ),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                IconButton(
-                  onPressed: (isStreaming || picking) ? null : onPickFiles,
-                  tooltip: '上传文件（PDF / Word / Excel / PPT / 文本）',
-                  icon: picking
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.attach_file),
-                ),
-                const SizedBox(width: 4),
-                Expanded(
-                  child: CallbackShortcuts(
-                    bindings: {
-                      // Enter to send; Shift+Enter for newline.
-                      const SingleActivator(LogicalKeyboardKey.enter): () {
-                        if (!isStreaming) onSend();
-                      },
-                    },
-                    child: TextField(
-                      controller: controller,
-                      minLines: 1,
-                      maxLines: 6,
-                      textInputAction: TextInputAction.newline,
-                      decoration: const InputDecoration(
-                        hintText: '给 Expert Chat 发消息…（Enter 发送，Shift+Enter 换行）',
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                isStreaming
-                    ? IconButton.filled(
-                        onPressed: onStop,
-                        icon: const Icon(Icons.stop),
-                        tooltip: '停止',
-                      )
-                    : IconButton.filled(
-                        onPressed: onSend,
-                        icon: const Icon(Icons.arrow_upward),
-                        tooltip: '发送',
-                        style: IconButton.styleFrom(
-                          backgroundColor: scheme.primary,
-                          foregroundColor: scheme.onPrimary,
-                        ),
-                      ),
-              ],
-            ),
-          ],
+          ),
         ),
       ),
     );
@@ -504,10 +604,13 @@ class _HistoryPanelState extends ConsumerState<_HistoryPanel> {
     final scheme = Theme.of(context).colorScheme;
     final state = widget.asyncState.value;
     final all = state?.conversations ?? const <Conversation>[];
-    final visible = [for (final c in all) if (_matches(c, _query)) c];
+    final visible = [
+      for (final c in all)
+        if (_matches(c, _query)) c,
+    ];
 
     return Material(
-      color: scheme.surface,
+      color: scheme.surfaceContainerHighest.withValues(alpha: 0.45),
       child: SafeArea(
         child: Column(
           children: [
@@ -515,13 +618,14 @@ class _HistoryPanelState extends ConsumerState<_HistoryPanel> {
               padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
               child: Align(
                 alignment: Alignment.centerLeft,
-                child: Text('历史对话',
-                    style: TextStyle(
-                        fontSize: 18, fontWeight: FontWeight.w600)),
+                child: Text(
+                  '历史对话',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+                ),
               ),
             ),
             Padding(
-              padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
               child: TextField(
                 decoration: const InputDecoration(
                   isDense: true,
@@ -534,57 +638,75 @@ class _HistoryPanelState extends ConsumerState<_HistoryPanel> {
             Expanded(
               child: visible.isEmpty
                   ? const Center(
-                      child: Text('没有匹配的对话',
-                          style: TextStyle(fontSize: 13)))
+                      child: Text('没有匹配的对话', style: TextStyle(fontSize: 13)),
+                    )
                   : ListView(
                       children: [
                         for (final c in visible)
                           if (c.id == _renamingId)
                             // Inline rename — no occluding dialog.
-                            ListTile(
-                              leading:
-                                  const Icon(Icons.chat_bubble_outline),
-                              title: TextField(
-                                controller: _renameCtrl,
-                                autofocus: true,
-                                decoration: const InputDecoration(
-                                    isDense: true),
-                                onSubmitted: (_) => _commitRename(),
+                            Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 2,
                               ),
-                              trailing: IconButton(
-                                icon: const Icon(Icons.check, size: 20),
-                                tooltip: '保存',
-                                onPressed: _commitRename,
+                              child: ListTile(
+                                tileColor: scheme.surfaceContainer,
+                                leading: const Icon(Icons.chat_bubble_outline),
+                                title: TextField(
+                                  controller: _renameCtrl,
+                                  autofocus: true,
+                                  decoration: const InputDecoration(
+                                    isDense: true,
+                                  ),
+                                  onSubmitted: (_) => _commitRename(),
+                                ),
+                                trailing: IconButton(
+                                  icon: const Icon(Icons.check, size: 20),
+                                  tooltip: '保存',
+                                  onPressed: _commitRename,
+                                ),
                               ),
                             )
                           else
-                            ListTile(
-                              selected: c.id == state?.currentId,
-                              leading:
-                                  const Icon(Icons.chat_bubble_outline),
-                              title: Text(c.title,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis),
-                              trailing: PopupMenuButton<String>(
-                                icon:
-                                    const Icon(Icons.more_horiz, size: 20),
-                                onSelected: (v) {
-                                  if (v == 'rename') _startRename(c);
-                                  if (v == 'delete') {
-                                    controller.deleteConversation(c.id);
-                                  }
-                                },
-                                itemBuilder: (_) => const [
-                                  PopupMenuItem(
-                                      value: 'rename', child: Text('重命名')),
-                                  PopupMenuItem(
-                                      value: 'delete', child: Text('删除')),
-                                ],
+                            Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 2,
                               ),
-                              onTap: () {
-                                controller.selectConversation(c.id);
-                                _closeDrawerIfAny();
-                              },
+                              child: ListTile(
+                                selected: c.id == state?.currentId,
+                                tileColor: scheme.surfaceContainer,
+                                leading: const Icon(Icons.chat_bubble_outline),
+                                title: Text(
+                                  c.title,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                trailing: PopupMenuButton<String>(
+                                  icon: const Icon(Icons.more_horiz, size: 20),
+                                  onSelected: (v) {
+                                    if (v == 'rename') _startRename(c);
+                                    if (v == 'delete') {
+                                      controller.deleteConversation(c.id);
+                                    }
+                                  },
+                                  itemBuilder: (_) => const [
+                                    PopupMenuItem(
+                                      value: 'rename',
+                                      child: Text('重命名'),
+                                    ),
+                                    PopupMenuItem(
+                                      value: 'delete',
+                                      child: Text('删除'),
+                                    ),
+                                  ],
+                                ),
+                                onTap: () {
+                                  controller.selectConversation(c.id);
+                                  _closeDrawerIfAny();
+                                },
+                              ),
                             ),
                       ],
                     ),
@@ -613,8 +735,10 @@ class _ErrorBanner extends StatelessWidget {
           Icon(Icons.error_outline, size: 18, color: scheme.onErrorContainer),
           const SizedBox(width: 8),
           Expanded(
-            child: Text(message,
-                style: TextStyle(color: scheme.onErrorContainer)),
+            child: Text(
+              message,
+              style: TextStyle(color: scheme.onErrorContainer),
+            ),
           ),
           if (onRetry != null)
             TextButton.icon(
@@ -643,14 +767,14 @@ class _EmptyState extends StatelessWidget {
         children: [
           Icon(Icons.auto_awesome_outlined, size: 48, color: scheme.primary),
           const SizedBox(height: 16),
-          Text('开始一段对话',
-              style: Theme.of(context).textTheme.titleMedium),
+          Text('开始一段对话', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 8),
-          Text('在下方输入消息，或在设置中配置 API Key',
-              style: Theme.of(context)
-                  .textTheme
-                  .bodySmall
-                  ?.copyWith(color: scheme.onSurfaceVariant)),
+          Text(
+            '在下方输入消息，或在设置中配置 API Key',
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+          ),
         ],
       ),
     );

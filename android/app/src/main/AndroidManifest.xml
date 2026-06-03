@@ -1,4 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Required so the app can reach LLM/search APIs in release builds too.
+         (The debug/profile manifests already declare this for tooling, but
+         release builds use only this main manifest.) -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
         android:label="expert_chat"
         android:name="${applicationName}"

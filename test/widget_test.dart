@@ -1,7 +1,9 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:dio/dio.dart' show CancelToken;
 import 'package:drift/native.dart';
+import 'package:flutter/material.dart';
 import 'package:expert_chat/core/providers.dart';
 import 'package:expert_chat/data/conversation_repository.dart';
 import 'package:expert_chat/data/db/app_database.dart' show AppDatabase;
@@ -13,6 +15,7 @@ import 'package:expert_chat/domain/llm/llm_provider.dart';
 import 'package:expert_chat/domain/tools/file_parser.dart';
 import 'package:expert_chat/domain/tools/search_provider.dart';
 import 'package:expert_chat/domain/tools/tool_engine.dart';
+import 'package:expert_chat/features/chat/chat_page.dart';
 import 'package:expert_chat/state/chat_controller.dart';
 import 'package:expert_chat/state/settings_controller.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -21,23 +24,37 @@ import 'package:flutter_test/flutter_test.dart';
 /// LLM provider that replays a scripted list of chunks and records the config
 /// it was called with (so tests can assert model routing).
 class FakeLlmProvider implements LlmProvider {
-  FakeLlmProvider(this.chunks);
+  FakeLlmProvider(this.chunks, {this.scriptedChunks});
+
   final List<ChatChunk> chunks;
+  final List<List<ChatChunk>>? scriptedChunks;
+  final List<List<LlmRequestMessage>> calls = [];
+  final List<List<ToolSpec>?> toolCalls = [];
   LlmConfig? lastConfig;
   List<ToolSpec>? lastTools;
   bool? lastThinking;
+  int callCount = 0;
 
   @override
   Stream<ChatChunk> streamChat({
     required LlmConfig config,
-    required List<ChatMessage> messages,
+    required List<LlmRequestMessage> messages,
     List<ToolSpec>? tools,
     bool? thinking,
+    CancelToken? cancelToken,
   }) async* {
+    final callIndex = callCount++;
+    calls.add(List<LlmRequestMessage>.of(messages));
+    toolCalls.add(tools == null ? null : List<ToolSpec>.of(tools));
     lastConfig = config;
     lastTools = tools;
     lastThinking = thinking;
-    for (final c in chunks) {
+    final scripts = scriptedChunks;
+    final scriptIndex = scripts == null
+        ? 0
+        : (callIndex < scripts.length ? callIndex : scripts.length - 1);
+    final activeChunks = scripts == null ? chunks : scripts[scriptIndex];
+    for (final c in activeChunks) {
       yield c;
     }
   }
@@ -80,16 +97,64 @@ class FakeSettings extends SettingsController {
       profiles: [profile],
       activeProfileId: profile.id,
       apiKey: 'sk-test',
+      searchApiKey: 'search-key',
     );
   }
 }
 
-ProviderContainer _container(FakeLlmProvider llm, InMemoryRepo repo) {
-  return ProviderContainer(overrides: [
-    llmProvider.overrideWithValue(llm),
-    conversationRepositoryProvider.overrideWithValue(repo),
-    settingsControllerProvider.overrideWith(FakeSettings.new),
-  ]);
+/// Settings with no API key — `config.isReady` is false.
+class FakeUnconfiguredSettings extends SettingsController {
+  @override
+  Future<SettingsState> build() async {
+    final profile = ProviderProfile(
+      name: 'DeepSeek',
+      baseUrl: 'https://api.deepseek.com',
+      chatModel: KnownModels.chat,
+      reasonerModel: KnownModels.reasoner,
+      models: const [KnownModels.chat, KnownModels.reasoner],
+    );
+    return SettingsState(
+      profiles: [profile],
+      activeProfileId: profile.id,
+      apiKey: '',
+    );
+  }
+}
+
+/// Settings whose active model is a vision-capable model (gpt-4o).
+class FakeVisionSettings extends SettingsController {
+  @override
+  Future<SettingsState> build() async {
+    final profile = ProviderProfile(
+      name: 'OpenAI',
+      baseUrl: 'https://api.openai.com/v1',
+      chatModel: 'gpt-4o',
+      reasonerModel: 'o3-mini',
+      models: const ['gpt-4o', 'o3-mini'],
+    );
+    return SettingsState(
+      profiles: [profile],
+      activeProfileId: profile.id,
+      apiKey: 'sk-test',
+    );
+  }
+}
+
+ProviderContainer _container(
+  FakeLlmProvider llm,
+  InMemoryRepo repo, {
+  ToolEngineFactory? toolEngineFactory,
+  SettingsController Function() settingsBuilder = FakeSettings.new,
+}) {
+  return ProviderContainer(
+    overrides: [
+      llmProvider.overrideWithValue(llm),
+      conversationRepositoryProvider.overrideWithValue(repo),
+      settingsControllerProvider.overrideWith(settingsBuilder),
+      if (toolEngineFactory != null)
+        toolEngineFactoryProvider.overrideWithValue(toolEngineFactory),
+    ],
+  );
 }
 
 void main() {
@@ -133,17 +198,87 @@ void main() {
     expect(assistant.reasoning, 'pondering');
   });
 
-  test('without deepThink the chat model is used with thinking disabled',
-      () async {
-    final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'hello')]);
-    final c = _container(llm, InMemoryRepo());
+  test(
+    'without deepThink the chat model is used with thinking disabled',
+    () async {
+      final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'hello')]);
+      final c = _container(llm, InMemoryRepo());
+      addTearDown(c.dispose);
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
+
+      await ctrl.sendMessage('hi');
+      expect(llm.lastConfig?.model, KnownModels.chat);
+      expect(llm.lastThinking, isFalse); // normal mode disables thinking
+    },
+  );
+
+  test('web_search tool runs only when the model requests it', () async {
+    final llm = FakeLlmProvider(
+      const [],
+      scriptedChunks: const [
+        [
+          ChatChunk(
+            toolCalls: [
+              ToolCall(
+                index: 0,
+                id: 'call_1',
+                name: 'web_search',
+                argumentsJson: '{"query":"dart',
+              ),
+            ],
+          ),
+          ChatChunk(
+            toolCalls: [ToolCall(index: 0, argumentsJson: ' flutter"}')],
+            finishReason: 'tool_calls',
+          ),
+        ],
+        [ChatChunk(contentDelta: 'Use Flutter with Dart [1].')],
+      ],
+    );
+    final search = _CountingSearch(const [
+      SearchResult(
+        title: 'Flutter',
+        url: 'https://flutter.dev',
+        snippet: 'UI toolkit',
+      ),
+    ]);
+    final c = _container(
+      llm,
+      InMemoryRepo(),
+      toolEngineFactory: ({required backend, required apiKey}) =>
+          ToolEngine(search),
+    );
     addTearDown(c.dispose);
+
     final ctrl = c.read(chatControllerProvider.notifier);
     await c.read(chatControllerProvider.future);
 
-    await ctrl.sendMessage('hi');
-    expect(llm.lastConfig?.model, KnownModels.chat);
-    expect(llm.lastThinking, isFalse); // normal mode disables thinking
+    ctrl.toggleSearch();
+    await ctrl.sendMessage('What should I use?');
+
+    expect(search.calls, 1);
+    expect(search.lastQuery, 'dart flutter');
+    expect(llm.callCount, 2);
+    expect(llm.toolCalls.first?.single.name, 'web_search');
+    expect(
+      llm.calls[1].any(
+        (m) =>
+            m.role == MessageRole.tool &&
+            m.toolCallId == 'call_1' &&
+            m.content.contains('https://flutter.dev'),
+      ),
+      isTrue,
+    );
+
+    final assistant = c
+        .read(chatControllerProvider)
+        .value!
+        .current!
+        .activePath
+        .last;
+    expect(assistant.content, 'Use Flutter with Dart [1].');
+    expect(assistant.citations.single.url, 'https://flutter.dev');
   });
 
   test('ProviderProfile round-trips through JSON', () {
@@ -161,47 +296,53 @@ void main() {
     expect(restored.models.length, 2);
   });
 
-  test('DriftConversationRepository persists, reloads, deletes and searches',
-      () async {
-    final db = AppDatabase(NativeDatabase.memory());
-    addTearDown(db.close);
-    final repo = DriftConversationRepository(db);
+  test(
+    'DriftConversationRepository persists, reloads, deletes and searches',
+    () async {
+      final db = AppDatabase(NativeDatabase.memory());
+      addTearDown(db.close);
+      final repo = DriftConversationRepository(db);
 
-    final convo = Conversation(
-      title: 'Flutter help',
-      messages: [
-        ChatMessage(role: MessageRole.user, content: 'how do I use drift?'),
-        ChatMessage(
-          role: MessageRole.assistant,
-          content: 'call build_runner',
-          reasoning: 'think',
-          model: 'deepseek-reasoner',
-          thinkingMillis: 1500,
-          citations: const [
-            Citation(index: 1, title: 'drift docs', url: 'https://drift.simonbinder.eu'),
-          ],
-        ),
-      ],
-    );
-    await repo.saveAll([convo]);
+      final convo = Conversation(
+        title: 'Flutter help',
+        messages: [
+          ChatMessage(role: MessageRole.user, content: 'how do I use drift?'),
+          ChatMessage(
+            role: MessageRole.assistant,
+            content: 'call build_runner',
+            reasoning: 'think',
+            model: 'deepseek-reasoner',
+            thinkingMillis: 1500,
+            citations: const [
+              Citation(
+                index: 1,
+                title: 'drift docs',
+                url: 'https://drift.simonbinder.eu',
+              ),
+            ],
+          ),
+        ],
+      );
+      await repo.saveAll([convo]);
 
-    final loaded = await repo.loadAll();
-    expect(loaded, hasLength(1));
-    expect(loaded.single.messages, hasLength(2));
-    final assistant = loaded.single.messages[1];
-    expect(assistant.thinkingMillis, 1500);
-    expect(assistant.model, 'deepseek-reasoner');
-    expect(assistant.citations.single.url, 'https://drift.simonbinder.eu');
+      final loaded = await repo.loadAll();
+      expect(loaded, hasLength(1));
+      expect(loaded.single.messages, hasLength(2));
+      final assistant = loaded.single.messages[1];
+      expect(assistant.thinkingMillis, 1500);
+      expect(assistant.model, 'deepseek-reasoner');
+      expect(assistant.citations.single.url, 'https://drift.simonbinder.eu');
 
-    // Search matches title and message content.
-    expect(await repo.search('flutter'), hasLength(1));
-    expect(await repo.search('drift'), hasLength(1));
-    expect(await repo.search('nonexistent'), isEmpty);
+      // Search matches title and message content.
+      expect(await repo.search('flutter'), hasLength(1));
+      expect(await repo.search('drift'), hasLength(1));
+      expect(await repo.search('nonexistent'), isEmpty);
 
-    // Removing from the saved set deletes (cascade) on next save.
-    await repo.saveAll(const []);
-    expect(await repo.loadAll(), isEmpty);
-  });
+      // Removing from the saved set deletes (cascade) on next save.
+      await repo.saveAll(const []);
+      expect(await repo.loadAll(), isEmpty);
+    },
+  );
 
   group('FileParser', () {
     final parser = FileParser();
@@ -209,7 +350,11 @@ void main() {
     test('parses plain text', () {
       final bytes = Uint8List.fromList(utf8.encode('hello world'));
       final a = parser.parse(
-          name: 'note.txt', mimeType: 'text/plain', sizeBytes: 11, bytes: bytes);
+        name: 'note.txt',
+        mimeType: 'text/plain',
+        sizeBytes: 11,
+        bytes: bytes,
+      );
       expect(a.parseError, isNull);
       expect(a.text, 'hello world');
       expect(a.truncated, isFalse);
@@ -219,36 +364,67 @@ void main() {
       final big = 'a' * (FileParser.maxChars + 100);
       final bytes = Uint8List.fromList(utf8.encode(big));
       final a = parser.parse(
-          name: 'big.md', mimeType: 'text/markdown', sizeBytes: bytes.length, bytes: bytes);
+        name: 'big.md',
+        mimeType: 'text/markdown',
+        sizeBytes: bytes.length,
+        bytes: bytes,
+      );
       expect(a.truncated, isTrue);
       expect(a.text.length, FileParser.maxChars);
     });
 
-    test('flags images as unsupported for text', () {
+    test('retains small images as base64 for vision models', () {
       final a = parser.parse(
-          name: 'pic.png', mimeType: 'image/png', sizeBytes: 4, bytes: Uint8List(4));
+        name: 'pic.png',
+        mimeType: 'image/png',
+        sizeBytes: 4,
+        bytes: Uint8List.fromList([1, 2, 3, 4]),
+      );
       expect(a.isImage, isTrue);
-      expect(a.parseError, isNotNull);
+      expect(a.parseError, isNull);
+      expect(a.hasImageData, isTrue);
+      expect(a.imageDataUrl, startsWith('data:image/png;base64,'));
+    });
+
+    test('rejects oversized images with a note', () {
+      final big = Uint8List(FileParser.maxImageBytes + 1);
+      final a = parser.parse(
+        name: 'big.png',
+        mimeType: 'image/png',
+        sizeBytes: big.length,
+        bytes: big,
+      );
+      expect(a.hasImageData, isFalse);
+      expect(a.parseError, contains('过大'));
     });
 
     test('reports a clear error for unsupported types', () {
       final a = parser.parse(
-          name: 'app.exe',
-          mimeType: 'application/octet-stream',
-          sizeBytes: 2,
-          bytes: Uint8List(2));
+        name: 'app.exe',
+        mimeType: 'application/octet-stream',
+        sizeBytes: 2,
+        bytes: Uint8List(2),
+      );
       expect(a.parseError, contains('不支持'));
     });
   });
 
   group('ToolEngine', () {
     test('builds context + numbered citations from results', () async {
-      final engine = ToolEngine(_FakeSearch([
-        const SearchResult(
-            title: 'Dart', url: 'https://dart.dev', content: 'Dart lang'),
-        const SearchResult(
-            title: 'Flutter', url: 'https://flutter.dev', snippet: 'UI kit'),
-      ]));
+      final engine = ToolEngine(
+        _FakeSearch([
+          const SearchResult(
+            title: 'Dart',
+            url: 'https://dart.dev',
+            content: 'Dart lang',
+          ),
+          const SearchResult(
+            title: 'Flutter',
+            url: 'https://flutter.dev',
+            snippet: 'UI kit',
+          ),
+        ]),
+      );
       final ctx = await engine.runSearch('dart flutter');
       expect(ctx.citations, hasLength(2));
       expect(ctx.citations.first.index, 1);
@@ -263,14 +439,99 @@ void main() {
       expect(ctx.isEmpty, isTrue);
     });
 
+    test('propagates SearchUnavailableException so the UI can surface it', () {
+      final engine = ToolEngine(_ThrowingSearch());
+      expect(
+        () => engine.runSearch('q'),
+        throwsA(isA<SearchUnavailableException>()),
+      );
+    });
+
     test('skips results without a URL', () async {
-      final engine = ToolEngine(_FakeSearch([
-        const SearchResult(title: 'No url', url: '', content: 'x'),
-        const SearchResult(title: 'Has url', url: 'https://a.com', content: 'y'),
-      ]));
+      final engine = ToolEngine(
+        _FakeSearch([
+          const SearchResult(title: 'No url', url: '', content: 'x'),
+          const SearchResult(
+            title: 'Has url',
+            url: 'https://a.com',
+            content: 'y',
+          ),
+        ]),
+      );
       final ctx = await engine.runSearch('q');
       expect(ctx.citations, hasLength(1));
       expect(ctx.citations.single.url, 'https://a.com');
+    });
+  });
+
+  group('ModelCapabilities.resolve', () {
+    test('DeepSeek V4 flash: tools + thinking field, not reasoner', () {
+      final c = ModelCapabilities.resolve('deepseek-v4-flash');
+      expect(c.isReasoner, isFalse);
+      expect(c.supportsTools, isTrue);
+      expect(c.sendThinkingField, isTrue);
+    });
+
+    test('DeepSeek V4 pro: reasoner AND tool-capable (V4 hybrid)', () {
+      final c = ModelCapabilities.resolve('deepseek-v4-pro');
+      expect(c.isReasoner, isTrue);
+      expect(c.supportsTools, isTrue);
+      expect(c.sendThinkingField, isTrue);
+    });
+
+    test('legacy deepseek-reasoner: reasoner, no tools, no thinking field', () {
+      final c = ModelCapabilities.resolve('deepseek-reasoner');
+      expect(c.isReasoner, isTrue);
+      expect(c.supportsTools, isFalse);
+      expect(c.sendThinkingField, isFalse);
+    });
+
+    test('o1: reasoner, no tools, no DeepSeek thinking field', () {
+      final c = ModelCapabilities.resolve('o1');
+      expect(c.isReasoner, isTrue);
+      expect(c.supportsTools, isFalse);
+      expect(c.sendThinkingField, isFalse);
+    });
+
+    test('o3-mini: reasoner but still tool-capable (unchanged behavior)', () {
+      final c = ModelCapabilities.resolve('o3-mini');
+      expect(c.isReasoner, isTrue);
+      expect(c.supportsTools, isTrue);
+      expect(c.sendThinkingField, isFalse);
+    });
+
+    test('gpt-4o: plain chat — tools, not reasoner, no thinking field', () {
+      final c = ModelCapabilities.resolve('gpt-4o');
+      expect(c.isReasoner, isFalse);
+      expect(c.supportsTools, isTrue);
+      expect(c.sendThinkingField, isFalse);
+    });
+
+    test('kimi-thinking-preview: now detected as reasoner', () {
+      final c = ModelCapabilities.resolve('kimi-thinking-preview');
+      expect(c.isReasoner, isTrue);
+      expect(c.sendThinkingField, isFalse); // not a DeepSeek model
+    });
+
+    test('vision detection: gpt-4o yes, deepseek-v4 no, qwen-vl yes', () {
+      expect(ModelCapabilities.resolve('gpt-4o').supportsVision, isTrue);
+      expect(ModelCapabilities.resolve('gpt-4o-mini').supportsVision, isTrue);
+      expect(ModelCapabilities.resolve('qwen-vl-max').supportsVision, isTrue);
+      expect(ModelCapabilities.resolve('glm-4v').supportsVision, isTrue);
+      expect(ModelCapabilities.resolve('deepseek-v4-flash').supportsVision,
+          isFalse);
+    });
+
+    test('LlmConfig derives capabilities from its model by default', () {
+      const cfg = LlmConfig(
+        baseUrl: 'https://x',
+        apiKey: 'k',
+        model: 'deepseek-v4-flash',
+      );
+      expect(cfg.capabilities.sendThinkingField, isTrue);
+      // copyWith to a new model re-derives (no stale override leaks through).
+      final reasoner = cfg.copyWith(model: 'deepseek-reasoner');
+      expect(reasoner.capabilities.supportsTools, isFalse);
     });
   });
 
@@ -278,72 +539,134 @@ void main() {
     for (final b in SearchBackend.values) {
       expect(SearchBackendInfo.fromWire(b.wire), b);
     }
-    expect(SearchBackendInfo.fromWire('garbage'), SearchBackend.tavily);
+    expect(SearchBackendInfo.fromWire('garbage'), SearchBackend.duckduckgo);
+    expect(SearchBackend.duckduckgo.requiresApiKey, isFalse);
+    expect(SearchBackend.tavily.requiresApiKey, isTrue);
   });
 
-  test('ConversationExport.toMarkdown renders roles, reasoning and sources', () {
-    final convo = Conversation(
-      title: 'My chat',
-      messages: [
-        ChatMessage(role: MessageRole.user, content: 'hi'),
-        ChatMessage(
-          role: MessageRole.assistant,
-          content: 'hello [1]',
-          reasoning: 'pondered',
-          model: 'deepseek-reasoner',
-          citations: const [
-            Citation(index: 1, title: 'Src', url: 'https://src.com'),
-          ],
-        ),
-      ],
+  test(
+    'ConversationExport.toMarkdown renders roles, reasoning and sources',
+    () {
+      final convo = Conversation(
+        title: 'My chat',
+        messages: [
+          ChatMessage(role: MessageRole.user, content: 'hi'),
+          ChatMessage(
+            role: MessageRole.assistant,
+            content: 'hello [1]',
+            reasoning: 'pondered',
+            model: 'deepseek-reasoner',
+            citations: const [
+              Citation(index: 1, title: 'Src', url: 'https://src.com'),
+            ],
+          ),
+        ],
+      );
+      final md = ConversationExport.toMarkdown(convo);
+      expect(md, contains('# My chat'));
+      expect(md, contains('🧑 用户'));
+      expect(md, contains('🤖 助手'));
+      expect(md, contains('deepseek-reasoner'));
+      expect(md, contains('深度思考'));
+      expect(md, contains('[Src](https://src.com)'));
+    },
+  );
+
+  test('LlmRequestMessage serializes images as multimodal content parts', () {
+    const msg = LlmRequestMessage(
+      role: MessageRole.user,
+      content: 'what is this?',
+      imageDataUrls: ['data:image/png;base64,AAAA'],
     );
-    final md = ConversationExport.toMarkdown(convo);
-    expect(md, contains('# My chat'));
-    expect(md, contains('🧑 用户'));
-    expect(md, contains('🤖 助手'));
-    expect(md, contains('deepseek-reasoner'));
-    expect(md, contains('深度思考'));
-    expect(md, contains('[Src](https://src.com)'));
+    final json = msg.toOpenAiJson();
+    final parts = json['content'] as List;
+    expect(parts.first, {'type': 'text', 'text': 'what is this?'});
+    expect(parts.last, {
+      'type': 'image_url',
+      'image_url': {'url': 'data:image/png;base64,AAAA'},
+    });
   });
 
-  test('regenerate creates a new assistant branch and switches between them',
-      () async {
-    final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'first')]);
-    final c = _container(llm, InMemoryRepo());
+  test('vision model receives image attachments as image parts', () async {
+    final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'a cat')]);
+    final c = _container(
+      llm,
+      InMemoryRepo(),
+      settingsBuilder: FakeVisionSettings.new,
+    );
     addTearDown(c.dispose);
     final ctrl = c.read(chatControllerProvider.notifier);
     await c.read(chatControllerProvider.future);
 
-    await ctrl.sendMessage('question');
-    var convo = c.read(chatControllerProvider).value!.current!;
-    expect(convo.activePath, hasLength(2)); // user + assistant
-    expect(convo.activePath.last.content, 'first');
+    await ctrl.sendMessage(
+      'what is this?',
+      attachments: [
+        Attachment(name: 'pic.png', mimeType: 'image/png', imageBase64: 'AAAA'),
+      ],
+    );
 
-    llm.chunks
-      ..clear()
-      ..add(const ChatChunk(contentDelta: 'second'));
-    await ctrl.regenerate();
-
-    convo = c.read(chatControllerProvider).value!.current!;
-    // Active path still 2, but the assistant now has a sibling branch.
-    expect(convo.activePath, hasLength(2));
-    expect(convo.activePath.last.content, 'second');
-    final assistant = convo.activePath.last;
-    final (idx, count) = convo.branchInfo(assistant.id);
-    expect(count, 2);
-    expect(idx, 1);
-    // All assistant nodes are retained in the tree (no data lost).
-    expect(
-        convo.messages
-            .where((m) => m.role == MessageRole.assistant)
-            .length,
-        2);
-
-    // Switch back to the first branch.
-    ctrl.switchBranch(assistant.id, -1);
-    convo = c.read(chatControllerProvider).value!.current!;
-    expect(convo.activePath.last.content, 'first');
+    final user = llm.calls.last.firstWhere((m) => m.role == MessageRole.user);
+    expect(user.imageDataUrls, ['data:image/png;base64,AAAA']);
   });
+
+  test('non-vision model describes images in text, not as image parts', () async {
+    final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'ok')]);
+    final c = _container(llm, InMemoryRepo()); // default DeepSeek (no vision)
+    addTearDown(c.dispose);
+    final ctrl = c.read(chatControllerProvider.notifier);
+    await c.read(chatControllerProvider.future);
+
+    await ctrl.sendMessage(
+      'what is this?',
+      attachments: [
+        Attachment(name: 'pic.png', mimeType: 'image/png', imageBase64: 'AAAA'),
+      ],
+    );
+
+    final user = llm.calls.last.firstWhere((m) => m.role == MessageRole.user);
+    expect(user.imageDataUrls, isEmpty);
+    expect(user.content, contains('不支持图片'));
+  });
+
+  test(
+    'regenerate creates a new assistant branch and switches between them',
+    () async {
+      final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'first')]);
+      final c = _container(llm, InMemoryRepo());
+      addTearDown(c.dispose);
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
+
+      await ctrl.sendMessage('question');
+      var convo = c.read(chatControllerProvider).value!.current!;
+      expect(convo.activePath, hasLength(2)); // user + assistant
+      expect(convo.activePath.last.content, 'first');
+
+      llm.chunks
+        ..clear()
+        ..add(const ChatChunk(contentDelta: 'second'));
+      await ctrl.regenerate();
+
+      convo = c.read(chatControllerProvider).value!.current!;
+      // Active path still 2, but the assistant now has a sibling branch.
+      expect(convo.activePath, hasLength(2));
+      expect(convo.activePath.last.content, 'second');
+      final assistant = convo.activePath.last;
+      final (idx, count) = convo.branchInfo(assistant.id);
+      expect(count, 2);
+      expect(idx, 1);
+      // All assistant nodes are retained in the tree (no data lost).
+      expect(
+        convo.messages.where((m) => m.role == MessageRole.assistant).length,
+        2,
+      );
+
+      // Switch back to the first branch.
+      ctrl.switchBranch(assistant.id, -1);
+      convo = c.read(chatControllerProvider).value!.current!;
+      expect(convo.activePath.last.content, 'first');
+    },
+  );
 
   test('editMessage branches the user turn and keeps the original', () async {
     final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'ans-a')]);
@@ -371,26 +694,117 @@ void main() {
     expect(idx, 1);
   });
 
-  test('Conversation.activePath follows activeChildren and JSON round-trips',
-      () {
-    final u1 = ChatMessage(role: MessageRole.user, content: 'q');
-    final a1 = ChatMessage(
-        role: MessageRole.assistant, content: 'a1', parentId: u1.id);
-    final a2 = ChatMessage(
-        role: MessageRole.assistant, content: 'a2', parentId: u1.id);
-    final convo = Conversation(
-      title: 't',
-      messages: [u1, a1, a2],
-      activeChildren: {kRootKey: u1.id, u1.id: a1.id},
-    );
-    expect(convo.activePath.map((m) => m.content), ['q', 'a1']);
-    expect(convo.branchInfo(a1.id), (0, 2));
+  test(
+    'Conversation.activePath follows activeChildren and JSON round-trips',
+    () {
+      final u1 = ChatMessage(role: MessageRole.user, content: 'q');
+      final a1 = ChatMessage(
+        role: MessageRole.assistant,
+        content: 'a1',
+        parentId: u1.id,
+      );
+      final a2 = ChatMessage(
+        role: MessageRole.assistant,
+        content: 'a2',
+        parentId: u1.id,
+      );
+      final convo = Conversation(
+        title: 't',
+        messages: [u1, a1, a2],
+        activeChildren: {kRootKey: u1.id, u1.id: a1.id},
+      );
+      expect(convo.activePath.map((m) => m.content), ['q', 'a1']);
+      expect(convo.branchInfo(a1.id), (0, 2));
 
-    final restored = Conversation.fromJson(convo.toJson());
-    expect(restored.activePath.map((m) => m.content), ['q', 'a1']);
-    expect(restored.activeChildren[u1.id], a1.id);
-    expect(restored.messages[1].parentId, u1.id);
+      final restored = Conversation.fromJson(convo.toJson());
+      expect(restored.activePath.map((m) => m.content), ['q', 'a1']);
+      expect(restored.activeChildren[u1.id], a1.id);
+      expect(restored.messages[1].parentId, u1.id);
+    },
+  );
+
+  group('ChatPage widget interactions', () {
+    testWidgets('tapping send dispatches the message and renders the reply', (
+      tester,
+    ) async {
+      final llm = FakeLlmProvider([
+        const ChatChunk(contentDelta: 'hello there'),
+      ]);
+      final c = _container(llm, InMemoryRepo());
+      addTearDown(c.dispose);
+      await _pumpChat(tester, c);
+
+      // Fresh conversation → empty state visible.
+      expect(find.text('开始一段对话'), findsOneWidget);
+
+      await tester.enterText(find.byType(TextField).first, 'hi');
+      await tester.tap(find.byTooltip('发送'));
+      await _drain(tester);
+
+      expect(llm.callCount, 1);
+      final assistant = c
+          .read(chatControllerProvider)
+          .value!
+          .current!
+          .activePath
+          .last;
+      expect(assistant.content, 'hello there');
+      // The message list replaced the empty state.
+      expect(find.text('开始一段对话'), findsNothing);
+    });
+
+    testWidgets('深度思考 chip toggles deep-think state', (tester) async {
+      final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'x')]);
+      final c = _container(llm, InMemoryRepo());
+      addTearDown(c.dispose);
+      await _pumpChat(tester, c);
+
+      expect(c.read(chatControllerProvider).value!.deepThink, isFalse);
+      await tester.tap(find.widgetWithText(FilterChip, '深度思考'));
+      await tester.pump();
+      expect(c.read(chatControllerProvider).value!.deepThink, isTrue);
+    });
+
+    testWidgets('error banner with 重试 appears when the API key is missing', (
+      tester,
+    ) async {
+      final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'x')]);
+      final c = _container(
+        llm,
+        InMemoryRepo(),
+        settingsBuilder: FakeUnconfiguredSettings.new,
+      );
+      addTearDown(c.dispose);
+      await _pumpChat(tester, c);
+
+      await tester.enterText(find.byType(TextField).first, 'hi');
+      await tester.tap(find.byTooltip('发送'));
+      await _drain(tester);
+
+      expect(llm.callCount, 0); // never reached the LLM
+      expect(find.text('请先在设置中填写 API Key。'), findsOneWidget);
+      expect(find.text('重试'), findsOneWidget);
+    });
   });
+}
+
+/// Pump [ChatPage] against a prebuilt container so tests can read state back.
+Future<void> _pumpChat(WidgetTester tester, ProviderContainer container) async {
+  await tester.pumpWidget(
+    UncontrolledProviderScope(
+      container: container,
+      child: const MaterialApp(home: ChatPage()),
+    ),
+  );
+  await _drain(tester);
+}
+
+/// Bounded pumping — the async-loading branch shows a spinner, so pumpAndSettle
+/// would hang; a few fixed frames let the AsyncNotifier + fake stream resolve.
+Future<void> _drain(WidgetTester tester) async {
+  for (var i = 0; i < 8; i++) {
+    await tester.pump(const Duration(milliseconds: 20));
+  }
 }
 
 class _FakeSearch implements SearchProvider {
@@ -399,4 +813,25 @@ class _FakeSearch implements SearchProvider {
   @override
   Future<List<SearchResult>> search(String query, {int maxResults = 5}) async =>
       results;
+}
+
+class _ThrowingSearch implements SearchProvider {
+  @override
+  Future<List<SearchResult>> search(String query, {int maxResults = 5}) async =>
+      throw const SearchUnavailableException('unavailable');
+}
+
+class _CountingSearch implements SearchProvider {
+  _CountingSearch(this.results);
+
+  final List<SearchResult> results;
+  int calls = 0;
+  String? lastQuery;
+
+  @override
+  Future<List<SearchResult>> search(String query, {int maxResults = 5}) async {
+    calls++;
+    lastQuery = query;
+    return results.take(maxResults).toList();
+  }
 }

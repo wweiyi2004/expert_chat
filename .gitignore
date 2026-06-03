@@ -43,6 +43,9 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+# Gradle build output (android/build is a separate tree from the root /build/)
+/android/build/
+/android/.gradle/
 
 # Local configuration (SDK paths)
 android/local.properties

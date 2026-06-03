@@ -19,7 +19,7 @@ class SettingsState {
     this.apiKey = '',
     this.selectedModel,
     this.themeMode = ThemeMode.system,
-    this.searchBackend = SearchBackend.tavily,
+    this.searchBackend = SearchBackend.duckduckgo,
     this.searchApiKey = '',
     this.systemPrompt = '',
   });
@@ -74,19 +74,18 @@ class SettingsState {
     SearchBackend? searchBackend,
     String? searchApiKey,
     String? systemPrompt,
-  }) =>
-      SettingsState(
-        profiles: profiles ?? this.profiles,
-        activeProfileId: activeProfileId ?? this.activeProfileId,
-        apiKey: apiKey ?? this.apiKey,
-        selectedModel: identical(selectedModel, _sentinel)
-            ? this.selectedModel
-            : selectedModel as String?,
-        themeMode: themeMode ?? this.themeMode,
-        searchBackend: searchBackend ?? this.searchBackend,
-        searchApiKey: searchApiKey ?? this.searchApiKey,
-        systemPrompt: systemPrompt ?? this.systemPrompt,
-      );
+  }) => SettingsState(
+    profiles: profiles ?? this.profiles,
+    activeProfileId: activeProfileId ?? this.activeProfileId,
+    apiKey: apiKey ?? this.apiKey,
+    selectedModel: identical(selectedModel, _sentinel)
+        ? this.selectedModel
+        : selectedModel as String?,
+    themeMode: themeMode ?? this.themeMode,
+    searchBackend: searchBackend ?? this.searchBackend,
+    searchApiKey: searchApiKey ?? this.searchApiKey,
+    systemPrompt: systemPrompt ?? this.systemPrompt,
+  );
 
   static const _sentinel = Object();
 }
@@ -132,7 +131,9 @@ class SettingsController extends AsyncNotifier<SettingsState> {
         profiles = [migrated];
         if (legacyKey != null && legacyKey.isNotEmpty) {
           await secure.write(
-              key: _secureKeyForProfile(migrated.id), value: legacyKey);
+            key: _secureKeyForProfile(migrated.id),
+            value: legacyKey,
+          );
         }
       } else {
         profiles = [ProviderPreset.presets.first.toProfile()];
@@ -168,8 +169,9 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       apiKey: apiKey,
       selectedModel: prefs.getString(_kSelectedModel),
       themeMode: ThemeMode.values[prefs.getInt(_kThemeMode) ?? 0],
-      searchBackend:
-          SearchBackendInfo.fromWire(prefs.getString(_kSearchBackend)),
+      searchBackend: SearchBackendInfo.fromWire(
+        prefs.getString(_kSearchBackend),
+      ),
       searchApiKey: searchApiKey,
       systemPrompt: prefs.getString(_kSystemPrompt) ?? '',
     );
@@ -198,9 +200,12 @@ class SettingsController extends AsyncNotifier<SettingsState> {
   }
 
   Future<void> _writeProfiles(
-          SharedPreferences prefs, List<ProviderProfile> profiles) =>
-      prefs.setString(
-          _kProfiles, jsonEncode(profiles.map((p) => p.toJson()).toList()));
+    SharedPreferences prefs,
+    List<ProviderProfile> profiles,
+  ) => prefs.setString(
+    _kProfiles,
+    jsonEncode(profiles.map((p) => p.toJson()).toList()),
+  );
 
   /// Update theme or model selection (lightweight, frequently called).
   Future<void> apply({String? selectedModel, ThemeMode? themeMode}) async {
@@ -252,13 +257,13 @@ class SettingsController extends AsyncNotifier<SettingsState> {
   Future<void> selectProfile(String id) async {
     if (!_current.profiles.any((p) => p.id == id)) return;
     final key =
-        await ref.read(secureStorageProvider).read(key: _secureKeyForProfile(id)) ??
-            '';
-    state = AsyncData(_current.copyWith(
-      activeProfileId: id,
-      apiKey: key,
-      selectedModel: null,
-    ));
+        await ref
+            .read(secureStorageProvider)
+            .read(key: _secureKeyForProfile(id)) ??
+        '';
+    state = AsyncData(
+      _current.copyWith(activeProfileId: id, apiKey: key, selectedModel: null),
+    );
     final prefs = ref.read(sharedPrefsProvider);
     await prefs.setString(_kActiveProfile, id);
     await prefs.remove(_kSelectedModel);
@@ -267,12 +272,14 @@ class SettingsController extends AsyncNotifier<SettingsState> {
   /// Add a profile (e.g. from a preset). Becomes active.
   Future<void> addProfile(ProviderProfile profile) async {
     final profiles = [..._current.profiles, profile];
-    state = AsyncData(_current.copyWith(
-      profiles: profiles,
-      activeProfileId: profile.id,
-      apiKey: '',
-      selectedModel: null,
-    ));
+    state = AsyncData(
+      _current.copyWith(
+        profiles: profiles,
+        activeProfileId: profile.id,
+        apiKey: '',
+        selectedModel: null,
+      ),
+    );
     final prefs = ref.read(sharedPrefsProvider);
     await _writeProfiles(prefs, profiles);
     await prefs.setString(_kActiveProfile, profile.id);
@@ -298,12 +305,14 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     final prefs = ref.read(sharedPrefsProvider);
     if (remaining.isEmpty) {
       final fresh = ProviderPreset.presets.first.toProfile();
-      state = AsyncData(SettingsState(
-        profiles: [fresh],
-        activeProfileId: fresh.id,
-        apiKey: '',
-        themeMode: _current.themeMode,
-      ));
+      state = AsyncData(
+        SettingsState(
+          profiles: [fresh],
+          activeProfileId: fresh.id,
+          apiKey: '',
+          themeMode: _current.themeMode,
+        ),
+      );
       await _writeProfiles(prefs, [fresh]);
       await prefs.setString(_kActiveProfile, fresh.id);
       return;
@@ -315,12 +324,14 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       activeId = remaining.first.id;
       apiKey = await secure.read(key: _secureKeyForProfile(activeId)) ?? '';
     }
-    state = AsyncData(_current.copyWith(
-      profiles: remaining,
-      activeProfileId: activeId,
-      apiKey: apiKey,
-      selectedModel: null,
-    ));
+    state = AsyncData(
+      _current.copyWith(
+        profiles: remaining,
+        activeProfileId: activeId,
+        apiKey: apiKey,
+        selectedModel: null,
+      ),
+    );
     await _writeProfiles(prefs, remaining);
     await prefs.setString(_kActiveProfile, activeId!);
   }
@@ -328,5 +339,5 @@ class SettingsController extends AsyncNotifier<SettingsState> {
 
 final settingsControllerProvider =
     AsyncNotifierProvider<SettingsController, SettingsState>(
-  SettingsController.new,
-);
+      SettingsController.new,
+    );

@@ -41,7 +41,11 @@ class ToolEngine {
 
   /// Runs a search for [query] and returns an injectable context + citations.
   /// Returns an empty [SearchContext] when there are no hits.
-  Future<SearchContext> runSearch(String query, {int maxResults = 5}) async {
+  Future<SearchContext> runSearch(
+    String query, {
+    int maxResults = 5,
+    int startIndex = 1,
+  }) async {
     final results = await _search.search(query, maxResults: maxResults);
     if (results.isEmpty) {
       return const SearchContext(contextText: '', citations: []);
@@ -52,7 +56,7 @@ class ToolEngine {
       ..writeln('以下是联网搜索的结果。请基于这些信息回答用户问题，并在引用处用 [编号] 标注来源（例如 [1]）：')
       ..writeln();
 
-    var index = 1;
+    var index = startIndex;
     for (final r in results) {
       if (r.url.trim().isEmpty) continue;
       final text = r.bestText;
@@ -64,21 +68,20 @@ class ToolEngine {
         ..writeln('URL: ${r.url}')
         ..writeln(clipped)
         ..writeln();
-      citations.add(Citation(
-        index: index,
-        title: r.title.isEmpty ? r.url : r.title,
-        url: r.url,
-        snippet: r.snippet,
-      ));
+      citations.add(
+        Citation(
+          index: index,
+          title: r.title.isEmpty ? r.url : r.title,
+          url: r.url,
+          snippet: r.snippet,
+        ),
+      );
       index++;
     }
 
     if (citations.isEmpty) {
       return const SearchContext(contextText: '', citations: []);
     }
-    return SearchContext(
-      contextText: buffer.toString(),
-      citations: citations,
-    );
+    return SearchContext(contextText: buffer.toString(), citations: citations);
   }
 }

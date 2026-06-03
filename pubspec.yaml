@@ -1,5 +1,5 @@
 name: expert_chat
-description: "A new Flutter project."
+description: "跨平台 Flutter LLM 客户端：支持任意 OpenAI 兼容 API（DeepSeek/Kimi/OpenAI/智谱等），含深度思考、联网搜索与本地文件解析。"
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev

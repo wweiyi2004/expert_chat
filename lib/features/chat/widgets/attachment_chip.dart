@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 
 import '../../../data/models.dart';
@@ -6,11 +8,7 @@ import '../../../data/models.dart';
 /// Surfaces the file name, a status line (size / truncated / parse error) and,
 /// when [onRemove] is given, a remove button.
 class AttachmentChip extends StatelessWidget {
-  const AttachmentChip({
-    super.key,
-    required this.attachment,
-    this.onRemove,
-  });
+  const AttachmentChip({super.key, required this.attachment, this.onRemove});
 
   final Attachment attachment;
   final VoidCallback? onRemove;
@@ -19,24 +17,24 @@ class AttachmentChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final hasError = attachment.parseError != null;
-    final color = hasError ? scheme.error : scheme.onSurfaceVariant;
+    final color = hasError ? scheme.error : scheme.primary;
 
     return Container(
       constraints: const BoxConstraints(maxWidth: 240),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
-        color: scheme.surfaceContainerHighest.withValues(alpha: 0.6),
-        borderRadius: BorderRadius.circular(10),
+        color: scheme.surfaceContainer,
+        borderRadius: BorderRadius.circular(8),
         border: Border.all(
           color: hasError
               ? scheme.error.withValues(alpha: 0.5)
-              : scheme.outlineVariant.withValues(alpha: 0.4),
+              : scheme.outlineVariant,
         ),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(_iconFor(attachment), size: 20, color: color),
+          _leading(color),
           const SizedBox(width: 8),
           Flexible(
             child: Column(
@@ -48,7 +46,9 @@ class AttachmentChip extends StatelessWidget {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
-                      fontSize: 13, fontWeight: FontWeight.w500),
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                  ),
                 ),
                 Text(
                   _status(attachment),
@@ -63,13 +63,37 @@ class AttachmentChip extends StatelessWidget {
             const SizedBox(width: 4),
             InkWell(
               onTap: onRemove,
-              borderRadius: BorderRadius.circular(12),
-              child: Icon(Icons.close, size: 16, color: scheme.onSurfaceVariant),
+              borderRadius: BorderRadius.circular(8),
+              child: Icon(
+                Icons.close,
+                size: 16,
+                color: scheme.onSurfaceVariant,
+              ),
             ),
           ],
         ],
       ),
     );
+  }
+
+  /// A small image thumbnail when the attachment is a retained image, else the
+  /// type icon.
+  Widget _leading(Color color) {
+    if (attachment.hasImageData) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(4),
+        child: Image.memory(
+          base64Decode(attachment.imageBase64!),
+          width: 28,
+          height: 28,
+          fit: BoxFit.cover,
+          gaplessPlayback: true,
+          errorBuilder: (_, _, _) =>
+              Icon(_iconFor(attachment), size: 20, color: color),
+        ),
+      );
+    }
+    return Icon(_iconFor(attachment), size: 20, color: color);
   }
 
   String _status(Attachment a) {

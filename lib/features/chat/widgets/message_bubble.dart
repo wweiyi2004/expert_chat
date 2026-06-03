@@ -50,8 +50,9 @@ class MessageBubble extends StatefulWidget {
 
 class _MessageBubbleState extends State<MessageBubble> {
   bool _editing = false;
-  late final TextEditingController _editCtrl =
-      TextEditingController(text: widget.message.content);
+  late final TextEditingController _editCtrl = TextEditingController(
+    text: widget.message.content,
+  );
 
   @override
   void dispose() {
@@ -92,7 +93,8 @@ class _MessageBubbleState extends State<MessageBubble> {
                   spacing: 8,
                   runSpacing: 8,
                   children: [
-                    for (final a in m.attachments) AttachmentChip(attachment: a),
+                    for (final a in m.attachments)
+                      AttachmentChip(attachment: a),
                   ],
                 ),
               ),
@@ -104,18 +106,19 @@ class _MessageBubbleState extends State<MessageBubble> {
               )
             else if (m.content.isNotEmpty)
               Container(
-                margin: const EdgeInsets.symmetric(vertical: 6),
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                margin: const EdgeInsets.symmetric(vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 10,
+                ),
                 constraints: const BoxConstraints(maxWidth: 560),
                 decoration: BoxDecoration(
-                  color: scheme.primaryContainer,
-                  borderRadius: BorderRadius.circular(16),
+                  color: scheme.primary,
+                  borderRadius: BorderRadius.circular(8),
                 ),
                 child: SelectableText(
                   m.content,
-                  style:
-                      TextStyle(color: scheme.onPrimaryContainer, height: 1.5),
+                  style: TextStyle(color: scheme.onPrimary, height: 1.5),
                 ),
               ),
             if (!_editing)
@@ -142,14 +145,13 @@ class _MessageBubbleState extends State<MessageBubble> {
     // Assistant message: optional thinking panel + markdown body + actions.
     final hasReasoning = m.reasoning.trim().isNotEmpty;
     final stillThinking = widget.isStreaming && m.content.isEmpty;
-    final showCursor =
-        widget.isStreaming && m.content.isEmpty && !hasReasoning;
+    final showCursor = widget.isStreaming && m.content.isEmpty && !hasReasoning;
 
     return Align(
       alignment: Alignment.centerLeft,
       child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 6),
-        constraints: const BoxConstraints(maxWidth: 720),
+        margin: const EdgeInsets.symmetric(vertical: 10),
+        constraints: const BoxConstraints(maxWidth: 760),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -176,13 +178,14 @@ class _MessageBubbleState extends State<MessageBubble> {
                   // text (gpt_markdown's default would badge ANY [number]).
                   sourceTagBuilder: (context, content, style) {
                     final n = int.tryParse(content.trim());
-                    final isCitation =
-                        m.citations.any((c) => c.index == n);
+                    final isCitation = m.citations.any((c) => c.index == n);
                     if (!isCitation) {
                       return Text('[$content]', style: style);
                     }
                     return _CitationBadge(
-                        number: content, citations: m.citations);
+                      number: content,
+                      citations: m.citations,
+                    );
                   },
                 ),
               ),
@@ -204,8 +207,7 @@ class _MessageBubbleState extends State<MessageBubble> {
                       color: scheme.onSurfaceVariant,
                       icon: const Icon(Icons.copy_outlined),
                       onPressed: () async {
-                        await Clipboard.setData(
-                            ClipboardData(text: m.content));
+                        await Clipboard.setData(ClipboardData(text: m.content));
                         if (context.mounted) {
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(
@@ -284,6 +286,12 @@ class _EditBox extends StatelessWidget {
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 6),
       constraints: const BoxConstraints(maxWidth: 560),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainer,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
@@ -292,7 +300,7 @@ class _EditBox extends StatelessWidget {
             autofocus: true,
             minLines: 1,
             maxLines: 8,
-            decoration: const InputDecoration(isDense: true),
+            decoration: const InputDecoration(isDense: true, filled: false),
           ),
           const SizedBox(height: 6),
           Row(
@@ -336,14 +344,14 @@ class _CitationBadge extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
           decoration: BoxDecoration(
-            color: scheme.primaryContainer,
-            borderRadius: BorderRadius.circular(8),
+            color: scheme.primary,
+            borderRadius: BorderRadius.circular(6),
           ),
           child: Text(
             number,
             style: TextStyle(
               fontSize: 11,
-              color: scheme.onPrimaryContainer,
+              color: scheme.onPrimary,
               fontWeight: FontWeight.w600,
             ),
           ),

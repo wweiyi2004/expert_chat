@@ -17,6 +17,10 @@ class FileParser {
   /// Excess is dropped and the attachment is flagged [Attachment.truncated].
   static const int maxChars = 60000;
 
+  /// Largest image we retain for vision models. Bigger images are rejected with
+  /// a note (base64 in the prompt + DB would balloon for little benefit).
+  static const int maxImageBytes = 5 * 1024 * 1024;
+
   /// Build an [Attachment] from raw bytes. Never throws: parse failures are
   /// captured in [Attachment.parseError] so the UI can surface them.
   Attachment parse({
@@ -29,9 +33,14 @@ class FileParser {
     final base = Attachment(name: name, mimeType: mimeType, sizeBytes: sizeBytes);
 
     if (mimeType.startsWith('image/')) {
-      return base.copyWith(
-        parseError: '图片暂不支持文本解析（需视觉模型）。',
-      );
+      if (bytes.lengthInBytes > maxImageBytes) {
+        return base.copyWith(
+          parseError: '图片过大（超过 5MB），未附加。',
+        );
+      }
+      // Retain the image for vision-capable models; non-vision models get a
+      // textual note at send time instead (see ChatController).
+      return base.copyWith(imageBase64: base64Encode(bytes));
     }
 
     try {

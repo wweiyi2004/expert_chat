@@ -1,11 +1,12 @@
 import 'dart:async';
+import 'dart:convert';
 
+import 'package:dio/dio.dart' show CancelToken;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/providers.dart';
 import '../data/models.dart';
 import '../domain/llm/llm_provider.dart';
-import '../domain/tools/search_provider.dart';
 import '../domain/tools/tool_engine.dart';
 import 'settings_controller.dart';
 
@@ -28,10 +29,10 @@ class ChatState {
   /// configured default model (the "深度思考" toggle in the composer).
   final bool deepThink;
 
-  /// When true the next send runs a web search first (the "联网" toggle).
+  /// When true the model may call the `web_search` tool while answering.
   final bool searchEnabled;
 
-  /// True while the pre-answer web search is running (drives a status hint).
+  /// True while a web-search tool call is running (drives a status hint).
   final bool isSearching;
   final String? error;
 
@@ -51,26 +52,34 @@ class ChatState {
     bool? searchEnabled,
     bool? isSearching,
     Object? error = _sentinel,
-  }) =>
-      ChatState(
-        conversations: conversations ?? this.conversations,
-        currentId: currentId ?? this.currentId,
-        isStreaming: isStreaming ?? this.isStreaming,
-        deepThink: deepThink ?? this.deepThink,
-        searchEnabled: searchEnabled ?? this.searchEnabled,
-        isSearching: isSearching ?? this.isSearching,
-        error: identical(error, _sentinel) ? this.error : error as String?,
-      );
+  }) => ChatState(
+    conversations: conversations ?? this.conversations,
+    currentId: currentId ?? this.currentId,
+    isStreaming: isStreaming ?? this.isStreaming,
+    deepThink: deepThink ?? this.deepThink,
+    searchEnabled: searchEnabled ?? this.searchEnabled,
+    isSearching: isSearching ?? this.isSearching,
+    error: identical(error, _sentinel) ? this.error : error as String?,
+  );
 
   static const _sentinel = Object();
 }
 
 class ChatController extends AsyncNotifier<ChatState> {
+  static const int _maxToolRounds = 3;
+
   StreamSubscription<dynamic>? _sub;
+  Completer<void>? _streamCompleter;
+
+  /// Cancels the active LLM HTTP request (set per generation, fired by [stop]).
+  CancelToken? _cancelToken;
 
   @override
   Future<ChatState> build() async {
-    ref.onDispose(() => _sub?.cancel());
+    ref.onDispose(() {
+      _sub?.cancel();
+      _cancelToken?.cancel();
+    });
     final repo = ref.read(conversationRepositoryProvider);
     final conversations = await repo.loadAll();
     if (conversations.isEmpty) {
@@ -97,16 +106,18 @@ class ChatController extends AsyncNotifier<ChatState> {
 
   /// Replace the current conversation in the list with [updated].
   List<Conversation> _replace(Conversation updated) => [
-        for (final c in _s.conversations) c.id == updated.id ? updated : c,
-      ];
+    for (final c in _s.conversations) c.id == updated.id ? updated : c,
+  ];
 
   void newConversation() {
     final fresh = Conversation();
-    _set(_s.copyWith(
-      conversations: [fresh, ..._s.conversations],
-      currentId: fresh.id,
-      error: null,
-    ));
+    _set(
+      _s.copyWith(
+        conversations: [fresh, ..._s.conversations],
+        currentId: fresh.id,
+        error: null,
+      ),
+    );
     _persist();
   }
 
@@ -149,8 +160,7 @@ class ChatController extends AsyncNotifier<ChatState> {
       _set(_s.copyWith(conversations: [fresh], currentId: fresh.id));
       repo.saveConversation(fresh);
     } else {
-      final newCurrent =
-          _s.currentId == id ? remaining.first.id : _s.currentId;
+      final newCurrent = _s.currentId == id ? remaining.first.id : _s.currentId;
       _set(_s.copyWith(conversations: remaining, currentId: newCurrent));
     }
   }
@@ -158,7 +168,12 @@ class ChatController extends AsyncNotifier<ChatState> {
   void stop() {
     _sub?.cancel();
     _sub = null;
-    _set(_s.copyWith(isStreaming: false));
+    // Abort the underlying HTTP request too, so it stops consuming tokens.
+    _cancelToken?.cancel();
+    _cancelToken = null;
+    final completer = _streamCompleter;
+    if (completer != null && !completer.isCompleted) completer.complete();
+    _set(_s.copyWith(isStreaming: false, isSearching: false));
     _persist();
   }
 
@@ -175,8 +190,7 @@ class ChatController extends AsyncNotifier<ChatState> {
     final config = _configFor(settings);
 
     final convo = _s.current ?? Conversation();
-    final parentId =
-        convo.activePath.isEmpty ? null : convo.activePath.last.id;
+    final parentId = convo.activePath.isEmpty ? null : convo.activePath.last.id;
     final userMsg = ChatMessage(
       role: MessageRole.user,
       content: trimmed,
@@ -196,7 +210,9 @@ class ChatController extends AsyncNotifier<ChatState> {
         : (attachments.isNotEmpty ? attachments.first.name : '新对话');
     final working = convo.copyWith(
       title: isFirst
-          ? (titleSeed.length > 20 ? '${titleSeed.substring(0, 20)}…' : titleSeed)
+          ? (titleSeed.length > 20
+                ? '${titleSeed.substring(0, 20)}…'
+                : titleSeed)
           : convo.title,
       messages: [...convo.messages, userMsg, assistantMsg],
       activeChildren: {
@@ -228,8 +244,10 @@ class ChatController extends AsyncNotifier<ChatState> {
     if (trimmed.isEmpty) return;
     final convo = _s.current;
     if (convo == null) return;
-    final old = convo.messages.firstWhere((m) => m.id == messageId,
-        orElse: () => convo.messages.first);
+    final old = convo.messages.firstWhere(
+      (m) => m.id == messageId,
+      orElse: () => convo.messages.first,
+    );
     if (old.role != MessageRole.user) return;
 
     final settings = await _readySettings();
@@ -308,19 +326,25 @@ class ChatController extends AsyncNotifier<ChatState> {
     if (_s.isStreaming) return;
     final convo = _s.current;
     if (convo == null) return;
-    final m = convo.messages.firstWhere((x) => x.id == messageId,
-        orElse: () => convo.messages.first);
+    final m = convo.messages.firstWhere(
+      (x) => x.id == messageId,
+      orElse: () => convo.messages.first,
+    );
     final key = m.parentId ?? kRootKey;
     final sibs = convo.childrenOf(key);
     if (sibs.length < 2) return;
     final curIdx = sibs.indexWhere((x) => x.id == messageId);
     final newIdx = (curIdx + delta).clamp(0, sibs.length - 1);
     if (newIdx == curIdx) return;
-    _set(_s.copyWith(
-      conversations: _replace(convo.copyWith(
-        activeChildren: {...convo.activeChildren, key: sibs[newIdx].id},
-      )),
-    ));
+    _set(
+      _s.copyWith(
+        conversations: _replace(
+          convo.copyWith(
+            activeChildren: {...convo.activeChildren, key: sibs[newIdx].id},
+          ),
+        ),
+      ),
+    );
     _persist();
   }
 
@@ -342,8 +366,8 @@ class ChatController extends AsyncNotifier<ChatState> {
       ? settings.config.copyWith(model: settings.reasonerModel)
       : settings.config;
 
-  /// Shared pipeline: show the pending turn, run optional web search, then
-  /// stream the answer along the active branch.
+  /// Shared pipeline: show the pending turn, optionally expose `web_search` as
+  /// a model-controlled tool, then stream the answer along the active branch.
   Future<void> _generate({
     required Conversation working,
     required String assistantId,
@@ -352,32 +376,39 @@ class ChatController extends AsyncNotifier<ChatState> {
     required String searchQuery,
     required bool thinking,
   }) async {
-    _set(_s.copyWith(
-      conversations: _replace(working),
-      currentId: working.id,
-      isStreaming: true,
-      isSearching: _s.searchEnabled,
-      error: null,
-    ));
+    final searchAllowed = _s.searchEnabled && searchQuery.trim().isNotEmpty;
+    final useWebSearchTool = searchAllowed && config.capabilities.supportsTools;
 
-    // Optional web-search pre-step (works for reasoner too, which can't do
-    // function calling). On failure we surface a hint and answer without it.
+    _set(
+      _s.copyWith(
+        conversations: _replace(working),
+        currentId: working.id,
+        isStreaming: true,
+        isSearching: false,
+        error: null,
+      ),
+    );
+
+    // Fallback for legacy models that reject tool-call parameters: keep the old
+    // explicit search-first behavior so the feature still works.
     SearchContext? searchContext;
-    if (_s.searchEnabled && searchQuery.trim().isNotEmpty) {
+    if (searchAllowed && !useWebSearchTool) {
+      _set(_s.copyWith(isSearching: true));
       try {
-        final engine = ToolEngine(HttpSearchProvider(
+        final engine = ref.read(toolEngineFactoryProvider)(
           backend: settings.searchBackend,
           apiKey: settings.searchApiKey,
-        ));
+        );
         searchContext = await engine.runSearch(searchQuery.trim());
         if (searchContext.citations.isNotEmpty) {
           _setCitations(working.id, assistantId, searchContext.citations);
         }
       } catch (e) {
         _set(_s.copyWith(error: e.toString()));
+      } finally {
+        _set(_s.copyWith(isSearching: false));
       }
     }
-    _set(_s.copyWith(isSearching: false));
 
     // The user may have pressed stop during the (awaited) search; honor it.
     if (!_s.isStreaming) {
@@ -388,19 +419,24 @@ class ChatController extends AsyncNotifier<ChatState> {
     // Build the request from the CURRENT active branch (re-read state, since
     // citations may have replaced the conversation object), excluding the empty
     // assistant placeholder and expanding attachments into text.
-    final cur = _s.conversations.firstWhere((c) => c.id == working.id,
-        orElse: () => working);
+    final cur = _s.conversations.firstWhere(
+      (c) => c.id == working.id,
+      orElse: () => working,
+    );
+    final vision = config.capabilities.supportsVision;
     final history = cur.activePath
         .where((m) => m.id != assistantId)
-        .map(_expandAttachments)
+        .map((m) => _toRequestMessage(m, vision: vision))
         .toList();
 
     if (searchContext != null && searchContext.contextText.isNotEmpty) {
       final insertAt = history.isEmpty ? 0 : history.length - 1;
       history.insert(
         insertAt,
-        ChatMessage(
-            role: MessageRole.system, content: searchContext.contextText),
+        LlmRequestMessage(
+          role: MessageRole.system,
+          content: searchContext.contextText,
+        ),
       );
     }
 
@@ -410,7 +446,7 @@ class ChatController extends AsyncNotifier<ChatState> {
     if (preset.isNotEmpty) {
       history.insert(
         0,
-        ChatMessage(role: MessageRole.system, content: preset),
+        LlmRequestMessage(role: MessageRole.system, content: preset),
       );
     }
 
@@ -420,17 +456,28 @@ class ChatController extends AsyncNotifier<ChatState> {
       convoId: working.id,
       assistantId: assistantId,
       thinking: thinking,
+      settings: settings,
+      fallbackSearchQuery: searchQuery,
+      enableWebSearchTool: useWebSearchTool,
     );
   }
 
   Future<void> _streamAnswer({
     required LlmConfig config,
-    required List<ChatMessage> history,
+    required List<LlmRequestMessage> history,
     required String convoId,
     required String assistantId,
     required bool thinking,
+    required SettingsState settings,
+    required String fallbackSearchQuery,
+    required bool enableWebSearchTool,
   }) async {
     final llm = ref.read(llmProvider);
+    // One token covers all tool rounds of this generation; stop() fires it.
+    final cancelToken = CancelToken();
+    _cancelToken = cancelToken;
+    final requestMessages = List<LlmRequestMessage>.of(history);
+    final citations = <Citation>[];
     var content = '';
     var reasoning = '';
     // Stopwatch for "已深度思考 N 秒": starts on first reasoning delta, freezes
@@ -438,45 +485,237 @@ class ChatController extends AsyncNotifier<ChatState> {
     final thinkClock = Stopwatch();
     var thinkMillis = 0;
 
-    final stream =
-        llm.streamChat(config: config, messages: history, thinking: thinking);
-    final completer = Completer<void>();
+    try {
+      for (var round = 0; round < _maxToolRounds; round++) {
+        final toolDrafts = <int, _ToolCallDraft>{};
+        var turnContent = '';
+        var turnReasoning = '';
+        String? finishReason;
+        Object? streamError;
 
-    _sub = stream.listen(
-      (chunk) {
-        if (chunk.reasoningDelta != null && chunk.reasoningDelta!.isNotEmpty) {
-          if (!thinkClock.isRunning && thinkMillis == 0) thinkClock.start();
-          reasoning += chunk.reasoningDelta!;
+        final stream = llm.streamChat(
+          config: config,
+          messages: requestMessages,
+          tools: enableWebSearchTool ? const [ToolEngine.webSearchTool] : null,
+          thinking: thinking,
+          cancelToken: cancelToken,
+        );
+        final completer = Completer<void>();
+        _streamCompleter = completer;
+
+        _sub = stream.listen(
+          (chunk) {
+            finishReason = chunk.finishReason ?? finishReason;
+            if (chunk.reasoningDelta != null &&
+                chunk.reasoningDelta!.isNotEmpty) {
+              if (!thinkClock.isRunning && thinkMillis == 0) {
+                thinkClock.start();
+              }
+              turnReasoning += chunk.reasoningDelta!;
+              reasoning += chunk.reasoningDelta!;
+            }
+            if (chunk.contentDelta != null && chunk.contentDelta!.isNotEmpty) {
+              if (thinkClock.isRunning) {
+                thinkClock.stop();
+                thinkMillis = thinkClock.elapsedMilliseconds;
+              }
+              turnContent += chunk.contentDelta!;
+              content += chunk.contentDelta!;
+            }
+            for (final call in chunk.toolCalls ?? const <ToolCall>[]) {
+              (toolDrafts[call.index] ??= _ToolCallDraft(
+                call.index,
+              )).merge(call);
+            }
+            _updateAssistant(
+              convoId,
+              assistantId,
+              content,
+              reasoning,
+              thinkMillis,
+            );
+          },
+          onError: (Object e) {
+            streamError = e;
+            if (!completer.isCompleted) completer.complete();
+          },
+          onDone: () {
+            if (!completer.isCompleted) completer.complete();
+          },
+          cancelOnError: true,
+        );
+
+        await completer.future;
+        if (identical(_streamCompleter, completer)) _streamCompleter = null;
+        _sub = null;
+
+        if (streamError != null) throw streamError!;
+        if (!_s.isStreaming) {
+          _persist();
+          return;
         }
-        if (chunk.contentDelta != null && chunk.contentDelta!.isNotEmpty) {
-          if (thinkClock.isRunning) {
-            thinkClock.stop();
-            thinkMillis = thinkClock.elapsedMilliseconds;
-          }
-          content += chunk.contentDelta!;
-        }
-        _updateAssistant(convoId, assistantId, content, reasoning, thinkMillis);
-      },
-      onError: (Object e) {
-        if (thinkClock.isRunning) thinkClock.stop();
-        _set(_s.copyWith(isStreaming: false, error: e.toString()));
-        _persist();
-        if (!completer.isCompleted) completer.complete();
-      },
-      onDone: () {
+
         if (thinkClock.isRunning) {
           thinkClock.stop();
           thinkMillis = thinkClock.elapsedMilliseconds;
-          _updateAssistant(convoId, assistantId, content, reasoning, thinkMillis);
+          _updateAssistant(
+            convoId,
+            assistantId,
+            content,
+            reasoning,
+            thinkMillis,
+          );
         }
-        _set(_s.copyWith(isStreaming: false));
-        _persist();
-        if (!completer.isCompleted) completer.complete();
-      },
-      cancelOnError: true,
-    );
 
-    await completer.future;
+        final toolCalls = _finalizeToolCalls(toolDrafts);
+        final needsTools =
+            enableWebSearchTool &&
+            (toolCalls.isNotEmpty || finishReason == 'tool_calls');
+        if (!needsTools) {
+          _set(_s.copyWith(isStreaming: false, isSearching: false));
+          await _persist();
+          return;
+        }
+
+        if (toolCalls.isEmpty) {
+          throw Exception('模型请求了工具调用，但没有返回可执行的工具参数。');
+        }
+        if (round == _maxToolRounds - 1) {
+          throw Exception('联网搜索工具调用轮次过多，已停止。');
+        }
+
+        requestMessages.add(
+          LlmRequestMessage(
+            role: MessageRole.assistant,
+            content: turnContent,
+            reasoningContent: turnReasoning,
+            toolCalls: toolCalls,
+          ),
+        );
+
+        // Clear transient "let me search" text from the visible answer. The
+        // final response will stream in after tool results are appended.
+        content = '';
+        _updateAssistant(convoId, assistantId, content, reasoning, thinkMillis);
+
+        final toolMessages = await _executeToolCalls(
+          toolCalls: toolCalls,
+          settings: settings,
+          fallbackSearchQuery: fallbackSearchQuery,
+          convoId: convoId,
+          assistantId: assistantId,
+          citations: citations,
+        );
+        if (!_s.isStreaming) {
+          await _persist();
+          return;
+        }
+        requestMessages.addAll(toolMessages);
+      }
+    } catch (e) {
+      if (thinkClock.isRunning) thinkClock.stop();
+      _set(
+        _s.copyWith(
+          isStreaming: false,
+          isSearching: false,
+          error: e.toString(),
+        ),
+      );
+      await _persist();
+    } finally {
+      // Drop our token once finished so a later stop() can't cancel a stale one.
+      if (identical(_cancelToken, cancelToken)) _cancelToken = null;
+    }
+  }
+
+  List<ToolCall> _finalizeToolCalls(Map<int, _ToolCallDraft> drafts) {
+    final calls = drafts.values.map((d) => d.build()).toList()
+      ..sort((a, b) => a.index.compareTo(b.index));
+    return calls.where((c) => (c.name ?? '').isNotEmpty).toList();
+  }
+
+  Future<List<LlmRequestMessage>> _executeToolCalls({
+    required List<ToolCall> toolCalls,
+    required SettingsState settings,
+    required String fallbackSearchQuery,
+    required String convoId,
+    required String assistantId,
+    required List<Citation> citations,
+  }) async {
+    final out = <LlmRequestMessage>[];
+    _set(_s.copyWith(isSearching: true));
+    try {
+      for (final call in toolCalls) {
+        final toolCallId = call.id ?? '';
+        String toolContent;
+        if (call.name != ToolEngine.webSearchTool.name) {
+          toolContent = '不支持的工具：${call.name ?? 'unknown'}';
+        } else {
+          toolContent = await _runWebSearchTool(
+            call,
+            settings,
+            fallbackSearchQuery,
+            convoId,
+            assistantId,
+            citations,
+          );
+        }
+        out.add(
+          LlmRequestMessage(
+            role: MessageRole.tool,
+            content: toolContent,
+            toolCallId: toolCallId,
+          ),
+        );
+      }
+    } finally {
+      _set(_s.copyWith(isSearching: false));
+    }
+    return out;
+  }
+
+  Future<String> _runWebSearchTool(
+    ToolCall call,
+    SettingsState settings,
+    String fallbackSearchQuery,
+    String convoId,
+    String assistantId,
+    List<Citation> citations,
+  ) async {
+    final query = _searchQueryFromArgs(call.argumentsJson, fallbackSearchQuery);
+    try {
+      final engine = ref.read(toolEngineFactoryProvider)(
+        backend: settings.searchBackend,
+        apiKey: settings.searchApiKey,
+      );
+      final context = await engine.runSearch(
+        query,
+        startIndex: citations.length + 1,
+      );
+      if (context.citations.isNotEmpty) {
+        citations.addAll(context.citations);
+        _setCitations(convoId, assistantId, List<Citation>.of(citations));
+      }
+      return context.contextText.isEmpty
+          ? '没有搜索到与 "$query" 相关的结果。'
+          : context.contextText;
+    } catch (e) {
+      _set(_s.copyWith(error: e.toString()));
+      return '联网搜索失败：$e';
+    }
+  }
+
+  String _searchQueryFromArgs(String raw, String fallback) {
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map && decoded['query'] is String) {
+        final query = (decoded['query'] as String).trim();
+        if (query.isNotEmpty) return query;
+      }
+    } catch (_) {
+      // Fall through to the user turn if the model returned malformed JSON.
+    }
+    return fallback.trim();
   }
 
   void _setCitations(String convoId, String msgId, List<Citation> citations) {
@@ -488,16 +727,32 @@ class ChatController extends AsyncNotifier<ChatState> {
       for (final m in convo.messages)
         if (m.id == msgId) m.copyWith(citations: citations) else m,
     ];
-    _set(_s.copyWith(
-        conversations: _replace(convo.copyWith(messages: messages))));
+    _set(
+      _s.copyWith(conversations: _replace(convo.copyWith(messages: messages))),
+    );
   }
 
-  /// Inline a message's attachment text so the model can read it. Returns the
-  /// message unchanged when it has no attachments.
-  ChatMessage _expandAttachments(ChatMessage m) {
-    if (m.attachments.isEmpty) return m;
+  /// Turn a stored [ChatMessage] into a request message: text attachments are
+  /// inlined into the content; image attachments are sent as `image_url` parts
+  /// when [vision] is true, otherwise described in text. Messages with no
+  /// attachments pass through unchanged.
+  LlmRequestMessage _toRequestMessage(ChatMessage m, {required bool vision}) {
+    if (m.attachments.isEmpty) return LlmRequestMessage.fromChatMessage(m);
+
     final buffer = StringBuffer();
+    final images = <String>[];
     for (final a in m.attachments) {
+      if (a.isImage) {
+        if (vision && a.hasImageData) {
+          images.add(a.imageDataUrl); // sent through the image channel
+        } else {
+          buffer
+            ..writeln('【图片：${a.name}】')
+            ..writeln(a.parseError ?? '（当前模型不支持图片，未发送图片内容）')
+            ..writeln();
+        }
+        continue;
+      }
       buffer.writeln('【文件：${a.name}】');
       if (a.parseError != null) {
         buffer.writeln('（${a.parseError}）');
@@ -508,7 +763,12 @@ class ChatController extends AsyncNotifier<ChatState> {
       buffer.writeln();
     }
     if (m.content.isNotEmpty) buffer.write(m.content);
-    return m.copyWith(content: buffer.toString());
+
+    return LlmRequestMessage(
+      role: m.role,
+      content: buffer.toString(),
+      imageDataUrls: images,
+    );
   }
 
   void _updateAssistant(
@@ -533,9 +793,34 @@ class ChatController extends AsyncNotifier<ChatState> {
         else
           m,
     ];
-    _set(_s.copyWith(conversations: _replace(convo.copyWith(messages: messages))));
+    _set(
+      _s.copyWith(conversations: _replace(convo.copyWith(messages: messages))),
+    );
   }
 }
 
-final chatControllerProvider =
-    AsyncNotifierProvider<ChatController, ChatState>(ChatController.new);
+final chatControllerProvider = AsyncNotifierProvider<ChatController, ChatState>(
+  ChatController.new,
+);
+
+class _ToolCallDraft {
+  _ToolCallDraft(this.index);
+
+  final int index;
+  String? id;
+  String? name;
+  final StringBuffer _arguments = StringBuffer();
+
+  void merge(ToolCall call) {
+    id ??= call.id;
+    name ??= call.name;
+    if (call.argumentsJson.isNotEmpty) _arguments.write(call.argumentsJson);
+  }
+
+  ToolCall build() => ToolCall(
+    index: index,
+    id: id ?? 'call_${index}_${DateTime.now().microsecondsSinceEpoch}',
+    name: name,
+    argumentsJson: _arguments.toString(),
+  );
+}

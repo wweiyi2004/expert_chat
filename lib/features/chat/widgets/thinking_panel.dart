@@ -76,15 +76,15 @@ class _ThinkingPanelState extends State<ThinkingPanel>
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       decoration: BoxDecoration(
-        color: scheme.surfaceContainerHighest.withValues(alpha: 0.4),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.4)),
+        color: scheme.surfaceContainer,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: scheme.outlineVariant),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           InkWell(
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: BorderRadius.circular(8),
             onTap: () => setState(() {
               _expanded = !_expanded;
               _userToggled = true;
@@ -95,22 +95,33 @@ class _ThinkingPanelState extends State<ThinkingPanel>
                 children: [
                   widget.isStreaming
                       ? FadeTransition(
-                          opacity: Tween(begin: 0.35, end: 1.0)
-                              .animate(_pulse),
-                          child: Icon(Icons.psychology,
-                              size: 18, color: scheme.primary),
+                          opacity: Tween(begin: 0.35, end: 1.0).animate(_pulse),
+                          child: Icon(
+                            Icons.psychology,
+                            size: 18,
+                            color: scheme.primary,
+                          ),
                         )
-                      : Icon(Icons.psychology_outlined,
-                          size: 18, color: scheme.primary),
+                      : Icon(
+                          Icons.psychology_outlined,
+                          size: 18,
+                          color: scheme.primary,
+                        ),
                   const SizedBox(width: 8),
-                  Text(_label,
-                      style: TextStyle(
-                          fontSize: 13,
-                          color: scheme.onSurfaceVariant,
-                          fontWeight: FontWeight.w500)),
+                  Text(
+                    _label,
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: scheme.onSurfaceVariant,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
                   const Spacer(),
-                  Icon(_expanded ? Icons.expand_less : Icons.expand_more,
-                      size: 18, color: scheme.onSurfaceVariant),
+                  Icon(
+                    _expanded ? Icons.expand_less : Icons.expand_more,
+                    size: 18,
+                    color: scheme.onSurfaceVariant,
+                  ),
                 ],
               ),
             ),

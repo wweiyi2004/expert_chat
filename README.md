@@ -8,7 +8,7 @@
 - **流式输出** — 实时流式显示 AI 回复
 - **思考过程展示** — 可展开查看模型的推理过程（thinking）
 - **文件解析** — 支持上传 PDF、DOCX、Excel、TXT 等文件作为上下文
-- **联网搜索** — 集成搜索 API，支持联网获取实时信息
+- **联网搜索** — 默认 DuckDuckGo 免费搜索（尽力而为，可能因限流/页面变动失效，失效时会提示改用 API 后端）+ 本地网页正文抓取；稳定使用建议配置 Tavily / Exa / 博查等搜索 API
 - **对话管理** — 创建、删除、导出对话历史
 - **Markdown 渲染** — 完整支持代码高亮、表格、链接等 Markdown 语法
 - **安全存储** — API 密钥通过 `flutter_secure_storage` 加密存储
@@ -53,7 +53,7 @@ flutter run
 
 1. 启动应用后进入 **设置** 页面
 2. 填写 LLM API 的 Base URL、API Key 和模型名称
-3. （可选）配置搜索 API Key 以启用联网搜索功能
+3. （可选）联网搜索默认使用 DuckDuckGo 免费后端，不需要 API Key；如选择 Tavily / Exa / 博查等后端，再填写对应搜索 API Key
 
 ## 项目结构
 

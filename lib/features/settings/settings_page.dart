@@ -86,7 +86,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                       : '用于 ${active.name}（${active.baseUrl}）',
                   suffixIcon: IconButton(
                     icon: Icon(
-                        _obscure ? Icons.visibility : Icons.visibility_off),
+                      _obscure ? Icons.visibility : Icons.visibility_off,
+                    ),
                     onPressed: () => setState(() => _obscure = !_obscure),
                   ),
                 ),
@@ -97,15 +98,16 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                 initialValue: s.availableModels.contains(s.model)
                     ? s.model
                     : (s.availableModels.isNotEmpty
-                        ? s.availableModels.first
-                        : null),
+                          ? s.availableModels.first
+                          : null),
                 decoration: const InputDecoration(labelText: '模型'),
                 items: [
                   for (final m in s.availableModels)
                     DropdownMenuItem(
                       value: m,
-                      child: Text(m +
-                          (KnownModels.isReasoner(m) ? '（深度思考）' : '')),
+                      child: Text(
+                        m + (KnownModels.isReasoner(m) ? '（深度思考）' : ''),
+                      ),
                     ),
                 ],
                 onChanged: (v) =>
@@ -132,17 +134,20 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
               SegmentedButton<ThemeMode>(
                 segments: const [
                   ButtonSegment(
-                      value: ThemeMode.system,
-                      label: Text('跟随系统'),
-                      icon: Icon(Icons.brightness_auto)),
+                    value: ThemeMode.system,
+                    label: Text('跟随系统'),
+                    icon: Icon(Icons.brightness_auto),
+                  ),
                   ButtonSegment(
-                      value: ThemeMode.light,
-                      label: Text('浅色'),
-                      icon: Icon(Icons.light_mode)),
+                    value: ThemeMode.light,
+                    label: Text('浅色'),
+                    icon: Icon(Icons.light_mode),
+                  ),
                   ButtonSegment(
-                      value: ThemeMode.dark,
-                      label: Text('深色'),
-                      icon: Icon(Icons.dark_mode)),
+                    value: ThemeMode.dark,
+                    label: Text('深色'),
+                    icon: Icon(Icons.dark_mode),
+                  ),
                 ],
                 selected: {s.themeMode},
                 onSelectionChanged: (set) =>
@@ -165,12 +170,12 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                 controller: _searchKey,
                 obscureText: _obscureSearch,
                 decoration: InputDecoration(
-                  labelText: '搜索 API Key',
-                  helperText: '在输入框上方开启"联网"后生效；留空则不联网。',
+                  labelText: '搜索 API Key（可选）',
+                  helperText: 'DuckDuckGo 免费后端可留空；Tavily / Exa / 博查需要填写 Key。',
                   suffixIcon: IconButton(
-                    icon: Icon(_obscureSearch
-                        ? Icons.visibility
-                        : Icons.visibility_off),
+                    icon: Icon(
+                      _obscureSearch ? Icons.visibility : Icons.visibility_off,
+                    ),
                     onPressed: () =>
                         setState(() => _obscureSearch = !_obscureSearch),
                   ),
@@ -190,7 +195,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   }
 
   Future<void> _editProfile(
-      BuildContext context, ProviderProfile? existing) async {
+    BuildContext context,
+    ProviderProfile? existing,
+  ) async {
     final result = await Navigator.of(context).push<ProviderProfile>(
       MaterialPageRoute(builder: (_) => _ProfileEditPage(existing: existing)),
     );
@@ -253,8 +260,9 @@ class _ProfileSelector extends StatelessWidget {
               case 'custom':
                 onAddCustom();
               default:
-                final preset = ProviderPreset.presets
-                    .firstWhere((p) => p.name == value);
+                final preset = ProviderPreset.presets.firstWhere(
+                  (p) => p.name == value,
+                );
                 onAddPreset(preset);
             }
           },
@@ -267,7 +275,9 @@ class _ProfileSelector extends StatelessWidget {
             const PopupMenuItem(value: 'custom', child: Text('+ 自定义服务商')),
             for (final preset in ProviderPreset.presets)
               PopupMenuItem(
-                  value: preset.name, child: Text('+ ${preset.name} 预设')),
+                value: preset.name,
+                child: Text('+ ${preset.name} 预设'),
+              ),
           ],
         ),
       ],
@@ -319,12 +329,7 @@ class _ProfileEditPageState extends State<_ProfileEditPage> {
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.existing == null ? '新增服务商' : '编辑服务商'),
-        actions: [
-          TextButton(
-            onPressed: _save,
-            child: const Text('保存'),
-          ),
-        ],
+        actions: [TextButton(onPressed: _save, child: const Text('保存'))],
       ),
       body: ListView(
         padding: const EdgeInsets.all(20),
@@ -337,13 +342,17 @@ class _ProfileEditPageState extends State<_ProfileEditPage> {
           TextField(
             controller: _baseUrl,
             decoration: const InputDecoration(
-                labelText: 'Base URL', hintText: 'https://api.example.com/v1'),
+              labelText: 'Base URL',
+              hintText: 'https://api.example.com/v1',
+            ),
           ),
           const SizedBox(height: 16),
           TextField(
             controller: _models,
             decoration: const InputDecoration(
-                labelText: '模型列表（逗号分隔）', hintText: 'model-a, model-b'),
+              labelText: '模型列表（逗号分隔）',
+              hintText: 'model-a, model-b',
+            ),
           ),
           const SizedBox(height: 16),
           TextField(
@@ -354,7 +363,9 @@ class _ProfileEditPageState extends State<_ProfileEditPage> {
           TextField(
             controller: _reasonerModel,
             decoration: const InputDecoration(
-                labelText: '深度思考模型', hintText: '没有则与对话模型相同'),
+              labelText: '深度思考模型',
+              hintText: '没有则与对话模型相同',
+            ),
           ),
         ],
       ),
@@ -374,20 +385,21 @@ class _ProfileEditPageState extends State<_ProfileEditPage> {
         ? _reasonerModel.text.trim()
         : chat;
     final base = widget.existing;
-    final profile = (base ??
-            ProviderProfile(
-              name: '',
-              baseUrl: '',
-              chatModel: '',
-              reasonerModel: '',
-            ))
-        .copyWith(
-      name: _name.text.trim().isEmpty ? '未命名' : _name.text.trim(),
-      baseUrl: _baseUrl.text.trim(),
-      models: models.isEmpty ? [chat] : models,
-      chatModel: chat,
-      reasonerModel: reasoner,
-    );
+    final profile =
+        (base ??
+                ProviderProfile(
+                  name: '',
+                  baseUrl: '',
+                  chatModel: '',
+                  reasonerModel: '',
+                ))
+            .copyWith(
+              name: _name.text.trim().isEmpty ? '未命名' : _name.text.trim(),
+              baseUrl: _baseUrl.text.trim(),
+              models: models.isEmpty ? [chat] : models,
+              chatModel: chat,
+              reasonerModel: reasoner,
+            );
     Navigator.of(context).pop(profile);
   }
 }
@@ -398,11 +410,12 @@ class _SectionTitle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.only(bottom: 12),
-        child: Text(text,
-            style: Theme.of(context)
-                .textTheme
-                .titleMedium
-                ?.copyWith(fontWeight: FontWeight.w600)),
-      );
+    padding: const EdgeInsets.only(bottom: 12),
+    child: Text(
+      text,
+      style: Theme.of(
+        context,
+      ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+    ),
+  );
 }

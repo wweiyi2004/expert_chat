@@ -3,50 +3,51 @@ import 'dart:convert';
 
 import 'package:dio/dio.dart';
 
-import '../../data/models.dart';
 import 'llm_provider.dart';
 
 /// LLM provider for any OpenAI-compatible `/chat/completions` SSE endpoint.
 /// DeepSeek, OpenAI, Kimi, 智谱 etc. all share this wire format.
 class OpenAiCompatibleProvider implements LlmProvider {
   OpenAiCompatibleProvider({Dio? dio})
-      : _dio = dio ??
-            Dio(BaseOptions(
+    : _dio =
+          dio ??
+          Dio(
+            BaseOptions(
               // Fail fast on a dead network; no receiveTimeout so long streamed
               // answers are never cut off mid-generation.
               connectTimeout: const Duration(seconds: 30),
-            ));
+            ),
+          );
 
   final Dio _dio;
 
   @override
   Stream<ChatChunk> streamChat({
     required LlmConfig config,
-    required List<ChatMessage> messages,
+    required List<LlmRequestMessage> messages,
     List<ToolSpec>? tools,
     bool? thinking,
+    CancelToken? cancelToken,
   }) async* {
-    final url = '${config.baseUrl.replaceAll(RegExp(r"/+$"), "")}'
+    final url =
+        '${config.baseUrl.replaceAll(RegExp(r"/+$"), "")}'
         '/chat/completions';
 
     final body = <String, dynamic>{
       'model': config.model,
       'stream': true,
-      'messages': messages
-          // chain-of-thought is never sent back to the API
-          .map((m) => {'role': m.role.wire, 'content': m.content})
-          .toList(),
+      'messages': messages.map((m) => m.toOpenAiJson()).toList(),
     };
     // DeepSeek V4 defaults thinking to ENABLED, so we must explicitly disable it
     // for fast normal chat (and enable it for deep-think). The `thinking` field
-    // is DeepSeek-specific, so only send it for deepseek-v4 models to avoid
-    // 400s from other OpenAI-compatible providers.
-    if (thinking != null && config.model.startsWith('deepseek-v4')) {
+    // is DeepSeek-specific; `capabilities.sendThinkingField` gates it so other
+    // OpenAI-compatible providers never receive it (which would 400).
+    if (thinking != null && config.capabilities.sendThinkingField) {
       body['thinking'] = {'type': thinking ? 'enabled' : 'disabled'};
     }
-    // Reasoner models reject `tools`; callers must not pass them for reasoners,
+    // Some legacy reasoner endpoints reject `tools`; callers avoid those paths,
     // but guard here too so a stray tool list can't break the request.
-    if (tools != null && tools.isNotEmpty && !KnownModels.isReasoner(config.model)) {
+    if (tools != null && tools.isNotEmpty && config.capabilities.supportsTools) {
       body['tools'] = tools.map((t) => t.toJson()).toList();
       body['tool_choice'] = 'auto';
     }
@@ -64,8 +65,11 @@ class OpenAiCompatibleProvider implements LlmProvider {
           },
         ),
         data: jsonEncode(body),
+        cancelToken: cancelToken,
       );
     } on DioException catch (e) {
+      // Stop pressed during connection setup → end the stream quietly.
+      if (CancelToken.isCancel(e)) return;
       throw await _humanizeError(e);
     }
 
@@ -74,35 +78,41 @@ class OpenAiCompatibleProvider implements LlmProvider {
         .transform(StreamTransformer.fromBind(utf8.decoder.bind))
         .transform(const LineSplitter());
 
-    await for (final line in byteStream) {
-      final trimmed = line.trim();
-      if (trimmed.isEmpty || !trimmed.startsWith('data:')) continue;
-      final payload = trimmed.substring(5).trim();
-      if (payload == '[DONE]') return;
+    try {
+      await for (final line in byteStream) {
+        final trimmed = line.trim();
+        if (trimmed.isEmpty || !trimmed.startsWith('data:')) continue;
+        final payload = trimmed.substring(5).trim();
+        if (payload == '[DONE]') return;
 
-      Map<String, dynamic> json;
-      try {
-        json = jsonDecode(payload) as Map<String, dynamic>;
-      } catch (_) {
-        continue; // ignore keep-alive / malformed fragments
+        Map<String, dynamic> json;
+        try {
+          json = jsonDecode(payload) as Map<String, dynamic>;
+        } catch (_) {
+          continue; // ignore keep-alive / malformed fragments
+        }
+
+        final choices = json['choices'] as List<dynamic>?;
+        if (choices == null || choices.isEmpty) continue;
+        final choice = choices.first as Map<String, dynamic>;
+        final delta = choice['delta'] as Map<String, dynamic>?;
+        final finishReason = choice['finish_reason'] as String?;
+        if (delta == null) {
+          if (finishReason != null) yield ChatChunk(finishReason: finishReason);
+          continue;
+        }
+
+        yield ChatChunk(
+          contentDelta: delta['content'] as String?,
+          reasoningDelta: delta['reasoning_content'] as String?,
+          toolCalls: _parseToolCalls(delta['tool_calls']),
+          finishReason: finishReason,
+        );
       }
-
-      final choices = json['choices'] as List<dynamic>?;
-      if (choices == null || choices.isEmpty) continue;
-      final choice = choices.first as Map<String, dynamic>;
-      final delta = choice['delta'] as Map<String, dynamic>?;
-      final finishReason = choice['finish_reason'] as String?;
-      if (delta == null) {
-        if (finishReason != null) yield ChatChunk(finishReason: finishReason);
-        continue;
-      }
-
-      yield ChatChunk(
-        contentDelta: delta['content'] as String?,
-        reasoningDelta: delta['reasoning_content'] as String?,
-        toolCalls: _parseToolCalls(delta['tool_calls']),
-        finishReason: finishReason,
-      );
+    } on DioException catch (e) {
+      // Stop pressed mid-stream → end quietly instead of surfacing an error.
+      if (CancelToken.isCancel(e)) return;
+      rethrow;
     }
   }
 
@@ -112,12 +122,14 @@ class OpenAiCompatibleProvider implements LlmProvider {
     for (final e in raw) {
       if (e is! Map) continue;
       final fn = e['function'] as Map<String, dynamic>?;
-      out.add(ToolCall(
-        index: (e['index'] as num?)?.toInt() ?? 0,
-        id: e['id'] as String?,
-        name: fn?['name'] as String?,
-        argumentsJson: fn?['arguments'] as String? ?? '',
-      ));
+      out.add(
+        ToolCall(
+          index: (e['index'] as num?)?.toInt() ?? 0,
+          id: e['id'] as String?,
+          name: fn?['name'] as String?,
+          argumentsJson: fn?['arguments'] as String? ?? '',
+        ),
+      );
     }
     return out.isEmpty ? null : out;
   }

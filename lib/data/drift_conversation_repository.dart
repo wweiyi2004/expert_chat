@@ -57,16 +57,15 @@ class DriftConversationRepository implements ConversationRepository {
 
   @override
   Future<void> saveAll(List<Conversation> conversations) async {
-    final keepIds = conversations.map((c) => c.id).toSet();
+    final keepIds = conversations.map((c) => c.id).toList();
     await _db.transaction(() async {
-      // Drop conversations no longer present (messages cascade).
-      final existing = await _db.select(_db.conversations).get();
-      for (final row in existing) {
-        if (!keepIds.contains(row.id)) {
-          await (_db.delete(_db.conversations)
-                ..where((c) => c.id.equals(row.id)))
-              .go();
-        }
+      // Drop conversations no longer present in one statement (messages cascade).
+      if (keepIds.isEmpty) {
+        await _db.delete(_db.conversations).go();
+      } else {
+        await (_db.delete(_db.conversations)
+              ..where((c) => c.id.isNotIn(keepIds)))
+            .go();
       }
       for (final convo in conversations) {
         await _writeConversation(convo);
@@ -99,10 +98,13 @@ class DriftConversationRepository implements ConversationRepository {
         );
     await (_db.delete(_db.messages)..where((m) => m.convoId.equals(convo.id)))
         .go();
+    if (convo.messages.isEmpty) return;
     var seq = 0;
-    for (final m in convo.messages) {
-      await _db.into(_db.messages).insert(_toCompanion(m, convo.id, seq++));
-    }
+    final rows = [
+      for (final m in convo.messages) _toCompanion(m, convo.id, seq++),
+    ];
+    // One batched INSERT instead of N round-trips per persisted turn.
+    await _db.batch((b) => b.insertAll(_db.messages, rows));
   }
 
   /// Returns conversations whose title or any message content matches [query]

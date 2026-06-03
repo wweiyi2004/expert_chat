@@ -28,6 +28,7 @@ class Attachment {
     this.text = '',
     this.truncated = false,
     this.parseError,
+    this.imageBase64,
   }) : id = id ?? _uuid.v4();
 
   final String id;
@@ -42,18 +43,33 @@ class Attachment {
   /// Set when local parsing failed; surfaced in the UI.
   final String? parseError;
 
+  /// Base64-encoded image bytes, retained for vision-capable models. Null for
+  /// non-images or images too large to attach.
+  final String? imageBase64;
+
   bool get isImage => mimeType.startsWith('image/');
 
-  Attachment copyWith({String? text, bool? truncated, String? parseError}) =>
-      Attachment(
-        id: id,
-        name: name,
-        mimeType: mimeType,
-        sizeBytes: sizeBytes,
-        text: text ?? this.text,
-        truncated: truncated ?? this.truncated,
-        parseError: parseError ?? this.parseError,
-      );
+  /// True when this image can be sent to a vision model.
+  bool get hasImageData => imageBase64 != null && imageBase64!.isNotEmpty;
+
+  /// `data:` URL for the OpenAI `image_url` content part (vision models).
+  String get imageDataUrl => 'data:$mimeType;base64,$imageBase64';
+
+  Attachment copyWith({
+    String? text,
+    bool? truncated,
+    String? parseError,
+    String? imageBase64,
+  }) => Attachment(
+    id: id,
+    name: name,
+    mimeType: mimeType,
+    sizeBytes: sizeBytes,
+    text: text ?? this.text,
+    truncated: truncated ?? this.truncated,
+    parseError: parseError ?? this.parseError,
+    imageBase64: imageBase64 ?? this.imageBase64,
+  );
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -63,6 +79,7 @@ class Attachment {
         'text': text,
         'truncated': truncated,
         if (parseError != null) 'parseError': parseError,
+        if (imageBase64 != null) 'imageBase64': imageBase64,
       };
 
   factory Attachment.fromJson(Map<String, dynamic> json) => Attachment(
@@ -73,6 +90,7 @@ class Attachment {
         text: json['text'] as String? ?? '',
         truncated: json['truncated'] as bool? ?? false,
         parseError: json['parseError'] as String?,
+        imageBase64: json['imageBase64'] as String?,
       );
 }
 

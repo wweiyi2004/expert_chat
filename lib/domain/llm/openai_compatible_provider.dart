@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:characters/characters.dart';
 import 'package:dio/dio.dart';
 
 import 'llm_provider.dart';
@@ -177,7 +178,10 @@ class OpenAiCompatibleProvider implements LlmProvider {
         // Not JSON — fall through to the raw text.
       }
       final trimmed = raw.trim();
-      return trimmed.length > 200 ? '${trimmed.substring(0, 200)}…' : trimmed;
+      // Grapheme-aware cut so we can't split an emoji/surrogate pair.
+      return trimmed.length > 200
+          ? '${trimmed.characters.take(200)}…'
+          : trimmed;
     } catch (_) {
       return null;
     }

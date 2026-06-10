@@ -34,6 +34,8 @@ dependencies:
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
+  # Grapheme-cluster-safe string truncation (titles, clipped search text).
+  characters: ^1.4.0
   flutter_riverpod: ^3.3.1
   dio: ^5.9.2
   flutter_secure_storage: ^10.3.1

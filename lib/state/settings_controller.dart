@@ -163,11 +163,26 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     final apiKey = await secure.read(key: _secureKeyForProfile(activeId)) ?? '';
     final searchApiKey = await secure.read(key: _kSearchApiKeySecure) ?? '';
 
+    // Drop a stored model override that no longer exists in the active
+    // profile's model list (e.g. the profile was edited since), so requests
+    // can't silently go out with a stale model id.
+    final id = activeId;
+    final activeProfile = profiles.firstWhere(
+      (p) => p.id == id,
+      orElse: () => profiles.first,
+    );
+    var selectedModel = prefs.getString(_kSelectedModel);
+    if (selectedModel != null &&
+        !activeProfile.models.contains(selectedModel)) {
+      selectedModel = null;
+      await prefs.remove(_kSelectedModel);
+    }
+
     return SettingsState(
       profiles: profiles,
       activeProfileId: activeId,
       apiKey: apiKey,
-      selectedModel: prefs.getString(_kSelectedModel),
+      selectedModel: selectedModel,
       themeMode: ThemeMode.values[prefs.getInt(_kThemeMode) ?? 0],
       searchBackend: SearchBackendInfo.fromWire(
         prefs.getString(_kSearchBackend),
@@ -286,13 +301,25 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     await prefs.remove(_kSelectedModel);
   }
 
-  /// Edit an existing profile in place.
+  /// Edit an existing profile in place. Clears the model override when the
+  /// edit removed that model from the active profile's list.
   Future<void> updateProfile(ProviderProfile updated) async {
     final profiles = [
       for (final p in _current.profiles) p.id == updated.id ? updated : p,
     ];
-    state = AsyncData(_current.copyWith(profiles: profiles));
-    await _writeProfiles(ref.read(sharedPrefsProvider), profiles);
+    final overrideStale =
+        updated.id == _current.activeProfileId &&
+        _current.selectedModel != null &&
+        !updated.models.contains(_current.selectedModel);
+    state = AsyncData(
+      _current.copyWith(
+        profiles: profiles,
+        selectedModel: overrideStale ? null : _current.selectedModel,
+      ),
+    );
+    final prefs = ref.read(sharedPrefsProvider);
+    if (overrideStale) await prefs.remove(_kSelectedModel);
+    await _writeProfiles(prefs, profiles);
   }
 
   /// Delete a profile and its stored key. Falls back to another profile, or a

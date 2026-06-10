@@ -24,23 +24,66 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   final List<Attachment> _attachments = [];
   bool _picking = false;
 
+  /// Whether the view should keep following new content (stick-to-bottom). Set
+  /// false the moment the user scrolls up, so streaming output no longer yanks
+  /// them back down; restored when they scroll back to the bottom (or tap the
+  /// jump button / send a message).
+  bool _stick = true;
+
+  /// How close to the bottom (px) still counts as "at the bottom".
+  static const double _stickThreshold = 80;
+
+  /// True while we are driving an animated scroll ourselves, so [_onScroll]
+  /// doesn't mistake the in-flight animation for the user scrolling away.
+  bool _programmaticScroll = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _scroll.addListener(_onScroll);
+  }
+
   @override
   void dispose() {
+    _scroll.removeListener(_onScroll);
     _input.dispose();
     _scroll.dispose();
     super.dispose();
   }
 
-  void _send() {
+  /// Re-evaluate stick-to-bottom whenever the user scrolls. Programmatic
+  /// auto-scrolls also fire this, which simply keeps [_stick] true at the bottom.
+  void _onScroll() {
+    if (!_scroll.hasClients || _programmaticScroll) return;
+    final pos = _scroll.position;
+    final atBottom = pos.maxScrollExtent - pos.pixels <= _stickThreshold;
+    if (atBottom != _stick) setState(() => _stick = atBottom);
+  }
+
+  /// Resume following and snap to the latest content (jump button / send).
+  void _jumpToBottom() {
+    setState(() => _stick = true);
+    _scrollToBottom(animated: true);
+  }
+
+  Future<void> _send() async {
     final text = _input.text;
     if (text.trim().isEmpty && _attachments.isEmpty) return;
     final attachments = List<Attachment>.of(_attachments);
     _input.clear();
     setState(_attachments.clear);
-    ref
+    _jumpToBottom();
+    final accepted = await ref
         .read(chatControllerProvider.notifier)
         .sendMessage(text, attachments: attachments);
-    _scrollToBottom();
+    // Rejected (e.g. API key 未配置 / 正在生成中) → restore the draft so the
+    // user's input isn't lost. Rejection paths return fast, well before any
+    // generation starts.
+    if (!accepted && mounted) {
+      _input.text = text;
+      _input.selection = TextSelection.collapsed(offset: text.length);
+      setState(() => _attachments.addAll(attachments));
+    }
   }
 
   Future<void> _pickFiles() async {
@@ -60,6 +103,12 @@ class _ChatPageState extends ConsumerState<ChatPage> {
           'md',
           'csv',
           'json',
+          'png',
+          'jpg',
+          'jpeg',
+          'gif',
+          'webp',
+          'bmp',
         ],
       );
       if (result == null) return;
@@ -82,6 +131,11 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   }
 
   String _mimeFor(String? ext) => switch (ext?.toLowerCase()) {
+    'png' => 'image/png',
+    'jpg' || 'jpeg' => 'image/jpeg',
+    'gif' => 'image/gif',
+    'webp' => 'image/webp',
+    'bmp' => 'image/bmp',
     'pdf' => 'application/pdf',
     'docx' =>
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -131,14 +185,27 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     }
   }
 
-  void _scrollToBottom() {
+  /// Follow the latest content. Streaming uses an instant [jumpTo] so there is
+  /// no animation window in which [_onScroll] could read a not-at-bottom
+  /// position and wrongly unstick; explicit user jumps animate for polish.
+  void _scrollToBottom({bool animated = false}) {
+    // Only follow when the user is parked at the bottom; if they've scrolled up
+    // to read, leave their position alone.
+    if (!_stick) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scroll.hasClients) {
-        _scroll.animateTo(
-          _scroll.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 200),
-          curve: Curves.easeOut,
-        );
+      if (!_stick || !_scroll.hasClients) return;
+      final target = _scroll.position.maxScrollExtent;
+      if (animated) {
+        _programmaticScroll = true;
+        _scroll
+            .animateTo(
+              target,
+              duration: const Duration(milliseconds: 200),
+              curve: Curves.easeOut,
+            )
+            .whenComplete(() => _programmaticScroll = false);
+      } else {
+        _scroll.jumpTo(target);
       }
     });
   }
@@ -152,8 +219,12 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     final controller = ref.read(chatControllerProvider.notifier);
     final current = asyncState.value?.current;
 
-    // Auto-scroll as content streams in.
-    ref.listen(chatControllerProvider, (_, _) => _scrollToBottom());
+    // Auto-scroll as content streams in (only while stuck to the bottom).
+    // Switching conversations resumes following and snaps to the latest turn.
+    ref.listen(chatControllerProvider, (prev, next) {
+      if (prev?.value?.currentId != next.value?.currentId) _stick = true;
+      _scrollToBottom();
+    });
 
     return CallbackShortcuts(
       bindings: {
@@ -244,6 +315,10 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   Widget _chatColumn(ChatState state, ChatController controller) {
     final convo = state.current;
     final messages = convo?.activePath ?? const <ChatMessage>[];
+    // Whether the in-flight generation (if any) belongs to THIS conversation;
+    // another conversation's stream must not light up bubbles here.
+    final streamingHere =
+        convo != null && state.streamingConvoId == convo.id;
     return Column(
       children: [
         if (state.error != null)
@@ -254,37 +329,60 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         Expanded(
           child: messages.isEmpty
               ? const _EmptyState()
-              : Center(
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 900),
-                    child: ListView.builder(
-                      controller: _scroll,
-                      padding: const EdgeInsets.fromLTRB(24, 18, 24, 28),
-                      itemCount: messages.length,
-                      itemBuilder: (context, i) {
-                        final m = messages[i];
-                        final isLast = i == messages.length - 1;
-                        final isLastAssistant =
-                            isLast && m.role == MessageRole.assistant;
-                        final (bIdx, bCount) = convo!.branchInfo(m.id);
-                        return MessageBubble(
-                          message: m,
-                          isStreaming: state.isStreaming && isLastAssistant,
-                          onRegenerate: (isLastAssistant && !state.isStreaming)
-                              ? controller.regenerate
-                              : null,
-                          onEdit:
-                              (m.role == MessageRole.user && !state.isStreaming)
-                              ? (text) => controller.editMessage(m.id, text)
-                              : null,
-                          branchIndex: bIdx,
-                          branchCount: bCount,
-                          onPrevBranch: () => controller.switchBranch(m.id, -1),
-                          onNextBranch: () => controller.switchBranch(m.id, 1),
-                        );
-                      },
+              : Stack(
+                  children: [
+                    Center(
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 900),
+                        child: ListView.builder(
+                          controller: _scroll,
+                          padding: const EdgeInsets.fromLTRB(24, 18, 24, 28),
+                          itemCount: messages.length,
+                          itemBuilder: (context, i) {
+                            final m = messages[i];
+                            final isLast = i == messages.length - 1;
+                            final isLastAssistant =
+                                isLast && m.role == MessageRole.assistant;
+                            final (bIdx, bCount) = convo!.branchInfo(m.id);
+                            return MessageBubble(
+                              // Keyed by message id: bubbles hold local edit
+                              // state that must not leak across messages when
+                              // the list shifts (branch switch, new turns).
+                              key: ValueKey(m.id),
+                              message: m,
+                              isStreaming: streamingHere && isLastAssistant,
+                              onRegenerate:
+                                  (isLastAssistant && !state.isStreaming)
+                                  ? controller.regenerate
+                                  : null,
+                              onEdit:
+                                  (m.role == MessageRole.user &&
+                                      !state.isStreaming)
+                                  ? (text) => controller.editMessage(m.id, text)
+                                  : null,
+                              branchIndex: bIdx,
+                              branchCount: bCount,
+                              onPrevBranch: () =>
+                                  controller.switchBranch(m.id, -1),
+                              onNextBranch: () =>
+                                  controller.switchBranch(m.id, 1),
+                            );
+                          },
+                        ),
+                      ),
                     ),
-                  ),
+                    // Shown only when the user has scrolled away from the
+                    // bottom; tapping resumes follow + snaps to the latest.
+                    if (!_stick)
+                      Positioned(
+                        left: 0,
+                        right: 0,
+                        bottom: 12,
+                        child: Center(
+                          child: _JumpToBottomButton(onTap: _jumpToBottom),
+                        ),
+                      ),
+                  ],
                 ),
         ),
         _Composer(
@@ -395,7 +493,13 @@ class _Composer extends StatelessWidget {
                               const SingleActivator(
                                 LogicalKeyboardKey.enter,
                               ): () {
-                                if (!isStreaming) onSend();
+                                // Don't fire while an IME composition (拼音
+                                // 候选) is in progress — that Enter belongs to
+                                // the input method, not "send".
+                                if (!isStreaming &&
+                                    !controller.value.composing.isValid) {
+                                  onSend();
+                                }
                               },
                             },
                             child: TextField(
@@ -451,7 +555,7 @@ class _Composer extends StatelessWidget {
                           onPressed: (isStreaming || picking)
                               ? null
                               : onPickFiles,
-                          tooltip: '上传文件（PDF / Word / Excel / PPT / 文本）',
+                          tooltip: '上传文件（图片 / PDF / Word / Excel / PPT / 文本）',
                           icon: picking
                               ? const SizedBox(
                                   width: 18,
@@ -492,7 +596,8 @@ class _Composer extends StatelessWidget {
                                 : scheme.onSurfaceVariant,
                           ),
                           label: const Text('联网'),
-                          tooltip: '开启后允许模型按需调用 web_search（需在设置中配置搜索 Key）',
+                          tooltip: '开启后模型可按需联网搜索；默认用免费 DuckDuckGo（无需 Key），'
+                              '也可在设置中改用 Tavily / Exa / 博查 等带 Key 的后端',
                           onSelected: (_) => onToggleSearch(),
                         ),
                         if (isSearching)
@@ -750,6 +855,31 @@ class _ErrorBanner extends StatelessWidget {
               ),
             ),
         ],
+      ),
+    );
+  }
+}
+
+/// Small circular "back to latest" affordance, shown over the message list
+/// while the user has scrolled up during streaming.
+class _JumpToBottomButton extends StatelessWidget {
+  const _JumpToBottomButton({required this.onTap});
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Material(
+      color: scheme.surfaceContainerHighest,
+      elevation: 2,
+      shape: CircleBorder(side: BorderSide(color: scheme.outlineVariant)),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(8),
+          child: Icon(Icons.arrow_downward, size: 20, color: scheme.primary),
+        ),
       ),
     );
   }

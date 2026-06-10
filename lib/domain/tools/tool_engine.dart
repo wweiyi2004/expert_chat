@@ -1,3 +1,6 @@
+import 'package:characters/characters.dart';
+import 'package:dio/dio.dart' show CancelToken;
+
 import '../../data/models.dart';
 import '../llm/llm_provider.dart';
 import 'search_provider.dart';
@@ -45,8 +48,13 @@ class ToolEngine {
     String query, {
     int maxResults = 5,
     int startIndex = 1,
+    CancelToken? cancelToken,
   }) async {
-    final results = await _search.search(query, maxResults: maxResults);
+    final results = await _search.search(
+      query,
+      maxResults: maxResults,
+      cancelToken: cancelToken,
+    );
     if (results.isEmpty) {
       return const SearchContext(contextText: '', citations: []);
     }
@@ -60,8 +68,9 @@ class ToolEngine {
     for (final r in results) {
       if (r.url.trim().isEmpty) continue;
       final text = r.bestText;
+      // Grapheme-aware clip so the cut can't split an emoji/surrogate pair.
       final clipped = text.length > _perSourceChars
-          ? '${text.substring(0, _perSourceChars)}…'
+          ? '${text.characters.take(_perSourceChars)}…'
           : text;
       buffer
         ..writeln('[$index] ${r.title}')

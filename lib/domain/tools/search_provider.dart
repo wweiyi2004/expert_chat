@@ -1,3 +1,4 @@
+import 'package:characters/characters.dart';
 import 'package:dio/dio.dart';
 import 'package:html/dom.dart' as dom;
 import 'package:html/parser.dart' as html_parser;
@@ -48,7 +49,11 @@ extension SearchBackendInfo on SearchBackend {
 /// Abstraction over a search API. Native/desktop fetch directly; on Web these
 /// calls are CORS-gated (handled by the caller).
 abstract class SearchProvider {
-  Future<List<SearchResult>> search(String query, {int maxResults = 5});
+  Future<List<SearchResult>> search(
+    String query, {
+    int maxResults = 5,
+    CancelToken? cancelToken,
+  });
 }
 
 /// Thrown when the keyless DuckDuckGo backend yields no usable results. A real
@@ -82,18 +87,25 @@ class HttpSearchProvider implements SearchProvider {
   final Dio _dio;
 
   @override
-  Future<List<SearchResult>> search(String query, {int maxResults = 5}) async {
+  Future<List<SearchResult>> search(
+    String query, {
+    int maxResults = 5,
+    CancelToken? cancelToken,
+  }) async {
     if (backend.requiresApiKey && apiKey.trim().isEmpty) {
       throw Exception('未配置联网搜索的 API Key，请在设置中填写。');
     }
     try {
       return switch (backend) {
-        SearchBackend.duckduckgo => await _duckduckgo(query, maxResults),
-        SearchBackend.tavily => await _tavily(query, maxResults),
-        SearchBackend.bocha => await _bocha(query, maxResults),
-        SearchBackend.exa => await _exa(query, maxResults),
+        SearchBackend.duckduckgo =>
+          await _duckduckgo(query, maxResults, cancelToken),
+        SearchBackend.tavily => await _tavily(query, maxResults, cancelToken),
+        SearchBackend.bocha => await _bocha(query, maxResults, cancelToken),
+        SearchBackend.exa => await _exa(query, maxResults, cancelToken),
       };
     } on DioException catch (e) {
+      // Let cancellations (stop button) propagate as-is — they're not errors.
+      if (CancelToken.isCancel(e)) rethrow;
       final status = e.response?.statusCode;
       if (status == 401 || status == 403) {
         throw Exception('搜索鉴权失败（$status）：请检查搜索 API Key。');
@@ -102,8 +114,12 @@ class HttpSearchProvider implements SearchProvider {
     }
   }
 
-  Future<List<SearchResult>> _duckduckgo(String query, int maxResults) async {
-    final hits = await _duckduckgoHits(query, maxResults);
+  Future<List<SearchResult>> _duckduckgo(
+    String query,
+    int maxResults,
+    CancelToken? cancelToken,
+  ) async {
+    final hits = await _duckduckgoHits(query, maxResults, cancelToken);
     if (hits.isEmpty) {
       // Both the html and lite endpoints parsed to zero links — treat as the
       // backend being unavailable rather than silently returning no sources.
@@ -114,36 +130,70 @@ class HttpSearchProvider implements SearchProvider {
     }
 
     final enriched = await Future.wait([
-      for (final hit in hits) _withFetchedContent(hit),
+      for (final hit in hits) _withFetchedContent(hit, cancelToken),
     ]);
     return enriched;
   }
 
+  static const _ddgEndpoints = [
+    'https://html.duckduckgo.com/html/',
+    'https://lite.duckduckgo.com/lite/',
+  ];
+
   Future<List<SearchResult>> _duckduckgoHits(
     String query,
     int maxResults,
+    CancelToken? cancelToken,
   ) async {
-    final r = await _dio.get<String>(
-      'https://html.duckduckgo.com/html/',
-      queryParameters: {'q': query},
-      options: Options(
-        responseType: ResponseType.plain,
-        headers: _browserHeaders,
-      ),
-    );
-    var out = _parseDuckDuckGoResults(r.data ?? '', maxResults);
-    if (out.isNotEmpty) return out;
+    // DDG's HTML form submits via POST; POSTing is markedly less likely to be
+    // rate-limited / served a challenge page than a bare GET — the usual reason
+    // the free endpoint intermittently returns 200 with zero parseable links.
+    // Try POST on both endpoints first, then (after a short back-off) GET, so a
+    // transient block on one method/host still has a chance to recover.
+    for (var attempt = 0; attempt < 2; attempt++) {
+      final usePost = attempt == 0;
+      for (final url in _ddgEndpoints) {
+        final body = await _ddgFetch(
+          url,
+          query,
+          post: usePost,
+          cancelToken: cancelToken,
+        );
+        final out = _parseDuckDuckGoResults(body, maxResults);
+        if (out.isNotEmpty) return out;
+      }
+      if (attempt == 0) {
+        await Future<void>.delayed(const Duration(milliseconds: 700));
+      }
+    }
+    return const [];
+  }
 
-    final lite = await _dio.get<String>(
-      'https://lite.duckduckgo.com/lite/',
-      queryParameters: {'q': query},
-      options: Options(
-        responseType: ResponseType.plain,
-        headers: _browserHeaders,
-      ),
+  Future<String> _ddgFetch(
+    String url,
+    String query, {
+    required bool post,
+    CancelToken? cancelToken,
+  }) async {
+    final options = Options(
+      responseType: ResponseType.plain,
+      headers: _browserHeaders,
+      contentType: post ? Headers.formUrlEncodedContentType : null,
     );
-    out = _parseDuckDuckGoResults(lite.data ?? '', maxResults);
-    return out;
+    final r = post
+        ? await _dio.post<String>(
+            url,
+            data: {'q': query},
+            options: options,
+            cancelToken: cancelToken,
+          )
+        : await _dio.get<String>(
+            url,
+            queryParameters: {'q': query},
+            options: options,
+            cancelToken: cancelToken,
+          );
+    return r.data ?? '';
   }
 
   List<SearchResult> _parseDuckDuckGoResults(String html, int maxResults) {
@@ -174,8 +224,11 @@ class HttpSearchProvider implements SearchProvider {
     return out;
   }
 
-  Future<SearchResult> _withFetchedContent(SearchResult hit) async {
-    final content = await _fetchReadableText(hit.url);
+  Future<SearchResult> _withFetchedContent(
+    SearchResult hit,
+    CancelToken? cancelToken,
+  ) async {
+    final content = await _fetchReadableText(hit.url, cancelToken);
     return SearchResult(
       title: hit.title,
       url: hit.url,
@@ -184,7 +237,7 @@ class HttpSearchProvider implements SearchProvider {
     );
   }
 
-  Future<String> _fetchReadableText(String url) async {
+  Future<String> _fetchReadableText(String url, CancelToken? cancelToken) async {
     try {
       final r = await _dio.get<String>(
         url,
@@ -193,6 +246,7 @@ class HttpSearchProvider implements SearchProvider {
           headers: _browserHeaders,
           validateStatus: (status) => status != null && status < 500,
         ),
+        cancelToken: cancelToken,
       );
       if ((r.statusCode ?? 0) >= 400) return '';
       final raw = r.data ?? '';
@@ -249,10 +303,15 @@ class HttpSearchProvider implements SearchProvider {
     }
   }
 
-  Future<List<SearchResult>> _tavily(String query, int maxResults) async {
+  Future<List<SearchResult>> _tavily(
+    String query,
+    int maxResults,
+    CancelToken? cancelToken,
+  ) async {
     final r = await _dio.post<Map<String, dynamic>>(
       'https://api.tavily.com/search',
       options: Options(headers: {'Authorization': 'Bearer $apiKey'}),
+      cancelToken: cancelToken,
       data: {
         'query': query,
         'max_results': maxResults,
@@ -273,7 +332,11 @@ class HttpSearchProvider implements SearchProvider {
     ];
   }
 
-  Future<List<SearchResult>> _bocha(String query, int maxResults) async {
+  Future<List<SearchResult>> _bocha(
+    String query,
+    int maxResults,
+    CancelToken? cancelToken,
+  ) async {
     final r = await _dio.post<Map<String, dynamic>>(
       'https://api.bochaai.com/v1/web-search',
       options: Options(
@@ -282,6 +345,7 @@ class HttpSearchProvider implements SearchProvider {
           'Content-Type': 'application/json',
         },
       ),
+      cancelToken: cancelToken,
       data: {
         'query': query,
         'count': maxResults,
@@ -302,10 +366,15 @@ class HttpSearchProvider implements SearchProvider {
     ];
   }
 
-  Future<List<SearchResult>> _exa(String query, int maxResults) async {
+  Future<List<SearchResult>> _exa(
+    String query,
+    int maxResults,
+    CancelToken? cancelToken,
+  ) async {
     final r = await _dio.post<Map<String, dynamic>>(
       'https://api.exa.ai/search',
       options: Options(headers: {'x-api-key': apiKey}),
+      cancelToken: cancelToken,
       data: {
         'query': query,
         'numResults': maxResults,
@@ -372,6 +441,7 @@ class HttpSearchProvider implements SearchProvider {
       .replaceAll(RegExp(r'\n\s*\n\s*\n+'), '\n\n')
       .trim();
 
+  /// Grapheme-aware clip so the cut can't split an emoji/surrogate pair.
   String _clip(String value, int maxChars) =>
-      value.length > maxChars ? value.substring(0, maxChars) : value;
+      value.length > maxChars ? value.characters.take(maxChars).toString() : value;
 }

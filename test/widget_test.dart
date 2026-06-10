@@ -811,14 +811,20 @@ class _FakeSearch implements SearchProvider {
   _FakeSearch(this.results);
   final List<SearchResult> results;
   @override
-  Future<List<SearchResult>> search(String query, {int maxResults = 5}) async =>
-      results;
+  Future<List<SearchResult>> search(
+    String query, {
+    int maxResults = 5,
+    CancelToken? cancelToken,
+  }) async => results;
 }
 
 class _ThrowingSearch implements SearchProvider {
   @override
-  Future<List<SearchResult>> search(String query, {int maxResults = 5}) async =>
-      throw const SearchUnavailableException('unavailable');
+  Future<List<SearchResult>> search(
+    String query, {
+    int maxResults = 5,
+    CancelToken? cancelToken,
+  }) async => throw const SearchUnavailableException('unavailable');
 }
 
 class _CountingSearch implements SearchProvider {
@@ -829,7 +835,11 @@ class _CountingSearch implements SearchProvider {
   String? lastQuery;
 
   @override
-  Future<List<SearchResult>> search(String query, {int maxResults = 5}) async {
+  Future<List<SearchResult>> search(
+    String query, {
+    int maxResults = 5,
+    CancelToken? cancelToken,
+  }) async {
     calls++;
     lastQuery = query;
     return results.take(maxResults).toList();

@@ -1,7 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:dio/dio.dart' show CancelToken;
+import 'package:characters/characters.dart';
+import 'package:dio/dio.dart' show CancelToken, DioException;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/providers.dart';
@@ -14,7 +15,7 @@ class ChatState {
   const ChatState({
     this.conversations = const [],
     this.currentId,
-    this.isStreaming = false,
+    this.streamingConvoId,
     this.deepThink = false,
     this.searchEnabled = false,
     this.isSearching = false,
@@ -23,7 +24,13 @@ class ChatState {
 
   final List<Conversation> conversations;
   final String? currentId;
-  final bool isStreaming;
+
+  /// Id of the conversation a generation is currently streaming into, or null
+  /// when idle. Kept as an id (not a bool) so switching conversations mid-
+  /// stream can't mis-attribute the stream to the newly selected one.
+  final String? streamingConvoId;
+
+  bool get isStreaming => streamingConvoId != null;
 
   /// When true the next send is routed to the reasoner model regardless of the
   /// configured default model (the "深度思考" toggle in the composer).
@@ -47,7 +54,7 @@ class ChatState {
   ChatState copyWith({
     List<Conversation>? conversations,
     String? currentId,
-    bool? isStreaming,
+    Object? streamingConvoId = _sentinel,
     bool? deepThink,
     bool? searchEnabled,
     bool? isSearching,
@@ -55,7 +62,9 @@ class ChatState {
   }) => ChatState(
     conversations: conversations ?? this.conversations,
     currentId: currentId ?? this.currentId,
-    isStreaming: isStreaming ?? this.isStreaming,
+    streamingConvoId: identical(streamingConvoId, _sentinel)
+        ? this.streamingConvoId
+        : streamingConvoId as String?,
     deepThink: deepThink ?? this.deepThink,
     searchEnabled: searchEnabled ?? this.searchEnabled,
     isSearching: isSearching ?? this.isSearching,
@@ -100,6 +109,18 @@ class ChatController extends AsyncNotifier<ChatState> {
     final cur = _s.current;
     if (cur == null) return Future.value();
     return ref.read(conversationRepositoryProvider).saveConversation(cur);
+  }
+
+  /// Persist a specific conversation by id. Used by the generation pipeline so
+  /// the streamed conversation is saved even if the user switched to another
+  /// one mid-stream. No-op when the conversation was deleted meanwhile (so a
+  /// late save can't resurrect it).
+  Future<void> _persistById(String convoId) {
+    final idx = _s.conversations.indexWhere((c) => c.id == convoId);
+    if (idx < 0) return Future.value();
+    return ref
+        .read(conversationRepositoryProvider)
+        .saveConversation(_s.conversations[idx]);
   }
 
   void _set(ChatState next) => state = AsyncData(next);
@@ -152,6 +173,9 @@ class ChatController extends AsyncNotifier<ChatState> {
   }
 
   void deleteConversation(String id) {
+    // Deleting the conversation that is currently streaming: abort the stream
+    // first, WITHOUT persisting it (a late save would resurrect the row).
+    if (_s.streamingConvoId == id) stop(persist: false);
     final repo = ref.read(conversationRepositoryProvider);
     repo.deleteConversation(id);
     final remaining = _s.conversations.where((c) => c.id != id).toList();
@@ -165,7 +189,8 @@ class ChatController extends AsyncNotifier<ChatState> {
     }
   }
 
-  void stop() {
+  void stop({bool persist = true}) {
+    final streamingId = _s.streamingConvoId;
     _sub?.cancel();
     _sub = null;
     // Abort the underlying HTTP request too, so it stops consuming tokens.
@@ -173,20 +198,24 @@ class ChatController extends AsyncNotifier<ChatState> {
     _cancelToken = null;
     final completer = _streamCompleter;
     if (completer != null && !completer.isCompleted) completer.complete();
-    _set(_s.copyWith(isStreaming: false, isSearching: false));
-    _persist();
+    _set(_s.copyWith(streamingConvoId: null, isSearching: false));
+    if (persist && streamingId != null) _persistById(streamingId);
   }
 
-  /// Send a new user turn at the end of the active branch.
-  Future<void> sendMessage(
+  /// Send a new user turn at the end of the active branch. Returns false when
+  /// the send was rejected up front (empty input, already streaming, settings
+  /// not ready) so the UI can restore the user's draft.
+  Future<bool> sendMessage(
     String text, {
     List<Attachment> attachments = const [],
   }) async {
     final trimmed = text.trim();
-    if ((trimmed.isEmpty && attachments.isEmpty) || _s.isStreaming) return;
+    if ((trimmed.isEmpty && attachments.isEmpty) || _s.isStreaming) {
+      return false;
+    }
 
     final settings = await _readySettings();
-    if (settings == null) return;
+    if (settings == null) return false;
     final config = _configFor(settings);
 
     final convo = _s.current ?? Conversation();
@@ -209,11 +238,7 @@ class ChatController extends AsyncNotifier<ChatState> {
         ? trimmed
         : (attachments.isNotEmpty ? attachments.first.name : '新对话');
     final working = convo.copyWith(
-      title: isFirst
-          ? (titleSeed.length > 20
-                ? '${titleSeed.substring(0, 20)}…'
-                : titleSeed)
-          : convo.title,
+      title: isFirst ? _truncateTitle(titleSeed) : convo.title,
       messages: [...convo.messages, userMsg, assistantMsg],
       activeChildren: {
         ...convo.activeChildren,
@@ -230,6 +255,13 @@ class ChatController extends AsyncNotifier<ChatState> {
       searchQuery: trimmed,
       thinking: _s.deepThink,
     );
+    return true;
+  }
+
+  /// Grapheme-aware truncation so a 20-cut can't split an emoji/surrogate pair.
+  static String _truncateTitle(String seed) {
+    final chars = seed.characters;
+    return chars.length > 20 ? '${chars.take(20)}…' : seed;
   }
 
   /// Edit a previous user message: creates a sibling under the same parent
@@ -244,10 +276,9 @@ class ChatController extends AsyncNotifier<ChatState> {
     if (trimmed.isEmpty) return;
     final convo = _s.current;
     if (convo == null) return;
-    final old = convo.messages.firstWhere(
-      (m) => m.id == messageId,
-      orElse: () => convo.messages.first,
-    );
+    final oldIdx = convo.messages.indexWhere((m) => m.id == messageId);
+    if (oldIdx < 0) return;
+    final old = convo.messages[oldIdx];
     if (old.role != MessageRole.user) return;
 
     final settings = await _readySettings();
@@ -326,10 +357,9 @@ class ChatController extends AsyncNotifier<ChatState> {
     if (_s.isStreaming) return;
     final convo = _s.current;
     if (convo == null) return;
-    final m = convo.messages.firstWhere(
-      (x) => x.id == messageId,
-      orElse: () => convo.messages.first,
-    );
+    final mIdx = convo.messages.indexWhere((x) => x.id == messageId);
+    if (mIdx < 0) return;
+    final m = convo.messages[mIdx];
     final key = m.parentId ?? kRootKey;
     final sibs = convo.childrenOf(key);
     if (sibs.length < 2) return;
@@ -379,11 +409,22 @@ class ChatController extends AsyncNotifier<ChatState> {
     final searchAllowed = _s.searchEnabled && searchQuery.trim().isNotEmpty;
     final useWebSearchTool = searchAllowed && config.capabilities.supportsTools;
 
+    // One token covers the whole generation (search pre-step + all tool
+    // rounds); stop() fires it.
+    final cancelToken = CancelToken();
+    _cancelToken = cancelToken;
+
     _set(
       _s.copyWith(
-        conversations: _replace(working),
+        // Move the conversation to the top: it just got new activity, matching
+        // the updatedAt-desc order used when loading from the DB. Also covers
+        // the defensive case where [working] wasn't in the list yet.
+        conversations: [
+          working,
+          ..._s.conversations.where((c) => c.id != working.id),
+        ],
         currentId: working.id,
-        isStreaming: true,
+        streamingConvoId: working.id,
         isSearching: false,
         error: null,
       ),
@@ -399,12 +440,16 @@ class ChatController extends AsyncNotifier<ChatState> {
           backend: settings.searchBackend,
           apiKey: settings.searchApiKey,
         );
-        searchContext = await engine.runSearch(searchQuery.trim());
+        searchContext = await engine.runSearch(
+          searchQuery.trim(),
+          cancelToken: cancelToken,
+        );
         if (searchContext.citations.isNotEmpty) {
           _setCitations(working.id, assistantId, searchContext.citations);
         }
       } catch (e) {
-        _set(_s.copyWith(error: e.toString()));
+        // Stop pressed during the search is not an error.
+        if (!_isCancel(e)) _set(_s.copyWith(error: e.toString()));
       } finally {
         _set(_s.copyWith(isSearching: false));
       }
@@ -412,7 +457,7 @@ class ChatController extends AsyncNotifier<ChatState> {
 
     // The user may have pressed stop during the (awaited) search; honor it.
     if (!_s.isStreaming) {
-      _persist();
+      await _persistById(working.id);
       return;
     }
 
@@ -459,8 +504,13 @@ class ChatController extends AsyncNotifier<ChatState> {
       settings: settings,
       fallbackSearchQuery: searchQuery,
       enableWebSearchTool: useWebSearchTool,
+      cancelToken: cancelToken,
     );
   }
+
+  /// True when [e] is a cancellation raised by stop() firing the CancelToken.
+  static bool _isCancel(Object e) =>
+      e is DioException && CancelToken.isCancel(e);
 
   Future<void> _streamAnswer({
     required LlmConfig config,
@@ -471,11 +521,9 @@ class ChatController extends AsyncNotifier<ChatState> {
     required SettingsState settings,
     required String fallbackSearchQuery,
     required bool enableWebSearchTool,
+    required CancelToken cancelToken,
   }) async {
     final llm = ref.read(llmProvider);
-    // One token covers all tool rounds of this generation; stop() fires it.
-    final cancelToken = CancelToken();
-    _cancelToken = cancelToken;
     final requestMessages = List<LlmRequestMessage>.of(history);
     final citations = <Citation>[];
     var content = '';
@@ -493,10 +541,14 @@ class ChatController extends AsyncNotifier<ChatState> {
         String? finishReason;
         Object? streamError;
 
+        // On the LAST round drop the tool list entirely so the model is forced
+        // to answer from what it has, instead of us erroring out mid-answer.
+        final allowTools =
+            enableWebSearchTool && round < _maxToolRounds - 1;
         final stream = llm.streamChat(
           config: config,
           messages: requestMessages,
-          tools: enableWebSearchTool ? const [ToolEngine.webSearchTool] : null,
+          tools: allowTools ? const [ToolEngine.webSearchTool] : null,
           thinking: thinking,
           cancelToken: cancelToken,
         );
@@ -551,7 +603,7 @@ class ChatController extends AsyncNotifier<ChatState> {
 
         if (streamError != null) throw streamError!;
         if (!_s.isStreaming) {
-          _persist();
+          await _persistById(convoId);
           return;
         }
 
@@ -569,19 +621,16 @@ class ChatController extends AsyncNotifier<ChatState> {
 
         final toolCalls = _finalizeToolCalls(toolDrafts);
         final needsTools =
-            enableWebSearchTool &&
+            allowTools &&
             (toolCalls.isNotEmpty || finishReason == 'tool_calls');
         if (!needsTools) {
-          _set(_s.copyWith(isStreaming: false, isSearching: false));
-          await _persist();
+          _set(_s.copyWith(streamingConvoId: null, isSearching: false));
+          await _persistById(convoId);
           return;
         }
 
         if (toolCalls.isEmpty) {
           throw Exception('模型请求了工具调用，但没有返回可执行的工具参数。');
-        }
-        if (round == _maxToolRounds - 1) {
-          throw Exception('联网搜索工具调用轮次过多，已停止。');
         }
 
         requestMessages.add(
@@ -605,9 +654,10 @@ class ChatController extends AsyncNotifier<ChatState> {
           convoId: convoId,
           assistantId: assistantId,
           citations: citations,
+          cancelToken: cancelToken,
         );
         if (!_s.isStreaming) {
-          await _persist();
+          await _persistById(convoId);
           return;
         }
         requestMessages.addAll(toolMessages);
@@ -616,12 +666,13 @@ class ChatController extends AsyncNotifier<ChatState> {
       if (thinkClock.isRunning) thinkClock.stop();
       _set(
         _s.copyWith(
-          isStreaming: false,
+          streamingConvoId: null,
           isSearching: false,
-          error: e.toString(),
+          // A cancellation raised by stop() is not an error to surface.
+          error: _isCancel(e) ? null : e.toString(),
         ),
       );
-      await _persist();
+      await _persistById(convoId);
     } finally {
       // Drop our token once finished so a later stop() can't cancel a stale one.
       if (identical(_cancelToken, cancelToken)) _cancelToken = null;
@@ -641,9 +692,11 @@ class ChatController extends AsyncNotifier<ChatState> {
     required String convoId,
     required String assistantId,
     required List<Citation> citations,
+    required CancelToken cancelToken,
   }) async {
     final out = <LlmRequestMessage>[];
-    _set(_s.copyWith(isSearching: true));
+    // Don't re-light the "正在联网搜索" hint if stop() already fired.
+    if (_s.isStreaming) _set(_s.copyWith(isSearching: true));
     try {
       for (final call in toolCalls) {
         final toolCallId = call.id ?? '';
@@ -658,6 +711,7 @@ class ChatController extends AsyncNotifier<ChatState> {
             convoId,
             assistantId,
             citations,
+            cancelToken,
           );
         }
         out.add(
@@ -681,6 +735,7 @@ class ChatController extends AsyncNotifier<ChatState> {
     String convoId,
     String assistantId,
     List<Citation> citations,
+    CancelToken cancelToken,
   ) async {
     final query = _searchQueryFromArgs(call.argumentsJson, fallbackSearchQuery);
     try {
@@ -691,6 +746,7 @@ class ChatController extends AsyncNotifier<ChatState> {
       final context = await engine.runSearch(
         query,
         startIndex: citations.length + 1,
+        cancelToken: cancelToken,
       );
       if (context.citations.isNotEmpty) {
         citations.addAll(context.citations);
@@ -700,6 +756,8 @@ class ChatController extends AsyncNotifier<ChatState> {
           ? '没有搜索到与 "$query" 相关的结果。'
           : context.contextText;
     } catch (e) {
+      // Stop pressed mid-search: the caller's !isStreaming check bails out.
+      if (_isCancel(e)) return '搜索已取消。';
       _set(_s.copyWith(error: e.toString()));
       return '联网搜索失败：$e';
     }
@@ -719,10 +777,9 @@ class ChatController extends AsyncNotifier<ChatState> {
   }
 
   void _setCitations(String convoId, String msgId, List<Citation> citations) {
-    final convo = _s.conversations.firstWhere(
-      (c) => c.id == convoId,
-      orElse: () => _s.conversations.first,
-    );
+    final idx = _s.conversations.indexWhere((c) => c.id == convoId);
+    if (idx < 0) return; // conversation was deleted mid-stream
+    final convo = _s.conversations[idx];
     final messages = [
       for (final m in convo.messages)
         if (m.id == msgId) m.copyWith(citations: citations) else m,
@@ -778,10 +835,9 @@ class ChatController extends AsyncNotifier<ChatState> {
     String reasoning,
     int thinkingMillis,
   ) {
-    final convo = _s.conversations.firstWhere(
-      (c) => c.id == convoId,
-      orElse: () => _s.conversations.first,
-    );
+    final idx = _s.conversations.indexWhere((c) => c.id == convoId);
+    if (idx < 0) return; // conversation was deleted mid-stream
+    final convo = _s.conversations[idx];
     final messages = [
       for (final m in convo.messages)
         if (m.id == msgId)

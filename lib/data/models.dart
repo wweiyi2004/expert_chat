@@ -250,13 +250,28 @@ class Conversation {
   final Map<String, String> activeChildren;
   final DateTime updatedAt;
 
-  /// Children of a parent, oldest-first, across all branches.
-  List<ChatMessage> childrenOf(String parentKey) {
-    final out = [
-      for (final m in messages) if ((m.parentId ?? kRootKey) == parentKey) m,
-    ]..sort((a, b) => a.createdAt.compareTo(b.createdAt));
-    return out;
+  /// Lazily built parent → children index. Conversations are treated as
+  /// immutable (every mutation goes through [copyWith], which builds a new
+  /// instance), so the index never goes stale. Avoids the O(n²) rescan that
+  /// [activePath]/[branchInfo] otherwise cost on every frame while streaming.
+  Map<String, List<ChatMessage>>? _childrenIndex;
+
+  Map<String, List<ChatMessage>> get _children {
+    final cached = _childrenIndex;
+    if (cached != null) return cached;
+    final map = <String, List<ChatMessage>>{};
+    for (final m in messages) {
+      (map[m.parentId ?? kRootKey] ??= []).add(m);
+    }
+    for (final siblings in map.values) {
+      siblings.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    }
+    return _childrenIndex = map;
   }
+
+  /// Children of a parent, oldest-first, across all branches.
+  List<ChatMessage> childrenOf(String parentKey) =>
+      _children[parentKey] ?? const [];
 
   /// The currently visible linear path from root to the active leaf.
   List<ChatMessage> get activePath {
@@ -279,12 +294,13 @@ class Conversation {
   }
 
   /// (index, total) of [messageId] among its siblings; total>1 means a branch.
+  /// Unknown ids yield (0, 1) — i.e. "no branching".
   (int, int) branchInfo(String messageId) {
-    final m = messages.firstWhere((x) => x.id == messageId,
-        orElse: () => messages.first);
-    final sibs = childrenOf(m.parentId ?? kRootKey);
+    final i = messages.indexWhere((x) => x.id == messageId);
+    if (i < 0) return (0, 1);
+    final sibs = childrenOf(messages[i].parentId ?? kRootKey);
     final idx = sibs.indexWhere((x) => x.id == messageId);
-    return (idx, sibs.length);
+    return (idx < 0 ? 0 : idx, sibs.length);
   }
 
   Conversation copyWith({

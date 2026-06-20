@@ -10,7 +10,9 @@ import '../../data/models.dart';
 /// user-chosen location. Pure [toMarkdown] is separated for testing.
 class ConversationExport {
   /// Build a Markdown transcript. Reasoning and citations are included so the
-  /// export is a faithful record of the session.
+  /// export is a faithful record of the session. Only the currently visible
+  /// branch ([Conversation.activePath]) is exported — discarded edit/regenerate
+  /// branches are left out so the document matches what the user sees.
   static String toMarkdown(Conversation convo) {
     final b = StringBuffer()
       ..writeln('# ${convo.title}')
@@ -18,7 +20,7 @@ class ConversationExport {
       ..writeln('_导出时间：${DateTime.now().toIso8601String()}_')
       ..writeln();
 
-    for (final m in convo.messages) {
+    for (final m in convo.activePath) {
       switch (m.role) {
         case MessageRole.user:
           b.writeln('## 🧑 用户');

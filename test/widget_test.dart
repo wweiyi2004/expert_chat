@@ -547,15 +547,17 @@ void main() {
   test(
     'ConversationExport.toMarkdown renders roles, reasoning and sources',
     () {
+      final user = ChatMessage(role: MessageRole.user, content: 'hi');
       final convo = Conversation(
         title: 'My chat',
         messages: [
-          ChatMessage(role: MessageRole.user, content: 'hi'),
+          user,
           ChatMessage(
             role: MessageRole.assistant,
             content: 'hello [1]',
             reasoning: 'pondered',
             model: 'deepseek-reasoner',
+            parentId: user.id,
             citations: const [
               Citation(index: 1, title: 'Src', url: 'https://src.com'),
             ],
@@ -569,6 +571,33 @@ void main() {
       expect(md, contains('deepseek-reasoner'));
       expect(md, contains('深度思考'));
       expect(md, contains('[Src](https://src.com)'));
+    },
+  );
+
+  test(
+    'ConversationExport.toMarkdown exports only the active branch',
+    () {
+      final user = ChatMessage(role: MessageRole.user, content: 'q');
+      final oldReply = ChatMessage(
+        role: MessageRole.assistant,
+        content: 'DISCARDED answer',
+        parentId: user.id,
+      );
+      final newReply = ChatMessage(
+        role: MessageRole.assistant,
+        content: 'ACTIVE answer',
+        parentId: user.id,
+      );
+      // Two assistant siblings (a regenerate); the active path points to the new
+      // one. The discarded branch must not appear in the export.
+      final convo = Conversation(
+        title: 'Branched',
+        messages: [user, oldReply, newReply],
+        activeChildren: {kRootKey: user.id, user.id: newReply.id},
+      );
+      final md = ConversationExport.toMarkdown(convo);
+      expect(md, contains('ACTIVE answer'));
+      expect(md, isNot(contains('DISCARDED answer')));
     },
   );
 

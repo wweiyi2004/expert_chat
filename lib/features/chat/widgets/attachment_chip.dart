@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
@@ -7,14 +8,45 @@ import '../../../data/models.dart';
 /// Compact file card shown in the composer (and on user message bubbles).
 /// Surfaces the file name, a status line (size / truncated / parse error) and,
 /// when [onRemove] is given, a remove button.
-class AttachmentChip extends StatelessWidget {
+class AttachmentChip extends StatefulWidget {
   const AttachmentChip({super.key, required this.attachment, this.onRemove});
 
   final Attachment attachment;
   final VoidCallback? onRemove;
 
   @override
+  State<AttachmentChip> createState() => _AttachmentChipState();
+}
+
+class _AttachmentChipState extends State<AttachmentChip> {
+  /// Decoded once and cached: the composer rebuilds this chip on every keystroke
+  /// and on streaming-state changes, and re-running base64Decode each frame
+  /// wastes CPU and causes the thumbnail to flicker (new bytes → cache miss).
+  Uint8List? _imageBytes;
+
+  @override
+  void initState() {
+    super.initState();
+    _decode();
+  }
+
+  @override
+  void didUpdateWidget(AttachmentChip oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.attachment.imageBase64 != widget.attachment.imageBase64) {
+      _decode();
+    }
+  }
+
+  void _decode() {
+    final b64 = widget.attachment.imageBase64;
+    _imageBytes = (b64 == null) ? null : base64Decode(b64);
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final attachment = widget.attachment;
+    final onRemove = widget.onRemove;
     final scheme = Theme.of(context).colorScheme;
     final hasError = attachment.parseError != null;
     final color = hasError ? scheme.error : scheme.primary;
@@ -79,21 +111,22 @@ class AttachmentChip extends StatelessWidget {
   /// A small image thumbnail when the attachment is a retained image, else the
   /// type icon.
   Widget _leading(Color color) {
-    if (attachment.hasImageData) {
+    final bytes = _imageBytes;
+    if (bytes != null) {
       return ClipRRect(
         borderRadius: BorderRadius.circular(4),
         child: Image.memory(
-          base64Decode(attachment.imageBase64!),
+          bytes,
           width: 28,
           height: 28,
           fit: BoxFit.cover,
           gaplessPlayback: true,
           errorBuilder: (_, _, _) =>
-              Icon(_iconFor(attachment), size: 20, color: color),
+              Icon(_iconFor(widget.attachment), size: 20, color: color),
         ),
       );
     }
-    return Icon(_iconFor(attachment), size: 20, color: color);
+    return Icon(_iconFor(widget.attachment), size: 20, color: color);
   }
 
   String _status(Attachment a) {

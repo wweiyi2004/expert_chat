@@ -74,9 +74,15 @@ class OpenAiCompatibleProvider implements LlmProvider {
       throw await _humanizeError(e);
     }
 
+    // allowMalformed: a connection dropped mid-multibyte-character leaves a
+    // half sequence; strict utf8 would throw a FormatException that escapes the
+    // `on DioException` handler below and surfaces as a raw crash. Lenient
+    // decoding turns it into a harmless replacement char and the stream ends.
     final byteStream = response.data!.stream
         .cast<List<int>>()
-        .transform(StreamTransformer.fromBind(utf8.decoder.bind))
+        .transform(StreamTransformer.fromBind(
+          const Utf8Decoder(allowMalformed: true).bind,
+        ))
         .transform(const LineSplitter());
 
     try {

@@ -119,12 +119,20 @@ class FileParser {
 
     final out = StringBuffer();
     for (final slide in slides) {
-      final content = slide.content as List<int>;
-      final doc = XmlDocument.parse(utf8.decode(content));
-      // <a:t> elements hold the visible text runs.
-      final texts =
-          doc.findAllElements('a:t').map((e) => e.innerText).where((t) => t.trim().isNotEmpty);
-      if (texts.isNotEmpty) out.writeln(texts.join(' '));
+      try {
+        final content = slide.content as List<int>;
+        final doc = XmlDocument.parse(utf8.decode(content, allowMalformed: true));
+        // <a:t> elements hold the visible text runs.
+        final texts = doc
+            .findAllElements('a:t')
+            .map((e) => e.innerText)
+            .where((t) => t.trim().isNotEmpty);
+        if (texts.isNotEmpty) out.writeln(texts.join(' '));
+      } catch (_) {
+        // Skip a single corrupt/unparsable slide rather than failing the whole
+        // deck — the rest of the presentation is still worth extracting.
+        continue;
+      }
     }
     return out.toString();
   }
@@ -136,9 +144,21 @@ class FileParser {
 
   String _decodeText(Uint8List bytes) {
     try {
-      return utf8.decode(bytes);
+      return utf8.decode(bytes); // strict: succeeds only for real UTF-8
     } catch (_) {
-      return latin1.decode(bytes);
+      // Not valid UTF-8. Decode leniently and check how much was unmappable: a
+      // high proportion of replacement chars means a legacy encoding (e.g. GBK
+      // /GB2312, common on Chinese Windows) we can't read — surface a clear
+      // error instead of silently feeding the model garbage (the old latin1
+      // fallback never threw, so mojibake slipped through unnoticed).
+      final lenient = utf8.decode(bytes, allowMalformed: true);
+      final replacements = '�'.allMatches(lenient).length;
+      if (lenient.isNotEmpty && replacements / lenient.length > 0.1) {
+        throw const FormatException(
+          '文件不是 UTF-8 编码（可能是 GBK/GB2312 等），无法可靠解析；请另存为 UTF-8 后重试。',
+        );
+      }
+      return lenient;
     }
   }
 }

@@ -222,16 +222,29 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     jsonEncode(profiles.map((p) => p.toJson()).toList()),
   );
 
-  /// Update theme or model selection (lightweight, frequently called).
-  Future<void> apply({String? selectedModel, ThemeMode? themeMode}) async {
+  /// Update theme and/or model selection (lightweight, frequently called).
+  ///
+  /// [selectedModel] uses the same sentinel convention as [SettingsState.copyWith]:
+  /// omitting it leaves the current model untouched (so e.g. switching theme
+  /// alone doesn't wipe the picked model), passing `null` clears it back to the
+  /// profile default, and passing a value sets it.
+  Future<void> apply({
+    Object? selectedModel = SettingsState._sentinel,
+    ThemeMode? themeMode,
+  }) async {
     final next = _current.copyWith(
       selectedModel: selectedModel,
       themeMode: themeMode,
     );
     state = AsyncData(next);
     final prefs = ref.read(sharedPrefsProvider);
-    if (selectedModel != null) {
-      await prefs.setString(_kSelectedModel, selectedModel);
+    if (!identical(selectedModel, SettingsState._sentinel)) {
+      final model = selectedModel as String?;
+      if (model != null) {
+        await prefs.setString(_kSelectedModel, model);
+      } else {
+        await prefs.remove(_kSelectedModel);
+      }
     }
     if (themeMode != null) await prefs.setInt(_kThemeMode, themeMode.index);
   }

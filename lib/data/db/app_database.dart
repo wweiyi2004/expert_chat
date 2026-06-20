@@ -53,6 +53,18 @@ class AppDatabase extends _$AppDatabase {
           if (from < 2) {
             await m.addColumn(messages, messages.parentId);
             await m.addColumn(conversations, conversations.activeChildrenJson);
+            // v1 conversations were linear (ordered by `seq`); v2 is a tree
+            // keyed by parentId. Without backfilling, every old message keeps a
+            // NULL parentId and becomes a root sibling, so activePath (which
+            // walks one child per node) collapses the whole history to a single
+            // message. Re-link each message to its predecessor by seq.
+            await customStatement(
+              'UPDATE messages SET parent_id = ('
+              ' SELECT m2.id FROM messages AS m2'
+              ' WHERE m2.convo_id = messages.convo_id AND m2.seq < messages.seq'
+              ' ORDER BY m2.seq DESC LIMIT 1'
+              ') WHERE parent_id IS NULL',
+            );
           }
         },
         beforeOpen: (details) async {

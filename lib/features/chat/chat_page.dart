@@ -77,9 +77,9 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         .read(chatControllerProvider.notifier)
         .sendMessage(text, attachments: attachments);
     // Rejected (e.g. API key 未配置 / 正在生成中) → restore the draft so the
-    // user's input isn't lost. Rejection paths return fast, well before any
-    // generation starts.
-    if (!accepted && mounted) {
+    // user's input isn't lost. Only restore when the field is still empty, so
+    // we don't clobber anything the user started typing during the await.
+    if (!accepted && mounted && _input.text.isEmpty) {
       _input.text = text;
       _input.selection = TextSelection.collapsed(offset: text.length);
       setState(() => _attachments.addAll(attachments));

@@ -80,6 +80,14 @@ class ChatController extends AsyncNotifier<ChatState> {
   StreamSubscription<dynamic>? _sub;
   Completer<void>? _streamCompleter;
 
+  /// Set synchronously the instant a generation entry point is accepted, and
+  /// cleared when it finishes. Guards the async window between the `isStreaming`
+  /// check and [_generate] setting `streamingConvoId`: without it, two rapid
+  /// sends (or send + regenerate) both pass the check while the first is still
+  /// awaiting [_readySettings], starting two overlapping streams and leaking the
+  /// first subscription.
+  bool _starting = false;
+
   /// Cancels the active LLM HTTP request (set per generation, fired by [stop]).
   CancelToken? _cancelToken;
 
@@ -198,6 +206,7 @@ class ChatController extends AsyncNotifier<ChatState> {
     _cancelToken = null;
     final completer = _streamCompleter;
     if (completer != null && !completer.isCompleted) completer.complete();
+    _streamCompleter = null;
     _set(_s.copyWith(streamingConvoId: null, isSearching: false));
     if (persist && streamingId != null) _persistById(streamingId);
   }
@@ -210,52 +219,56 @@ class ChatController extends AsyncNotifier<ChatState> {
     List<Attachment> attachments = const [],
   }) async {
     final trimmed = text.trim();
-    if ((trimmed.isEmpty && attachments.isEmpty) || _s.isStreaming) {
+    if ((trimmed.isEmpty && attachments.isEmpty) || _s.isStreaming || _starting) {
       return false;
     }
+    _starting = true;
+    try {
+      final settings = await _readySettings();
+      if (settings == null) return false;
+      final config = _configFor(settings);
 
-    final settings = await _readySettings();
-    if (settings == null) return false;
-    final config = _configFor(settings);
+      final convo = _s.current ?? Conversation();
+      final parentId = convo.activePath.isEmpty ? null : convo.activePath.last.id;
+      final userMsg = ChatMessage(
+        role: MessageRole.user,
+        content: trimmed,
+        attachments: attachments,
+        parentId: parentId,
+      );
+      final assistantMsg = ChatMessage(
+        role: MessageRole.assistant,
+        content: '',
+        model: config.model,
+        parentId: userMsg.id,
+      );
 
-    final convo = _s.current ?? Conversation();
-    final parentId = convo.activePath.isEmpty ? null : convo.activePath.last.id;
-    final userMsg = ChatMessage(
-      role: MessageRole.user,
-      content: trimmed,
-      attachments: attachments,
-      parentId: parentId,
-    );
-    final assistantMsg = ChatMessage(
-      role: MessageRole.assistant,
-      content: '',
-      model: config.model,
-      parentId: userMsg.id,
-    );
+      final isFirst = convo.messages.isEmpty;
+      final titleSeed = trimmed.isNotEmpty
+          ? trimmed
+          : (attachments.isNotEmpty ? attachments.first.name : '新对话');
+      final working = convo.copyWith(
+        title: isFirst ? _truncateTitle(titleSeed) : convo.title,
+        messages: [...convo.messages, userMsg, assistantMsg],
+        activeChildren: {
+          ...convo.activeChildren,
+          parentId ?? kRootKey: userMsg.id,
+          userMsg.id: assistantMsg.id,
+        },
+      );
 
-    final isFirst = convo.messages.isEmpty;
-    final titleSeed = trimmed.isNotEmpty
-        ? trimmed
-        : (attachments.isNotEmpty ? attachments.first.name : '新对话');
-    final working = convo.copyWith(
-      title: isFirst ? _truncateTitle(titleSeed) : convo.title,
-      messages: [...convo.messages, userMsg, assistantMsg],
-      activeChildren: {
-        ...convo.activeChildren,
-        parentId ?? kRootKey: userMsg.id,
-        userMsg.id: assistantMsg.id,
-      },
-    );
-
-    await _generate(
-      working: working,
-      assistantId: assistantMsg.id,
-      config: config,
-      settings: settings,
-      searchQuery: trimmed,
-      thinking: _s.deepThink,
-    );
-    return true;
+      await _generate(
+        working: working,
+        assistantId: assistantMsg.id,
+        config: config,
+        settings: settings,
+        searchQuery: trimmed,
+        thinking: _s.deepThink,
+      );
+      return true;
+    } finally {
+      _starting = false;
+    }
   }
 
   /// Grapheme-aware truncation so a 20-cut can't split an emoji/surrogate pair.
@@ -271,7 +284,7 @@ class ChatController extends AsyncNotifier<ChatState> {
     String newText, {
     List<Attachment>? attachments,
   }) async {
-    if (_s.isStreaming) return;
+    if (_s.isStreaming || _starting) return;
     final trimmed = newText.trim();
     if (trimmed.isEmpty) return;
     final convo = _s.current;
@@ -281,45 +294,50 @@ class ChatController extends AsyncNotifier<ChatState> {
     final old = convo.messages[oldIdx];
     if (old.role != MessageRole.user) return;
 
-    final settings = await _readySettings();
-    if (settings == null) return;
-    final config = _configFor(settings);
+    _starting = true;
+    try {
+      final settings = await _readySettings();
+      if (settings == null) return;
+      final config = _configFor(settings);
 
-    final userMsg = ChatMessage(
-      role: MessageRole.user,
-      content: trimmed,
-      attachments: attachments ?? old.attachments,
-      parentId: old.parentId,
-    );
-    final assistantMsg = ChatMessage(
-      role: MessageRole.assistant,
-      content: '',
-      model: config.model,
-      parentId: userMsg.id,
-    );
-    final working = convo.copyWith(
-      messages: [...convo.messages, userMsg, assistantMsg],
-      activeChildren: {
-        ...convo.activeChildren,
-        old.parentId ?? kRootKey: userMsg.id,
-        userMsg.id: assistantMsg.id,
-      },
-    );
+      final userMsg = ChatMessage(
+        role: MessageRole.user,
+        content: trimmed,
+        attachments: attachments ?? old.attachments,
+        parentId: old.parentId,
+      );
+      final assistantMsg = ChatMessage(
+        role: MessageRole.assistant,
+        content: '',
+        model: config.model,
+        parentId: userMsg.id,
+      );
+      final working = convo.copyWith(
+        messages: [...convo.messages, userMsg, assistantMsg],
+        activeChildren: {
+          ...convo.activeChildren,
+          old.parentId ?? kRootKey: userMsg.id,
+          userMsg.id: assistantMsg.id,
+        },
+      );
 
-    await _generate(
-      working: working,
-      assistantId: assistantMsg.id,
-      config: config,
-      settings: settings,
-      searchQuery: trimmed,
-      thinking: _s.deepThink,
-    );
+      await _generate(
+        working: working,
+        assistantId: assistantMsg.id,
+        config: config,
+        settings: settings,
+        searchQuery: trimmed,
+        thinking: _s.deepThink,
+      );
+    } finally {
+      _starting = false;
+    }
   }
 
   /// Regenerate the last assistant reply as a NEW branch (the previous reply is
   /// kept and can be switched back to).
   Future<void> regenerate() async {
-    if (_s.isStreaming) return;
+    if (_s.isStreaming || _starting) return;
     final convo = _s.current;
     if (convo == null) return;
     final path = convo.activePath;
@@ -327,29 +345,34 @@ class ChatController extends AsyncNotifier<ChatState> {
     if (lastUser < 0) return;
     final userMsg = path[lastUser];
 
-    final settings = await _readySettings();
-    if (settings == null) return;
-    final config = _configFor(settings);
+    _starting = true;
+    try {
+      final settings = await _readySettings();
+      if (settings == null) return;
+      final config = _configFor(settings);
 
-    final assistantMsg = ChatMessage(
-      role: MessageRole.assistant,
-      content: '',
-      model: config.model,
-      parentId: userMsg.id,
-    );
-    final working = convo.copyWith(
-      messages: [...convo.messages, assistantMsg],
-      activeChildren: {...convo.activeChildren, userMsg.id: assistantMsg.id},
-    );
+      final assistantMsg = ChatMessage(
+        role: MessageRole.assistant,
+        content: '',
+        model: config.model,
+        parentId: userMsg.id,
+      );
+      final working = convo.copyWith(
+        messages: [...convo.messages, assistantMsg],
+        activeChildren: {...convo.activeChildren, userMsg.id: assistantMsg.id},
+      );
 
-    await _generate(
-      working: working,
-      assistantId: assistantMsg.id,
-      config: config,
-      settings: settings,
-      searchQuery: userMsg.content,
-      thinking: _s.deepThink,
-    );
+      await _generate(
+        working: working,
+        assistantId: assistantMsg.id,
+        config: config,
+        settings: settings,
+        searchQuery: userMsg.content,
+        thinking: _s.deepThink,
+      );
+    } finally {
+      _starting = false;
+    }
   }
 
   /// Switch which sibling branch is active at [messageId] (delta -1 / +1).

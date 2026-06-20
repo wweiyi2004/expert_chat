@@ -125,6 +125,17 @@ class Citation {
       );
 }
 
+/// Parses a stored ISO-8601 timestamp. Returns null only when the field is
+/// genuinely absent (a fresh object, where the caller defaults to "now"). A
+/// present-but-corrupt value falls back to epoch so the record sorts oldest,
+/// rather than `now()` which would silently float corrupt data to the top and
+/// scramble time-based ordering.
+DateTime? _parseStoredTime(Object? raw) {
+  if (raw == null) return null;
+  return DateTime.tryParse(raw as String? ?? '') ??
+      DateTime.fromMillisecondsSinceEpoch(0);
+}
+
 /// A single chat message. [reasoning] holds the model's chain-of-thought
 /// (only populated for reasoning models); it is shown in a collapsible panel
 /// and is NOT sent back to the API in later turns.
@@ -219,7 +230,7 @@ class ChatMessage {
         citations: (json['citations'] as List<dynamic>? ?? [])
             .map((e) => Citation.fromJson(e as Map<String, dynamic>))
             .toList(),
-        createdAt: DateTime.tryParse(json['createdAt'] as String? ?? ''),
+        createdAt: _parseStoredTime(json['createdAt']),
       );
 }
 
@@ -259,12 +270,24 @@ class Conversation {
   Map<String, List<ChatMessage>> get _children {
     final cached = _childrenIndex;
     if (cached != null) return cached;
+    // Insertion order (the order messages appear in the list, which the repo
+    // preserves via the `seq` column) is the stable tiebreaker: Dart's
+    // List.sort is NOT stable, so siblings created in the same millisecond
+    // (e.g. a fast regenerate) would otherwise reorder unpredictably across
+    // reloads, making branch indices and the default branch jump around.
+    final order = <String, int>{};
+    for (var i = 0; i < messages.length; i++) {
+      order[messages[i].id] = i;
+    }
     final map = <String, List<ChatMessage>>{};
     for (final m in messages) {
       (map[m.parentId ?? kRootKey] ??= []).add(m);
     }
     for (final siblings in map.values) {
-      siblings.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+      siblings.sort((a, b) {
+        final c = a.createdAt.compareTo(b.createdAt);
+        return c != 0 ? c : (order[a.id] ?? 0).compareTo(order[b.id] ?? 0);
+      });
     }
     return _childrenIndex = map;
   }
@@ -328,7 +351,7 @@ class Conversation {
   factory Conversation.fromJson(Map<String, dynamic> json) => Conversation(
         id: json['id'] as String?,
         title: json['title'] as String? ?? '新对话',
-        updatedAt: DateTime.tryParse(json['updatedAt'] as String? ?? ''),
+        updatedAt: _parseStoredTime(json['updatedAt']),
         activeChildren: (json['activeChildren'] as Map<String, dynamic>? ?? {})
             .map((k, v) => MapEntry(k, v as String)),
         messages: (json['messages'] as List<dynamic>? ?? [])

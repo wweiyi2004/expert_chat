@@ -40,7 +40,18 @@ class _AttachmentChipState extends State<AttachmentChip> {
 
   void _decode() {
     final b64 = widget.attachment.imageBase64;
-    _imageBytes = (b64 == null) ? null : base64Decode(b64);
+    if (b64 == null) {
+      _imageBytes = null;
+      return;
+    }
+    // Stored conversations can outlive an interrupted write or a schema
+    // change. A malformed thumbnail should degrade to the file icon, not take
+    // down the entire chat view during initState/build.
+    try {
+      _imageBytes = base64Decode(b64);
+    } on FormatException {
+      _imageBytes = null;
+    }
   }
 
   @override
@@ -51,59 +62,58 @@ class _AttachmentChipState extends State<AttachmentChip> {
     final hasError = attachment.parseError != null;
     final color = hasError ? scheme.error : scheme.primary;
 
-    return Container(
-      constraints: const BoxConstraints(maxWidth: 240),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      decoration: BoxDecoration(
-        color: scheme.surfaceContainer,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(
-          color: hasError
-              ? scheme.error.withValues(alpha: 0.5)
-              : scheme.outlineVariant,
-        ),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _leading(color),
-          const SizedBox(width: 8),
-          Flexible(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  attachment.name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-                Text(
-                  _status(attachment),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: 11, color: color),
-                ),
-              ],
-            ),
+    return Semantics(
+      container: true,
+      label: '${attachment.name}，${_status(attachment)}',
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 260),
+        padding: const EdgeInsets.only(left: 12, top: 7, bottom: 7),
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainer,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: hasError
+                ? scheme.error.withValues(alpha: 0.5)
+                : scheme.outlineVariant,
           ),
-          if (onRemove != null) ...[
-            const SizedBox(width: 4),
-            InkWell(
-              onTap: onRemove,
-              borderRadius: BorderRadius.circular(8),
-              child: Icon(
-                Icons.close,
-                size: 16,
-                color: scheme.onSurfaceVariant,
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _leading(color),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    attachment.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  Text(
+                    _status(attachment),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 11, color: color),
+                  ),
+                ],
               ),
             ),
+            if (onRemove != null)
+              IconButton(
+                tooltip: '移除 ${attachment.name}',
+                onPressed: onRemove,
+                icon: const Icon(Icons.close_rounded, size: 18),
+                color: scheme.onSurfaceVariant,
+              ),
           ],
-        ],
+        ),
       ),
     );
   }
@@ -114,7 +124,7 @@ class _AttachmentChipState extends State<AttachmentChip> {
     final bytes = _imageBytes;
     if (bytes != null) {
       return ClipRRect(
-        borderRadius: BorderRadius.circular(4),
+        borderRadius: BorderRadius.circular(8),
         child: Image.memory(
           bytes,
           width: 28,

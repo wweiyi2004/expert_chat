@@ -34,7 +34,9 @@ android {
     }
 
     lint {
-        checkReleaseBuilds = false
+        // Release artifacts should pass Android lint just like debug builds.
+        // Do not hide platform/API regressions until after distribution.
+        checkReleaseBuilds = true
     }
 }
 

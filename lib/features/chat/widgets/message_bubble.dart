@@ -9,8 +9,15 @@ import 'citations_bar.dart';
 import 'thinking_panel.dart';
 
 Future<void> _openUrl(String url) async {
-  final uri = Uri.tryParse(url);
-  if (uri == null) return;
+  final uri = Uri.tryParse(url.trim());
+  final scheme = uri?.scheme.toLowerCase();
+  // Content and citations can be model-generated, so never hand arbitrary
+  // schemes (file:, intent:, javascript:, ...) to the operating system.
+  if (uri == null ||
+      uri.host.isEmpty ||
+      (scheme != 'https' && scheme != 'http')) {
+    return;
+  }
   await launchUrl(uri, mode: LaunchMode.externalApplication);
 }
 
@@ -114,7 +121,7 @@ class _MessageBubbleState extends State<MessageBubble> {
                 constraints: const BoxConstraints(maxWidth: 560),
                 decoration: BoxDecoration(
                   color: scheme.primary,
-                  borderRadius: BorderRadius.circular(8),
+                  borderRadius: BorderRadius.circular(18),
                 ),
                 child: SelectableText(
                   m.content,
@@ -129,7 +136,6 @@ class _MessageBubbleState extends State<MessageBubble> {
                   if (widget.onEdit != null && !widget.isStreaming)
                     IconButton(
                       iconSize: 16,
-                      visualDensity: VisualDensity.compact,
                       tooltip: '编辑',
                       color: scheme.onSurfaceVariant,
                       icon: const Icon(Icons.edit_outlined),
@@ -168,26 +174,51 @@ class _MessageBubbleState extends State<MessageBubble> {
                 child: CircularProgressIndicator(strokeWidth: 2),
               )
             else if (m.content.isNotEmpty)
-              SelectionArea(
-                child: GptMarkdown(
-                  m.content,
-                  useDollarSignsForLatex: true,
-                  onLinkTap: (url, _) => _openUrl(url),
-                  // Always handle [n] ourselves: render a tappable badge only
-                  // when it maps to a real citation, otherwise keep it as plain
-                  // text (gpt_markdown's default would badge ANY [number]).
-                  sourceTagBuilder: (context, content, style) {
-                    final n = int.tryParse(content.trim());
-                    final isCitation = m.citations.any((c) => c.index == n);
-                    if (!isCitation) {
-                      return Text('[$content]', style: style);
-                    }
-                    return _CitationBadge(
-                      number: content,
-                      citations: m.citations,
-                    );
-                  },
+              Container(
+                margin: EdgeInsets.only(top: hasReasoning ? 10 : 0),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 14,
                 ),
+                decoration: BoxDecoration(
+                  color: scheme.surfaceContainer,
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: scheme.outlineVariant),
+                ),
+                child: widget.isStreaming
+                    // Parsing a growing Markdown document is needlessly
+                    // expensive and can make long streams stutter. Show the
+                    // live text directly, then render full Markdown once the
+                    // response is complete.
+                    ? SelectableText(
+                        m.content,
+                        style: Theme.of(
+                          context,
+                        ).textTheme.bodyLarge?.copyWith(height: 1.65),
+                      )
+                    : SelectionArea(
+                        child: GptMarkdown(
+                          m.content,
+                          useDollarSignsForLatex: true,
+                          onLinkTap: (url, _) => _openUrl(url),
+                          // Always handle [n] ourselves: render a tappable badge only
+                          // when it maps to a real citation, otherwise keep it as plain
+                          // text (gpt_markdown's default would badge ANY [number]).
+                          sourceTagBuilder: (context, content, style) {
+                            final n = int.tryParse(content.trim());
+                            final isCitation = m.citations.any(
+                              (c) => c.index == n,
+                            );
+                            if (!isCitation) {
+                              return Text('[$content]', style: style);
+                            }
+                            return _CitationBadge(
+                              number: content,
+                              citations: m.citations,
+                            );
+                          },
+                        ),
+                      ),
               ),
             if (m.citations.isNotEmpty && !widget.isStreaming)
               CitationsBar(
@@ -202,7 +233,6 @@ class _MessageBubbleState extends State<MessageBubble> {
                     _branchNav(scheme),
                     IconButton(
                       iconSize: 18,
-                      visualDensity: VisualDensity.compact,
                       tooltip: '复制',
                       color: scheme.onSurfaceVariant,
                       icon: const Icon(Icons.copy_outlined),
@@ -222,7 +252,6 @@ class _MessageBubbleState extends State<MessageBubble> {
                     if (widget.onRegenerate != null)
                       IconButton(
                         iconSize: 18,
-                        visualDensity: VisualDensity.compact,
                         tooltip: '重新生成（新分支）',
                         color: scheme.onSurfaceVariant,
                         icon: const Icon(Icons.refresh),
@@ -246,7 +275,6 @@ class _MessageBubbleState extends State<MessageBubble> {
       children: [
         IconButton(
           iconSize: 16,
-          visualDensity: VisualDensity.compact,
           tooltip: '上一个回复',
           color: scheme.onSurfaceVariant,
           icon: const Icon(Icons.chevron_left),
@@ -255,7 +283,6 @@ class _MessageBubbleState extends State<MessageBubble> {
         Text('${widget.branchIndex + 1}/${widget.branchCount}', style: style),
         IconButton(
           iconSize: 16,
-          visualDensity: VisualDensity.compact,
           tooltip: '下一个回复',
           color: scheme.onSurfaceVariant,
           icon: const Icon(Icons.chevron_right),
@@ -289,7 +316,7 @@ class _EditBox extends StatelessWidget {
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
         color: scheme.surfaceContainer,
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(color: scheme.outlineVariant),
       ),
       child: Column(
@@ -337,22 +364,27 @@ class _CitationBadge extends StatelessWidget {
     final n = int.tryParse(number.trim());
     final match = citations.where((c) => c.index == n);
     final url = match.isEmpty ? null : match.first.url;
-    return GestureDetector(
-      onTap: url == null ? null : () => _openUrl(url),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 2),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-          decoration: BoxDecoration(
-            color: scheme.primary,
-            borderRadius: BorderRadius.circular(6),
-          ),
-          child: Text(
-            number,
-            style: TextStyle(
-              fontSize: 11,
-              color: scheme.onPrimary,
-              fontWeight: FontWeight.w600,
+    return Semantics(
+      button: url != null,
+      label: url == null ? '引用 $number' : '打开引用 $number',
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: url == null ? null : () => _openUrl(url),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 3),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+            decoration: BoxDecoration(
+              color: scheme.primary,
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Text(
+              number,
+              style: TextStyle(
+                fontSize: 11,
+                color: scheme.onPrimary,
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ),
         ),

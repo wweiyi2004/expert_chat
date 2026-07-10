@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:archive/archive.dart';
 import 'package:dio/dio.dart' show CancelToken;
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
@@ -80,6 +82,18 @@ class InMemoryRepo implements ConversationRepository {
   @override
   Future<void> deleteConversation(String id) async =>
       store.removeWhere((c) => c.id == id);
+}
+
+class DelayedFailDeleteRepo extends InMemoryRepo {
+  final deleteStarted = Completer<void>();
+  final failDelete = Completer<void>();
+
+  @override
+  Future<void> deleteConversation(String id) async {
+    if (!deleteStarted.isCompleted) deleteStarted.complete();
+    await failDelete.future;
+    throw Exception('simulated delete failure');
+  }
 }
 
 /// Settings controller that returns a ready config without touching storage.
@@ -281,6 +295,68 @@ void main() {
     expect(assistant.citations.single.url, 'https://flutter.dev');
   });
 
+  test('caps network work while replying to every model tool call', () async {
+    final llm = FakeLlmProvider(
+      const [],
+      scriptedChunks: const [
+        [
+          ChatChunk(
+            toolCalls: [
+              ToolCall(
+                index: 0,
+                id: 'call_0',
+                name: 'web_search',
+                argumentsJson: '{"query":"q0"}',
+              ),
+              ToolCall(
+                index: 1,
+                id: 'call_1',
+                name: 'web_search',
+                argumentsJson: '{"query":"q1"}',
+              ),
+              ToolCall(
+                index: 2,
+                id: 'call_2',
+                name: 'web_search',
+                argumentsJson: '{"query":"q2"}',
+              ),
+              ToolCall(
+                index: 3,
+                id: 'call_3',
+                name: 'web_search',
+                argumentsJson: '{"query":"q3"}',
+              ),
+            ],
+            finishReason: 'tool_calls',
+          ),
+        ],
+        [ChatChunk(contentDelta: 'bounded answer')],
+      ],
+    );
+    final search = _CountingSearch(const [
+      SearchResult(title: 'Result', url: 'https://example.com'),
+    ]);
+    final c = _container(
+      llm,
+      InMemoryRepo(),
+      toolEngineFactory: ({required backend, required apiKey}) =>
+          ToolEngine(search),
+    );
+    addTearDown(c.dispose);
+
+    final ctrl = c.read(chatControllerProvider.notifier);
+    await c.read(chatControllerProvider.future);
+    ctrl.toggleSearch();
+    await ctrl.sendMessage('search safely');
+
+    expect(search.calls, 3);
+    final toolMessages = llm.calls[1]
+        .where((m) => m.role == MessageRole.tool)
+        .toList();
+    expect(toolMessages, hasLength(4));
+    expect(toolMessages.last.content, contains('最多执行 3 次'));
+  });
+
   test('ProviderProfile round-trips through JSON', () {
     final p = ProviderProfile(
       name: 'Kimi',
@@ -398,6 +474,36 @@ void main() {
       expect(a.parseError, contains('过大'));
     });
 
+    test('rejects an oversized document before attempting extraction', () {
+      final a = parser.parse(
+        name: 'large.txt',
+        mimeType: 'text/plain',
+        // Keeping bytes tiny proves the pre-flight metadata guard runs before
+        // a potentially expensive parser is selected.
+        sizeBytes: FileParser.maxFileBytes + 1,
+        bytes: Uint8List.fromList([0x61]),
+      );
+      expect(a.parseError, contains('文件过大'));
+    });
+
+    test('rejects an OOXML archive with an abnormal compression ratio', () {
+      final payload = Uint8List.fromList(utf8.encode('a' * (256 * 1024)));
+      final archive = Archive()
+        ..addFile(
+          ArchiveFile('word/document.xml', payload.lengthInBytes, payload),
+        );
+      final compressed = Uint8List.fromList(ZipEncoder().encode(archive)!);
+
+      final a = parser.parse(
+        name: 'suspicious.docx',
+        mimeType:
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        sizeBytes: compressed.lengthInBytes,
+        bytes: compressed,
+      );
+      expect(a.parseError, contains('压缩比异常'));
+    });
+
     test('reports a clear error for unsupported types', () {
       final a = parser.parse(
         name: 'app.exe',
@@ -462,6 +568,46 @@ void main() {
       expect(ctx.citations, hasLength(1));
       expect(ctx.citations.single.url, 'https://a.com');
     });
+
+    test('skips local and private search-result URLs', () async {
+      final engine = ToolEngine(
+        _FakeSearch([
+          const SearchResult(title: 'Loopback', url: 'http://127.0.0.1/x'),
+          const SearchResult(title: 'Router', url: 'http://192.168.1.1/'),
+          const SearchResult(title: 'Local name', url: 'http://host.local/'),
+          const SearchResult(title: 'IPv6 loopback', url: 'http://[::1]/'),
+          const SearchResult(title: 'Public', url: 'https://example.com/'),
+        ]),
+      );
+
+      final ctx = await engine.runSearch('q');
+      expect(ctx.citations, hasLength(1));
+      expect(ctx.citations.single.url, 'https://example.com/');
+      expect(HttpSearchProvider.isSafeHttpUrl('https://dart.dev'), isTrue);
+      expect(HttpSearchProvider.isSafeHttpUrl('file:///tmp/x'), isFalse);
+    });
+  });
+
+  test('failed async delete restores only the deleted conversation', () async {
+    final original = Conversation(title: 'Original');
+    final repo = DelayedFailDeleteRepo()..store = [original];
+    final container = _container(FakeLlmProvider(const []), repo);
+    addTearDown(container.dispose);
+    await container.read(chatControllerProvider.future);
+    final controller = container.read(chatControllerProvider.notifier);
+
+    final deletion = controller.deleteConversation(original.id);
+    await repo.deleteStarted.future;
+    controller.newConversation();
+    final newId = container.read(chatControllerProvider).value!.currentId;
+    repo.failDelete.complete();
+    await deletion;
+
+    final state = container.read(chatControllerProvider).value!;
+    expect(state.conversations.map((c) => c.id), contains(original.id));
+    expect(state.conversations.map((c) => c.id), contains(newId));
+    expect(state.currentId, newId);
+    expect(state.error, contains('本地删除失败'));
   });
 
   group('ModelCapabilities.resolve', () {
@@ -518,8 +664,10 @@ void main() {
       expect(ModelCapabilities.resolve('gpt-4o-mini').supportsVision, isTrue);
       expect(ModelCapabilities.resolve('qwen-vl-max').supportsVision, isTrue);
       expect(ModelCapabilities.resolve('glm-4v').supportsVision, isTrue);
-      expect(ModelCapabilities.resolve('deepseek-v4-flash').supportsVision,
-          isFalse);
+      expect(
+        ModelCapabilities.resolve('deepseek-v4-flash').supportsVision,
+        isFalse,
+      );
     });
 
     test('LlmConfig derives capabilities from its model by default', () {
@@ -574,32 +722,29 @@ void main() {
     },
   );
 
-  test(
-    'ConversationExport.toMarkdown exports only the active branch',
-    () {
-      final user = ChatMessage(role: MessageRole.user, content: 'q');
-      final oldReply = ChatMessage(
-        role: MessageRole.assistant,
-        content: 'DISCARDED answer',
-        parentId: user.id,
-      );
-      final newReply = ChatMessage(
-        role: MessageRole.assistant,
-        content: 'ACTIVE answer',
-        parentId: user.id,
-      );
-      // Two assistant siblings (a regenerate); the active path points to the new
-      // one. The discarded branch must not appear in the export.
-      final convo = Conversation(
-        title: 'Branched',
-        messages: [user, oldReply, newReply],
-        activeChildren: {kRootKey: user.id, user.id: newReply.id},
-      );
-      final md = ConversationExport.toMarkdown(convo);
-      expect(md, contains('ACTIVE answer'));
-      expect(md, isNot(contains('DISCARDED answer')));
-    },
-  );
+  test('ConversationExport.toMarkdown exports only the active branch', () {
+    final user = ChatMessage(role: MessageRole.user, content: 'q');
+    final oldReply = ChatMessage(
+      role: MessageRole.assistant,
+      content: 'DISCARDED answer',
+      parentId: user.id,
+    );
+    final newReply = ChatMessage(
+      role: MessageRole.assistant,
+      content: 'ACTIVE answer',
+      parentId: user.id,
+    );
+    // Two assistant siblings (a regenerate); the active path points to the new
+    // one. The discarded branch must not appear in the export.
+    final convo = Conversation(
+      title: 'Branched',
+      messages: [user, oldReply, newReply],
+      activeChildren: {kRootKey: user.id, user.id: newReply.id},
+    );
+    final md = ConversationExport.toMarkdown(convo);
+    expect(md, contains('ACTIVE answer'));
+    expect(md, isNot(contains('DISCARDED answer')));
+  });
 
   test('LlmRequestMessage serializes images as multimodal content parts', () {
     const msg = LlmRequestMessage(
@@ -638,24 +783,31 @@ void main() {
     expect(user.imageDataUrls, ['data:image/png;base64,AAAA']);
   });
 
-  test('non-vision model describes images in text, not as image parts', () async {
-    final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'ok')]);
-    final c = _container(llm, InMemoryRepo()); // default DeepSeek (no vision)
-    addTearDown(c.dispose);
-    final ctrl = c.read(chatControllerProvider.notifier);
-    await c.read(chatControllerProvider.future);
+  test(
+    'non-vision model describes images in text, not as image parts',
+    () async {
+      final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'ok')]);
+      final c = _container(llm, InMemoryRepo()); // default DeepSeek (no vision)
+      addTearDown(c.dispose);
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
 
-    await ctrl.sendMessage(
-      'what is this?',
-      attachments: [
-        Attachment(name: 'pic.png', mimeType: 'image/png', imageBase64: 'AAAA'),
-      ],
-    );
+      await ctrl.sendMessage(
+        'what is this?',
+        attachments: [
+          Attachment(
+            name: 'pic.png',
+            mimeType: 'image/png',
+            imageBase64: 'AAAA',
+          ),
+        ],
+      );
 
-    final user = llm.calls.last.firstWhere((m) => m.role == MessageRole.user);
-    expect(user.imageDataUrls, isEmpty);
-    expect(user.content, contains('不支持图片'));
-  });
+      final user = llm.calls.last.firstWhere((m) => m.role == MessageRole.user);
+      expect(user.imageDataUrls, isEmpty);
+      expect(user.content, contains('不支持图片'));
+    },
+  );
 
   test(
     'regenerate creates a new assistant branch and switches between them',

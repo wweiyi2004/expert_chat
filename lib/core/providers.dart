@@ -49,8 +49,34 @@ typedef ToolEngineFactory =
       required String apiKey,
     });
 
-final toolEngineFactoryProvider = Provider<ToolEngineFactory>(
-  (ref) =>
-      ({required backend, required apiKey}) =>
-          ToolEngine(HttpSearchProvider(backend: backend, apiKey: apiKey)),
-);
+final toolEngineFactoryProvider = Provider<ToolEngineFactory>((ref) {
+  // The factory is called for each search step. Reuse an engine for each
+  // backend/key pair so ToolEngine's short-lived result cache can help across
+  // turns without mixing results from different configured providers.
+  final engines = <_ToolEngineConfigKey, ToolEngine>{};
+  ref.onDispose(engines.clear);
+  return ({required backend, required apiKey}) {
+    final key = _ToolEngineConfigKey(backend, apiKey.trim());
+    return engines.putIfAbsent(
+      key,
+      () =>
+          ToolEngine(HttpSearchProvider(backend: backend, apiKey: key.apiKey)),
+    );
+  };
+});
+
+class _ToolEngineConfigKey {
+  const _ToolEngineConfigKey(this.backend, this.apiKey);
+
+  final SearchBackend backend;
+  final String apiKey;
+
+  @override
+  bool operator ==(Object other) =>
+      other is _ToolEngineConfigKey &&
+      other.backend == backend &&
+      other.apiKey == apiKey;
+
+  @override
+  int get hashCode => Object.hash(backend, apiKey);
+}

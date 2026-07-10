@@ -1,16 +1,20 @@
 import 'package:flutter/material.dart';
 
-/// Clean Material 3 themes with a DeepSeek-like blue/white chat surface.
+/// Calm Material 3 themes with a restrained ink-blue accent.
+///
+/// The palette deliberately avoids neon gradients and overly saturated "AI"
+/// blues: the conversation should feel like a focused work surface rather than
+/// a dashboard competing with the answer.
 class AppTheme {
-  static const _seed = Color(0xFF4D6BFE);
-  static const _lightSurface = Color(0xFFF7FAFF);
+  static const _seed = Color(0xFF365C8D);
+  static const _lightSurface = Color(0xFFF7F8FA);
   static const _lightSurfacePanel = Color(0xFFFFFFFF);
-  static const _lightInput = Color(0xFFF3F7FF);
-  static const _lightBorder = Color(0xFFDDE7FF);
-  static const _darkSurface = Color(0xFF0D1424);
-  static const _darkSurfacePanel = Color(0xFF111B2E);
-  static const _darkInput = Color(0xFF17233A);
-  static const _darkBorder = Color(0xFF243450);
+  static const _lightInput = Color(0xFFF1F4F7);
+  static const _lightBorder = Color(0xFFDCE3EA);
+  static const _darkSurface = Color(0xFF111827);
+  static const _darkSurfacePanel = Color(0xFF172132);
+  static const _darkInput = Color(0xFF202C3D);
+  static const _darkBorder = Color(0xFF314158);
 
   /// CJK font fallback chain. The default family (Segoe UI / Roboto / SF) has
   /// no Chinese glyphs, so without this Flutter falls back glyph-by-glyph to
@@ -37,12 +41,12 @@ class AppTheme {
       primary: _seed,
       onPrimary: Colors.white,
       primaryContainer: isDark
-          ? const Color(0xFF223778)
-          : const Color(0xFFE8EEFF),
+          ? const Color(0xFF25436A)
+          : const Color(0xFFE8EFF8),
       onPrimaryContainer: isDark
-          ? const Color(0xFFE9EEFF)
-          : const Color(0xFF263C8F),
-      secondary: const Color(0xFF1AA6A6),
+          ? const Color(0xFFEAF1FB)
+          : const Color(0xFF23446D),
+      secondary: const Color(0xFF177D71),
       surface: isDark ? _darkSurface : _lightSurface,
       surfaceContainer: isDark ? _darkSurfacePanel : _lightSurfacePanel,
       surfaceContainerHighest: isDark ? _darkInput : _lightInput,
@@ -82,16 +86,16 @@ class AppTheme {
           vertical: 12,
         ),
         border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(14),
           borderSide: BorderSide(color: border),
         ),
         enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(14),
           borderSide: BorderSide(color: border),
         ),
         focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(8),
-          borderSide: BorderSide(color: scheme.primary, width: 1.2),
+          borderRadius: BorderRadius.circular(14),
+          borderSide: BorderSide(color: scheme.primary, width: 1.5),
         ),
         helperStyle: TextStyle(color: scheme.onSurfaceVariant),
       ),
@@ -101,34 +105,50 @@ class AppTheme {
         side: BorderSide(color: border),
         labelStyle: TextStyle(color: scheme.onSurface),
         secondaryLabelStyle: TextStyle(color: scheme.onPrimaryContainer),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
           backgroundColor: scheme.primary,
           foregroundColor: scheme.onPrimary,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          minimumSize: const Size(48, 48),
+          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
         ),
       ),
       iconButtonTheme: IconButtonThemeData(
         style: IconButton.styleFrom(
           foregroundColor: scheme.onSurfaceVariant,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          minimumSize: const Size(48, 48),
+          padding: const EdgeInsets.all(12),
+          tapTargetSize: MaterialTapTargetSize.padded,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
         ),
       ),
       listTileTheme: ListTileThemeData(
         selectedColor: scheme.primary,
         selectedTileColor: scheme.primaryContainer.withValues(alpha: 0.65),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
       ),
       snackBarTheme: SnackBarThemeData(
         behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      ),
+      dialogTheme: DialogThemeData(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      ),
+      popupMenuTheme: PopupMenuThemeData(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
       ),
       segmentedButtonTheme: SegmentedButtonThemeData(
         style: ButtonStyle(
           shape: WidgetStatePropertyAll(
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           ),
           side: WidgetStatePropertyAll(BorderSide(color: border)),
         ),

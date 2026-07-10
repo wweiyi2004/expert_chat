@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
@@ -9,6 +10,12 @@ import 'package:xml/xml.dart';
 
 import '../../data/models.dart';
 
+class FileReadLimitExceeded implements Exception {
+  const FileReadLimitExceeded(this.maxBytes);
+
+  final int maxBytes;
+}
+
 /// Parses uploaded files to plain text locally (no backend). Supports digital
 /// (text-layer) PDF, Word .docx, Excel .xlsx and PowerPoint .pptx. Scanned/image
 /// PDFs and images yield no text (would need OCR / a vision model — M6).
@@ -17,9 +24,54 @@ class FileParser {
   /// Excess is dropped and the attachment is flagged [Attachment.truncated].
   static const int maxChars = 60000;
 
+  /// Guard before unzipping or decoding a document. Character truncation alone
+  /// is too late: a large PDF/OOXML file can already have frozen the UI or
+  /// consumed significant memory by the time text is extracted.
+  static const int maxFileBytes = 15 * 1024 * 1024;
+
+  /// OOXML documents are ZIP files. Inspect the central directory before any
+  /// library asks for decompressed bytes, otherwise a tiny zip bomb can exhaust
+  /// the app process despite the input-file size limit.
+  static const int _maxZipEntries = 2000;
+  static const int _maxZipEntryBytes = 20 * 1024 * 1024;
+  static const int _maxZipExpandedBytes = 50 * 1024 * 1024;
+  static const int _maxZipCompressionRatio = 100;
+
   /// Largest image we retain for vision models. Bigger images are rejected with
   /// a note (base64 in the prompt + DB would balloon for little benefit).
   static const int maxImageBytes = 5 * 1024 * 1024;
+
+  /// Reads a picker-provided stream without allowing an inaccurate file-size
+  /// report to bypass the caller's memory budget.
+  static Future<Uint8List> readBytesWithLimit(
+    Stream<List<int>> stream, {
+    required int maxBytes,
+  }) async {
+    final bytes = BytesBuilder(copy: false);
+    var total = 0;
+    await for (final chunk in stream) {
+      total += chunk.length;
+      if (total > maxBytes) throw FileReadLimitExceeded(maxBytes);
+      bytes.add(chunk);
+    }
+    return bytes.takeBytes();
+  }
+
+  /// Runs the CPU-heavy parser outside the UI isolate. The synchronous [parse]
+  /// entry point stays available for small unit tests and non-UI callers.
+  Future<Attachment> parseAsync({
+    required String name,
+    required String mimeType,
+    required int sizeBytes,
+    required Uint8List bytes,
+  }) => Isolate.run(
+    () => FileParser().parse(
+      name: name,
+      mimeType: mimeType,
+      sizeBytes: sizeBytes,
+      bytes: bytes,
+    ),
+  );
 
   /// Build an [Attachment] from raw bytes. Never throws: parse failures are
   /// captured in [Attachment.parseError] so the UI can surface them.
@@ -30,13 +82,22 @@ class FileParser {
     required Uint8List bytes,
   }) {
     final lower = name.toLowerCase();
-    final base = Attachment(name: name, mimeType: mimeType, sizeBytes: sizeBytes);
+    final base = Attachment(
+      name: name,
+      mimeType: mimeType,
+      sizeBytes: sizeBytes,
+    );
+
+    if (sizeBytes > maxFileBytes || bytes.lengthInBytes > maxFileBytes) {
+      return base.copyWith(
+        parseError:
+            '文件过大（超过 ${(maxFileBytes / 1024 / 1024).toStringAsFixed(0)}MB），未解析。',
+      );
+    }
 
     if (mimeType.startsWith('image/')) {
       if (bytes.lengthInBytes > maxImageBytes) {
-        return base.copyWith(
-          parseError: '图片过大（超过 5MB），未附加。',
-        );
+        return base.copyWith(parseError: '图片过大（超过 5MB），未附加。');
       }
       // Retain the image for vision-capable models; non-vision models get a
       // textual note at send time instead (see ChatController).
@@ -48,7 +109,7 @@ class FileParser {
       if (lower.endsWith('.pdf')) {
         text = _parsePdf(bytes);
       } else if (lower.endsWith('.docx')) {
-        text = docxToText(bytes);
+        text = _parseDocx(bytes);
       } else if (lower.endsWith('.xlsx')) {
         text = _parseXlsx(bytes);
       } else if (lower.endsWith('.pptx')) {
@@ -65,9 +126,7 @@ class FileParser {
 
       text = text.trim();
       if (text.isEmpty) {
-        return base.copyWith(
-          parseError: '未能从文件中提取到文本（可能是扫描件/图片型文档）。',
-        );
+        return base.copyWith(parseError: '未能从文件中提取到文本（可能是扫描件/图片型文档）。');
       }
       final truncated = text.length > maxChars;
       return base.copyWith(
@@ -88,7 +147,13 @@ class FileParser {
     }
   }
 
+  String _parseDocx(Uint8List bytes) {
+    _decodeSafeZip(bytes);
+    return docxToText(bytes);
+  }
+
   String _parseXlsx(Uint8List bytes) {
+    _decodeSafeZip(bytes);
     final excel = Excel.decodeBytes(bytes);
     final out = StringBuffer();
     for (final entry in excel.tables.entries) {
@@ -107,21 +172,26 @@ class FileParser {
   }
 
   String _parsePptx(Uint8List bytes) {
-    final archive = ZipDecoder().decodeBytes(bytes);
+    final archive = _decodeSafeZip(bytes);
     // Slides are ppt/slides/slideN.xml; order them numerically.
-    final slides = archive.files
-        .where((f) =>
-            f.isFile &&
-            f.name.startsWith('ppt/slides/slide') &&
-            f.name.endsWith('.xml'))
-        .toList()
-      ..sort((a, b) => _slideIndex(a.name).compareTo(_slideIndex(b.name)));
+    final slides =
+        archive.files
+            .where(
+              (f) =>
+                  f.isFile &&
+                  f.name.startsWith('ppt/slides/slide') &&
+                  f.name.endsWith('.xml'),
+            )
+            .toList()
+          ..sort((a, b) => _slideIndex(a.name).compareTo(_slideIndex(b.name)));
 
     final out = StringBuffer();
     for (final slide in slides) {
       try {
         final content = slide.content as List<int>;
-        final doc = XmlDocument.parse(utf8.decode(content, allowMalformed: true));
+        final doc = XmlDocument.parse(
+          utf8.decode(content, allowMalformed: true),
+        );
         // <a:t> elements hold the visible text runs.
         final texts = doc
             .findAllElements('a:t')
@@ -135,6 +205,36 @@ class FileParser {
       }
     }
     return out.toString();
+  }
+
+  Archive _decodeSafeZip(Uint8List bytes) {
+    final archive = ZipDecoder().decodeBytes(bytes);
+    if (archive.files.length > _maxZipEntries) {
+      throw const FormatException('压缩文档包含过多条目，已拒绝解析。');
+    }
+
+    var expandedBytes = 0;
+    for (final file in archive.files) {
+      if (!file.isFile) continue;
+      final declaredSize = file.size;
+      if (declaredSize < 0 || declaredSize > _maxZipEntryBytes) {
+        throw const FormatException('压缩文档含有过大的文件条目，已拒绝解析。');
+      }
+      expandedBytes += declaredSize;
+      if (expandedBytes > _maxZipExpandedBytes) {
+        throw const FormatException('压缩文档解压后内容过大，已拒绝解析。');
+      }
+
+      final compressedSize = file.rawContent?.length ?? 0;
+      if (declaredSize > 0 && compressedSize == 0) {
+        throw const FormatException('压缩文档包含无效条目，已拒绝解析。');
+      }
+      if (compressedSize > 0 &&
+          declaredSize / compressedSize > _maxZipCompressionRatio) {
+        throw const FormatException('压缩文档压缩比异常，已拒绝解析。');
+      }
+    }
+    return archive;
   }
 
   int _slideIndex(String path) {

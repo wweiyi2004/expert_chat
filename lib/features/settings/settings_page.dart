@@ -56,138 +56,156 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
             _systemPrompt.text = s.systemPrompt;
             _systemPromptSynced = true;
           }
-          return ListView(
-            padding: const EdgeInsets.all(20),
-            children: [
-              const _SectionTitle('模型服务'),
-              _ProfileSelector(
-                profiles: s.profiles,
-                activeId: active?.id,
-                onSelect: controller.selectProfile,
-                onAddPreset: (preset) =>
-                    controller.addProfile(preset.toProfile()),
-                onAddCustom: () => _editProfile(context, null),
-                onEdit: active == null
-                    ? null
-                    : () => _editProfile(context, active),
-                onDelete: active == null
-                    ? null
-                    : () => controller.deleteProfile(active.id),
-              ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: _apiKey,
-                obscureText: _obscure,
-                decoration: InputDecoration(
-                  labelText: 'API Key',
-                  hintText: 'sk-...',
-                  helperText: active == null
-                      ? null
-                      : '用于 ${active.name}（${active.baseUrl}）',
-                  suffixIcon: IconButton(
-                    icon: Icon(
-                      _obscure ? Icons.visibility : Icons.visibility_off,
+          return SafeArea(
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 720),
+                child: ListView(
+                  padding: const EdgeInsets.fromLTRB(20, 24, 20, 40),
+                  children: [
+                    const _SectionTitle('模型服务'),
+                    _ProfileSelector(
+                      profiles: s.profiles,
+                      activeId: active?.id,
+                      onSelect: controller.selectProfile,
+                      onAddPreset: (preset) =>
+                          controller.addProfile(preset.toProfile()),
+                      onAddCustom: () => _editProfile(context, null),
+                      onEdit: active == null
+                          ? null
+                          : () => _editProfile(context, active),
+                      onDelete: active == null
+                          ? null
+                          : () => _confirmDeleteProfile(active),
                     ),
-                    onPressed: () => setState(() => _obscure = !_obscure),
-                  ),
-                ),
-                onChanged: controller.setApiKey,
-              ),
-              const SizedBox(height: 16),
-              DropdownButtonFormField<String>(
-                initialValue: s.availableModels.contains(s.model)
-                    ? s.model
-                    : (s.availableModels.isNotEmpty
-                          ? s.availableModels.first
-                          : null),
-                decoration: const InputDecoration(labelText: '模型'),
-                items: [
-                  for (final m in s.availableModels)
-                    DropdownMenuItem(
-                      value: m,
-                      child: Text(
-                        m + (KnownModels.isReasoner(m) ? '（深度思考）' : ''),
+                    const SizedBox(height: 16),
+                    TextField(
+                      controller: _apiKey,
+                      obscureText: _obscure,
+                      autocorrect: false,
+                      enableSuggestions: false,
+                      decoration: InputDecoration(
+                        labelText: 'API Key',
+                        hintText: 'sk-...',
+                        helperText: active == null
+                            ? null
+                            : '用于 ${active.name}（${active.baseUrl}）',
+                        suffixIcon: IconButton(
+                          tooltip: _obscure ? '显示 API Key' : '隐藏 API Key',
+                          icon: Icon(
+                            _obscure ? Icons.visibility : Icons.visibility_off,
+                          ),
+                          onPressed: () => setState(() => _obscure = !_obscure),
+                        ),
                       ),
+                      onChanged: controller.setApiKey,
                     ),
-                ],
-                onChanged: (v) =>
-                    v == null ? null : controller.apply(selectedModel: v),
-              ),
-              const SizedBox(height: 32),
-              const _SectionTitle('预设提示词'),
-              TextField(
-                controller: _systemPrompt,
-                minLines: 3,
-                maxLines: 8,
-                decoration: const InputDecoration(
-                  labelText: '系统提示词（人设）',
-                  alignLabelWithHint: true,
-                  hintText: '例如：你是一位资深的中文写作助手，回答简洁专业，必要时给出例子。',
-                  helperText: '每次对话都会作为第一条系统消息发送。留空则使用模型默认行为。',
-                  helperMaxLines: 2,
-                  border: OutlineInputBorder(),
-                ),
-                onChanged: controller.setSystemPrompt,
-              ),
-              const SizedBox(height: 32),
-              const _SectionTitle('外观'),
-              SegmentedButton<ThemeMode>(
-                segments: const [
-                  ButtonSegment(
-                    value: ThemeMode.system,
-                    label: Text('跟随系统'),
-                    icon: Icon(Icons.brightness_auto),
-                  ),
-                  ButtonSegment(
-                    value: ThemeMode.light,
-                    label: Text('浅色'),
-                    icon: Icon(Icons.light_mode),
-                  ),
-                  ButtonSegment(
-                    value: ThemeMode.dark,
-                    label: Text('深色'),
-                    icon: Icon(Icons.dark_mode),
-                  ),
-                ],
-                selected: {s.themeMode},
-                onSelectionChanged: (set) =>
-                    controller.apply(themeMode: set.first),
-              ),
-              const SizedBox(height: 32),
-              const _SectionTitle('联网搜索'),
-              DropdownButtonFormField<SearchBackend>(
-                initialValue: s.searchBackend,
-                decoration: const InputDecoration(labelText: '搜索服务'),
-                items: [
-                  for (final b in SearchBackend.values)
-                    DropdownMenuItem(value: b, child: Text(b.label)),
-                ],
-                onChanged: (v) =>
-                    v == null ? null : controller.setSearchBackend(v),
-              ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: _searchKey,
-                obscureText: _obscureSearch,
-                decoration: InputDecoration(
-                  labelText: '搜索 API Key（可选）',
-                  helperText: 'DuckDuckGo 免费后端可留空；Tavily / Exa / 博查需要填写 Key。',
-                  suffixIcon: IconButton(
-                    icon: Icon(
-                      _obscureSearch ? Icons.visibility : Icons.visibility_off,
+                    const SizedBox(height: 16),
+                    DropdownButtonFormField<String>(
+                      initialValue: s.availableModels.contains(s.model)
+                          ? s.model
+                          : (s.availableModels.isNotEmpty
+                                ? s.availableModels.first
+                                : null),
+                      decoration: const InputDecoration(labelText: '模型'),
+                      items: [
+                        for (final m in s.availableModels)
+                          DropdownMenuItem(
+                            value: m,
+                            child: Text(
+                              m + (KnownModels.isReasoner(m) ? '（深度思考）' : ''),
+                            ),
+                          ),
+                      ],
+                      onChanged: (v) =>
+                          v == null ? null : controller.apply(selectedModel: v),
                     ),
-                    onPressed: () =>
-                        setState(() => _obscureSearch = !_obscureSearch),
-                  ),
+                    const SizedBox(height: 32),
+                    const _SectionTitle('预设提示词'),
+                    TextField(
+                      controller: _systemPrompt,
+                      minLines: 3,
+                      maxLines: 8,
+                      decoration: const InputDecoration(
+                        labelText: '系统提示词（人设）',
+                        alignLabelWithHint: true,
+                        hintText: '例如：你是一位资深的中文写作助手，回答简洁专业，必要时给出例子。',
+                        helperText: '每次对话都会作为第一条系统消息发送。留空则使用模型默认行为。',
+                        helperMaxLines: 2,
+                        border: OutlineInputBorder(),
+                      ),
+                      onChanged: controller.setSystemPrompt,
+                    ),
+                    const SizedBox(height: 32),
+                    const _SectionTitle('外观'),
+                    SegmentedButton<ThemeMode>(
+                      segments: const [
+                        ButtonSegment(
+                          value: ThemeMode.system,
+                          label: Text('跟随系统'),
+                          icon: Icon(Icons.brightness_auto),
+                        ),
+                        ButtonSegment(
+                          value: ThemeMode.light,
+                          label: Text('浅色'),
+                          icon: Icon(Icons.light_mode),
+                        ),
+                        ButtonSegment(
+                          value: ThemeMode.dark,
+                          label: Text('深色'),
+                          icon: Icon(Icons.dark_mode),
+                        ),
+                      ],
+                      selected: {s.themeMode},
+                      onSelectionChanged: (set) =>
+                          controller.apply(themeMode: set.first),
+                    ),
+                    const SizedBox(height: 32),
+                    const _SectionTitle('联网搜索'),
+                    DropdownButtonFormField<SearchBackend>(
+                      initialValue: s.searchBackend,
+                      decoration: const InputDecoration(labelText: '搜索服务'),
+                      items: [
+                        for (final b in SearchBackend.values)
+                          DropdownMenuItem(value: b, child: Text(b.label)),
+                      ],
+                      onChanged: (v) =>
+                          v == null ? null : controller.setSearchBackend(v),
+                    ),
+                    const SizedBox(height: 16),
+                    TextField(
+                      controller: _searchKey,
+                      obscureText: _obscureSearch,
+                      autocorrect: false,
+                      enableSuggestions: false,
+                      decoration: InputDecoration(
+                        labelText: '搜索 API Key（可选）',
+                        helperText:
+                            'DuckDuckGo 免费后端可留空；Tavily / Exa / 博查需要填写 Key。',
+                        suffixIcon: IconButton(
+                          tooltip: _obscureSearch
+                              ? '显示搜索 API Key'
+                              : '隐藏搜索 API Key',
+                          icon: Icon(
+                            _obscureSearch
+                                ? Icons.visibility
+                                : Icons.visibility_off,
+                          ),
+                          onPressed: () =>
+                              setState(() => _obscureSearch = !_obscureSearch),
+                        ),
+                      ),
+                      onChanged: controller.setSearchApiKey,
+                    ),
+                    const SizedBox(height: 32),
+                    Text(
+                      'API Key 通过系统安全存储保存在本机，不会上传到任何服务器。',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
                 ),
-                onChanged: controller.setSearchApiKey,
               ),
-              const SizedBox(height: 32),
-              Text(
-                'API Key 通过系统安全存储保存在本机，不会上传到任何服务器。',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            ],
+            ),
           );
         },
       ),
@@ -207,6 +225,43 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       await controller.addProfile(result);
     } else {
       await controller.updateProfile(result);
+    }
+  }
+
+  Future<void> _confirmDeleteProfile(ProviderProfile profile) async {
+    final scheme = Theme.of(context).colorScheme;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        icon: Icon(Icons.delete_outline, color: scheme.error),
+        title: const Text('删除当前服务商？'),
+        content: Text('“${profile.name}”的配置和本机保存的 API Key 会被删除，且无法恢复。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            style: FilledButton.styleFrom(
+              backgroundColor: scheme.error,
+              foregroundColor: scheme.onError,
+            ),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      await ref
+          .read(settingsControllerProvider.notifier)
+          .deleteProfile(profile.id);
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('删除服务商失败，请重试。')));
     }
   }
 }
@@ -232,6 +287,7 @@ class _ProfileSelector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     return Row(
       children: [
         Expanded(
@@ -270,7 +326,10 @@ class _ProfileSelector extends StatelessWidget {
             if (onEdit != null)
               const PopupMenuItem(value: 'edit', child: Text('编辑当前服务商')),
             if (onDelete != null)
-              const PopupMenuItem(value: 'delete', child: Text('删除当前服务商')),
+              PopupMenuItem(
+                value: 'delete',
+                child: Text('删除当前服务商', style: TextStyle(color: scheme.error)),
+              ),
             const PopupMenuDivider(),
             const PopupMenuItem(value: 'custom', child: Text('+ 自定义服务商')),
             for (final preset in ProviderPreset.presets)
@@ -341,6 +400,9 @@ class _ProfileEditPageState extends State<_ProfileEditPage> {
           const SizedBox(height: 16),
           TextField(
             controller: _baseUrl,
+            keyboardType: TextInputType.url,
+            autocorrect: false,
+            enableSuggestions: false,
             decoration: const InputDecoration(
               labelText: 'Base URL',
               hintText: 'https://api.example.com/v1',

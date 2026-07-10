@@ -7,14 +7,16 @@ enum MessageRole { system, user, assistant, tool }
 
 extension MessageRoleApi on MessageRole {
   String get wire => switch (this) {
-        MessageRole.system => 'system',
-        MessageRole.user => 'user',
-        MessageRole.assistant => 'assistant',
-        MessageRole.tool => 'tool',
-      };
+    MessageRole.system => 'system',
+    MessageRole.user => 'user',
+    MessageRole.assistant => 'assistant',
+    MessageRole.tool => 'tool',
+  };
 
-  static MessageRole fromWire(String value) => MessageRole.values
-      .firstWhere((r) => r.wire == value, orElse: () => MessageRole.user);
+  static MessageRole fromWire(String value) => MessageRole.values.firstWhere(
+    (r) => r.wire == value,
+    orElse: () => MessageRole.user,
+  );
 }
 
 /// A file the user attached to a message. The body is parsed to [text] locally
@@ -72,26 +74,26 @@ class Attachment {
   );
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'name': name,
-        'mimeType': mimeType,
-        'sizeBytes': sizeBytes,
-        'text': text,
-        'truncated': truncated,
-        if (parseError != null) 'parseError': parseError,
-        if (imageBase64 != null) 'imageBase64': imageBase64,
-      };
+    'id': id,
+    'name': name,
+    'mimeType': mimeType,
+    'sizeBytes': sizeBytes,
+    'text': text,
+    'truncated': truncated,
+    if (parseError != null) 'parseError': parseError,
+    if (imageBase64 != null) 'imageBase64': imageBase64,
+  };
 
   factory Attachment.fromJson(Map<String, dynamic> json) => Attachment(
-        id: json['id'] as String?,
-        name: json['name'] as String? ?? '',
-        mimeType: json['mimeType'] as String? ?? 'application/octet-stream',
-        sizeBytes: (json['sizeBytes'] as num?)?.toInt() ?? 0,
-        text: json['text'] as String? ?? '',
-        truncated: json['truncated'] as bool? ?? false,
-        parseError: json['parseError'] as String?,
-        imageBase64: json['imageBase64'] as String?,
-      );
+    id: json['id'] as String?,
+    name: json['name'] as String? ?? '',
+    mimeType: json['mimeType'] as String? ?? 'application/octet-stream',
+    sizeBytes: (json['sizeBytes'] as num?)?.toInt() ?? 0,
+    text: json['text'] as String? ?? '',
+    truncated: json['truncated'] as bool? ?? false,
+    parseError: json['parseError'] as String?,
+    imageBase64: json['imageBase64'] as String?,
+  );
 }
 
 /// A web source cited by the assistant after a search (M5). Rendered as a
@@ -111,18 +113,18 @@ class Citation {
   final String snippet;
 
   Map<String, dynamic> toJson() => {
-        'index': index,
-        'title': title,
-        'url': url,
-        'snippet': snippet,
-      };
+    'index': index,
+    'title': title,
+    'url': url,
+    'snippet': snippet,
+  };
 
   factory Citation.fromJson(Map<String, dynamic> json) => Citation(
-        index: (json['index'] as num?)?.toInt() ?? 0,
-        title: json['title'] as String? ?? '',
-        url: json['url'] as String? ?? '',
-        snippet: json['snippet'] as String? ?? '',
-      );
+    index: (json['index'] as num?)?.toInt() ?? 0,
+    title: json['title'] as String? ?? '',
+    url: json['url'] as String? ?? '',
+    snippet: json['snippet'] as String? ?? '',
+  );
 }
 
 /// Parses a stored ISO-8601 timestamp. Returns null only when the field is
@@ -151,10 +153,10 @@ class ChatMessage {
     List<Attachment>? attachments,
     List<Citation>? citations,
     DateTime? createdAt,
-  })  : id = id ?? _uuid.v4(),
-        attachments = attachments ?? const [],
-        citations = citations ?? const [],
-        createdAt = createdAt ?? DateTime.now();
+  }) : id = id ?? _uuid.v4(),
+       attachments = attachments ?? const [],
+       citations = citations ?? const [],
+       createdAt = createdAt ?? DateTime.now();
 
   final String id;
 
@@ -187,51 +189,50 @@ class ChatMessage {
     int? thinkingMillis,
     List<Attachment>? attachments,
     List<Citation>? citations,
-  }) =>
-      ChatMessage(
-        id: id,
-        role: role,
-        parentId: parentId,
-        content: content ?? this.content,
-        reasoning: reasoning ?? this.reasoning,
-        model: model ?? this.model,
-        thinkingMillis: thinkingMillis ?? this.thinkingMillis,
-        attachments: attachments ?? this.attachments,
-        citations: citations ?? this.citations,
-        createdAt: createdAt,
-      );
+  }) => ChatMessage(
+    id: id,
+    role: role,
+    parentId: parentId,
+    content: content ?? this.content,
+    reasoning: reasoning ?? this.reasoning,
+    model: model ?? this.model,
+    thinkingMillis: thinkingMillis ?? this.thinkingMillis,
+    attachments: attachments ?? this.attachments,
+    citations: citations ?? this.citations,
+    createdAt: createdAt,
+  );
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'role': role.wire,
-        if (parentId != null) 'parentId': parentId,
-        'content': content,
-        'reasoning': reasoning,
-        if (model != null) 'model': model,
-        'thinkingMillis': thinkingMillis,
-        if (attachments.isNotEmpty)
-          'attachments': attachments.map((a) => a.toJson()).toList(),
-        if (citations.isNotEmpty)
-          'citations': citations.map((c) => c.toJson()).toList(),
-        'createdAt': createdAt.toIso8601String(),
-      };
+    'id': id,
+    'role': role.wire,
+    if (parentId != null) 'parentId': parentId,
+    'content': content,
+    'reasoning': reasoning,
+    if (model != null) 'model': model,
+    'thinkingMillis': thinkingMillis,
+    if (attachments.isNotEmpty)
+      'attachments': attachments.map((a) => a.toJson()).toList(),
+    if (citations.isNotEmpty)
+      'citations': citations.map((c) => c.toJson()).toList(),
+    'createdAt': createdAt.toIso8601String(),
+  };
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) => ChatMessage(
-        id: json['id'] as String?,
-        role: MessageRoleApi.fromWire(json['role'] as String? ?? 'user'),
-        parentId: json['parentId'] as String?,
-        content: json['content'] as String? ?? '',
-        reasoning: json['reasoning'] as String? ?? '',
-        model: json['model'] as String?,
-        thinkingMillis: (json['thinkingMillis'] as num?)?.toInt() ?? 0,
-        attachments: (json['attachments'] as List<dynamic>? ?? [])
-            .map((e) => Attachment.fromJson(e as Map<String, dynamic>))
-            .toList(),
-        citations: (json['citations'] as List<dynamic>? ?? [])
-            .map((e) => Citation.fromJson(e as Map<String, dynamic>))
-            .toList(),
-        createdAt: _parseStoredTime(json['createdAt']),
-      );
+    id: json['id'] as String?,
+    role: MessageRoleApi.fromWire(json['role'] as String? ?? 'user'),
+    parentId: json['parentId'] as String?,
+    content: json['content'] as String? ?? '',
+    reasoning: json['reasoning'] as String? ?? '',
+    model: json['model'] as String?,
+    thinkingMillis: (json['thinkingMillis'] as num?)?.toInt() ?? 0,
+    attachments: (json['attachments'] as List<dynamic>? ?? [])
+        .map((e) => Attachment.fromJson(e as Map<String, dynamic>))
+        .toList(),
+    citations: (json['citations'] as List<dynamic>? ?? [])
+        .map((e) => Citation.fromJson(e as Map<String, dynamic>))
+        .toList(),
+    createdAt: _parseStoredTime(json['createdAt']),
+  );
 }
 
 /// Root-level key for [Conversation.activeChildren] (messages with no parent).
@@ -248,10 +249,10 @@ class Conversation {
     List<ChatMessage>? messages,
     Map<String, String>? activeChildren,
     DateTime? updatedAt,
-  })  : id = id ?? _uuid.v4(),
-        messages = messages ?? [],
-        activeChildren = activeChildren ?? {},
-        updatedAt = updatedAt ?? DateTime.now();
+  }) : id = id ?? _uuid.v4(),
+       messages = messages ?? [],
+       activeChildren = activeChildren ?? {},
+       updatedAt = updatedAt ?? DateTime.now();
 
   final String id;
   final String title;
@@ -266,6 +267,7 @@ class Conversation {
   /// instance), so the index never goes stale. Avoids the O(n²) rescan that
   /// [activePath]/[branchInfo] otherwise cost on every frame while streaming.
   Map<String, List<ChatMessage>>? _childrenIndex;
+  Map<String, (int, int)>? _branchInfoIndex;
 
   Map<String, List<ChatMessage>> get _children {
     final cached = _childrenIndex;
@@ -316,46 +318,55 @@ class Conversation {
     return path;
   }
 
+  /// Pre-computed sibling position/count for every message. The chat page asks
+  /// for this once per visible bubble during a stream; scanning [messages] for
+  /// each bubble turns a long conversation into repeated O(n²) work.
+  Map<String, (int, int)> get _branchInfo {
+    final cached = _branchInfoIndex;
+    if (cached != null) return cached;
+    final index = <String, (int, int)>{};
+    for (final siblings in _children.values) {
+      for (var i = 0; i < siblings.length; i++) {
+        index[siblings[i].id] = (i, siblings.length);
+      }
+    }
+    return _branchInfoIndex = index;
+  }
+
   /// (index, total) of [messageId] among its siblings; total>1 means a branch.
   /// Unknown ids yield (0, 1) — i.e. "no branching".
-  (int, int) branchInfo(String messageId) {
-    final i = messages.indexWhere((x) => x.id == messageId);
-    if (i < 0) return (0, 1);
-    final sibs = childrenOf(messages[i].parentId ?? kRootKey);
-    final idx = sibs.indexWhere((x) => x.id == messageId);
-    return (idx < 0 ? 0 : idx, sibs.length);
-  }
+  (int, int) branchInfo(String messageId) => _branchInfo[messageId] ?? (0, 1);
 
   Conversation copyWith({
     String? title,
     List<ChatMessage>? messages,
     Map<String, String>? activeChildren,
     DateTime? updatedAt,
-  }) =>
-      Conversation(
-        id: id,
-        title: title ?? this.title,
-        messages: messages ?? this.messages,
-        activeChildren: activeChildren ?? this.activeChildren,
-        updatedAt: updatedAt ?? DateTime.now(),
-      );
+  }) => Conversation(
+    id: id,
+    title: title ?? this.title,
+    messages: messages ?? this.messages,
+    activeChildren: activeChildren ?? this.activeChildren,
+    updatedAt: updatedAt ?? DateTime.now(),
+  );
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'title': title,
-        'updatedAt': updatedAt.toIso8601String(),
-        'activeChildren': activeChildren,
-        'messages': messages.map((m) => m.toJson()).toList(),
-      };
+    'id': id,
+    'title': title,
+    'updatedAt': updatedAt.toIso8601String(),
+    'activeChildren': activeChildren,
+    'messages': messages.map((m) => m.toJson()).toList(),
+  };
 
   factory Conversation.fromJson(Map<String, dynamic> json) => Conversation(
-        id: json['id'] as String?,
-        title: json['title'] as String? ?? '新对话',
-        updatedAt: _parseStoredTime(json['updatedAt']),
-        activeChildren: (json['activeChildren'] as Map<String, dynamic>? ?? {})
-            .map((k, v) => MapEntry(k, v as String)),
-        messages: (json['messages'] as List<dynamic>? ?? [])
-            .map((e) => ChatMessage.fromJson(e as Map<String, dynamic>))
-            .toList(),
-      );
+    id: json['id'] as String?,
+    title: json['title'] as String? ?? '新对话',
+    updatedAt: _parseStoredTime(json['updatedAt']),
+    activeChildren: (json['activeChildren'] as Map<String, dynamic>? ?? {}).map(
+      (k, v) => MapEntry(k, v as String),
+    ),
+    messages: (json['messages'] as List<dynamic>? ?? [])
+        .map((e) => ChatMessage.fromJson(e as Map<String, dynamic>))
+        .toList(),
+  );
 }

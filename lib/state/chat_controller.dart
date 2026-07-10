@@ -76,6 +76,18 @@ class ChatState {
 
 class ChatController extends AsyncNotifier<ChatState> {
   static const int _maxToolRounds = 3;
+  static const int _maxToolCallsPerRound = 3;
+
+  /// Streaming providers often emit many tiny SSE chunks per second. Coalescing
+  /// them keeps the message list, markdown renderer and scroll controller from
+  /// rebuilding for every token while still feeling live to the user.
+  static const _streamUiFlushInterval = Duration(milliseconds: 50);
+
+  /// A completed turn is always persisted, but Android can reclaim a background
+  /// process before a long stream finishes. A low-frequency checkpoint protects
+  /// the in-progress user turn without turning every token into a DB write.
+  static const _checkpointInterval = Duration(seconds: 3);
+  static const int _checkpointChars = 8192;
 
   StreamSubscription<dynamic>? _sub;
   Completer<void>? _streamCompleter;
@@ -91,9 +103,24 @@ class ChatController extends AsyncNotifier<ChatState> {
   /// Cancels the active LLM HTTP request (set per generation, fired by [stop]).
   CancelToken? _cancelToken;
 
+  /// Invoked by [stop] before it snapshots the conversation, so a scheduled UI
+  /// flush cannot leave the last received tokens out of the saved transcript.
+  void Function()? _flushActiveStream;
+
+  /// Serializes repository writes. Several UI actions intentionally don't await
+  /// persistence; without a queue an older snapshot can finish after a newer
+  /// one and overwrite it (especially around stop / rename / branch switches).
+  Future<void> _writeQueue = Future<void>.value();
+
+  /// A slow disk must not let periodic stream checkpoints pile up behind one
+  /// another. The final turn write is still awaited separately, so dropping an
+  /// overlapping best-effort checkpoint cannot lose the completed answer.
+  final Set<String> _checkpointWritesInFlight = {};
+
   @override
   Future<ChatState> build() async {
     ref.onDispose(() {
+      _flushActiveStream?.call();
       _sub?.cancel();
       _cancelToken?.cancel();
     });
@@ -113,10 +140,22 @@ class ChatController extends AsyncNotifier<ChatState> {
 
   /// Persist only the active conversation (cheap; avoids rewriting the whole DB
   /// on every turn).
+  Future<void> _enqueueWrite(Future<void> Function() operation) {
+    // Keep future writes alive even when one write fails. The caller still gets
+    // the individual failure, while the queue remains usable for later turns.
+    final queued = _writeQueue
+        .catchError((Object _) {})
+        .then((_) => operation());
+    _writeQueue = queued;
+    return queued;
+  }
+
   Future<void> _persist() {
     final cur = _s.current;
     if (cur == null) return Future.value();
-    return ref.read(conversationRepositoryProvider).saveConversation(cur);
+    return _enqueueWrite(
+      () => ref.read(conversationRepositoryProvider).saveConversation(cur),
+    );
   }
 
   /// Persist a specific conversation by id. Used by the generation pipeline so
@@ -126,9 +165,42 @@ class ChatController extends AsyncNotifier<ChatState> {
   Future<void> _persistById(String convoId) {
     final idx = _s.conversations.indexWhere((c) => c.id == convoId);
     if (idx < 0) return Future.value();
-    return ref
-        .read(conversationRepositoryProvider)
-        .saveConversation(_s.conversations[idx]);
+    final convo = _s.conversations[idx];
+    return _enqueueWrite(
+      () => ref.read(conversationRepositoryProvider).saveConversation(convo),
+    );
+  }
+
+  Future<void> _deletePersistedConversation(String id) => _enqueueWrite(
+    () => ref.read(conversationRepositoryProvider).deleteConversation(id),
+  );
+
+  /// UI callbacks should remain responsive, but persistence failures must never
+  /// become unhandled async errors. Surface them in the existing error banner
+  /// so the user knows a local archive operation needs attention.
+  void _persistSoon(Future<void> write) {
+    unawaited(_reportPersistFailure(write));
+  }
+
+  Future<void> _reportPersistFailure(Future<void> write) async {
+    try {
+      await write;
+    } catch (e) {
+      if (ref.mounted) _set(_s.copyWith(error: '本地保存失败：$e'));
+    }
+  }
+
+  void _checkpointSoon(String conversationId) {
+    if (!_checkpointWritesInFlight.add(conversationId)) return;
+    unawaited(_runCheckpoint(conversationId));
+  }
+
+  Future<void> _runCheckpoint(String conversationId) async {
+    try {
+      await _reportPersistFailure(_persistById(conversationId));
+    } finally {
+      _checkpointWritesInFlight.remove(conversationId);
+    }
   }
 
   void _set(ChatState next) => state = AsyncData(next);
@@ -147,7 +219,7 @@ class ChatController extends AsyncNotifier<ChatState> {
         error: null,
       ),
     );
-    _persist();
+    _persistSoon(_persist());
   }
 
   void selectConversation(String id) {
@@ -176,29 +248,74 @@ class ChatController extends AsyncNotifier<ChatState> {
     // Save the renamed conversation specifically (it may not be the active one).
     final r = renamed;
     if (r != null) {
-      ref.read(conversationRepositoryProvider).saveConversation(r);
+      _persistSoon(
+        _enqueueWrite(
+          () => ref.read(conversationRepositoryProvider).saveConversation(r),
+        ),
+      );
     }
   }
 
-  void deleteConversation(String id) {
+  Future<void> deleteConversation(String id) async {
     // Deleting the conversation that is currently streaming: abort the stream
     // first, WITHOUT persisting it (a late save would resurrect the row).
     if (_s.streamingConvoId == id) stop(persist: false);
-    final repo = ref.read(conversationRepositoryProvider);
-    repo.deleteConversation(id);
-    final remaining = _s.conversations.where((c) => c.id != id).toList();
-    if (remaining.isEmpty) {
-      final fresh = Conversation();
-      _set(_s.copyWith(conversations: [fresh], currentId: fresh.id));
-      repo.saveConversation(fresh);
-    } else {
-      final newCurrent = _s.currentId == id ? remaining.first.id : _s.currentId;
-      _set(_s.copyWith(conversations: remaining, currentId: newCurrent));
+
+    // Remove it from memory before awaiting the database operation. The stream
+    // teardown may resume as soon as stop() completes; _persistById then sees
+    // no matching conversation and cannot enqueue a save behind this delete.
+    final beforeDeletion = _s;
+    final deletedIndex = beforeDeletion.conversations.indexWhere(
+      (c) => c.id == id,
+    );
+    if (deletedIndex < 0) return;
+    final deletedConversation = beforeDeletion.conversations[deletedIndex];
+    final remaining = beforeDeletion.conversations
+        .where((c) => c.id != id)
+        .toList();
+    final createsFreshConversation = remaining.isEmpty;
+    final nextConversations = createsFreshConversation
+        ? <Conversation>[Conversation()]
+        : remaining;
+    final nextCurrent = beforeDeletion.currentId == id
+        ? nextConversations.first.id
+        : beforeDeletion.currentId;
+    _set(
+      beforeDeletion.copyWith(
+        conversations: nextConversations,
+        currentId: nextCurrent,
+        error: null,
+      ),
+    );
+
+    try {
+      await _deletePersistedConversation(id);
+    } catch (e) {
+      // Keep the archive visible if deleting its row failed, but do not restore
+      // the entire old state: the user may have created or edited another
+      // conversation while this awaited database write was in flight.
+      if (ref.mounted) {
+        final current = _s;
+        final restored = current.conversations.any((c) => c.id == id)
+            ? current.conversations
+            : [
+                ...current.conversations.take(deletedIndex),
+                deletedConversation,
+                ...current.conversations.skip(deletedIndex),
+              ];
+        _set(current.copyWith(conversations: restored, error: '本地删除失败：$e'));
+      }
+      return;
+    }
+
+    if (createsFreshConversation) {
+      _persistSoon(_persist());
     }
   }
 
   void stop({bool persist = true}) {
     final streamingId = _s.streamingConvoId;
+    _flushActiveStream?.call();
     _sub?.cancel();
     _sub = null;
     // Abort the underlying HTTP request too, so it stops consuming tokens.
@@ -208,7 +325,7 @@ class ChatController extends AsyncNotifier<ChatState> {
     if (completer != null && !completer.isCompleted) completer.complete();
     _streamCompleter = null;
     _set(_s.copyWith(streamingConvoId: null, isSearching: false));
-    if (persist && streamingId != null) _persistById(streamingId);
+    if (persist && streamingId != null) _persistSoon(_persistById(streamingId));
   }
 
   /// Send a new user turn at the end of the active branch. Returns false when
@@ -219,7 +336,9 @@ class ChatController extends AsyncNotifier<ChatState> {
     List<Attachment> attachments = const [],
   }) async {
     final trimmed = text.trim();
-    if ((trimmed.isEmpty && attachments.isEmpty) || _s.isStreaming || _starting) {
+    if ((trimmed.isEmpty && attachments.isEmpty) ||
+        _s.isStreaming ||
+        _starting) {
       return false;
     }
     _starting = true;
@@ -229,7 +348,9 @@ class ChatController extends AsyncNotifier<ChatState> {
       final config = _configFor(settings);
 
       final convo = _s.current ?? Conversation();
-      final parentId = convo.activePath.isEmpty ? null : convo.activePath.last.id;
+      final parentId = convo.activePath.isEmpty
+          ? null
+          : convo.activePath.last.id;
       final userMsg = ChatMessage(
         role: MessageRole.user,
         content: trimmed,
@@ -398,7 +519,8 @@ class ChatController extends AsyncNotifier<ChatState> {
         ),
       ),
     );
-    _persist();
+
+    _persistSoon(_persist());
   }
 
   /// Resend the last user turn after a failure (the error banner's "重试").
@@ -452,6 +574,18 @@ class ChatController extends AsyncNotifier<ChatState> {
         error: null,
       ),
     );
+
+    // Write the user turn and assistant placeholder before any network work.
+    // If the app is backgrounded or killed during a long response, the turn is
+    // still recoverable on the next launch.
+    try {
+      await _persistById(working.id);
+    } catch (e) {
+      // Don't crash the send action on a transient local-storage failure. The
+      // final/checkpoint writes will retry through the serialized queue, while
+      // the user gets a visible diagnostic instead of losing the live reply.
+      _set(_s.copyWith(error: '本地保存失败：$e'));
+    }
 
     // Fallback for legacy models that reject tool-call parameters: keep the old
     // explicit search-first behavior so the feature still works.
@@ -549,25 +683,64 @@ class ChatController extends AsyncNotifier<ChatState> {
     final llm = ref.read(llmProvider);
     final requestMessages = List<LlmRequestMessage>.of(history);
     final citations = <Citation>[];
-    var content = '';
-    var reasoning = '';
+    final content = StringBuffer();
+    final reasoning = StringBuffer();
     // Stopwatch for "已深度思考 N 秒": starts on first reasoning delta, freezes
     // once real answer content begins streaming.
     final thinkClock = Stopwatch();
     var thinkMillis = 0;
 
+    Timer? uiFlushTimer;
+    var uiDirty = false;
+    var lastCheckpointAt = DateTime.now();
+    var lastCheckpointLength = 0;
+
+    void flushUi() {
+      uiFlushTimer?.cancel();
+      uiFlushTimer = null;
+      if (!uiDirty) return;
+      uiDirty = false;
+      _updateAssistant(
+        convoId,
+        assistantId,
+        content.toString(),
+        reasoning.toString(),
+        thinkMillis,
+      );
+
+      final totalLength = content.length + reasoning.length;
+      final now = DateTime.now();
+      if (totalLength > 0 &&
+          (now.difference(lastCheckpointAt) >= _checkpointInterval ||
+              totalLength - lastCheckpointLength >= _checkpointChars)) {
+        lastCheckpointAt = now;
+        lastCheckpointLength = totalLength;
+        // Checkpoints are best-effort; the final awaited write below remains
+        // the authoritative persistence error surface.
+        _checkpointSoon(convoId);
+      }
+    }
+
+    void scheduleUiFlush() {
+      uiDirty = true;
+      uiFlushTimer ??= Timer(_streamUiFlushInterval, flushUi);
+    }
+
+    late final void Function() flushActiveStream;
+    flushActiveStream = flushUi;
+    _flushActiveStream = flushActiveStream;
+
     try {
       for (var round = 0; round < _maxToolRounds; round++) {
         final toolDrafts = <int, _ToolCallDraft>{};
-        var turnContent = '';
-        var turnReasoning = '';
+        final turnContent = StringBuffer();
+        final turnReasoning = StringBuffer();
         String? finishReason;
         Object? streamError;
 
         // On the LAST round drop the tool list entirely so the model is forced
         // to answer from what it has, instead of us erroring out mid-answer.
-        final allowTools =
-            enableWebSearchTool && round < _maxToolRounds - 1;
+        final allowTools = enableWebSearchTool && round < _maxToolRounds - 1;
         final stream = llm.streamChat(
           config: config,
           messages: requestMessages,
@@ -586,29 +759,23 @@ class ChatController extends AsyncNotifier<ChatState> {
               if (!thinkClock.isRunning && thinkMillis == 0) {
                 thinkClock.start();
               }
-              turnReasoning += chunk.reasoningDelta!;
-              reasoning += chunk.reasoningDelta!;
+              turnReasoning.write(chunk.reasoningDelta!);
+              reasoning.write(chunk.reasoningDelta!);
             }
             if (chunk.contentDelta != null && chunk.contentDelta!.isNotEmpty) {
               if (thinkClock.isRunning) {
                 thinkClock.stop();
                 thinkMillis = thinkClock.elapsedMilliseconds;
               }
-              turnContent += chunk.contentDelta!;
-              content += chunk.contentDelta!;
+              turnContent.write(chunk.contentDelta!);
+              content.write(chunk.contentDelta!);
             }
             for (final call in chunk.toolCalls ?? const <ToolCall>[]) {
               (toolDrafts[call.index] ??= _ToolCallDraft(
                 call.index,
               )).merge(call);
             }
-            _updateAssistant(
-              convoId,
-              assistantId,
-              content,
-              reasoning,
-              thinkMillis,
-            );
+            scheduleUiFlush();
           },
           onError: (Object e) {
             streamError = e;
@@ -624,6 +791,10 @@ class ChatController extends AsyncNotifier<ChatState> {
         if (identical(_streamCompleter, completer)) _streamCompleter = null;
         _sub = null;
 
+        // The fake/test stream and very short real answers may finish before
+        // the coalescing timer fires, so always publish pending content here.
+        flushUi();
+
         if (streamError != null) throw streamError!;
         if (!_s.isStreaming) {
           await _persistById(convoId);
@@ -633,13 +804,8 @@ class ChatController extends AsyncNotifier<ChatState> {
         if (thinkClock.isRunning) {
           thinkClock.stop();
           thinkMillis = thinkClock.elapsedMilliseconds;
-          _updateAssistant(
-            convoId,
-            assistantId,
-            content,
-            reasoning,
-            thinkMillis,
-          );
+          uiDirty = true;
+          flushUi();
         }
 
         final toolCalls = _finalizeToolCalls(toolDrafts);
@@ -659,16 +825,17 @@ class ChatController extends AsyncNotifier<ChatState> {
         requestMessages.add(
           LlmRequestMessage(
             role: MessageRole.assistant,
-            content: turnContent,
-            reasoningContent: turnReasoning,
+            content: turnContent.toString(),
+            reasoningContent: turnReasoning.toString(),
             toolCalls: toolCalls,
           ),
         );
 
         // Clear transient "let me search" text from the visible answer. The
         // final response will stream in after tool results are appended.
-        content = '';
-        _updateAssistant(convoId, assistantId, content, reasoning, thinkMillis);
+        content.clear();
+        uiDirty = true;
+        flushUi();
 
         final toolMessages = await _executeToolCalls(
           toolCalls: toolCalls,
@@ -686,6 +853,7 @@ class ChatController extends AsyncNotifier<ChatState> {
         requestMessages.addAll(toolMessages);
       }
     } catch (e) {
+      flushUi();
       if (thinkClock.isRunning) thinkClock.stop();
       _set(
         _s.copyWith(
@@ -697,6 +865,10 @@ class ChatController extends AsyncNotifier<ChatState> {
       );
       await _persistById(convoId);
     } finally {
+      uiFlushTimer?.cancel();
+      if (identical(_flushActiveStream, flushActiveStream)) {
+        _flushActiveStream = null;
+      }
       // Drop our token once finished so a later stop() can't cancel a stale one.
       if (identical(_cancelToken, cancelToken)) _cancelToken = null;
     }
@@ -721,10 +893,16 @@ class ChatController extends AsyncNotifier<ChatState> {
     // Don't re-light the "正在联网搜索" hint if stop() already fired.
     if (_s.isStreaming) _set(_s.copyWith(isSearching: true));
     try {
-      for (final call in toolCalls) {
+      for (var callIndex = 0; callIndex < toolCalls.length; callIndex++) {
+        final call = toolCalls[callIndex];
         final toolCallId = call.id ?? '';
         String toolContent;
-        if (call.name != ToolEngine.webSearchTool.name) {
+        if (callIndex >= _maxToolCallsPerRound) {
+          // Every requested call still gets a protocol-valid tool response, but
+          // an untrusted/misbehaving model cannot fan out an unbounded number
+          // of network requests in one turn.
+          toolContent = '本轮最多执行 $_maxToolCallsPerRound 次联网搜索；其余请求已跳过。';
+        } else if (call.name != ToolEngine.webSearchTool.name) {
           toolContent = '不支持的工具：${call.name ?? 'unknown'}';
         } else {
           toolContent = await _runWebSearchTool(

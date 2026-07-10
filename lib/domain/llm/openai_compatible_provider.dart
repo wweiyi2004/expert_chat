@@ -22,6 +22,15 @@ class OpenAiCompatibleProvider implements LlmProvider {
 
   final Dio _dio;
 
+  /// A stream can stay open for a long answer, but it must not wait forever
+  /// without receiving even a heartbeat. This guards against half-open mobile
+  /// and desktop connections while still allowing providers to stream slowly.
+  static const _streamIdleTimeout = Duration(seconds: 90);
+
+  /// Error payloads are untrusted server input. Keep a useful diagnostic while
+  /// avoiding an accidental multi-megabyte error page being buffered in memory.
+  static const _maxErrorBodyBytes = 64 * 1024;
+
   @override
   Stream<ChatChunk> streamChat({
     required LlmConfig config,
@@ -48,7 +57,9 @@ class OpenAiCompatibleProvider implements LlmProvider {
     }
     // Some legacy reasoner endpoints reject `tools`; callers avoid those paths,
     // but guard here too so a stray tool list can't break the request.
-    if (tools != null && tools.isNotEmpty && config.capabilities.supportsTools) {
+    if (tools != null &&
+        tools.isNotEmpty &&
+        config.capabilities.supportsTools) {
       body['tools'] = tools.map((t) => t.toJson()).toList();
       body['tool_choice'] = 'auto';
     }
@@ -80,10 +91,13 @@ class OpenAiCompatibleProvider implements LlmProvider {
     // decoding turns it into a harmless replacement char and the stream ends.
     final byteStream = response.data!.stream
         .cast<List<int>>()
-        .transform(StreamTransformer.fromBind(
-          const Utf8Decoder(allowMalformed: true).bind,
-        ))
-        .transform(const LineSplitter());
+        .transform(
+          StreamTransformer.fromBind(
+            const Utf8Decoder(allowMalformed: true).bind,
+          ),
+        )
+        .transform(const LineSplitter())
+        .timeout(_streamIdleTimeout);
 
     try {
       await for (final line in byteStream) {
@@ -97,6 +111,14 @@ class OpenAiCompatibleProvider implements LlmProvider {
           json = jsonDecode(payload) as Map<String, dynamic>;
         } catch (_) {
           continue; // ignore keep-alive / malformed fragments
+        }
+
+        // Some OpenAI-compatible gateways return a 200 SSE response and put
+        // the actual error in a `data:` event. Surface it instead of silently
+        // ending with an empty answer.
+        final streamError = _streamErrorMessage(json);
+        if (streamError != null) {
+          throw Exception('生成失败：$streamError');
         }
 
         final choices = json['choices'] as List<dynamic>?;
@@ -119,8 +141,36 @@ class OpenAiCompatibleProvider implements LlmProvider {
     } on DioException catch (e) {
       // Stop pressed mid-stream → end quietly instead of surfacing an error.
       if (CancelToken.isCancel(e)) return;
-      rethrow;
+      throw await _humanizeError(e);
+    } on TimeoutException {
+      // If cancellation races with the timeout, stopping remains quiet.
+      if (cancelToken?.isCancelled ?? false) return;
+      throw Exception(
+        '响应超时：服务端在 ${_streamIdleTimeout.inSeconds} 秒内没有返回数据，'
+        '请检查网络或稍后重试。',
+      );
     }
+  }
+
+  String? _streamErrorMessage(Map<String, dynamic> payload) {
+    final error = payload['error'];
+    if (error is Map) {
+      final message = error['message'] ?? error['detail'];
+      if (message is String && message.trim().isNotEmpty) {
+        return _clipErrorMessage(message);
+      }
+    }
+    if (error is String && error.trim().isNotEmpty) {
+      return _clipErrorMessage(error);
+    }
+
+    // A few compatible providers omit `error` but send an error-shaped
+    // payload with a top-level message and no choices.
+    final message = payload['message'];
+    if (payload['choices'] == null && message is String && message.isNotEmpty) {
+      return _clipErrorMessage(message);
+    }
+    return null;
   }
 
   List<ToolCall>? _parseToolCalls(dynamic raw) {
@@ -156,8 +206,20 @@ class OpenAiCompatibleProvider implements LlmProvider {
     if (e.type == DioExceptionType.connectionTimeout) {
       return Exception('连接超时：请检查网络或 Base URL。');
     }
+    if (e.type == DioExceptionType.receiveTimeout) {
+      return Exception('响应超时：服务端长时间没有返回数据，请稍后重试。');
+    }
+    if (e.type == DioExceptionType.sendTimeout) {
+      return Exception('请求发送超时：请检查网络后重试。');
+    }
     if (e.type == DioExceptionType.connectionError) {
       return Exception('连接失败：请检查网络或 Base URL。');
+    }
+    if (e.type == DioExceptionType.badCertificate) {
+      return Exception('TLS 证书校验失败：请检查 Base URL 是否可信。');
+    }
+    if (e.type == DioExceptionType.unknown) {
+      return Exception('网络连接中断：请检查网络后重试。');
     }
     if (status != null) return Exception('请求失败（$status）$detail');
     return Exception('请求失败：${e.message ?? e.type.name}');
@@ -169,8 +231,18 @@ class OpenAiCompatibleProvider implements LlmProvider {
     try {
       String? raw;
       if (data is ResponseBody) {
-        final chunks = await data.stream.toList();
-        raw = utf8.decode(chunks.expand((c) => c).toList());
+        final bytes = <int>[];
+        await for (final chunk in data.stream) {
+          final remaining = _maxErrorBodyBytes - bytes.length;
+          if (remaining <= 0) break;
+          if (chunk.length <= remaining) {
+            bytes.addAll(chunk);
+          } else {
+            bytes.addAll(chunk.take(remaining));
+            break;
+          }
+        }
+        raw = utf8.decode(bytes, allowMalformed: true);
       } else if (data is String) {
         raw = data;
       } else if (data is Map) {
@@ -195,9 +267,20 @@ class OpenAiCompatibleProvider implements LlmProvider {
 
   String? _messageFromMap(Map<dynamic, dynamic> map) {
     final err = map['error'];
-    if (err is Map && err['message'] is String) return err['message'] as String;
-    if (err is String) return err;
-    if (map['message'] is String) return map['message'] as String;
+    if (err is Map && err['message'] is String) {
+      return _clipErrorMessage(err['message'] as String);
+    }
+    if (err is String) return _clipErrorMessage(err);
+    if (map['message'] is String) {
+      return _clipErrorMessage(map['message'] as String);
+    }
     return null;
+  }
+
+  String _clipErrorMessage(String value) {
+    final trimmed = value.trim();
+    return trimmed.characters.length > 200
+        ? '${trimmed.characters.take(200)}…'
+        : trimmed;
   }
 }

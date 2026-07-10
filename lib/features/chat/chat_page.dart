@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -6,6 +8,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/providers.dart';
 import '../../data/models.dart';
 import '../../domain/export/conversation_export.dart';
+import '../../domain/tools/file_parser.dart';
+import '../../domain/tools/local_file_reader.dart';
 import '../../state/chat_controller.dart';
 import '../settings/settings_page.dart';
 import 'widgets/attachment_chip.dart';
@@ -24,6 +28,13 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   final List<Attachment> _attachments = [];
   bool _picking = false;
 
+  // Keep an accidental multi-select from consuming the device's memory,
+  // context window, or API request budget. The parser additionally enforces
+  // format-specific limits before it extracts content.
+  static const int _maxAttachments = 5;
+  static const int _maxAttachmentBytes = 10 * 1024 * 1024;
+  static const int _maxTotalAttachmentBytes = 20 * 1024 * 1024;
+
   /// Whether the view should keep following new content (stick-to-bottom). Set
   /// false the moment the user scrolls up, so streaming output no longer yanks
   /// them back down; restored when they scroll back to the bottom (or tap the
@@ -36,6 +47,12 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   /// True while we are driving an animated scroll ourselves, so [_onScroll]
   /// doesn't mistake the in-flight animation for the user scrolling away.
   bool _programmaticScroll = false;
+
+  /// Streaming state changes can arrive several times per frame. Coalesce the
+  /// resulting post-frame scroll work into one operation so rendering remains
+  /// smooth on lower-end Android devices and long conversations.
+  bool _scrollScheduled = false;
+  bool _pendingAnimatedScroll = false;
 
   @override
   void initState() {
@@ -92,7 +109,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     try {
       final result = await FilePicker.pickFiles(
         allowMultiple: true,
-        withData: true,
+        withData: false,
+        withReadStream: true,
         type: FileType.custom,
         allowedExtensions: const [
           'pdf',
@@ -112,22 +130,107 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         ],
       );
       if (result == null) return;
+
+      final slots = _maxAttachments - _attachments.length;
+      if (slots <= 0) {
+        _showAttachmentNotice('最多可添加 $_maxAttachments 个附件。');
+        return;
+      }
+
       final parser = ref.read(fileParserProvider);
+      final additions = <Attachment>[];
+      var runningTotal = _attachments.fold<int>(
+        0,
+        (total, attachment) => total + attachment.sizeBytes,
+      );
+      var tooMany = 0;
+      var tooLarge = 0;
+      var overTotal = 0;
+      var unreadable = 0;
       for (final f in result.files) {
-        final bytes = f.bytes;
-        if (bytes == null) continue;
-        final attachment = parser.parse(
+        if (additions.length >= slots) {
+          tooMany++;
+          continue;
+        }
+        if (f.size > _maxAttachmentBytes) {
+          tooLarge++;
+          continue;
+        }
+        final stream = f.readStream ?? openLocalFileReadStream(f.path);
+        if (stream == null) {
+          unreadable++;
+          continue;
+        }
+        final remainingTotal = _maxTotalAttachmentBytes - runningTotal;
+        if (remainingTotal <= 0) {
+          overTotal++;
+          continue;
+        }
+        final readLimit = remainingTotal < _maxAttachmentBytes
+            ? remainingTotal
+            : _maxAttachmentBytes;
+        final Uint8List bytes;
+        try {
+          bytes = await FileParser.readBytesWithLimit(
+            stream,
+            maxBytes: readLimit,
+          );
+        } on FileReadLimitExceeded {
+          if (readLimit < _maxAttachmentBytes) {
+            overTotal++;
+          } else {
+            tooLarge++;
+          }
+          continue;
+        } catch (_) {
+          unreadable++;
+          continue;
+        }
+        // Prefer the actual bytes when a platform picker reports an inaccurate
+        // size (or a provider returns a synthetic file).
+        final sizeBytes = f.size > bytes.lengthInBytes
+            ? f.size
+            : bytes.lengthInBytes;
+        if (sizeBytes > _maxAttachmentBytes) {
+          tooLarge++;
+          continue;
+        }
+        if (runningTotal + sizeBytes > _maxTotalAttachmentBytes) {
+          overTotal++;
+          continue;
+        }
+        final attachment = await parser.parseAsync(
           name: f.name,
           mimeType: _mimeFor(f.extension),
-          sizeBytes: f.size,
+          sizeBytes: sizeBytes,
           bytes: bytes,
         );
-        _attachments.add(attachment);
+        if (!mounted) return;
+        additions.add(attachment);
+        runningTotal += sizeBytes;
       }
-      if (mounted) setState(() {});
+      if (additions.isNotEmpty && mounted) {
+        setState(() => _attachments.addAll(additions));
+      }
+      final notices = <String>[];
+      if (additions.isNotEmpty) notices.add('已添加 ${additions.length} 个附件');
+      if (tooMany > 0) notices.add('跳过 $tooMany 个（最多 $_maxAttachments 个）');
+      if (tooLarge > 0) {
+        notices.add('跳过 $tooLarge 个（单个最大 10 MB）');
+      }
+      if (overTotal > 0) notices.add('跳过 $overTotal 个（总计最大 20 MB）');
+      if (unreadable > 0) notices.add('跳过 $unreadable 个（无法读取）');
+      if (notices.isNotEmpty) _showAttachmentNotice(notices.join('；'));
     } finally {
       if (mounted) setState(() => _picking = false);
     }
+  }
+
+  void _showAttachmentNotice(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
   }
 
   String _mimeFor(String? ext) => switch (ext?.toLowerCase()) {
@@ -192,10 +295,17 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     // Only follow when the user is parked at the bottom; if they've scrolled up
     // to read, leave their position alone.
     if (!_stick) return;
+    _pendingAnimatedScroll = _pendingAnimatedScroll || animated;
+    if (_scrollScheduled) return;
+    _scrollScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!_stick || !_scroll.hasClients) return;
+      _scrollScheduled = false;
+      final shouldAnimate = _pendingAnimatedScroll;
+      _pendingAnimatedScroll = false;
+      if (!mounted || !_stick || !_scroll.hasClients) return;
       final target = _scroll.position.maxScrollExtent;
-      if (animated) {
+      if ((_scroll.position.pixels - target).abs() < 0.5) return;
+      if (shouldAnimate) {
         _programmaticScroll = true;
         _scroll
             .animateTo(
@@ -250,7 +360,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                       height: 28,
                       decoration: BoxDecoration(
                         color: scheme.primary,
-                        borderRadius: BorderRadius.circular(8),
+                        borderRadius: BorderRadius.circular(10),
                       ),
                       child: Icon(
                         Icons.auto_awesome,
@@ -317,8 +427,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     final messages = convo?.activePath ?? const <ChatMessage>[];
     // Whether the in-flight generation (if any) belongs to THIS conversation;
     // another conversation's stream must not light up bubbles here.
-    final streamingHere =
-        convo != null && state.streamingConvoId == convo.id;
+    final streamingHere = convo != null && state.streamingConvoId == convo.id;
     return Column(
       children: [
         if (state.error != null)
@@ -528,7 +637,7 @@ class _Composer extends StatelessWidget {
                                 icon: const Icon(Icons.stop),
                                 tooltip: '停止',
                                 style: IconButton.styleFrom(
-                                  fixedSize: const Size.square(40),
+                                  fixedSize: const Size.square(48),
                                   backgroundColor: scheme.errorContainer,
                                   foregroundColor: scheme.onErrorContainer,
                                 ),
@@ -538,7 +647,7 @@ class _Composer extends StatelessWidget {
                                 icon: const Icon(Icons.arrow_upward),
                                 tooltip: '发送',
                                 style: IconButton.styleFrom(
-                                  fixedSize: const Size.square(40),
+                                  fixedSize: const Size.square(48),
                                   backgroundColor: scheme.primary,
                                   foregroundColor: scheme.onPrimary,
                                 ),
@@ -555,7 +664,7 @@ class _Composer extends StatelessWidget {
                           onPressed: (isStreaming || picking)
                               ? null
                               : onPickFiles,
-                          tooltip: '上传文件（图片 / PDF / Word / Excel / PPT / 文本）',
+                          tooltip: '上传文件（最多 5 个，单个最大 10 MB）',
                           icon: picking
                               ? const SizedBox(
                                   width: 18,
@@ -566,7 +675,7 @@ class _Composer extends StatelessWidget {
                                 )
                               : const Icon(Icons.attach_file),
                           style: IconButton.styleFrom(
-                            fixedSize: const Size.square(34),
+                            fixedSize: const Size.square(48),
                             backgroundColor: scheme.surfaceContainerHighest,
                             foregroundColor: scheme.primary,
                           ),
@@ -596,7 +705,8 @@ class _Composer extends StatelessWidget {
                                 : scheme.onSurfaceVariant,
                           ),
                           label: const Text('联网'),
-                          tooltip: '开启后模型可按需联网搜索；默认用免费 DuckDuckGo（无需 Key），'
+                          tooltip:
+                              '开启后模型可按需联网搜索；默认用免费 DuckDuckGo（无需 Key），'
                               '也可在设置中改用 Tavily / Exa / 博查 等带 Key 的后端',
                           onSelected: (_) => onToggleSearch(),
                         ),
@@ -608,7 +718,7 @@ class _Composer extends StatelessWidget {
                             ),
                             decoration: BoxDecoration(
                               color: scheme.surfaceContainerHighest,
-                              borderRadius: BorderRadius.circular(8),
+                              borderRadius: BorderRadius.circular(12),
                               border: Border.all(color: scheme.outlineVariant),
                             ),
                             child: Row(
@@ -667,11 +777,20 @@ class _HistoryPanelState extends ConsumerState<_HistoryPanel> {
   String _query = '';
   String? _renamingId; // id of the conversation being renamed inline
   final _renameCtrl = TextEditingController();
+  Timer? _searchDebounce;
 
   @override
   void dispose() {
+    _searchDebounce?.cancel();
     _renameCtrl.dispose();
     super.dispose();
+  }
+
+  void _scheduleSearch(String value) {
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 250), () {
+      if (mounted) setState(() => _query = value.trim());
+    });
   }
 
   bool _matches(Conversation c, String q) {
@@ -692,6 +811,37 @@ class _HistoryPanelState extends ConsumerState<_HistoryPanel> {
     setState(() => _renamingId = null);
     if (id != null && text.isNotEmpty) {
       ref.read(chatControllerProvider.notifier).renameConversation(id, text);
+    }
+  }
+
+  Future<void> _confirmDelete(Conversation conversation) async {
+    final scheme = Theme.of(context).colorScheme;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        icon: Icon(Icons.delete_outline, color: scheme.error),
+        title: const Text('删除这段对话？'),
+        content: Text('“${conversation.title}”及其中的全部消息会从本机删除，且无法恢复。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            style: FilledButton.styleFrom(
+              backgroundColor: scheme.error,
+              foregroundColor: scheme.onError,
+            ),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true && mounted) {
+      ref
+          .read(chatControllerProvider.notifier)
+          .deleteConversation(conversation.id);
     }
   }
 
@@ -737,7 +887,7 @@ class _HistoryPanelState extends ConsumerState<_HistoryPanel> {
                   prefixIcon: Icon(Icons.search, size: 20),
                   hintText: '搜索对话…',
                 ),
-                onChanged: (v) => setState(() => _query = v),
+                onChanged: _scheduleSearch,
               ),
             ),
             Expanded(
@@ -745,75 +895,77 @@ class _HistoryPanelState extends ConsumerState<_HistoryPanel> {
                   ? const Center(
                       child: Text('没有匹配的对话', style: TextStyle(fontSize: 13)),
                     )
-                  : ListView(
-                      children: [
-                        for (final c in visible)
-                          if (c.id == _renamingId)
-                            // Inline rename — no occluding dialog.
-                            Padding(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 2,
+                  : ListView.builder(
+                      itemCount: visible.length,
+                      itemBuilder: (context, index) {
+                        final c = visible[index];
+                        if (c.id == _renamingId) {
+                          // Inline rename — no occluding dialog.
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 2,
+                            ),
+                            child: ListTile(
+                              tileColor: scheme.surfaceContainer,
+                              leading: const Icon(Icons.chat_bubble_outline),
+                              title: TextField(
+                                controller: _renameCtrl,
+                                autofocus: true,
+                                decoration: const InputDecoration(
+                                  isDense: true,
+                                ),
+                                onSubmitted: (_) => _commitRename(),
                               ),
-                              child: ListTile(
-                                tileColor: scheme.surfaceContainer,
-                                leading: const Icon(Icons.chat_bubble_outline),
-                                title: TextField(
-                                  controller: _renameCtrl,
-                                  autofocus: true,
-                                  decoration: const InputDecoration(
-                                    isDense: true,
-                                  ),
-                                  onSubmitted: (_) => _commitRename(),
-                                ),
-                                trailing: IconButton(
-                                  icon: const Icon(Icons.check, size: 20),
-                                  tooltip: '保存',
-                                  onPressed: _commitRename,
-                                ),
-                              ),
-                            )
-                          else
-                            Padding(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 2,
-                              ),
-                              child: ListTile(
-                                selected: c.id == state?.currentId,
-                                tileColor: scheme.surfaceContainer,
-                                leading: const Icon(Icons.chat_bubble_outline),
-                                title: Text(
-                                  c.title,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                trailing: PopupMenuButton<String>(
-                                  icon: const Icon(Icons.more_horiz, size: 20),
-                                  onSelected: (v) {
-                                    if (v == 'rename') _startRename(c);
-                                    if (v == 'delete') {
-                                      controller.deleteConversation(c.id);
-                                    }
-                                  },
-                                  itemBuilder: (_) => const [
-                                    PopupMenuItem(
-                                      value: 'rename',
-                                      child: Text('重命名'),
-                                    ),
-                                    PopupMenuItem(
-                                      value: 'delete',
-                                      child: Text('删除'),
-                                    ),
-                                  ],
-                                ),
-                                onTap: () {
-                                  controller.selectConversation(c.id);
-                                  _closeDrawerIfAny();
-                                },
+                              trailing: IconButton(
+                                icon: const Icon(Icons.check, size: 20),
+                                tooltip: '保存',
+                                onPressed: _commitRename,
                               ),
                             ),
-                      ],
+                          );
+                        }
+                        return Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 2,
+                          ),
+                          child: ListTile(
+                            selected: c.id == state?.currentId,
+                            tileColor: scheme.surfaceContainer,
+                            leading: const Icon(Icons.chat_bubble_outline),
+                            title: Text(
+                              c.title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            trailing: PopupMenuButton<String>(
+                              icon: const Icon(Icons.more_horiz, size: 20),
+                              onSelected: (v) {
+                                if (v == 'rename') _startRename(c);
+                                if (v == 'delete') _confirmDelete(c);
+                              },
+                              itemBuilder: (_) => [
+                                const PopupMenuItem(
+                                  value: 'rename',
+                                  child: Text('重命名'),
+                                ),
+                                PopupMenuItem(
+                                  value: 'delete',
+                                  child: Text(
+                                    '删除',
+                                    style: TextStyle(color: scheme.error),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            onTap: () {
+                              controller.selectConversation(c.id);
+                              _closeDrawerIfAny();
+                            },
+                          ),
+                        );
+                      },
                     ),
             ),
           ],
@@ -869,16 +1021,27 @@ class _JumpToBottomButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Material(
-      color: scheme.surfaceContainerHighest,
-      elevation: 2,
-      shape: CircleBorder(side: BorderSide(color: scheme.outlineVariant)),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.all(8),
-          child: Icon(Icons.arrow_downward, size: 20, color: scheme.primary),
+    return Semantics(
+      button: true,
+      label: '回到最新消息',
+      child: Tooltip(
+        message: '回到最新消息',
+        child: Material(
+          color: scheme.surfaceContainerHighest,
+          elevation: 2,
+          shape: CircleBorder(side: BorderSide(color: scheme.outlineVariant)),
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Icon(
+                Icons.arrow_downward,
+                size: 20,
+                color: scheme.primary,
+              ),
+            ),
+          ),
         ),
       ),
     );

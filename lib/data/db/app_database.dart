@@ -11,6 +11,19 @@ class Conversations extends Table {
   // JSON map parentId→activeChildId driving branch selection (v2).
   TextColumn get activeChildrenJson => text().nullable()();
 
+  // Story mode fields (v3).
+  TextColumn get mode => text().withDefault(const Constant('chat'))();
+  TextColumn get characterId => text().nullable()();
+  TextColumn get worldInfoIdsJson => text().nullable()();
+  TextColumn get outline => text().withDefault(const Constant(''))();
+  TextColumn get authorNote => text().withDefault(const Constant(''))();
+  IntColumn get plotCursor => integer().withDefault(const Constant(0))();
+
+  // Ensemble / multi-character (v4).
+  TextColumn get participantIdsJson => text().nullable()();
+  TextColumn get venue => text().withDefault(const Constant(''))();
+  IntColumn get nextSpeakerIndex => integer().withDefault(const Constant(0))();
+
   @override
   Set<Column> get primaryKey => {id};
 }
@@ -33,17 +46,57 @@ class Messages extends Table {
   DateTimeColumn get createdAt => dateTime()();
   // Monotonic ordering within a conversation (insertion order).
   IntColumn get seq => integer().withDefault(const Constant(0))();
+  // Ensemble speaker (v4).
+  TextColumn get speakerId => text().nullable()();
+  TextColumn get speakerName => text().nullable()();
 
   @override
   Set<Column> get primaryKey => {id};
 }
 
-@DriftDatabase(tables: [Conversations, Messages])
+/// Character card library (v3).
+@DataClassName('CharacterCardRow')
+class CharacterCards extends Table {
+  TextColumn get id => text()();
+  TextColumn get name => text()();
+  TextColumn get description => text().withDefault(const Constant(''))();
+  TextColumn get personality => text().withDefault(const Constant(''))();
+  TextColumn get scenario => text().withDefault(const Constant(''))();
+  TextColumn get firstMes => text().withDefault(const Constant(''))();
+  TextColumn get exampleDialogs => text().withDefault(const Constant(''))();
+  TextColumn get systemPrompt => text().withDefault(const Constant(''))();
+  DateTimeColumn get createdAt => dateTime()();
+  DateTimeColumn get updatedAt => dateTime()();
+
+  @override
+  Set<Column> get primaryKey => {id};
+}
+
+/// Global world-info / lorebook entries (v3).
+@DataClassName('WorldInfoEntryRow')
+class WorldInfoEntries extends Table {
+  TextColumn get id => text()();
+  TextColumn get title => text()();
+  TextColumn get keysJson => text().withDefault(const Constant('[]'))();
+  TextColumn get content => text().withDefault(const Constant(''))();
+  BoolColumn get alwaysOn => boolean().withDefault(const Constant(false))();
+  BoolColumn get enabled => boolean().withDefault(const Constant(true))();
+  IntColumn get priority => integer().withDefault(const Constant(0))();
+  DateTimeColumn get createdAt => dateTime()();
+  DateTimeColumn get updatedAt => dateTime()();
+
+  @override
+  Set<Column> get primaryKey => {id};
+}
+
+@DriftDatabase(
+  tables: [Conversations, Messages, CharacterCards, WorldInfoEntries],
+)
 class AppDatabase extends _$AppDatabase {
   AppDatabase([QueryExecutor? executor]) : super(executor ?? _open());
 
   @override
-  int get schemaVersion => 2;
+  int get schemaVersion => 4;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -64,6 +117,23 @@ class AppDatabase extends _$AppDatabase {
           ') WHERE parent_id IS NULL',
         );
       }
+      if (from < 3) {
+        await m.addColumn(conversations, conversations.mode);
+        await m.addColumn(conversations, conversations.characterId);
+        await m.addColumn(conversations, conversations.worldInfoIdsJson);
+        await m.addColumn(conversations, conversations.outline);
+        await m.addColumn(conversations, conversations.authorNote);
+        await m.addColumn(conversations, conversations.plotCursor);
+        await m.createTable(characterCards);
+        await m.createTable(worldInfoEntries);
+      }
+      if (from < 4) {
+        await m.addColumn(conversations, conversations.participantIdsJson);
+        await m.addColumn(conversations, conversations.venue);
+        await m.addColumn(conversations, conversations.nextSpeakerIndex);
+        await m.addColumn(messages, messages.speakerId);
+        await m.addColumn(messages, messages.speakerName);
+      }
     },
     beforeOpen: (details) async {
       // SQLite has FK enforcement off by default; needed for cascade delete.
@@ -78,6 +148,14 @@ class AppDatabase extends _$AppDatabase {
       await customStatement(
         'CREATE INDEX IF NOT EXISTS idx_messages_convo_id_seq '
         'ON messages (convo_id, seq)',
+      );
+      await customStatement(
+        'CREATE INDEX IF NOT EXISTS idx_character_cards_updated_at '
+        'ON character_cards (updated_at DESC)',
+      );
+      await customStatement(
+        'CREATE INDEX IF NOT EXISTS idx_world_info_priority '
+        'ON world_info_entries (priority DESC, updated_at DESC)',
       );
     },
   );

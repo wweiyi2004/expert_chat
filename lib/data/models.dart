@@ -1,5 +1,7 @@
 import 'package:uuid/uuid.dart';
 
+import 'story_models.dart';
+
 const _uuid = Uuid();
 
 /// Role of a chat message, mapped 1:1 to the OpenAI-compatible `role` field.
@@ -150,6 +152,8 @@ class ChatMessage {
     this.reasoning = '',
     this.model,
     this.thinkingMillis = 0,
+    this.speakerId,
+    this.speakerName,
     List<Attachment>? attachments,
     List<Citation>? citations,
     DateTime? createdAt,
@@ -174,6 +178,12 @@ class ChatMessage {
   /// Wall-clock time the reasoning phase took, in milliseconds (assistant only).
   final int thinkingMillis;
 
+  /// Character card id when this line is spoken by a cast member (ensemble).
+  final String? speakerId;
+
+  /// Display name for the speaker (ensemble / multi-character).
+  final String? speakerName;
+
   /// Files attached by the user (user messages) — M4.
   final List<Attachment> attachments;
 
@@ -187,6 +197,8 @@ class ChatMessage {
     String? reasoning,
     String? model,
     int? thinkingMillis,
+    Object? speakerId = _msgSentinel,
+    Object? speakerName = _msgSentinel,
     List<Attachment>? attachments,
     List<Citation>? citations,
   }) => ChatMessage(
@@ -197,10 +209,18 @@ class ChatMessage {
     reasoning: reasoning ?? this.reasoning,
     model: model ?? this.model,
     thinkingMillis: thinkingMillis ?? this.thinkingMillis,
+    speakerId: identical(speakerId, _msgSentinel)
+        ? this.speakerId
+        : speakerId as String?,
+    speakerName: identical(speakerName, _msgSentinel)
+        ? this.speakerName
+        : speakerName as String?,
     attachments: attachments ?? this.attachments,
     citations: citations ?? this.citations,
     createdAt: createdAt,
   );
+
+  static const _msgSentinel = Object();
 
   Map<String, dynamic> toJson() => {
     'id': id,
@@ -210,6 +230,8 @@ class ChatMessage {
     'reasoning': reasoning,
     if (model != null) 'model': model,
     'thinkingMillis': thinkingMillis,
+    if (speakerId != null) 'speakerId': speakerId,
+    if (speakerName != null) 'speakerName': speakerName,
     if (attachments.isNotEmpty)
       'attachments': attachments.map((a) => a.toJson()).toList(),
     if (citations.isNotEmpty)
@@ -225,6 +247,8 @@ class ChatMessage {
     reasoning: json['reasoning'] as String? ?? '',
     model: json['model'] as String?,
     thinkingMillis: (json['thinkingMillis'] as num?)?.toInt() ?? 0,
+    speakerId: json['speakerId'] as String?,
+    speakerName: json['speakerName'] as String?,
     attachments: (json['attachments'] as List<dynamic>? ?? [])
         .map((e) => Attachment.fromJson(e as Map<String, dynamic>))
         .toList(),
@@ -249,10 +273,22 @@ class Conversation {
     List<ChatMessage>? messages,
     Map<String, String>? activeChildren,
     DateTime? updatedAt,
+    this.mode = ConversationMode.chat,
+    this.characterId,
+    List<String>? participantIds,
+    List<String>? worldInfoIds,
+    this.outline = '',
+    this.authorNote = '',
+    this.plotCursor = 0,
+    this.venue = '',
+    this.nextSpeakerIndex = 0,
   }) : id = id ?? _uuid.v4(),
        messages = messages ?? [],
        activeChildren = activeChildren ?? {},
-       updatedAt = updatedAt ?? DateTime.now();
+       updatedAt = updatedAt ?? DateTime.now(),
+       participantIds = participantIds ??
+           (characterId != null ? [characterId] : const []),
+       worldInfoIds = worldInfoIds ?? const [];
 
   final String id;
   final String title;
@@ -261,6 +297,46 @@ class Conversation {
   /// parentId (or [kRootKey]) → selected child id.
   final Map<String, String> activeChildren;
   final DateTime updatedAt;
+
+  /// Ordinary chat vs character/story session.
+  final ConversationMode mode;
+
+  /// Bound character card when [mode] is story (single-character).
+  final String? characterId;
+
+  /// Cast for ensemble sessions (and single-story when length == 1).
+  final List<String> participantIds;
+
+  /// World-info entry ids enabled for this session (global library opt-in).
+  final List<String> worldInfoIds;
+
+  /// Free-form plot outline; parsed into beats for [plotCursor].
+  final String outline;
+
+  /// Director / OOC instructions injected every turn in story mode.
+  final String authorNote;
+
+  /// 0-based index of the current outline beat (auto-advanced on successful
+  /// plot advance; manually adjustable).
+  final int plotCursor;
+
+  /// Shared place / situation for ensemble scenes.
+  final String venue;
+
+  /// Round-robin index into [participantIds] for the next AI line.
+  final int nextSpeakerIndex;
+
+  bool get isStory => mode == ConversationMode.story;
+  bool get isEnsemble => mode == ConversationMode.ensemble;
+  bool get isStoryLike => isStory || isEnsemble;
+
+  List<String> get outlineBeats => parseOutlineBeats(outline);
+
+  List<String> get castIds {
+    if (participantIds.isNotEmpty) return participantIds;
+    if (characterId != null) return [characterId!];
+    return const [];
+  }
 
   /// Lazily built parent → children index. Conversations are treated as
   /// immutable (every mutation goes through [copyWith], which builds a new
@@ -342,13 +418,35 @@ class Conversation {
     List<ChatMessage>? messages,
     Map<String, String>? activeChildren,
     DateTime? updatedAt,
+    ConversationMode? mode,
+    Object? characterId = _storySentinel,
+    List<String>? participantIds,
+    List<String>? worldInfoIds,
+    String? outline,
+    String? authorNote,
+    int? plotCursor,
+    String? venue,
+    int? nextSpeakerIndex,
   }) => Conversation(
     id: id,
     title: title ?? this.title,
     messages: messages ?? this.messages,
     activeChildren: activeChildren ?? this.activeChildren,
     updatedAt: updatedAt ?? DateTime.now(),
+    mode: mode ?? this.mode,
+    characterId: identical(characterId, _storySentinel)
+        ? this.characterId
+        : characterId as String?,
+    participantIds: participantIds ?? this.participantIds,
+    worldInfoIds: worldInfoIds ?? this.worldInfoIds,
+    outline: outline ?? this.outline,
+    authorNote: authorNote ?? this.authorNote,
+    plotCursor: plotCursor ?? this.plotCursor,
+    venue: venue ?? this.venue,
+    nextSpeakerIndex: nextSpeakerIndex ?? this.nextSpeakerIndex,
   );
+
+  static const _storySentinel = Object();
 
   Map<String, dynamic> toJson() => {
     'id': id,
@@ -356,6 +454,15 @@ class Conversation {
     'updatedAt': updatedAt.toIso8601String(),
     'activeChildren': activeChildren,
     'messages': messages.map((m) => m.toJson()).toList(),
+    'mode': mode.wire,
+    if (characterId != null) 'characterId': characterId,
+    if (participantIds.isNotEmpty) 'participantIds': participantIds,
+    if (worldInfoIds.isNotEmpty) 'worldInfoIds': worldInfoIds,
+    if (outline.isNotEmpty) 'outline': outline,
+    if (authorNote.isNotEmpty) 'authorNote': authorNote,
+    if (plotCursor != 0) 'plotCursor': plotCursor,
+    if (venue.isNotEmpty) 'venue': venue,
+    if (nextSpeakerIndex != 0) 'nextSpeakerIndex': nextSpeakerIndex,
   };
 
   factory Conversation.fromJson(Map<String, dynamic> json) => Conversation(
@@ -368,5 +475,18 @@ class Conversation {
     messages: (json['messages'] as List<dynamic>? ?? [])
         .map((e) => ChatMessage.fromJson(e as Map<String, dynamic>))
         .toList(),
+    mode: ConversationMode.fromWire(json['mode'] as String?),
+    characterId: json['characterId'] as String?,
+    participantIds: (json['participantIds'] as List<dynamic>? ?? [])
+        .map((e) => e.toString())
+        .toList(),
+    worldInfoIds: (json['worldInfoIds'] as List<dynamic>? ?? [])
+        .map((e) => e.toString())
+        .toList(),
+    outline: json['outline'] as String? ?? '',
+    authorNote: json['authorNote'] as String? ?? '',
+    plotCursor: (json['plotCursor'] as num?)?.toInt() ?? 0,
+    venue: json['venue'] as String? ?? '',
+    nextSpeakerIndex: (json['nextSpeakerIndex'] as num?)?.toInt() ?? 0,
   );
 }

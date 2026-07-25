@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>Expert Chat · 产品级线框</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="stage">
+    <aside class="legend">
+      <div class="legend-brand">
+        <div class="legend-logo" aria-hidden="true">
+          <span class="material-symbols-outlined">auto_awesome</span>
+        </div>
+        <div>
+          <h1>Expert Chat</h1>
+          <p class="tag">阶段 0 · 产品级可点原型</p>
+        </div>
+      </div>
+      <p>信息架构与阶段 1 一致；视觉按上线标准打样（Material Symbols + 统一头像体系）。</p>
+      <ol>
+        <li><strong>会话</strong> 主舞台 / 列表 / 情节 Sheet</li>
+        <li><strong>创作</strong> 角色卡 / 世界书</li>
+        <li><strong>我的</strong> Provider / 外观</li>
+      </ol>
+      <div class="legend-note" id="screenHint">当前：故事会话主屏</div>
+      <div class="legend-actions">
+        <button type="button" class="linkish" data-go="chat">重置到会话</button>
+        <button type="button" class="linkish" data-go="list">打开会话列表</button>
+        <button type="button" class="linkish" data-go="tablet">平板双栏示意</button>
+      </div>
+      <p class="legend-foot">头像使用 DiceBear（固定 seed，可换成用户上传图）。需联网加载字体与图标。</p>
+    </aside>
+
+    <div class="phones">
+      <div class="device" id="device">
+        <div class="device-bezel">
+          <div class="status-bar">
+            <span class="status-time">9:41</span>
+            <span class="status-island"></span>
+            <span class="status-sys">
+              <span class="material-symbols-outlined">signal_cellular_alt</span>
+              <span class="material-symbols-outlined">wifi</span>
+              <span class="battery"></span>
+            </span>
+          </div>
+
+          <div class="app" id="app">
+            <!-- 故事会话 -->
+            <section class="screen active" data-screen="chat" data-hint="会话主屏 · 故事模式">
+              <header class="topbar">
+                <button type="button" class="icon-btn" data-go="list" aria-label="会话列表">
+                  <span class="material-symbols-outlined">menu</span>
+                </button>
+                <div class="topbar-mid">
+                  <div class="title-row">
+                    <img class="title-avatar" src="https://api.dicebear.com/9.x/lorelei/svg?seed=LinWan&backgroundColor=c8dde3&radius=50" alt="" width="28" height="28" />
+                    <span class="title">林晚</span>
+                  </div>
+                  <div class="subrow">
+                    <span class="chip story">
+                      <span class="material-symbols-outlined chip-ico">auto_stories</span>
+                      故事
+                    </span>
+                    <span class="muted">节拍 2/7</span>
+                    <button type="button" class="text-btn" data-go="plot">情节</button>
+                  </div>
+                </div>
+                <button type="button" class="icon-btn" data-go="overflow" aria-label="更多">
+                  <span class="material-symbols-outlined">more_horiz</span>
+                </button>
+              </header>
+
+              <div class="context-bar story">
+                <div class="context-left">
+                  <span class="material-symbols-outlined context-ico">timeline</span>
+                  <span>初遇后的试探</span>
+                </div>
+                <div class="context-actions">
+                  <button type="button" class="mini icon" aria-label="上一节拍">
+                    <span class="material-symbols-outlined">chevron_left</span>
+                  </button>
+                  <button type="button" class="mini primary">推进情节</button>
+                  <button type="button" class="mini icon" aria-label="下一节拍">
+                    <span class="material-symbols-outlined">chevron_right</span>
+                  </button>
+                </div>
+              </div>
+
+              <main class="messages">
+                <div class="day-sep">今天</div>
+                <div class="bubble user">
+                  <p>傍晚的书店只剩最后一盏灯。我把那本旧诗集推到她面前。</p>
+                </div>
+                <div class="msg-row assistant">
+                  <img class="msg-avatar" src="https://api.dicebear.com/9.x/lorelei/svg?seed=LinWan&backgroundColor=c8dde3&radius=50" alt="" />
+                  <div class="bubble assistant">
+                    <div class="bubble-meta">林晚</div>
+                    <p>她没有立刻接。指尖在封面烫金的标题上停了一秒，像在确认这是不是记忆里的那一本。</p>
+                    <p>「你怎么知道我想找它？」声音很轻，带着一点被看穿的防备。</p>
+                    <div class="bubble-footer">
+                      <span class="branch">
+                        <button type="button" class="branch-nav" aria-label="上一分支">
+                          <span class="material-symbols-outlined">chevron_left</span>
+                        </button>
+                        1 / 2
+                        <button type="button" class="branch-nav" aria-label="下一分支">
+                          <span class="material-symbols-outlined">chevron_right</span>
+                        </button>
+                      </span>
+                      <button type="button" class="msg-act" aria-label="复制">
+                        <span class="material-symbols-outlined">content_copy</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div class="bubble user">
+                  <p>因为扉页里夹着同一张地铁票。</p>
+                </div>
+                <div class="msg-row assistant">
+                  <img class="msg-avatar" src="https://api.dicebear.com/9.x/lorelei/svg?seed=LinWan&backgroundColor=c8dde3&radius=50" alt="" />
+                  <div class="bubble assistant streaming">
+                    <div class="bubble-meta">林晚 · 生成中</div>
+                    <p>她的呼吸微微一滞<span class="caret"></span></p>
+                  </div>
+                </div>
+              </main>
+
+              <footer class="composer">
+                <div class="tools-scroll">
+                  <button type="button" class="tool icon" aria-label="附件">
+                    <span class="material-symbols-outlined">attach_file</span>
+                  </button>
+                  <button type="button" class="tool on">
+                    <span class="material-symbols-outlined">psychology</span>
+                    深度思考
+                  </button>
+                  <button type="button" class="tool">
+                    <span class="material-symbols-outlined">travel_explore</span>
+                    联网
+                  </button>
+                </div>
+                <div class="input-row">
+                  <div class="fake-input">续写她的反应，或输入旁白…</div>
+                  <button type="button" class="send" aria-label="发送">
+                    <span class="material-symbols-outlined">arrow_upward</span>
+                  </button>
+                </div>
+              </footer>
+            </section>
+
+            <!-- 会话列表 -->
+            <section class="screen" data-screen="list" data-hint="会话列表 · 模式筛选">
+              <header class="topbar">
+                <button type="button" class="icon-btn" data-go="chat" aria-label="返回">
+                  <span class="material-symbols-outlined">arrow_back</span>
+                </button>
+                <div class="topbar-mid">
+                  <div class="title-row"><span class="title">会话</span></div>
+                </div>
+                <button type="button" class="icon-btn accent" data-go="new-menu" aria-label="新建">
+                  <span class="material-symbols-outlined">add</span>
+                </button>
+              </header>
+              <div class="list-filters">
+                <button type="button" class="chip on">全部</button>
+                <button type="button" class="chip">对话</button>
+                <button type="button" class="chip">故事</button>
+                <button type="button" class="chip">乱斗</button>
+              </div>
+              <div class="search-box">
+                <span class="material-symbols-outlined">search</span>
+                <span>搜索标题或正文</span>
+              </div>
+              <main class="list-body">
+                <button type="button" class="convo-item" data-go="chat">
+                  <span class="mode-badge story">
+                    <span class="material-symbols-outlined">auto_stories</span>
+                  </span>
+                  <span class="convo-text">
+                    <span class="convo-title">林晚 · 旧书店</span>
+                    <span class="convo-preview">她的呼吸微微一滞……</span>
+                  </span>
+                  <span class="convo-meta">
+                    <span class="convo-time">2 分钟</span>
+                    <img class="convo-face" src="https://api.dicebear.com/9.x/lorelei/svg?seed=LinWan&backgroundColor=c8dde3&radius=50" alt="" />
+                  </span>
+                </button>
+                <button type="button" class="convo-item" data-go="chat-plain">
+                  <span class="mode-badge chat">
+                    <span class="material-symbols-outlined">chat_bubble</span>
+                  </span>
+                  <span class="convo-text">
+                    <span class="convo-title">比较模型定价</span>
+                    <span class="convo-preview">根据检索，DeepSeek…</span>
+                  </span>
+                  <span class="convo-meta">
+                    <span class="convo-time">1 小时</span>
+                  </span>
+                </button>
+                <button type="button" class="convo-item" data-go="ensemble">
+                  <span class="mode-badge ensemble">
+                    <span class="material-symbols-outlined">groups</span>
+                  </span>
+                  <span class="convo-text">
+                    <span class="convo-title">咖啡馆大乱斗</span>
+                    <span class="convo-preview">阿哲：你又迟到了…</span>
+                  </span>
+                  <span class="convo-meta">
+                    <span class="convo-time">昨天</span>
+                    <span class="face-stack">
+                      <img src="https://api.dicebear.com/9.x/lorelei/svg?seed=AZhe&backgroundColor=e8d5c4&radius=50" alt="" />
+                      <img src="https://api.dicebear.com/9.x/lorelei/svg?seed=LinWan&backgroundColor=c8dde3&radius=50" alt="" />
+                    </span>
+                  </span>
+                </button>
+              </main>
+            </section>
+
+            <!-- 普通对话 -->
+            <section class="screen" data-screen="chat-plain" data-hint="普通对话主屏">
+              <header class="topbar">
+                <button type="button" class="icon-btn" data-go="list" aria-label="会话列表">
+                  <span class="material-symbols-outlined">menu</span>
+                </button>
+                <div class="topbar-mid">
+                  <div class="title-row">
+                    <span class="mode-dot chat"></span>
+                    <span class="title">比较模型定价</span>
+                  </div>
+                </div>
+                <button type="button" class="icon-btn" data-go="overflow" aria-label="更多">
+                  <span class="material-symbols-outlined">more_horiz</span>
+                </button>
+              </header>
+              <main class="messages">
+                <div class="bubble user">
+                  <p>比较 DeepSeek V3 和 GPT-4o 的定价与上下文长度。</p>
+                </div>
+                <div class="msg-row assistant">
+                  <div class="msg-avatar system">
+                    <span class="material-symbols-outlined">auto_awesome</span>
+                  </div>
+                  <div class="bubble assistant">
+                    <div class="bubble-meta">助手</div>
+                    <p>根据联网结果，两边在定价与上下文窗口上差异明显……</p>
+                    <div class="cite-row">
+                      <span class="cite">[1] 官方文档</span>
+                      <span class="cite">[2] 第三方评测</span>
+                    </div>
+                  </div>
+                </div>
+              </main>
+              <footer class="composer">
+                <div class="tools-scroll">
+                  <button type="button" class="tool icon" aria-label="附件">
+                    <span class="material-symbols-outlined">attach_file</span>
+                  </button>
+                  <button type="button" class="tool">
+                    <span class="material-symbols-outlined">psychology</span>
+                    深度思考
+                  </button>
+                  <button type="button" class="tool on">
+                    <span class="material-symbols-outlined">travel_explore</span>
+                    联网
+                  </button>
+                </div>
+                <div class="input-row">
+                  <div class="fake-input">继续提问…</div>
+                  <button type="button" class="send" aria-label="发送">
+                    <span class="material-symbols-outlined">arrow_upward</span>
+                  </button>
+                </div>
+              </footer>
+            </section>
+
+            <!-- 大乱斗 -->
+            <section class="screen" data-screen="ensemble" data-hint="角色大乱斗主屏">
+              <header class="topbar">
+                <button type="button" class="icon-btn" data-go="list" aria-label="会话列表">
+                  <span class="material-symbols-outlined">menu</span>
+                </button>
+                <div class="topbar-mid">
+                  <div class="title-row">
+                    <span class="mode-dot ensemble"></span>
+                    <span class="title">咖啡馆大乱斗</span>
+                  </div>
+                  <div class="subrow">
+                    <span class="chip ensemble">
+                      <span class="material-symbols-outlined chip-ico">groups</span>
+                      乱斗
+                    </span>
+                    <span class="muted">3 人</span>
+                    <button type="button" class="text-btn" data-go="plot">情节</button>
+                  </div>
+                </div>
+                <button type="button" class="icon-btn" data-go="overflow" aria-label="更多">
+                  <span class="material-symbols-outlined">more_horiz</span>
+                </button>
+              </header>
+              <div class="context-bar ensemble">
+                <div class="context-left">
+                  <img class="next-face" src="https://api.dicebear.com/9.x/lorelei/svg?seed=AZhe&backgroundColor=e8d5c4&radius=50" alt="" />
+                  <span>下一位 · 阿哲</span>
+                </div>
+                <div class="context-actions">
+                  <button type="button" class="mini primary">下一角色</button>
+                  <button type="button" class="mini">自动 ×6</button>
+                </div>
+              </div>
+              <main class="messages">
+                <div class="msg-row assistant">
+                  <img class="msg-avatar" src="https://api.dicebear.com/9.x/lorelei/svg?seed=AZhe&backgroundColor=e8d5c4&radius=50" alt="" />
+                  <div class="bubble assistant">
+                    <div class="bubble-meta">阿哲</div>
+                    <p>你又迟到了。咖啡都凉了。</p>
+                  </div>
+                </div>
+                <div class="msg-row assistant">
+                  <img class="msg-avatar" src="https://api.dicebear.com/9.x/lorelei/svg?seed=LinWan&backgroundColor=c8dde3&radius=50" alt="" />
+                  <div class="bubble assistant alt">
+                    <div class="bubble-meta">林晚</div>
+                    <p>……他总是这样说，好像自己从不磨蹭。</p>
+                  </div>
+                </div>
+              </main>
+              <footer class="composer">
+                <div class="tools-scroll">
+                  <button type="button" class="tool icon" aria-label="附件">
+                    <span class="material-symbols-outlined">attach_file</span>
+                  </button>
+                  <button type="button" class="tool">
+                    <span class="material-symbols-outlined">psychology</span>
+                    深度思考
+                  </button>
+                </div>
+                <div class="input-row">
+                  <div class="fake-input">以用户身份插话…</div>
+                  <button type="button" class="send" aria-label="发送">
+                    <span class="material-symbols-outlined">arrow_upward</span>
+                  </button>
+                </div>
+              </footer>
+            </section>
+
+            <!-- 创作 -->
+            <section class="screen" data-screen="studio" data-hint="创作中心 · 角色库">
+              <header class="topbar single">
+                <div class="topbar-mid">
+                  <div class="title-row"><span class="title">创作</span></div>
+                </div>
+                <button type="button" class="icon-btn accent" aria-label="新建">
+                  <span class="material-symbols-outlined">add</span>
+                </button>
+              </header>
+              <div class="seg">
+                <button type="button" class="seg-item on">角色</button>
+                <button type="button" class="seg-item" data-go="world">世界书</button>
+              </div>
+              <main class="card-grid">
+                <button type="button" class="char-card" data-go="char-detail">
+                  <img class="portrait" src="https://api.dicebear.com/9.x/lorelei/svg?seed=LinWan&backgroundColor=c8dde3&radius=18" alt="林晚" width="56" height="56" />
+                  <div class="char-body">
+                    <div class="char-name">林晚</div>
+                    <div class="char-desc">安静的旧书店店员，观察力强。</div>
+                    <div class="char-tags">
+                      <span>故事</span><span>克制</span>
+                    </div>
+                  </div>
+                  <span class="material-symbols-outlined chev">chevron_right</span>
+                </button>
+                <button type="button" class="char-card">
+                  <img class="portrait" src="https://api.dicebear.com/9.x/lorelei/svg?seed=AZhe&backgroundColor=e8d5c4&radius=18" alt="阿哲" width="56" height="56" />
+                  <div class="char-body">
+                    <div class="char-name">阿哲</div>
+                    <div class="char-desc">嘴硬心软的程序员。</div>
+                    <div class="char-tags">
+                      <span>乱斗</span><span>吐槽</span>
+                    </div>
+                  </div>
+                  <span class="material-symbols-outlined chev">chevron_right</span>
+                </button>
+                <button type="button" class="char-card create">
+                  <span class="create-ico">
+                    <span class="material-symbols-outlined">person_add</span>
+                  </span>
+                  <div class="char-body">
+                    <div class="char-name">新建角色</div>
+                    <div class="char-desc">空白卡或 AI 辅助生成</div>
+                  </div>
+                </button>
+              </main>
+            </section>
+
+            <!-- 世界书 -->
+            <section class="screen" data-screen="world" data-hint="世界书库">
+              <header class="topbar">
+                <button type="button" class="icon-btn" data-go="studio" aria-label="返回">
+                  <span class="material-symbols-outlined">arrow_back</span>
+                </button>
+                <div class="topbar-mid">
+                  <div class="title-row"><span class="title">世界书</span></div>
+                </div>
+                <button type="button" class="icon-btn accent" aria-label="新建">
+                  <span class="material-symbols-outlined">add</span>
+                </button>
+              </header>
+              <main class="list-body pad">
+                <article class="wi-item">
+                  <div class="wi-top">
+                    <div class="wi-title">旧城区书店街</div>
+                    <span class="pill">Always on</span>
+                  </div>
+                  <div class="wi-keys">
+                    <span>书店</span><span>雨夜</span><span>地铁票</span>
+                  </div>
+                </article>
+                <article class="wi-item">
+                  <div class="wi-top">
+                    <div class="wi-title">林晚的过往</div>
+                  </div>
+                  <div class="wi-keys">
+                    <span>诗集</span><span>失踪</span><span>线索</span>
+                  </div>
+                </article>
+              </main>
+            </section>
+
+            <!-- 角色详情 -->
+            <section class="screen" data-screen="char-detail" data-hint="角色详情 · 开始故事">
+              <header class="topbar">
+                <button type="button" class="icon-btn" data-go="studio" aria-label="返回">
+                  <span class="material-symbols-outlined">arrow_back</span>
+                </button>
+                <div class="topbar-mid">
+                  <div class="title-row"><span class="title">角色</span></div>
+                </div>
+                <button type="button" class="text-btn">编辑</button>
+              </header>
+              <main class="detail">
+                <div class="detail-hero">
+                  <img class="portrait xl" src="https://api.dicebear.com/9.x/lorelei/svg?seed=LinWan&backgroundColor=c8dde3&radius=24" alt="林晚" width="112" height="112" />
+                  <h2>林晚</h2>
+                  <p class="detail-sub">故事角色 · 已用于 2 个会话</p>
+                </div>
+                <section class="detail-block">
+                  <h3>性格</h3>
+                  <p>克制、观察力强，不善先开口。</p>
+                </section>
+                <section class="detail-block">
+                  <h3>场景</h3>
+                  <p>城南旧书店，傍晚只开一盏灯。</p>
+                </section>
+                <section class="detail-block">
+                  <h3>开场白</h3>
+                  <p>「……需要找什么书吗？」</p>
+                </section>
+                <button type="button" class="cta" data-go="chat">
+                  <span class="material-symbols-outlined">play_arrow</span>
+                  开始故事
+                </button>
+                <button type="button" class="cta ghost" data-go="ensemble">加入大乱斗</button>
+              </main>
+            </section>
+
+            <!-- 我的 -->
+            <section class="screen" data-screen="me" data-hint="我的 · 连接与外观">
+              <header class="topbar single">
+                <div class="topbar-mid">
+                  <div class="title-row"><span class="title">我的</span></div>
+                </div>
+              </header>
+              <main class="settings">
+                <button type="button" class="settings-card" data-go="provider">
+                  <div class="provider-mark">DS</div>
+                  <div class="grow">
+                    <div class="s-title">DeepSeek</div>
+                    <div class="s-sub">deepseek-chat · Key 已配置</div>
+                  </div>
+                  <span class="material-symbols-outlined chev">chevron_right</span>
+                </button>
+                <button type="button" class="settings-row" data-go="search-settings">
+                  <span class="row-left">
+                    <span class="material-symbols-outlined row-ico">travel_explore</span>
+                    联网搜索
+                  </span>
+                  <span class="row-right">
+                    Tavily
+                    <span class="material-symbols-outlined chev">chevron_right</span>
+                  </span>
+                </button>
+
+                <div class="settings-section">外观</div>
+                <div class="settings-row static">
+                  <span>主题</span>
+                  <span class="seg mini-seg">
+                    <span class="seg-item">浅</span>
+                    <span class="seg-item on">跟随</span>
+                    <span class="seg-item">深</span>
+                  </span>
+                </div>
+                <div class="settings-row static">
+                  <span>文字大小</span>
+                  <span class="seg mini-seg">
+                    <span class="seg-item">小</span>
+                    <span class="seg-item on">中</span>
+                    <span class="seg-item">大</span>
+                  </span>
+                </div>
+                <div class="settings-row static">
+                  <span>界面密度</span>
+                  <span class="seg mini-seg">
+                    <span class="seg-item on">舒适</span>
+                    <span class="seg-item">紧凑</span>
+                  </span>
+                </div>
+                <div class="settings-row static">
+                  <span>消息样式</span>
+                  <span class="seg mini-seg">
+                    <span class="seg-item on">气泡</span>
+                    <span class="seg-item">文档</span>
+                  </span>
+                </div>
+                <div class="settings-row static">
+                  <span>内容宽度</span>
+                  <span class="s-sub">平板 / 桌面生效</span>
+                </div>
+
+                <div class="settings-section">数据</div>
+                <div class="settings-row static muted-row">
+                  <span class="row-left">
+                    <span class="material-symbols-outlined row-ico">database</span>
+                    导出 / 备份
+                  </span>
+                  <span class="s-sub">预留</span>
+                </div>
+              </main>
+            </section>
+
+            <section class="screen" data-screen="provider" data-hint="Provider 配置">
+              <header class="topbar">
+                <button type="button" class="icon-btn" data-go="me" aria-label="返回">
+                  <span class="material-symbols-outlined">arrow_back</span>
+                </button>
+                <div class="topbar-mid">
+                  <div class="title-row"><span class="title">模型与密钥</span></div>
+                </div>
+              </header>
+              <main class="settings pad">
+                <label class="field"><span>当前配置</span><div class="field-box">DeepSeek</div></label>
+                <label class="field"><span>Base URL</span><div class="field-box mono">https://api.deepseek.com</div></label>
+                <label class="field"><span>API Key</span><div class="field-box mono">••••••••••••••••</div></label>
+                <label class="field"><span>默认模型</span><div class="field-box mono">deepseek-chat</div></label>
+                <p class="hint">阶段 1 将复用现有 Settings 表单逻辑。</p>
+              </main>
+            </section>
+
+            <section class="screen" data-screen="search-settings" data-hint="搜索后端设置">
+              <header class="topbar">
+                <button type="button" class="icon-btn" data-go="me" aria-label="返回">
+                  <span class="material-symbols-outlined">arrow_back</span>
+                </button>
+                <div class="topbar-mid">
+                  <div class="title-row"><span class="title">联网搜索</span></div>
+                </div>
+              </header>
+              <main class="settings pad">
+                <label class="field"><span>后端</span><div class="field-box">Tavily · advanced</div></label>
+                <label class="field"><span>API Key</span><div class="field-box mono">••••••••••••</div></label>
+                <p class="hint">推荐配置 Tavily / 博查；DDG 为尽力而为的免费选项。</p>
+              </main>
+            </section>
+
+            <nav class="tabbar" id="tabbar">
+              <button type="button" class="tab on" data-tab="chat" data-go="chat">
+                <span class="material-symbols-outlined">forum</span>
+                <span>会话</span>
+              </button>
+              <button type="button" class="tab" data-tab="studio" data-go="studio">
+                <span class="material-symbols-outlined">menu_book</span>
+                <span>创作</span>
+              </button>
+              <button type="button" class="tab" data-tab="me" data-go="me">
+                <span class="material-symbols-outlined">person</span>
+                <span>我的</span>
+              </button>
+            </nav>
+
+            <!-- Overlays -->
+            <div class="overlay" id="plot-sheet" hidden>
+              <button type="button" class="scrim" data-close="plot-sheet" aria-label="关闭"></button>
+              <div class="sheet">
+                <div class="sheet-handle"></div>
+                <div class="sheet-head">
+                  <h2>情节与设定</h2>
+                  <span class="save-dot">已自动保存</span>
+                </div>
+                <label class="field">
+                  <span>大纲</span>
+                  <div class="field-box tall beats">
+                    <div>1. 相遇</div>
+                    <div class="current">2. 冲突 <em>当前</em></div>
+                    <div>3. 旧诗集的秘密</div>
+                    <div>4. …</div>
+                  </div>
+                </label>
+                <label class="field">
+                  <span>导演指令</span>
+                  <div class="field-box">保持克制，不要一次摊牌。</div>
+                </label>
+                <div class="field">
+                  <span>世界书 · 已选 2</span>
+                  <div class="field-box linkish-box">旧城区书店街 · 林晚的过往</div>
+                </div>
+                <div class="sheet-footer">
+                  <button type="button" class="mini" data-close="plot-sheet">关闭</button>
+                  <button type="button" class="mini primary" data-close="plot-sheet">完成</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="overlay" id="new-menu" hidden>
+              <button type="button" class="scrim" data-close="new-menu" aria-label="关闭"></button>
+              <div class="action-sheet">
+                <button type="button" data-go="chat-plain" data-close="new-menu">
+                  <span class="material-symbols-outlined">chat_bubble</span>
+                  <span>
+                    <strong>普通对话</strong>
+                    <small>多模型聊天</small>
+                  </span>
+                </button>
+                <button type="button" data-go="studio" data-close="new-menu">
+                  <span class="material-symbols-outlined">auto_stories</span>
+                  <span>
+                    <strong>角色故事</strong>
+                    <small>从角色卡开聊</small>
+                  </span>
+                </button>
+                <button type="button" data-go="ensemble" data-close="new-menu">
+                  <span class="material-symbols-outlined">groups</span>
+                  <span>
+                    <strong>角色大乱斗</strong>
+                    <small>多角色同台</small>
+                  </span>
+                </button>
+                <button type="button" class="cancel" data-close="new-menu">取消</button>
+              </div>
+            </div>
+
+            <div class="overlay" id="overflow" hidden>
+              <button type="button" class="scrim" data-close="overflow" aria-label="关闭"></button>
+              <div class="action-sheet">
+                <button type="button" data-close="overflow">
+                  <span class="material-symbols-outlined">ios_share</span>
+                  <span><strong>导出 Markdown</strong></span>
+                </button>
+                <button type="button" data-close="overflow">
+                  <span class="material-symbols-outlined">drive_file_rename_outline</span>
+                  <span><strong>重命名</strong></span>
+                </button>
+                <button type="button" class="danger" data-close="overflow">
+                  <span class="material-symbols-outlined">delete</span>
+                  <span><strong>删除会话</strong></span>
+                </button>
+                <button type="button" class="cancel" data-close="overflow">取消</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="device tablet" id="tablet" hidden>
+        <div class="tablet-frame">
+          <aside class="tablet-list">
+            <div class="tablet-list-h">
+              会话
+              <span class="material-symbols-outlined">add</span>
+            </div>
+            <div class="t-item on">
+              <span class="material-symbols-outlined">auto_stories</span>
+              林晚
+            </div>
+            <div class="t-item">
+              <span class="material-symbols-outlined">chat_bubble</span>
+              比较模型定价
+            </div>
+            <div class="t-item">
+              <span class="material-symbols-outlined">groups</span>
+              咖啡馆大乱斗
+            </div>
+          </aside>
+          <section class="tablet-stage">
+            <div class="tablet-top">林晚 · 故事 · 节拍 2/7</div>
+            <div class="tablet-msg">消息流主舞台</div>
+            <div class="tablet-composer">Composer</div>
+          </section>
+          <aside class="tablet-tools">
+            <div class="tablet-list-h">情节</div>
+            <div class="t-tool">大纲</div>
+            <div class="t-tool">导演指令</div>
+            <div class="t-tool">世界书</div>
+          </aside>
+        </div>
+        <p class="tablet-caption">阶段 2：宽屏双栏 / 三栏。信息架构与手机一致。</p>
+        <button type="button" class="linkish" data-go="chat">返回手机</button>
+      </div>
+    </div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -7,7 +7,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/providers.dart';
 import '../data/models.dart';
+import '../data/story_models.dart';
 import '../domain/llm/llm_provider.dart';
+import '../domain/story/story_prompt_assembler.dart';
+import '../domain/tools/search_query.dart';
 import '../domain/tools/tool_engine.dart';
 import 'settings_controller.dart';
 
@@ -99,6 +102,11 @@ class ChatController extends AsyncNotifier<ChatState> {
   /// awaiting [_readySettings], starting two overlapping streams and leaking the
   /// first subscription.
   bool _starting = false;
+
+  /// Set by [stop] so a generation that is still in the [_starting] window
+  /// (awaiting settings / building the turn) aborts before [_generate] runs.
+  /// Cleared when a new generation entry point is accepted.
+  bool _cancelStart = false;
 
   /// Cancels the active LLM HTTP request (set per generation, fired by [stop]).
   CancelToken? _cancelToken;
@@ -222,6 +230,295 @@ class ChatController extends AsyncNotifier<ChatState> {
     _persistSoon(_persist());
   }
 
+  Future<List<String>> _defaultWorldInfoIds() async {
+    final entries = await ref.read(worldInfoRepositoryProvider).loadAll();
+    return [
+      for (final e in entries)
+        if (e.enabled) e.id,
+    ];
+  }
+
+  /// Start a story session bound to [card]. Defaults to all enabled world-info
+  /// entries; optional [worldInfoIds] overrides the selection.
+  Future<void> newStoryConversation(
+    CharacterCard card, {
+    List<String>? worldInfoIds,
+  }) async {
+    final ids = worldInfoIds ?? await _defaultWorldInfoIds();
+
+    final messages = <ChatMessage>[];
+    final activeChildren = <String, String>{};
+    final firstMes = card.firstMes.trim();
+    if (firstMes.isNotEmpty) {
+      final opener = ChatMessage(
+        role: MessageRole.assistant,
+        content: firstMes,
+        parentId: null,
+        speakerId: card.id,
+        speakerName: card.name,
+      );
+      messages.add(opener);
+      activeChildren[kRootKey] = opener.id;
+    }
+
+    final fresh = Conversation(
+      title: card.name,
+      mode: ConversationMode.story,
+      characterId: card.id,
+      participantIds: [card.id],
+      worldInfoIds: ids,
+      messages: messages,
+      activeChildren: activeChildren,
+    );
+    _set(
+      _s.copyWith(
+        conversations: [fresh, ..._s.conversations],
+        currentId: fresh.id,
+        error: null,
+      ),
+    );
+    _persistSoon(_persist());
+  }
+
+  /// Multi-character ensemble: cast in one [venue], taking turns.
+  Future<void> newEnsembleConversation({
+    required List<CharacterCard> cast,
+    required String venue,
+    String authorNote = '',
+    List<String>? worldInfoIds,
+  }) async {
+    if (cast.length < 2) {
+      _set(_s.copyWith(error: '角色大乱斗至少需要 2 名角色。'));
+      return;
+    }
+    final ids = worldInfoIds ?? await _defaultWorldInfoIds();
+    final place = venue.trim().isEmpty ? '同一空间' : venue.trim();
+    final title = cast.map((c) => c.name).take(3).join('·');
+    final names = cast.map((c) => c.name).join('、');
+
+    final systemIntro = ChatMessage(
+      role: MessageRole.assistant,
+      content:
+          '【场景】$place\n'
+          '【在场】$names\n'
+          '你们已聚在一起。可由导演下达指令，或点「下一位发言 / 自动轮流」让角色对谈。',
+      speakerName: '旁白',
+    );
+
+    final fresh = Conversation(
+      title: cast.length <= 3 ? title : '$title…',
+      mode: ConversationMode.ensemble,
+      characterId: cast.first.id,
+      participantIds: [for (final c in cast) c.id],
+      worldInfoIds: ids,
+      venue: place,
+      authorNote: authorNote,
+      nextSpeakerIndex: 0,
+      messages: [systemIntro],
+      activeChildren: {kRootKey: systemIntro.id},
+    );
+    _set(
+      _s.copyWith(
+        conversations: [fresh, ..._s.conversations],
+        currentId: fresh.id,
+        error: null,
+      ),
+    );
+    _persistSoon(_persist());
+  }
+
+  /// Update story-session metadata on the current (or [conversationId]) chat.
+  void updateStoryMeta({
+    String? conversationId,
+    String? outline,
+    String? authorNote,
+    List<String>? worldInfoIds,
+    int? plotCursor,
+    String? venue,
+    List<String>? participantIds,
+    int? nextSpeakerIndex,
+  }) {
+    final id = conversationId ?? _s.currentId;
+    if (id == null) return;
+    final idx = _s.conversations.indexWhere((c) => c.id == id);
+    if (idx < 0) return;
+    final convo = _s.conversations[idx];
+    if (!convo.isStoryLike) return;
+
+    final beatsLen = parseOutlineBeats(outline ?? convo.outline).length;
+    final nextCursor = plotCursor == null
+        ? null
+        : (beatsLen == 0
+              ? plotCursor.clamp(0, 9999)
+              : plotCursor.clamp(0, beatsLen));
+
+    final cast = participantIds ?? convo.participantIds;
+    final nextIdx = nextSpeakerIndex == null
+        ? null
+        : (cast.isEmpty ? 0 : nextSpeakerIndex.clamp(0, cast.length - 1));
+
+    final updated = convo.copyWith(
+      outline: outline,
+      authorNote: authorNote,
+      worldInfoIds: worldInfoIds,
+      plotCursor: nextCursor,
+      venue: venue,
+      participantIds: participantIds,
+      nextSpeakerIndex: nextIdx,
+    );
+    _set(_s.copyWith(conversations: _replace(updated)));
+    _persistSoon(
+      _enqueueWrite(
+        () => ref.read(conversationRepositoryProvider).saveConversation(updated),
+      ),
+    );
+  }
+
+  /// Nudge plot cursor by [delta] on the current story conversation.
+  void adjustPlotCursor(int delta) {
+    final convo = _s.current;
+    if (convo == null || !convo.isStory) return;
+    final beats = convo.outlineBeats;
+    final max = beats.isEmpty ? convo.plotCursor + delta.abs() + 1 : beats.length;
+    final next = (convo.plotCursor + delta).clamp(0, max);
+    updateStoryMeta(plotCursor: next);
+  }
+
+  /// Generate the next plot beat (visible user turn "（推进情节）").
+  Future<void> advancePlot() async {
+    if (_s.isStreaming || _starting) return;
+    final convo = _s.current;
+    if (convo == null || !convo.isStory) return;
+
+    _starting = true;
+    _cancelStart = false;
+    try {
+      final settings = await _readySettings();
+      if (settings == null || _cancelStart) return;
+      final config = _configFor(settings);
+
+      final parentId = convo.activePath.isEmpty
+          ? null
+          : convo.activePath.last.id;
+      final userMsg = ChatMessage(
+        role: MessageRole.user,
+        content: '（推进情节）',
+        parentId: parentId,
+      );
+      final assistantMsg = ChatMessage(
+        role: MessageRole.assistant,
+        content: '',
+        model: config.model,
+        parentId: userMsg.id,
+      );
+      final working = convo.copyWith(
+        messages: [...convo.messages, userMsg, assistantMsg],
+        activeChildren: {
+          ...convo.activeChildren,
+          parentId ?? kRootKey: userMsg.id,
+          userMsg.id: assistantMsg.id,
+        },
+      );
+
+      if (_cancelStart) return;
+
+      await _generate(
+        working: working,
+        assistantId: assistantMsg.id,
+        config: config,
+        settings: settings,
+        searchQuery: '',
+        thinking: _s.deepThink,
+        advancePlot: true,
+      );
+    } finally {
+      _starting = false;
+    }
+  }
+
+  /// One AI line from the next cast member (round-robin).
+  Future<void> ensembleNextTurn({String? forceCharacterId}) async {
+    if (_s.isStreaming || _starting) return;
+    final convo = _s.current;
+    if (convo == null || !convo.isEnsemble) return;
+    final castIds = convo.castIds;
+    if (castIds.length < 2) {
+      _set(_s.copyWith(error: '角色大乱斗需要至少 2 名角色。'));
+      return;
+    }
+
+    var index = forceCharacterId != null
+        ? castIds.indexOf(forceCharacterId)
+        : convo.nextSpeakerIndex % castIds.length;
+    if (index < 0) index = 0;
+    final speakerId = castIds[index];
+    final card = await ref.read(characterRepositoryProvider).getById(speakerId);
+    if (card == null) {
+      _set(_s.copyWith(error: '找不到角色卡，请检查参与名单。'));
+      return;
+    }
+
+    _starting = true;
+    _cancelStart = false;
+    try {
+      final settings = await _readySettings();
+      if (settings == null || _cancelStart) return;
+      final config = _configFor(settings);
+
+      final parentId = convo.activePath.isEmpty
+          ? null
+          : convo.activePath.last.id;
+      final assistantMsg = ChatMessage(
+        role: MessageRole.assistant,
+        content: '',
+        model: config.model,
+        parentId: parentId,
+        speakerId: card.id,
+        speakerName: card.name,
+      );
+      final nextIndex = (index + 1) % castIds.length;
+      final working = convo.copyWith(
+        messages: [...convo.messages, assistantMsg],
+        activeChildren: {
+          ...convo.activeChildren,
+          parentId ?? kRootKey: assistantMsg.id,
+        },
+        nextSpeakerIndex: nextIndex,
+      );
+
+      if (_cancelStart) return;
+
+      await _generate(
+        working: working,
+        assistantId: assistantMsg.id,
+        config: config,
+        settings: settings,
+        searchQuery: '',
+        thinking: _s.deepThink,
+        ensembleSpeaker: card,
+      );
+    } finally {
+      _starting = false;
+    }
+  }
+
+  /// Auto-run [rounds] ensemble turns (or until stop).
+  Future<void> ensembleAutoPlay({int rounds = 6}) async {
+    final n = rounds.clamp(1, 20);
+    for (var i = 0; i < n; i++) {
+      final current = _s.current;
+      if (current == null || !current.isEnsemble) return;
+      if (_s.isStreaming || _starting) return;
+      await ensembleNextTurn();
+      // Allow UI to settle between turns.
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+      final after = _s.current;
+      if (_cancelStart || after == null || !after.isEnsemble) return;
+      final err = _s.error;
+      if (err != null && err.isNotEmpty) return;
+    }
+  }
+
   void selectConversation(String id) {
     _set(_s.copyWith(currentId: id, error: null));
   }
@@ -314,6 +611,9 @@ class ChatController extends AsyncNotifier<ChatState> {
   }
 
   void stop({bool persist = true}) {
+    // Also abort a generation that has been accepted but has not yet set
+    // streamingConvoId (still awaiting settings / building the turn).
+    _cancelStart = true;
     final streamingId = _s.streamingConvoId;
     _flushActiveStream?.call();
     _sub?.cancel();
@@ -342,9 +642,10 @@ class ChatController extends AsyncNotifier<ChatState> {
       return false;
     }
     _starting = true;
+    _cancelStart = false;
     try {
       final settings = await _readySettings();
-      if (settings == null) return false;
+      if (settings == null || _cancelStart) return false;
       final config = _configFor(settings);
 
       final convo = _s.current ?? Conversation();
@@ -377,6 +678,8 @@ class ChatController extends AsyncNotifier<ChatState> {
           userMsg.id: assistantMsg.id,
         },
       );
+
+      if (_cancelStart) return false;
 
       await _generate(
         working: working,
@@ -416,9 +719,10 @@ class ChatController extends AsyncNotifier<ChatState> {
     if (old.role != MessageRole.user) return;
 
     _starting = true;
+    _cancelStart = false;
     try {
       final settings = await _readySettings();
-      if (settings == null) return;
+      if (settings == null || _cancelStart) return;
       final config = _configFor(settings);
 
       final userMsg = ChatMessage(
@@ -441,6 +745,8 @@ class ChatController extends AsyncNotifier<ChatState> {
           userMsg.id: assistantMsg.id,
         },
       );
+
+      if (_cancelStart) return;
 
       await _generate(
         working: working,
@@ -467,9 +773,10 @@ class ChatController extends AsyncNotifier<ChatState> {
     final userMsg = path[lastUser];
 
     _starting = true;
+    _cancelStart = false;
     try {
       final settings = await _readySettings();
-      if (settings == null) return;
+      if (settings == null || _cancelStart) return;
       final config = _configFor(settings);
 
       final assistantMsg = ChatMessage(
@@ -482,6 +789,8 @@ class ChatController extends AsyncNotifier<ChatState> {
         messages: [...convo.messages, assistantMsg],
         activeChildren: {...convo.activeChildren, userMsg.id: assistantMsg.id},
       );
+
+      if (_cancelStart) return;
 
       await _generate(
         working: working,
@@ -550,6 +859,8 @@ class ChatController extends AsyncNotifier<ChatState> {
     required SettingsState settings,
     required String searchQuery,
     required bool thinking,
+    bool advancePlot = false,
+    CharacterCard? ensembleSpeaker,
   }) async {
     final searchAllowed = _s.searchEnabled && searchQuery.trim().isNotEmpty;
     final useWebSearchTool = searchAllowed && config.capabilities.supportsTools;
@@ -598,7 +909,7 @@ class ChatController extends AsyncNotifier<ChatState> {
           apiKey: settings.searchApiKey,
         );
         searchContext = await engine.runSearch(
-          searchQuery.trim(),
+          normalizeSearchQuery(searchQuery),
           cancelToken: cancelToken,
         );
         if (searchContext.citations.isNotEmpty) {
@@ -642,17 +953,93 @@ class ChatController extends AsyncNotifier<ChatState> {
       );
     }
 
-    // Prepend the global preset/persona prompt as the very first system message
-    // (before history and any search context) when configured.
-    final preset = settings.systemPrompt.trim();
-    if (preset.isNotEmpty) {
-      history.insert(
-        0,
-        LlmRequestMessage(role: MessageRole.system, content: preset),
+    // System prefix: story / ensemble use the assembler; chat keeps global only.
+    if (cur.isStoryLike) {
+      final worldPool = cur.worldInfoIds.isEmpty
+          ? const <WorldInfoEntry>[]
+          : await ref
+                .read(worldInfoRepositoryProvider)
+                .loadByIds(cur.worldInfoIds);
+      final pathForScan = cur.activePath
+          .where((m) => m.id != assistantId)
+          .toList();
+
+      CharacterCard? card;
+      var cast = const <CharacterCard>[];
+      final ensemble = cur.isEnsemble && ensembleSpeaker != null;
+      if (ensemble) {
+        final loaded = <CharacterCard>[];
+        for (final id in cur.castIds) {
+          final c = await ref.read(characterRepositoryProvider).getById(id);
+          if (c != null) loaded.add(c);
+        }
+        cast = loaded;
+        card = ensembleSpeaker;
+      } else if (cur.characterId != null) {
+        card = await ref
+            .read(characterRepositoryProvider)
+            .getById(cur.characterId!);
+      }
+
+      // Rewrite history so ensemble lines are labeled by speaker for the model.
+      if (ensemble) {
+        final labeled = <LlmRequestMessage>[];
+        for (final m in pathForScan) {
+          if (m.role == MessageRole.assistant &&
+              (m.speakerName ?? '').isNotEmpty) {
+            labeled.add(
+              LlmRequestMessage(
+                role: MessageRole.assistant,
+                content: '【${m.speakerName}】${m.content}',
+              ),
+            );
+          } else {
+            labeled.add(_toRequestMessage(m, vision: vision));
+          }
+        }
+        history
+          ..clear()
+          ..addAll(labeled);
+        if (searchContext != null && searchContext.contextText.isNotEmpty) {
+          final insertAt = history.isEmpty ? 0 : history.length - 1;
+          history.insert(
+            insertAt,
+            LlmRequestMessage(
+              role: MessageRole.system,
+              content: searchContext.contextText,
+            ),
+          );
+        }
+      }
+
+      final prefix = const StoryPromptAssembler().buildSystemPrefix(
+        globalSystemPrompt: settings.systemPrompt,
+        character: card,
+        cast: cast,
+        speakingAs: ensembleSpeaker,
+        worldInfoPool: worldPool,
+        conversation: cur,
+        historyPath: pathForScan,
+        advancePlot: advancePlot,
+        ensembleTurn: ensemble,
       );
+      history.insertAll(0, prefix);
+    } else {
+      final preset = settings.systemPrompt.trim();
+      if (preset.isNotEmpty) {
+        history.insert(
+          0,
+          LlmRequestMessage(role: MessageRole.system, content: preset),
+        );
+      }
     }
 
-    await _streamAnswer(
+    if (!_s.isStreaming) {
+      await _persistById(working.id);
+      return;
+    }
+
+    final succeeded = await _streamAnswer(
       config: config,
       history: history,
       convoId: working.id,
@@ -663,13 +1050,31 @@ class ChatController extends AsyncNotifier<ChatState> {
       enableWebSearchTool: useWebSearchTool,
       cancelToken: cancelToken,
     );
+
+    // Auto-advance plot cursor only after a successful, non-cancelled stream.
+    if (succeeded && advancePlot && cur.isStory) {
+      final latest = _s.conversations.firstWhere(
+        (c) => c.id == working.id,
+        orElse: () => cur,
+      );
+      if (latest.isStory) {
+        final beats = latest.outlineBeats;
+        final next = beats.isEmpty
+            ? latest.plotCursor + 1
+            : (latest.plotCursor + 1).clamp(0, beats.length);
+        final updated = latest.copyWith(plotCursor: next);
+        _set(_s.copyWith(conversations: _replace(updated)));
+        await _persistById(working.id);
+      }
+    }
   }
 
   /// True when [e] is a cancellation raised by stop() firing the CancelToken.
   static bool _isCancel(Object e) =>
       e is DioException && CancelToken.isCancel(e);
 
-  Future<void> _streamAnswer({
+  /// Returns true when the stream finished with an answer (not cancelled/errored).
+  Future<bool> _streamAnswer({
     required LlmConfig config,
     required List<LlmRequestMessage> history,
     required String convoId,
@@ -689,6 +1094,7 @@ class ChatController extends AsyncNotifier<ChatState> {
     // once real answer content begins streaming.
     final thinkClock = Stopwatch();
     var thinkMillis = 0;
+    var succeeded = false;
 
     Timer? uiFlushTimer;
     var uiDirty = false;
@@ -798,7 +1204,7 @@ class ChatController extends AsyncNotifier<ChatState> {
         if (streamError != null) throw streamError!;
         if (!_s.isStreaming) {
           await _persistById(convoId);
-          return;
+          return false;
         }
 
         if (thinkClock.isRunning) {
@@ -815,7 +1221,8 @@ class ChatController extends AsyncNotifier<ChatState> {
         if (!needsTools) {
           _set(_s.copyWith(streamingConvoId: null, isSearching: false));
           await _persistById(convoId);
-          return;
+          succeeded = true;
+          return true;
         }
 
         if (toolCalls.isEmpty) {
@@ -848,7 +1255,7 @@ class ChatController extends AsyncNotifier<ChatState> {
         );
         if (!_s.isStreaming) {
           await _persistById(convoId);
-          return;
+          return false;
         }
         requestMessages.addAll(toolMessages);
       }
@@ -864,6 +1271,7 @@ class ChatController extends AsyncNotifier<ChatState> {
         ),
       );
       await _persistById(convoId);
+      return false;
     } finally {
       uiFlushTimer?.cancel();
       if (identical(_flushActiveStream, flushActiveStream)) {
@@ -872,6 +1280,7 @@ class ChatController extends AsyncNotifier<ChatState> {
       // Drop our token once finished so a later stop() can't cancel a stale one.
       if (identical(_cancelToken, cancelToken)) _cancelToken = null;
     }
+    return succeeded;
   }
 
   List<ToolCall> _finalizeToolCalls(Map<int, _ToolCallDraft> drafts) {
@@ -968,13 +1377,13 @@ class ChatController extends AsyncNotifier<ChatState> {
     try {
       final decoded = jsonDecode(raw);
       if (decoded is Map && decoded['query'] is String) {
-        final query = (decoded['query'] as String).trim();
+        final query = normalizeSearchQuery(decoded['query'] as String);
         if (query.isNotEmpty) return query;
       }
     } catch (_) {
       // Fall through to the user turn if the model returned malformed JSON.
     }
-    return fallback.trim();
+    return normalizeSearchQuery(fallback);
   }
 
   void _setCitations(String convoId, String msgId, List<Citation> citations) {

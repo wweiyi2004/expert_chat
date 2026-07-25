@@ -5,13 +5,22 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/mode_style.dart';
 import '../../core/providers.dart';
+import '../../core/workspace_layout.dart';
 import '../../data/models.dart';
+import '../../data/story_models.dart';
+import '../../data/ui_prefs.dart';
 import '../../domain/export/conversation_export.dart';
 import '../../domain/tools/file_parser.dart';
 import '../../domain/tools/local_file_reader.dart';
+import '../../state/character_controller.dart';
 import '../../state/chat_controller.dart';
-import '../settings/settings_page.dart';
+import '../../state/settings_controller.dart';
+import '../shell/shell_tab.dart';
+import '../story/ensemble_setup_page.dart';
+import '../story/story_panel.dart';
+import '../story/studio_page.dart';
 import 'widgets/attachment_chip.dart';
 import 'widgets/message_bubble.dart';
 
@@ -27,6 +36,13 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   final _scroll = ScrollController();
   final List<Attachment> _attachments = [];
   bool _picking = false;
+
+  /// Wide-layout tools pane (story / ensemble plot). Ignored on phone.
+  bool _toolsOpen = true;
+  /// Wide-layout history pane toggle (desktop).
+  bool _historyOpen = true;
+  double _historyWidth = WorkspacePaneDefaults.historyWidth;
+  double _toolsWidth = WorkspacePaneDefaults.toolsWidth;
 
   // Keep an accidental multi-select from consuming the device's memory,
   // context window, or API request budget. The parser additionally enforces
@@ -267,7 +283,17 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       return;
     }
     try {
-      final path = await ConversationExport.saveMarkdown(convo);
+      String? characterName;
+      if (convo.isStory && convo.characterId != null) {
+        final card = await ref
+            .read(characterRepositoryProvider)
+            .getById(convo.characterId!);
+        characterName = card?.name;
+      }
+      final path = await ConversationExport.saveMarkdown(
+        convo,
+        characterName: characterName,
+      );
       if (path != null && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -286,6 +312,18 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         );
       }
     }
+  }
+
+  String? _characterNameFor(Conversation? convo) {
+    if (convo == null || !convo.isStory || convo.characterId == null) {
+      return null;
+    }
+    final cards = ref.watch(characterCardsProvider).value;
+    if (cards == null) return null;
+    for (final c in cards) {
+      if (c.id == convo.characterId) return c.name;
+    }
+    return null;
   }
 
   /// Follow the latest content. Streaming uses an instant [jumpTo] so there is
@@ -320,8 +358,13 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     });
   }
 
-  /// Two-pane history is shown at/above this width; narrower uses a drawer.
-  static const double _twoPaneBreakpoint = 900;
+  void _openPlot(Conversation convo, {required bool canPinTools}) {
+    if (canPinTools) {
+      setState(() => _toolsOpen = true);
+      return;
+    }
+    showStoryPanel(context, convo);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -347,72 +390,279 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         autofocus: true,
         child: LayoutBuilder(
           builder: (context, constraints) {
-            final twoPane = constraints.maxWidth >= _twoPaneBreakpoint;
+            final dualPane =
+                constraints.maxWidth >= WorkspaceBreakpoints.dualPane;
+            final triplePane =
+                constraints.maxWidth >= WorkspaceBreakpoints.triplePane;
+            final storyLike =
+                current != null && (current.isStory || current.isEnsemble);
+            final showHistory = dualPane && _historyOpen;
+            final showTools = triplePane && storyLike && _toolsOpen;
             final scheme = Theme.of(context).colorScheme;
+            final speakerName = _characterNameFor(current);
+            final mode = current?.mode ?? ConversationMode.chat;
+            final modeColor = ModeStyle.color(mode);
+            final titleText = current?.isEnsemble == true
+                ? (current?.title ?? '角色大乱斗')
+                : current?.isStory == true
+                ? (speakerName ?? current?.title ?? '故事')
+                : (current?.title.isNotEmpty == true
+                      ? current!.title
+                      : 'Expert Chat');
+            final beats = current?.outlineBeats ?? const <String>[];
+            final beatProgress = current == null || !current.isStory
+                ? null
+                : beats.isEmpty
+                ? null
+                : '节拍 ${current.plotCursor.clamp(0, beats.length)}/${beats.length}';
             return Scaffold(
               appBar: AppBar(
-                titleSpacing: twoPane ? 20 : 8,
+                titleSpacing: dualPane ? 20 : 8,
                 title: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Container(
-                      width: 28,
-                      height: 28,
+                      width: 32,
+                      height: 32,
                       decoration: BoxDecoration(
-                        color: scheme.primary,
-                        borderRadius: BorderRadius.circular(10),
+                        color: modeColor.withValues(alpha: 0.14),
+                        borderRadius: BorderRadius.circular(11),
+                        border: Border.all(
+                          color: modeColor.withValues(alpha: 0.28),
+                        ),
                       ),
                       child: Icon(
-                        Icons.auto_awesome,
-                        size: 16,
-                        color: scheme.onPrimary,
+                        ModeStyle.icon(mode, outlined: false),
+                        size: 17,
+                        color: modeColor,
                       ),
                     ),
                     const SizedBox(width: 10),
-                    const Text('Expert Chat'),
+                    Flexible(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(titleText, overflow: TextOverflow.ellipsis),
+                          if (current != null && storyLike)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 2),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  _ModePill(
+                                    label: ModeStyle.label(mode),
+                                    color: modeColor,
+                                    icon: ModeStyle.icon(mode),
+                                  ),
+                                  if (beatProgress != null) ...[
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      beatProgress,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .labelSmall
+                                          ?.copyWith(
+                                            color: scheme.onSurfaceVariant,
+                                          ),
+                                    ),
+                                  ],
+                                  if (storyLike) ...[
+                                    const SizedBox(width: 6),
+                                    GestureDetector(
+                                      onTap: () => _openPlot(
+                                        current,
+                                        canPinTools: triplePane,
+                                      ),
+                                      child: Text(
+                                        '情节',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .labelSmall
+                                            ?.copyWith(
+                                              color: modeColor,
+                                              fontWeight: FontWeight.w700,
+                                            ),
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
                   ],
                 ),
                 bottom: PreferredSize(
                   preferredSize: const Size.fromHeight(1),
-                  child: Container(height: 1, color: scheme.outlineVariant),
+                  child: Container(
+                    height: 1,
+                    color: scheme.outlineVariant.withValues(alpha: 0.85),
+                  ),
                 ),
                 actions: [
-                  IconButton(
-                    tooltip: '新对话 (Ctrl+N)',
-                    icon: const Icon(Icons.add_comment_outlined),
-                    onPressed: controller.newConversation,
-                  ),
-                  IconButton(
-                    tooltip: '导出当前对话',
-                    icon: const Icon(Icons.ios_share),
-                    onPressed: () => _export(current),
-                  ),
-                  IconButton(
-                    tooltip: '设置',
-                    icon: const Icon(Icons.settings_outlined),
-                    onPressed: () => Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const SettingsPage()),
+                  if (dualPane)
+                    IconButton(
+                      tooltip: _historyOpen ? '隐藏会话列表' : '显示会话列表',
+                      icon: Icon(
+                        _historyOpen
+                            ? Icons.view_sidebar_outlined
+                            : Icons.view_sidebar,
+                      ),
+                      onPressed: () =>
+                          setState(() => _historyOpen = !_historyOpen),
                     ),
+                  if (triplePane && storyLike)
+                    IconButton(
+                      tooltip: _toolsOpen ? '隐藏情节面板' : '显示情节面板',
+                      icon: Icon(
+                        _toolsOpen
+                            ? Icons.vertical_split
+                            : Icons.vertical_split_outlined,
+                      ),
+                      onPressed: () => setState(() => _toolsOpen = !_toolsOpen),
+                    ),
+                  PopupMenuButton<String>(
+                    tooltip: '新建',
+                    icon: const Icon(Icons.add_comment_outlined),
+                    onSelected: (v) {
+                      if (v == 'chat') {
+                        controller.newConversation();
+                      } else if (v == 'story') {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) =>
+                                const StudioPage(pickCharacter: true),
+                          ),
+                        );
+                      } else if (v == 'ensemble') {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => const EnsembleSetupPage(),
+                          ),
+                        );
+                      }
+                    },
+                    itemBuilder: (_) => [
+                      PopupMenuItem(
+                        value: 'chat',
+                        child: ListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(
+                            ModeStyle.icon(ConversationMode.chat),
+                            color: ModeStyle.chat,
+                          ),
+                          title: Text(
+                            ModeStyle.longLabel(ConversationMode.chat),
+                          ),
+                        ),
+                      ),
+                      PopupMenuItem(
+                        value: 'story',
+                        child: ListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(
+                            ModeStyle.icon(ConversationMode.story),
+                            color: ModeStyle.story,
+                          ),
+                          title: Text(
+                            ModeStyle.longLabel(ConversationMode.story),
+                          ),
+                          subtitle: const Text('单角色开聊'),
+                        ),
+                      ),
+                      PopupMenuItem(
+                        value: 'ensemble',
+                        child: ListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(
+                            ModeStyle.icon(ConversationMode.ensemble),
+                            color: ModeStyle.ensemble,
+                          ),
+                          title: Text(
+                            ModeStyle.longLabel(ConversationMode.ensemble),
+                          ),
+                          subtitle: const Text('多角色同台对谈'),
+                        ),
+                      ),
+                    ],
+                  ),
+                  PopupMenuButton<String>(
+                    tooltip: '更多',
+                    icon: const Icon(Icons.more_horiz),
+                    onSelected: (v) {
+                      if (v == 'export') _export(current);
+                    },
+                    itemBuilder: (_) => const [
+                      PopupMenuItem(
+                        value: 'export',
+                        child: ListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(Icons.ios_share_outlined),
+                          title: Text('导出 Markdown'),
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
-              drawer: twoPane ? null : _HistoryDrawer(asyncState: asyncState),
+              drawer: dualPane ? null : _HistoryDrawer(asyncState: asyncState),
               body: Row(
                 children: [
-                  if (twoPane)
+                  if (showHistory) ...[
                     SizedBox(
-                      width: 300,
+                      width: _historyWidth,
                       child: _HistoryPanel(asyncState: asyncState),
                     ),
-                  if (twoPane) const VerticalDivider(width: 1),
+                    _PaneResizeHandle(
+                      onDrag: (dx) {
+                        setState(() {
+                          _historyWidth = (_historyWidth + dx).clamp(
+                            WorkspacePaneDefaults.historyMin,
+                            WorkspacePaneDefaults.historyMax,
+                          );
+                        });
+                      },
+                    ),
+                  ],
                   Expanded(
                     child: asyncState.when(
                       loading: () =>
                           const Center(child: CircularProgressIndicator()),
                       error: (e, _) => Center(child: Text('出错了：$e')),
-                      data: (state) => _chatColumn(state, controller),
+                      data: (state) => _chatColumn(
+                        state,
+                        controller,
+                        canPinTools: triplePane,
+                      ),
                     ),
                   ),
+                  if (showTools) ...[
+                    _PaneResizeHandle(
+                      onDrag: (dx) {
+                        setState(() {
+                          _toolsWidth = (_toolsWidth - dx).clamp(
+                            WorkspacePaneDefaults.toolsMin,
+                            WorkspacePaneDefaults.toolsMax,
+                          );
+                        });
+                      },
+                    ),
+                    SizedBox(
+                      width: _toolsWidth,
+                      child: StoryPanelBody(
+                        key: ValueKey('tools-${current.id}'),
+                        conversationId: current.id,
+                        embedded: true,
+                        onClose: () => setState(() => _toolsOpen = false),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             );
@@ -422,18 +672,55 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     );
   }
 
-  Widget _chatColumn(ChatState state, ChatController controller) {
+  Widget _chatColumn(
+    ChatState state,
+    ChatController controller, {
+    required bool canPinTools,
+  }) {
     final convo = state.current;
     final messages = convo?.activePath ?? const <ChatMessage>[];
     // Whether the in-flight generation (if any) belongs to THIS conversation;
     // another conversation's stream must not light up bubbles here.
     final streamingHere = convo != null && state.streamingConvoId == convo.id;
+    final speakerName = _characterNameFor(convo);
+    final needsSetup =
+        state.error != null && state.error!.contains('API Key');
+    final ui = ref.watch(settingsControllerProvider).maybeWhen(
+          data: (s) => s.ui,
+          orElse: () => const UiPrefs(),
+        );
+    final contentMax = ui.contentWidth.maxWidth;
+    final densityPad = ui.density == DensityPref.compact
+        ? const EdgeInsets.fromLTRB(16, 12, 16, 20)
+        : const EdgeInsets.fromLTRB(24, 18, 24, 28);
     return Column(
       children: [
         if (state.error != null)
           _ErrorBanner(
             message: state.error!,
             onRetry: state.isStreaming ? null : () => controller.retryLast(),
+            onOpenSettings: needsSetup
+                ? () => openShellTab(ref, 2)
+                : null,
+          ),
+        if (convo != null && convo.isStory)
+          _StorySessionBar(
+            conversation: convo,
+            characterName: speakerName,
+            onOpenPlot: () => _openPlot(convo, canPinTools: canPinTools),
+            onAdvance: state.isStreaming ? null : controller.advancePlot,
+            onNudgeBack: () => controller.adjustPlotCursor(-1),
+            onNudgeForward: () => controller.adjustPlotCursor(1),
+          ),
+        if (convo != null && convo.isEnsemble)
+          _EnsembleSessionBar(
+            conversation: convo,
+            busy: state.isStreaming,
+            onNext: state.isStreaming ? null : controller.ensembleNextTurn,
+            onAuto: state.isStreaming
+                ? null
+                : () => controller.ensembleAutoPlay(rounds: 6),
+            onOpenPlot: () => _openPlot(convo, canPinTools: canPinTools),
           ),
         Expanded(
           child: messages.isEmpty
@@ -442,10 +729,10 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                   children: [
                     Center(
                       child: ConstrainedBox(
-                        constraints: const BoxConstraints(maxWidth: 900),
+                        constraints: BoxConstraints(maxWidth: contentMax),
                         child: ListView.builder(
                           controller: _scroll,
-                          padding: const EdgeInsets.fromLTRB(24, 18, 24, 28),
+                          padding: densityPad,
                           itemCount: messages.length,
                           itemBuilder: (context, i) {
                             final m = messages[i];
@@ -460,6 +747,9 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                               key: ValueKey(m.id),
                               message: m,
                               isStreaming: streamingHere && isLastAssistant,
+                              speakerName: m.role == MessageRole.assistant
+                                  ? (m.speakerName ?? speakerName)
+                                  : null,
                               onRegenerate:
                                   (isLastAssistant && !state.isStreaming)
                                   ? controller.regenerate
@@ -475,6 +765,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                                   controller.switchBranch(m.id, -1),
                               onNextBranch: () =>
                                   controller.switchBranch(m.id, 1),
+                              messageStyle: ui.messageStyle,
+                              liveMarkdown: ui.liveMarkdown,
                             );
                           },
                         ),
@@ -502,6 +794,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
           isSearching: state.isSearching,
           attachments: _attachments,
           picking: _picking,
+          storyLike: convo != null && (convo.isStory || convo.isEnsemble),
           onToggleDeepThink: controller.toggleDeepThink,
           onToggleSearch: controller.toggleSearch,
           onPickFiles: _pickFiles,
@@ -523,6 +816,7 @@ class _Composer extends StatelessWidget {
     required this.isSearching,
     required this.attachments,
     required this.picking,
+    required this.storyLike,
     required this.onToggleDeepThink,
     required this.onToggleSearch,
     required this.onPickFiles,
@@ -538,6 +832,7 @@ class _Composer extends StatelessWidget {
   final bool isSearching;
   final List<Attachment> attachments;
   final bool picking;
+  final bool storyLike;
   final VoidCallback onToggleDeepThink;
   final VoidCallback onToggleSearch;
   final VoidCallback onPickFiles;
@@ -548,10 +843,13 @@ class _Composer extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final hint = storyLike ? '续写反应，或输入旁白…' : '写下你的想法…';
     return Container(
       decoration: BoxDecoration(
-        color: scheme.surface,
-        border: Border(top: BorderSide(color: scheme.outlineVariant)),
+        color: scheme.surface.withValues(alpha: 0.94),
+        border: Border(
+          top: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.9)),
+        ),
       ),
       child: SafeArea(
         top: false,
@@ -559,174 +857,72 @@ class _Composer extends StatelessWidget {
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 900),
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
-              child: Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: scheme.surfaceContainer,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: scheme.outlineVariant),
-                  boxShadow: [
-                    BoxShadow(
-                      color: scheme.shadow.withValues(alpha: 0.06),
-                      blurRadius: 18,
-                      offset: const Offset(0, 8),
-                    ),
-                  ],
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    if (attachments.isNotEmpty)
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 8),
-                        child: Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
-                          children: [
-                            for (final a in attachments)
-                              AttachmentChip(
-                                attachment: a,
-                                onRemove: () => onRemoveAttachment(a.id),
-                              ),
-                          ],
-                        ),
-                      ),
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.end,
+              padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // Tool row above the field (wireframe: horizontal tools).
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
                       children: [
-                        Expanded(
-                          child: CallbackShortcuts(
-                            bindings: {
-                              const SingleActivator(
-                                LogicalKeyboardKey.enter,
-                              ): () {
-                                // Don't fire while an IME composition (拼音
-                                // 候选) is in progress — that Enter belongs to
-                                // the input method, not "send".
-                                if (!isStreaming &&
-                                    !controller.value.composing.isValid) {
-                                  onSend();
-                                }
-                              },
-                            },
-                            child: TextField(
-                              controller: controller,
-                              minLines: 1,
-                              maxLines: 6,
-                              textInputAction: TextInputAction.newline,
-                              decoration: const InputDecoration(
-                                hintText: '给 Expert Chat 发消息...',
-                                filled: false,
-                                border: InputBorder.none,
-                                enabledBorder: InputBorder.none,
-                                focusedBorder: InputBorder.none,
-                                contentPadding: EdgeInsets.symmetric(
-                                  horizontal: 4,
-                                  vertical: 8,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        isStreaming
-                            ? IconButton.filled(
-                                onPressed: onStop,
-                                icon: const Icon(Icons.stop),
-                                tooltip: '停止',
-                                style: IconButton.styleFrom(
-                                  fixedSize: const Size.square(48),
-                                  backgroundColor: scheme.errorContainer,
-                                  foregroundColor: scheme.onErrorContainer,
-                                ),
-                              )
-                            : IconButton.filled(
-                                onPressed: onSend,
-                                icon: const Icon(Icons.arrow_upward),
-                                tooltip: '发送',
-                                style: IconButton.styleFrom(
-                                  fixedSize: const Size.square(48),
-                                  backgroundColor: scheme.primary,
-                                  foregroundColor: scheme.onPrimary,
-                                ),
-                              ),
-                      ],
-                    ),
-                    const SizedBox(height: 6),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 6,
-                      crossAxisAlignment: WrapCrossAlignment.center,
-                      children: [
-                        IconButton(
+                        _ComposerToolButton(
+                          tooltip: '上传文件（最多 5 个，单个最大 10 MB）',
                           onPressed: (isStreaming || picking)
                               ? null
                               : onPickFiles,
-                          tooltip: '上传文件（最多 5 个，单个最大 10 MB）',
-                          icon: picking
-                              ? const SizedBox(
+                          child: picking
+                              ? SizedBox(
                                   width: 18,
                                   height: 18,
                                   child: CircularProgressIndicator(
                                     strokeWidth: 2,
+                                    color: scheme.primary,
                                   ),
                                 )
-                              : const Icon(Icons.attach_file),
-                          style: IconButton.styleFrom(
-                            fixedSize: const Size.square(48),
-                            backgroundColor: scheme.surfaceContainerHighest,
-                            foregroundColor: scheme.primary,
-                          ),
+                              : Icon(
+                                  Icons.attach_file_rounded,
+                                  size: 20,
+                                  color: scheme.primary,
+                                ),
                         ),
-                        FilterChip(
+                        const SizedBox(width: 8),
+                        _ComposerToggleChip(
                           selected: deepThink,
-                          showCheckmark: false,
-                          avatar: Icon(
-                            Icons.psychology_outlined,
-                            size: 18,
-                            color: deepThink
-                                ? scheme.primary
-                                : scheme.onSurfaceVariant,
-                          ),
-                          label: const Text('深度思考'),
+                          icon: Icons.psychology_outlined,
+                          label: '深度思考',
                           tooltip: '开启后本次对话使用深度推理模型',
-                          onSelected: (_) => onToggleDeepThink(),
+                          onSelected: onToggleDeepThink,
                         ),
-                        FilterChip(
+                        const SizedBox(width: 8),
+                        _ComposerToggleChip(
                           selected: searchEnabled,
-                          showCheckmark: false,
-                          avatar: Icon(
-                            Icons.travel_explore,
-                            size: 18,
-                            color: searchEnabled
-                                ? scheme.primary
-                                : scheme.onSurfaceVariant,
-                          ),
-                          label: const Text('联网'),
+                          icon: Icons.travel_explore,
+                          label: '联网',
                           tooltip:
-                              '开启后模型可按需联网搜索；默认用免费 DuckDuckGo（无需 Key），'
-                              '也可在设置中改用 Tavily / Exa / 博查 等带 Key 的后端',
-                          onSelected: (_) => onToggleSearch(),
+                              '开启后可按需联网搜索；默认 DuckDuckGo，也可在「我的」配置 Tavily 等',
+                          onSelected: onToggleSearch,
                         ),
-                        if (isSearching)
+                        if (isSearching) ...[
+                          const SizedBox(width: 8),
                           Container(
                             padding: const EdgeInsets.symmetric(
                               horizontal: 10,
-                              vertical: 6,
+                              vertical: 7,
                             ),
                             decoration: BoxDecoration(
-                              color: scheme.surfaceContainerHighest,
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(color: scheme.outlineVariant),
+                              color: scheme.primaryContainer.withValues(
+                                alpha: 0.55,
+                              ),
+                              borderRadius: BorderRadius.circular(999),
                             ),
                             child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
                                 SizedBox(
-                                  width: 13,
-                                  height: 13,
+                                  width: 12,
+                                  height: 12,
                                   child: CircularProgressIndicator(
                                     strokeWidth: 2,
                                     color: scheme.primary,
@@ -737,20 +933,241 @@ class _Composer extends StatelessWidget {
                                   '正在联网搜索',
                                   style: TextStyle(
                                     fontSize: 12,
-                                    color: scheme.onSurfaceVariant,
+                                    color: scheme.onPrimaryContainer,
+                                    fontWeight: FontWeight.w600,
                                   ),
                                 ),
                               ],
                             ),
                           ),
+                        ],
                       ],
                     ),
-                  ],
-                ),
+                  ),
+                  const SizedBox(height: 8),
+                  Container(
+                    padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+                    decoration: BoxDecoration(
+                      color: scheme.surfaceContainer,
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: scheme.outlineVariant.withValues(alpha: 0.95),
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: scheme.shadow.withValues(alpha: 0.06),
+                          blurRadius: 18,
+                          offset: const Offset(0, 8),
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (attachments.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 8),
+                            child: Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              children: [
+                                for (final a in attachments)
+                                  AttachmentChip(
+                                    attachment: a,
+                                    onRemove: () => onRemoveAttachment(a.id),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            Expanded(
+                              child: CallbackShortcuts(
+                                bindings: {
+                                  const SingleActivator(
+                                    LogicalKeyboardKey.enter,
+                                  ): () {
+                                    if (!isStreaming &&
+                                        !controller.value.composing.isValid) {
+                                      onSend();
+                                    }
+                                  },
+                                },
+                                child: TextField(
+                                  controller: controller,
+                                  minLines: 1,
+                                  maxLines: 6,
+                                  textInputAction: TextInputAction.newline,
+                                  decoration: InputDecoration(
+                                    hintText: hint,
+                                    filled: false,
+                                    border: InputBorder.none,
+                                    enabledBorder: InputBorder.none,
+                                    focusedBorder: InputBorder.none,
+                                    contentPadding: const EdgeInsets.symmetric(
+                                      horizontal: 6,
+                                      vertical: 10,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            isStreaming
+                                ? IconButton.filled(
+                                    onPressed: onStop,
+                                    icon: const Icon(Icons.stop_rounded),
+                                    tooltip: '停止',
+                                    style: IconButton.styleFrom(
+                                      fixedSize: const Size.square(44),
+                                      backgroundColor: scheme.errorContainer,
+                                      foregroundColor: scheme.onErrorContainer,
+                                    ),
+                                  )
+                                : IconButton.filled(
+                                    onPressed: onSend,
+                                    icon: const Icon(
+                                      Icons.arrow_upward_rounded,
+                                    ),
+                                    tooltip: '发送',
+                                    style: IconButton.styleFrom(
+                                      fixedSize: const Size.square(44),
+                                      backgroundColor: scheme.primary,
+                                      foregroundColor: scheme.onPrimary,
+                                    ),
+                                  ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _ComposerToolButton extends StatelessWidget {
+  const _ComposerToolButton({
+    required this.child,
+    required this.onPressed,
+    required this.tooltip,
+  });
+
+  final Widget child;
+  final VoidCallback? onPressed;
+  final String tooltip;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          onTap: onPressed,
+          borderRadius: BorderRadius.circular(12),
+          child: SizedBox(width: 36, height: 36, child: Center(child: child)),
+        ),
+      ),
+    );
+  }
+}
+
+class _ComposerToggleChip extends StatelessWidget {
+  const _ComposerToggleChip({
+    required this.selected,
+    required this.icon,
+    required this.label,
+    required this.tooltip,
+    required this.onSelected,
+  });
+
+  final bool selected;
+  final IconData icon;
+  final String label;
+  final String tooltip;
+  final VoidCallback onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final fg = selected ? scheme.primary : scheme.onSurfaceVariant;
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: selected
+            ? scheme.primaryContainer.withValues(alpha: 0.75)
+            : scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(999),
+        child: InkWell(
+          onTap: onSelected,
+          borderRadius: BorderRadius.circular(999),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon, size: 18, color: fg),
+                const SizedBox(width: 6),
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: fg,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ModePill extends StatelessWidget {
+  const _ModePill({
+    required this.label,
+    required this.color,
+    required this.icon,
+  });
+
+  final String label;
+  final Color color;
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 12, color: color),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: color,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -775,6 +1192,8 @@ class _HistoryPanel extends ConsumerStatefulWidget {
 
 class _HistoryPanelState extends ConsumerState<_HistoryPanel> {
   String _query = '';
+  /// null = all modes.
+  ConversationMode? _modeFilter;
   String? _renamingId; // id of the conversation being renamed inline
   final _renameCtrl = TextEditingController();
   Timer? _searchDebounce;
@@ -794,6 +1213,7 @@ class _HistoryPanelState extends ConsumerState<_HistoryPanel> {
   }
 
   bool _matches(Conversation c, String q) {
+    if (_modeFilter != null && c.mode != _modeFilter) return false;
     if (q.isEmpty) return true;
     final lower = q.toLowerCase();
     if (c.title.toLowerCase().contains(lower)) return true;
@@ -864,51 +1284,109 @@ class _HistoryPanelState extends ConsumerState<_HistoryPanel> {
         if (_matches(c, _query)) c,
     ];
 
+    // Header is a solid, non-scrolling block so list items never paint under
+    // the filter chips (and Wrap keeps 乱斗 visible without horizontal scroll).
+    final header = Material(
+      color: scheme.surfaceContainerLow.withValues(alpha: 0.98),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 8, 6),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    '会话',
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                ),
+                IconButton(
+                  tooltip: '新建普通对话',
+                  onPressed: () {
+                    controller.newConversation();
+                    _closeDrawerIfAny();
+                  },
+                  icon: Icon(Icons.add, color: scheme.primary),
+                ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _ModeFilterChip(
+                  label: '全部',
+                  selected: _modeFilter == null,
+                  onSelected: () => setState(() => _modeFilter = null),
+                ),
+                for (final mode in ConversationMode.values)
+                  _ModeFilterChip(
+                    label: ModeStyle.label(mode),
+                    color: ModeStyle.color(mode),
+                    icon: ModeStyle.icon(mode),
+                    selected: _modeFilter == mode,
+                    onSelected: () => setState(() => _modeFilter = mode),
+                  ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+            child: TextField(
+              decoration: InputDecoration(
+                isDense: true,
+                prefixIcon: const Icon(Icons.search, size: 20),
+                hintText: '搜索标题或正文…',
+                filled: true,
+                fillColor: scheme.surfaceContainer,
+              ),
+              onChanged: _scheduleSearch,
+            ),
+          ),
+          Divider(
+            height: 1,
+            color: scheme.outlineVariant.withValues(alpha: 0.85),
+          ),
+        ],
+      ),
+    );
+
     return Material(
-      color: scheme.surfaceContainerHighest.withValues(alpha: 0.45),
+      color: scheme.surfaceContainerLow.withValues(alpha: 0.92),
       child: SafeArea(
         child: Column(
           children: [
-            const Padding(
-              padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  '历史对话',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
-                ),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
-              child: TextField(
-                decoration: const InputDecoration(
-                  isDense: true,
-                  prefixIcon: Icon(Icons.search, size: 20),
-                  hintText: '搜索对话…',
-                ),
-                onChanged: _scheduleSearch,
-              ),
-            ),
+            header,
             Expanded(
               child: visible.isEmpty
-                  ? const Center(
-                      child: Text('没有匹配的对话', style: TextStyle(fontSize: 13)),
+                  ? Center(
+                      child: Text(
+                        '没有匹配的会话',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
                     )
                   : ListView.builder(
+                      padding: const EdgeInsets.fromLTRB(8, 8, 8, 16),
                       itemCount: visible.length,
                       itemBuilder: (context, index) {
                         final c = visible[index];
+                        final modeColor = ModeStyle.color(c.mode);
                         if (c.id == _renamingId) {
-                          // Inline rename — no occluding dialog.
                           return Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 8,
-                              vertical: 2,
-                            ),
+                            padding: const EdgeInsets.symmetric(vertical: 2),
                             child: ListTile(
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14),
+                              ),
                               tileColor: scheme.surfaceContainer,
-                              leading: const Icon(Icons.chat_bubble_outline),
+                              leading: Icon(
+                                ModeStyle.icon(c.mode),
+                                color: modeColor,
+                              ),
                               title: TextField(
                                 controller: _renameCtrl,
                                 autofocus: true,
@@ -925,44 +1403,142 @@ class _HistoryPanelState extends ConsumerState<_HistoryPanel> {
                             ),
                           );
                         }
+                        final selected = c.id == state?.currentId;
+                        final preview = _conversationPreview(c);
+                        final timeLabel = _relativeTime(c.updatedAt);
                         return Padding(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 2,
-                          ),
-                          child: ListTile(
-                            selected: c.id == state?.currentId,
-                            tileColor: scheme.surfaceContainer,
-                            leading: const Icon(Icons.chat_bubble_outline),
-                            title: Text(
-                              c.title,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            trailing: PopupMenuButton<String>(
-                              icon: const Icon(Icons.more_horiz, size: 20),
-                              onSelected: (v) {
-                                if (v == 'rename') _startRename(c);
-                                if (v == 'delete') _confirmDelete(c);
+                          padding: const EdgeInsets.symmetric(vertical: 2),
+                          child: Material(
+                            color: selected
+                                ? scheme.primaryContainer.withValues(
+                                    alpha: 0.45,
+                                  )
+                                : scheme.surfaceContainer,
+                            borderRadius: BorderRadius.circular(14),
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(14),
+                              onTap: () {
+                                controller.selectConversation(c.id);
+                                _closeDrawerIfAny();
                               },
-                              itemBuilder: (_) => [
-                                const PopupMenuItem(
-                                  value: 'rename',
-                                  child: Text('重命名'),
+                              child: Padding(
+                                padding: const EdgeInsets.fromLTRB(
+                                  10,
+                                  10,
+                                  4,
+                                  10,
                                 ),
-                                PopupMenuItem(
-                                  value: 'delete',
-                                  child: Text(
-                                    '删除',
-                                    style: TextStyle(color: scheme.error),
-                                  ),
+                                child: Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Container(
+                                      width: 36,
+                                      height: 36,
+                                      decoration: BoxDecoration(
+                                        color: modeColor.withValues(
+                                          alpha: 0.12,
+                                        ),
+                                        borderRadius: BorderRadius.circular(11),
+                                      ),
+                                      child: Icon(
+                                        ModeStyle.icon(c.mode),
+                                        size: 18,
+                                        color: modeColor,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 10),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            c.title,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: Theme.of(context)
+                                                .textTheme
+                                                .titleSmall
+                                                ?.copyWith(
+                                                  fontWeight: FontWeight.w700,
+                                                ),
+                                          ),
+                                          if (preview.isNotEmpty) ...[
+                                            const SizedBox(height: 3),
+                                            Text(
+                                              preview,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: Theme.of(context)
+                                                  .textTheme
+                                                  .bodySmall
+                                                  ?.copyWith(
+                                                    color: scheme
+                                                        .onSurfaceVariant,
+                                                  ),
+                                            ),
+                                          ],
+                                          const SizedBox(height: 4),
+                                          Text(
+                                            ModeStyle.label(c.mode),
+                                            style: TextStyle(
+                                              fontSize: 11,
+                                              color: modeColor,
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.end,
+                                      children: [
+                                        Text(
+                                          timeLabel,
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .labelSmall
+                                              ?.copyWith(
+                                                color: scheme.onSurfaceVariant,
+                                              ),
+                                        ),
+                                        PopupMenuButton<String>(
+                                          icon: const Icon(
+                                            Icons.more_horiz,
+                                            size: 20,
+                                          ),
+                                          padding: EdgeInsets.zero,
+                                          onSelected: (v) {
+                                            if (v == 'rename') {
+                                              _startRename(c);
+                                            }
+                                            if (v == 'delete') {
+                                              _confirmDelete(c);
+                                            }
+                                          },
+                                          itemBuilder: (_) => [
+                                            const PopupMenuItem(
+                                              value: 'rename',
+                                              child: Text('重命名'),
+                                            ),
+                                            PopupMenuItem(
+                                              value: 'delete',
+                                              child: Text(
+                                                '删除',
+                                                style: TextStyle(
+                                                  color: scheme.error,
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ],
+                                    ),
+                                  ],
                                 ),
-                              ],
+                              ),
                             ),
-                            onTap: () {
-                              controller.selectConversation(c.id);
-                              _closeDrawerIfAny();
-                            },
                           ),
                         );
                       },
@@ -975,10 +1551,321 @@ class _HistoryPanelState extends ConsumerState<_HistoryPanel> {
   }
 }
 
+String _conversationPreview(Conversation c) {
+  final path = c.activePath;
+  for (var i = path.length - 1; i >= 0; i--) {
+    final text = path[i].content.trim().replaceAll(RegExp(r'\s+'), ' ');
+    if (text.isNotEmpty) {
+      return text.length > 48 ? '${text.substring(0, 48)}…' : text;
+    }
+  }
+  return '';
+}
+
+String _relativeTime(DateTime when) {
+  final now = DateTime.now();
+  final diff = now.difference(when);
+  if (diff.inMinutes < 1) return '刚刚';
+  if (diff.inMinutes < 60) return '${diff.inMinutes} 分钟';
+  if (diff.inHours < 24) return '${diff.inHours} 小时';
+  if (diff.inDays == 1) return '昨天';
+  if (diff.inDays < 7) return '${diff.inDays} 天前';
+  final y = when.year.toString().padLeft(4, '0');
+  final m = when.month.toString().padLeft(2, '0');
+  final d = when.day.toString().padLeft(2, '0');
+  return '$y-$m-$d';
+}
+
+class _ModeFilterChip extends StatelessWidget {
+  const _ModeFilterChip({
+    required this.label,
+    required this.selected,
+    required this.onSelected,
+    this.color,
+    this.icon,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onSelected;
+  final Color? color;
+  final IconData? icon;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final accent = color ?? scheme.primary;
+    return FilterChip(
+      selected: selected,
+      showCheckmark: false,
+      avatar: icon == null
+          ? null
+          : Icon(icon, size: 16, color: selected ? accent : scheme.onSurfaceVariant),
+      label: Text(label),
+      onSelected: (_) => onSelected(),
+      selectedColor: accent.withValues(alpha: 0.16),
+      labelStyle: TextStyle(
+        fontSize: 12,
+        fontWeight: FontWeight.w600,
+        color: selected ? accent : scheme.onSurfaceVariant,
+      ),
+      side: BorderSide(
+        color: selected
+            ? accent.withValues(alpha: 0.35)
+            : scheme.outlineVariant,
+      ),
+      visualDensity: VisualDensity.compact,
+      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+    );
+  }
+}
+
+/// Ensemble controls: next speaker / auto-play / venue.
+class _EnsembleSessionBar extends StatelessWidget {
+  const _EnsembleSessionBar({
+    required this.conversation,
+    required this.busy,
+    required this.onNext,
+    required this.onAuto,
+    required this.onOpenPlot,
+  });
+
+  final Conversation conversation;
+  final bool busy;
+  final VoidCallback? onNext;
+  final VoidCallback? onAuto;
+  final VoidCallback onOpenPlot;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final accent = ModeStyle.ensemble;
+    final cast = conversation.castIds;
+    final idx = cast.isEmpty
+        ? 0
+        : conversation.nextSpeakerIndex.clamp(0, cast.length - 1);
+    final venue = conversation.venue.trim().isEmpty
+        ? '未设场地'
+        : conversation.venue.trim();
+
+    return Material(
+      color: Color.lerp(scheme.surface, accent, 0.08),
+      child: Container(
+        decoration: BoxDecoration(
+          border: Border(
+            bottom: BorderSide(
+              color: scheme.outlineVariant.withValues(alpha: 0.85),
+            ),
+          ),
+        ),
+        padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+        child: Row(
+          children: [
+            Icon(ModeStyle.icon(ConversationMode.ensemble), size: 18, color: accent),
+            const SizedBox(width: 8),
+            Expanded(
+              child: InkWell(
+                onTap: onOpenPlot,
+                borderRadius: BorderRadius.circular(10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '下一位 · #${idx + 1} / ${cast.length}',
+                      style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    Text(
+                      venue,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            _SessionMiniButton(
+              label: busy ? '发言中' : '下一角色',
+              filled: true,
+              color: accent,
+              onPressed: onNext,
+            ),
+            const SizedBox(width: 6),
+            _SessionMiniButton(
+              label: '自动 ×6',
+              onPressed: onAuto,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Always-visible story controls: current beat + plot settings + advance.
+class _StorySessionBar extends StatelessWidget {
+  const _StorySessionBar({
+    required this.conversation,
+    required this.characterName,
+    required this.onOpenPlot,
+    required this.onAdvance,
+    required this.onNudgeBack,
+    required this.onNudgeForward,
+  });
+
+  final Conversation conversation;
+  final String? characterName;
+  final VoidCallback onOpenPlot;
+  final VoidCallback? onAdvance;
+  final VoidCallback onNudgeBack;
+  final VoidCallback onNudgeForward;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final accent = ModeStyle.story;
+    final beats = conversation.outlineBeats;
+    final cursor = conversation.plotCursor;
+    final progress = beats.isEmpty
+        ? '无大纲'
+        : '${cursor.clamp(0, beats.length)}/${beats.length}';
+    final beatText = beats.isEmpty
+        ? (conversation.authorNote.trim().isEmpty
+              ? '点「情节」写大纲与导演指令'
+              : '导演指令已设置 · 可写大纲后推进')
+        : cursor < beats.length
+        ? beats[cursor.clamp(0, beats.length - 1)]
+        : '大纲已走完';
+
+    return Material(
+      color: Color.lerp(scheme.surface, accent, 0.08),
+      child: Container(
+        decoration: BoxDecoration(
+          border: Border(
+            bottom: BorderSide(
+              color: scheme.outlineVariant.withValues(alpha: 0.85),
+            ),
+          ),
+        ),
+        padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+        child: Row(
+          children: [
+            Icon(Icons.timeline, size: 18, color: accent),
+            const SizedBox(width: 8),
+            Expanded(
+              child: InkWell(
+                onTap: onOpenPlot,
+                borderRadius: BorderRadius.circular(10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      [
+                        if (characterName != null && characterName!.isNotEmpty)
+                          characterName!,
+                        '节拍 $progress',
+                      ].join(' · '),
+                      style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    Text(
+                      beatText,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            IconButton(
+              tooltip: '回退一拍',
+              visualDensity: VisualDensity.compact,
+              onPressed: onNudgeBack,
+              icon: const Icon(Icons.chevron_left, size: 22),
+            ),
+            _SessionMiniButton(
+              label: '推进情节',
+              filled: true,
+              color: accent,
+              onPressed: onAdvance,
+            ),
+            IconButton(
+              tooltip: '前进一拍',
+              visualDensity: VisualDensity.compact,
+              onPressed: onNudgeForward,
+              icon: const Icon(Icons.chevron_right, size: 22),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SessionMiniButton extends StatelessWidget {
+  const _SessionMiniButton({
+    required this.label,
+    required this.onPressed,
+    this.filled = false,
+    this.color,
+  });
+
+  final String label;
+  final VoidCallback? onPressed;
+  final bool filled;
+  final Color? color;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final accent = color ?? scheme.primary;
+    if (filled) {
+      return FilledButton(
+        onPressed: onPressed,
+        style: FilledButton.styleFrom(
+          backgroundColor: accent,
+          foregroundColor: Colors.white,
+          visualDensity: VisualDensity.compact,
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          minimumSize: const Size(0, 34),
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        ),
+        child: Text(label, style: const TextStyle(fontSize: 12)),
+      );
+    }
+    return OutlinedButton(
+      onPressed: onPressed,
+      style: OutlinedButton.styleFrom(
+        visualDensity: VisualDensity.compact,
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        minimumSize: const Size(0, 34),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        side: BorderSide(color: scheme.outlineVariant),
+      ),
+      child: Text(label, style: const TextStyle(fontSize: 12)),
+    );
+  }
+}
+
 class _ErrorBanner extends StatelessWidget {
-  const _ErrorBanner({required this.message, this.onRetry});
+  const _ErrorBanner({
+    required this.message,
+    this.onRetry,
+    this.onOpenSettings,
+  });
   final String message;
   final VoidCallback? onRetry;
+  final VoidCallback? onOpenSettings;
 
   @override
   Widget build(BuildContext context) {
@@ -997,6 +1884,14 @@ class _ErrorBanner extends StatelessWidget {
               style: TextStyle(color: scheme.onErrorContainer),
             ),
           ),
+          if (onOpenSettings != null)
+            TextButton(
+              onPressed: onOpenSettings,
+              style: TextButton.styleFrom(
+                foregroundColor: scheme.onErrorContainer,
+              ),
+              child: const Text('去填写'),
+            ),
           if (onRetry != null)
             TextButton.icon(
               onPressed: onRetry,
@@ -1007,6 +1902,35 @@ class _ErrorBanner extends StatelessWidget {
               ),
             ),
         ],
+      ),
+    );
+  }
+}
+
+/// Thin drag strip between workspace panes.
+class _PaneResizeHandle extends StatelessWidget {
+  const _PaneResizeHandle({required this.onDrag});
+
+  final ValueChanged<double> onDrag;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return MouseRegion(
+      cursor: SystemMouseCursors.resizeColumn,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onHorizontalDragUpdate: (d) => onDrag(d.delta.dx),
+        child: Container(
+          width: 6,
+          color: Colors.transparent,
+          child: Center(
+            child: Container(
+              width: 1,
+              color: scheme.outlineVariant.withValues(alpha: 0.9),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -1027,16 +1951,19 @@ class _JumpToBottomButton extends StatelessWidget {
       child: Tooltip(
         message: '回到最新消息',
         child: Material(
-          color: scheme.surfaceContainerHighest,
-          elevation: 2,
-          shape: CircleBorder(side: BorderSide(color: scheme.outlineVariant)),
+          color: scheme.surfaceContainer,
+          elevation: 3,
+          shadowColor: scheme.shadow.withValues(alpha: 0.2),
+          shape: CircleBorder(
+            side: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.9)),
+          ),
           clipBehavior: Clip.antiAlias,
           child: InkWell(
             onTap: onTap,
             child: Padding(
               padding: const EdgeInsets.all(14),
               child: Icon(
-                Icons.arrow_downward,
+                Icons.arrow_downward_rounded,
                 size: 20,
                 color: scheme.primary,
               ),
@@ -1055,20 +1982,60 @@ class _EmptyState extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.auto_awesome_outlined, size: 48, color: scheme.primary),
-          const SizedBox(height: 16),
-          Text('开始一段对话', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 8),
-          Text(
-            '在下方输入消息，或在设置中配置 API Key',
-            style: Theme.of(
-              context,
-            ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 360),
+        child: Container(
+          margin: const EdgeInsets.all(24),
+          padding: const EdgeInsets.fromLTRB(28, 28, 28, 24),
+          decoration: BoxDecoration(
+            color: scheme.surfaceContainer.withValues(alpha: 0.88),
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(
+              color: scheme.outlineVariant.withValues(alpha: 0.9),
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: scheme.shadow.withValues(alpha: 0.05),
+                blurRadius: 24,
+                offset: const Offset(0, 10),
+              ),
+            ],
           ),
-        ],
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 56,
+                height: 56,
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      scheme.primary,
+                      Color.lerp(scheme.primary, scheme.secondary, 0.35)!,
+                    ],
+                  ),
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                child: Icon(
+                  Icons.auto_awesome,
+                  color: scheme.onPrimary,
+                  size: 28,
+                ),
+              ),
+              const SizedBox(height: 18),
+              Text('开始一段对话', style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 8),
+              Text(
+                '在下方输入消息；API Key 在底栏「我的」里配置。\n也可点右上角新建：普通对话 / 角色故事 / 大乱斗。',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: scheme.onSurfaceVariant,
+                  height: 1.5,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

@@ -7,11 +7,14 @@ import 'package:dio/dio.dart' show CancelToken;
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:expert_chat/core/providers.dart';
+import 'package:expert_chat/data/character_repository.dart';
 import 'package:expert_chat/data/conversation_repository.dart';
 import 'package:expert_chat/data/db/app_database.dart' show AppDatabase;
 import 'package:expert_chat/data/drift_conversation_repository.dart';
 import 'package:expert_chat/data/models.dart';
 import 'package:expert_chat/data/provider_profile.dart';
+import 'package:expert_chat/data/story_models.dart';
+import 'package:expert_chat/data/world_info_repository.dart';
 import 'package:expert_chat/domain/export/conversation_export.dart';
 import 'package:expert_chat/domain/llm/llm_provider.dart';
 import 'package:expert_chat/domain/tools/file_parser.dart';
@@ -21,7 +24,11 @@ import 'package:expert_chat/features/chat/chat_page.dart';
 import 'package:expert_chat/state/chat_controller.dart';
 import 'package:expert_chat/state/settings_controller.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:flutter_secure_storage/test/test_flutter_secure_storage_platform.dart';
+import 'package:flutter_secure_storage_platform_interface/flutter_secure_storage_platform_interface.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// LLM provider that replays a scripted list of chunks and records the config
 /// it was called with (so tests can assert model routing).
@@ -154,21 +161,56 @@ class FakeVisionSettings extends SettingsController {
   }
 }
 
+/// Settings that stall on first read so tests can cancel during the start window.
+class DelayedReadySettings extends SettingsController {
+  final gate = Completer<void>();
+  final entered = Completer<void>();
+
+  @override
+  Future<SettingsState> build() async {
+    if (!entered.isCompleted) entered.complete();
+    await gate.future;
+    final profile = ProviderProfile(
+      name: 'DeepSeek',
+      baseUrl: 'https://api.deepseek.com',
+      chatModel: KnownModels.chat,
+      reasonerModel: KnownModels.reasoner,
+      models: const [KnownModels.chat, KnownModels.reasoner],
+    );
+    return SettingsState(
+      profiles: [profile],
+      activeProfileId: profile.id,
+      apiKey: 'sk-test',
+    );
+  }
+}
+
+/// In-memory Drift DB for story repos in unit tests (no path_provider).
 ProviderContainer _container(
   FakeLlmProvider llm,
   InMemoryRepo repo, {
   ToolEngineFactory? toolEngineFactory,
   SettingsController Function() settingsBuilder = FakeSettings.new,
 }) {
-  return ProviderContainer(
+  final db = AppDatabase(NativeDatabase.memory());
+  final characters = CharacterRepository(db);
+  final worldInfo = WorldInfoRepository(db);
+  final container = ProviderContainer(
     overrides: [
       llmProvider.overrideWithValue(llm),
       conversationRepositoryProvider.overrideWithValue(repo),
       settingsControllerProvider.overrideWith(settingsBuilder),
+      appDatabaseProvider.overrideWithValue(db),
+      characterRepositoryProvider.overrideWithValue(characters),
+      worldInfoRepositoryProvider.overrideWithValue(worldInfo),
       if (toolEngineFactory != null)
         toolEngineFactoryProvider.overrideWithValue(toolEngineFactory),
     ],
   );
+  // Memory DB is not opened via path_provider; close it when the test ends.
+  // Callers still dispose the container (which does not own this override's DB).
+  addTearDown(db.close);
+  return container;
 }
 
 void main() {
@@ -516,18 +558,30 @@ void main() {
   });
 
   group('ToolEngine', () {
+    // Bodies must clear ToolEngine.minSourceChars so thin-result filtering
+    // does not drop fixtures that are only testing URL / citation wiring.
+    const richDart =
+        'Dart is a client-optimized language for fast apps on any platform. '
+        'It powers Flutter and ships with a strong type system.';
+    const richFlutter =
+        'Flutter is Google UI toolkit for building natively compiled '
+        'applications for mobile, web, and desktop from a single codebase.';
+    const richExample =
+        'Example Domain is commonly used in documentation and test fixtures '
+        'as a reserved public hostname with a stable landing page.';
+
     test('builds context + numbered citations from results', () async {
       final engine = ToolEngine(
         _FakeSearch([
           const SearchResult(
             title: 'Dart',
             url: 'https://dart.dev',
-            content: 'Dart lang',
+            content: richDart,
           ),
           const SearchResult(
             title: 'Flutter',
             url: 'https://flutter.dev',
-            snippet: 'UI kit',
+            snippet: richFlutter,
           ),
         ]),
       );
@@ -537,6 +591,7 @@ void main() {
       expect(ctx.citations[1].url, 'https://flutter.dev');
       expect(ctx.contextText, contains('[1]'));
       expect(ctx.contextText, contains('https://dart.dev'));
+      expect(ctx.contextText, contains('查询：dart flutter'));
     });
 
     test('returns empty context when there are no results', () async {
@@ -556,11 +611,11 @@ void main() {
     test('skips results without a URL', () async {
       final engine = ToolEngine(
         _FakeSearch([
-          const SearchResult(title: 'No url', url: '', content: 'x'),
+          const SearchResult(title: 'No url', url: '', content: richDart),
           const SearchResult(
             title: 'Has url',
             url: 'https://a.com',
-            content: 'y',
+            content: richExample,
           ),
         ]),
       );
@@ -569,14 +624,23 @@ void main() {
       expect(ctx.citations.single.url, 'https://a.com');
     });
 
-    test('skips local and private search-result URLs', () async {
+    test('skips thin bodies and private URLs', () async {
       final engine = ToolEngine(
         _FakeSearch([
           const SearchResult(title: 'Loopback', url: 'http://127.0.0.1/x'),
           const SearchResult(title: 'Router', url: 'http://192.168.1.1/'),
           const SearchResult(title: 'Local name', url: 'http://host.local/'),
           const SearchResult(title: 'IPv6 loopback', url: 'http://[::1]/'),
-          const SearchResult(title: 'Public', url: 'https://example.com/'),
+          const SearchResult(
+            title: 'Empty body',
+            url: 'https://thin.example/',
+            content: 'ok',
+          ),
+          const SearchResult(
+            title: 'Public',
+            url: 'https://example.com/',
+            content: richExample,
+          ),
         ]),
       );
 
@@ -585,6 +649,19 @@ void main() {
       expect(ctx.citations.single.url, 'https://example.com/');
       expect(HttpSearchProvider.isSafeHttpUrl('https://dart.dev'), isTrue);
       expect(HttpSearchProvider.isSafeHttpUrl('file:///tmp/x'), isFalse);
+    });
+
+    test('normalizes chatty pre-search queries before calling the provider', () async {
+      final search = _CountingSearch([
+        const SearchResult(
+          title: 'Public',
+          url: 'https://example.com/',
+          content: richExample,
+        ),
+      ]);
+      final engine = ToolEngine(search);
+      await engine.runSearch('请问  DeepSeek V3 定价是多少？   ');
+      expect(search.lastQuery, 'DeepSeek V3 定价是多少？');
     });
   });
 
@@ -609,6 +686,195 @@ void main() {
     expect(state.currentId, newId);
     expect(state.error, contains('本地删除失败'));
   });
+
+  test('newStoryConversation inserts firstMes and story metadata', () async {
+    final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'ok')]);
+    final c = _container(llm, InMemoryRepo());
+    addTearDown(c.dispose);
+    final ctrl = c.read(chatControllerProvider.notifier);
+    await c.read(chatControllerProvider.future);
+
+    final card = CharacterCard(
+      name: '阿宁',
+      firstMes: '你好，旅人。',
+      personality: '温柔',
+    );
+    // Without a real world-info repo override, default ids come from DB —
+    // ProviderContainer uses real appDatabase only if not overridden.
+    // ChatController loads WI via worldInfoRepositoryProvider; for this test
+    // we only assert card binding + firstMes, so override repos to empty.
+    await ctrl.newStoryConversation(card, worldInfoIds: const []);
+
+    final convo = c.read(chatControllerProvider).value!.current!;
+    expect(convo.isStory, isTrue);
+    expect(convo.characterId, card.id);
+    expect(convo.title, '阿宁');
+    expect(convo.activePath, hasLength(1));
+    expect(convo.activePath.first.role, MessageRole.assistant);
+    expect(convo.activePath.first.content, '你好，旅人。');
+    expect(convo.worldInfoIds, isEmpty);
+  });
+
+  test('advancePlot increments plotCursor after a successful reply', () async {
+    final llm = FakeLlmProvider([
+      const ChatChunk(contentDelta: '第二节正文'),
+    ]);
+    final card = CharacterCard(name: '作者', firstMes: '开场');
+    final c = _container(llm, InMemoryRepo());
+    await c.read(characterRepositoryProvider).save(card);
+    final ctrl = c.read(chatControllerProvider.notifier);
+    await c.read(chatControllerProvider.future);
+
+    await ctrl.newStoryConversation(card, worldInfoIds: const []);
+    ctrl.updateStoryMeta(outline: '- 相遇\n- 冲突\n- 和解', plotCursor: 0);
+    expect(c.read(chatControllerProvider).value!.current!.plotCursor, 0);
+
+    await ctrl.advancePlot();
+
+    final convo = c.read(chatControllerProvider).value!.current!;
+    expect(convo.plotCursor, 1);
+    expect(convo.activePath.last.content, '第二节正文');
+    expect(
+      convo.activePath.any((m) => m.content == '（推进情节）'),
+      isTrue,
+    );
+  });
+
+  test('newEnsembleConversation requires two characters and sets cast', () async {
+    final c = _container(FakeLlmProvider(const []), InMemoryRepo());
+    final ctrl = c.read(chatControllerProvider.notifier);
+    await c.read(chatControllerProvider.future);
+
+    final a = CharacterCard(name: '甲', firstMes: '甲到场');
+    final b = CharacterCard(name: '乙', firstMes: '乙到场');
+    await ctrl.newEnsembleConversation(
+      cast: [a, b],
+      venue: '擂台中央',
+      authorNote: '火药味',
+      worldInfoIds: const [],
+    );
+
+    final convo = c.read(chatControllerProvider).value!.current!;
+    expect(convo.isEnsemble, isTrue);
+    expect(convo.castIds, [a.id, b.id]);
+    expect(convo.venue, '擂台中央');
+    expect(convo.authorNote, '火药味');
+    expect(convo.activePath.first.content, contains('擂台中央'));
+  });
+
+  test('ensembleNextTurn labels speaker and advances index', () async {
+    final llm = FakeLlmProvider([const ChatChunk(contentDelta: '看招！')]);
+    final a = CharacterCard(name: '甲');
+    final b = CharacterCard(name: '乙');
+    final c = _container(llm, InMemoryRepo());
+    await c.read(characterRepositoryProvider).save(a);
+    await c.read(characterRepositoryProvider).save(b);
+    final ctrl = c.read(chatControllerProvider.notifier);
+    await c.read(chatControllerProvider.future);
+
+    await ctrl.newEnsembleConversation(
+      cast: [a, b],
+      venue: '巷口',
+      worldInfoIds: const [],
+    );
+    expect(c.read(chatControllerProvider).value!.current!.nextSpeakerIndex, 0);
+
+    await ctrl.ensembleNextTurn();
+
+    final convo = c.read(chatControllerProvider).value!.current!;
+    final last = convo.activePath.last;
+    expect(last.role, MessageRole.assistant);
+    expect(last.speakerId, a.id);
+    expect(last.speakerName, '甲');
+    expect(last.content, '看招！');
+    expect(convo.nextSpeakerIndex, 1);
+  });
+
+  test('adjustPlotCursor can move progress without generating', () async {
+    final c = _container(FakeLlmProvider(const []), InMemoryRepo());
+    final ctrl = c.read(chatControllerProvider.notifier);
+    await c.read(chatControllerProvider.future);
+
+    await ctrl.newStoryConversation(
+      CharacterCard(name: 'A', firstMes: 'hi'),
+      worldInfoIds: const [],
+    );
+    ctrl.updateStoryMeta(outline: '- 一\n- 二\n- 三', plotCursor: 1);
+    ctrl.adjustPlotCursor(-1);
+    expect(c.read(chatControllerProvider).value!.current!.plotCursor, 0);
+    ctrl.adjustPlotCursor(2);
+    expect(c.read(chatControllerProvider).value!.current!.plotCursor, 2);
+  });
+
+  test('stop aborts a send that is still waiting for settings', () async {
+    final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'late')]);
+    final delayed = DelayedReadySettings();
+    final c = _container(
+      llm,
+      InMemoryRepo(),
+      settingsBuilder: () => delayed,
+    );
+    addTearDown(c.dispose);
+
+    final ctrl = c.read(chatControllerProvider.notifier);
+    await c.read(chatControllerProvider.future);
+
+    final send = ctrl.sendMessage('should be cancelled');
+    await delayed.entered.future;
+    ctrl.stop();
+    delayed.gate.complete();
+    final accepted = await send;
+
+    expect(accepted, isFalse);
+    expect(llm.callCount, 0);
+    expect(c.read(chatControllerProvider).value!.isStreaming, isFalse);
+    expect(
+      c.read(chatControllerProvider).value!.current?.messages ?? const [],
+      isEmpty,
+    );
+  });
+
+  test(
+    'deleteProfile keeps search and system prompt when last profile is removed',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final secureData = <String, String>{};
+      FlutterSecureStoragePlatform.instance =
+          TestFlutterSecureStoragePlatform(secureData);
+      addTearDown(() {
+        FlutterSecureStoragePlatform.instance =
+            TestFlutterSecureStoragePlatform({});
+      });
+
+      final prefs = await SharedPreferences.getInstance();
+      final container = ProviderContainer(
+        overrides: [
+          sharedPrefsProvider.overrideWithValue(prefs),
+          secureStorageProvider.overrideWithValue(const FlutterSecureStorage()),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      final settings = container.read(settingsControllerProvider.notifier);
+      await container.read(settingsControllerProvider.future);
+
+      await settings.setSearchBackend(SearchBackend.tavily);
+      await settings.setSearchApiKey('search-secret');
+      await settings.setSystemPrompt('你是专业助手');
+
+      final onlyId =
+          container.read(settingsControllerProvider).value!.activeProfileId!;
+      await settings.deleteProfile(onlyId);
+
+      final next = container.read(settingsControllerProvider).value!;
+      expect(next.profiles, hasLength(1));
+      expect(next.profiles.single.id, isNot(onlyId));
+      expect(next.searchBackend, SearchBackend.tavily);
+      expect(next.searchApiKey, 'search-secret');
+      expect(next.systemPrompt, '你是专业助手');
+      expect(next.apiKey, isEmpty);
+    },
+  );
 
   group('ModelCapabilities.resolve', () {
     test('DeepSeek V4 flash: tools + thinking field, not reasoner', () {
@@ -744,6 +1010,32 @@ void main() {
     final md = ConversationExport.toMarkdown(convo);
     expect(md, contains('ACTIVE answer'));
     expect(md, isNot(contains('DISCARDED answer')));
+  });
+
+  test('ConversationExport.toMarkdown labels story character and outline', () {
+    final user = ChatMessage(role: MessageRole.user, content: '（推进情节）');
+    final bot = ChatMessage(
+      role: MessageRole.assistant,
+      content: '月光下…',
+      parentId: user.id,
+    );
+    final convo = Conversation(
+      title: '夜谈',
+      mode: ConversationMode.story,
+      outline: '- 开端\n- 转折',
+      authorNote: '偏诗意',
+      plotCursor: 1,
+      messages: [user, bot],
+      activeChildren: {kRootKey: user.id, user.id: bot.id},
+    );
+    final md = ConversationExport.toMarkdown(convo, characterName: '林晚');
+    expect(md, contains('模式：故事'));
+    expect(md, contains('角色：林晚'));
+    expect(md, contains('## 大纲'));
+    expect(md, contains('导演指令'));
+    expect(md, contains('偏诗意'));
+    expect(md, contains('## 🤖 林晚'));
+    expect(md, contains('月光下'));
   });
 
   test('LlmRequestMessage serializes images as multimodal content parts', () {
@@ -941,7 +1233,7 @@ void main() {
       await _pumpChat(tester, c);
 
       expect(c.read(chatControllerProvider).value!.deepThink, isFalse);
-      await tester.tap(find.widgetWithText(FilterChip, '深度思考'));
+      await tester.tap(find.text('深度思考'));
       await tester.pump();
       expect(c.read(chatControllerProvider).value!.deepThink, isTrue);
     });
@@ -994,7 +1286,7 @@ class _FakeSearch implements SearchProvider {
   @override
   Future<List<SearchResult>> search(
     String query, {
-    int maxResults = 5,
+    int maxResults = 8,
     CancelToken? cancelToken,
   }) async => results;
 }
@@ -1003,7 +1295,7 @@ class _ThrowingSearch implements SearchProvider {
   @override
   Future<List<SearchResult>> search(
     String query, {
-    int maxResults = 5,
+    int maxResults = 8,
     CancelToken? cancelToken,
   }) async => throw const SearchUnavailableException('unavailable');
 }
@@ -1018,7 +1310,7 @@ class _CountingSearch implements SearchProvider {
   @override
   Future<List<SearchResult>> search(
     String query, {
-    int maxResults = 5,
+    int maxResults = 8,
     CancelToken? cancelToken,
   }) async {
     calls++;

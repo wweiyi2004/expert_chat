@@ -7,7 +7,8 @@ import 'core/theme.dart';
 import 'data/db/app_database.dart';
 import 'data/drift_conversation_repository.dart';
 import 'data/legacy_conversation_migration.dart';
-import 'features/chat/chat_page.dart';
+import 'data/ui_prefs.dart';
+import 'features/shell/app_shell.dart';
 import 'state/settings_controller.dart';
 
 Future<void> main() async {
@@ -35,18 +36,35 @@ class ExpertChatApp extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    // Theme mode reacts to settings; default to system while loading.
-    final themeMode = ref
-        .watch(settingsControllerProvider)
-        .maybeWhen(data: (s) => s.themeMode, orElse: () => ThemeMode.system);
+    final settings = ref.watch(settingsControllerProvider);
+    final themeMode = settings.maybeWhen(
+      data: (s) => s.themeMode,
+      orElse: () => ThemeMode.system,
+    );
+    final ui = settings.maybeWhen(
+      data: (s) => s.ui,
+      orElse: () => const UiPrefs(),
+    );
+    final density = ui.density == DensityPref.compact
+        ? VisualDensity.compact
+        : VisualDensity.standard;
 
     return MaterialApp(
       title: 'Expert Chat',
       debugShowCheckedModeBanner: false,
-      theme: AppTheme.light(),
-      darkTheme: AppTheme.dark(),
+      theme: AppTheme.light().copyWith(visualDensity: density),
+      darkTheme: AppTheme.dark().copyWith(visualDensity: density),
       themeMode: themeMode,
-      home: const ChatPage(),
+      builder: (context, child) {
+        final mq = MediaQuery.of(context);
+        return MediaQuery(
+          data: mq.copyWith(
+            textScaler: TextScaler.linear(ui.textScale.scale),
+          ),
+          child: child ?? const SizedBox.shrink(),
+        );
+      },
+      home: const AppShell(),
     );
   }
 }

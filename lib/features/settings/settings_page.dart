@@ -1,13 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'package:package_info_plus/package_info_plus.dart';
+
 import '../../data/provider_profile.dart';
+import '../../data/ui_prefs.dart';
 import '../../domain/llm/llm_provider.dart';
 import '../../domain/tools/search_provider.dart';
+import '../../domain/update/update_ui.dart';
 import '../../state/settings_controller.dart';
 
 class SettingsPage extends ConsumerStatefulWidget {
-  const SettingsPage({super.key});
+  const SettingsPage({super.key, this.asRootTab = false});
+
+  /// When true (bottom-nav「我的」), hide the back affordance and use tab title.
+  final bool asRootTab;
 
   @override
   ConsumerState<SettingsPage> createState() => _SettingsPageState();
@@ -24,6 +31,36 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   bool _systemPromptSynced = false;
 
   @override
+  void initState() {
+    super.initState();
+    // Sync text fields outside build: writing controllers during build can
+    // assert or fight focus when the provider rebuilds mid-frame.
+    ref.listenManual<AsyncValue<SettingsState>>(
+      settingsControllerProvider,
+      (previous, next) {
+        next.whenData(_syncFieldsFromState);
+      },
+      fireImmediately: true,
+    );
+  }
+
+  void _syncFieldsFromState(SettingsState s) {
+    final activeId = s.active?.id;
+    if (_syncedForProfile != activeId) {
+      _apiKey.text = s.apiKey;
+      _syncedForProfile = activeId;
+    }
+    if (!_searchKeySynced) {
+      _searchKey.text = s.searchApiKey;
+      _searchKeySynced = true;
+    }
+    if (!_systemPromptSynced) {
+      _systemPrompt.text = s.systemPrompt;
+      _systemPromptSynced = true;
+    }
+  }
+
+  @override
   void dispose() {
     _apiKey.dispose();
     _searchKey.dispose();
@@ -37,25 +74,15 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     final controller = ref.read(settingsControllerProvider.notifier);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('设置')),
+      appBar: AppBar(
+        title: Text(widget.asRootTab ? '我的' : '设置'),
+        automaticallyImplyLeading: !widget.asRootTab,
+      ),
       body: asyncSettings.when(
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (e, _) => Center(child: Text('加载失败：$e')),
         data: (s) {
           final active = s.active;
-          // Keep the key field in sync when the active profile changes.
-          if (_syncedForProfile != active?.id) {
-            _apiKey.text = s.apiKey;
-            _syncedForProfile = active?.id;
-          }
-          if (!_searchKeySynced) {
-            _searchKey.text = s.searchApiKey;
-            _searchKeySynced = true;
-          }
-          if (!_systemPromptSynced) {
-            _systemPrompt.text = s.systemPrompt;
-            _systemPromptSynced = true;
-          }
           return SafeArea(
             child: Center(
               child: ConstrainedBox(
@@ -142,7 +169,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                       segments: const [
                         ButtonSegment(
                           value: ThemeMode.system,
-                          label: Text('跟随系统'),
+                          label: Text('跟随'),
                           icon: Icon(Icons.brightness_auto),
                         ),
                         ButtonSegment(
@@ -159,6 +186,78 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                       selected: {s.themeMode},
                       onSelectionChanged: (set) =>
                           controller.apply(themeMode: set.first),
+                    ),
+                    const SizedBox(height: 16),
+                    _PrefRow(
+                      label: '文字大小',
+                      child: SegmentedButton<TextScalePref>(
+                        segments: [
+                          for (final v in TextScalePref.values)
+                            ButtonSegment(value: v, label: Text(v.label)),
+                        ],
+                        selected: {s.ui.textScale},
+                        onSelectionChanged: (set) => controller.setUiPrefs(
+                          s.ui.copyWith(textScale: set.first),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    _PrefRow(
+                      label: '界面密度',
+                      child: SegmentedButton<DensityPref>(
+                        segments: [
+                          for (final v in DensityPref.values)
+                            ButtonSegment(value: v, label: Text(v.label)),
+                        ],
+                        selected: {s.ui.density},
+                        onSelectionChanged: (set) => controller.setUiPrefs(
+                          s.ui.copyWith(density: set.first),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    _PrefRow(
+                      label: '消息样式',
+                      child: SegmentedButton<MessageStylePref>(
+                        segments: [
+                          for (final v in MessageStylePref.values)
+                            ButtonSegment(value: v, label: Text(v.label)),
+                        ],
+                        selected: {s.ui.messageStyle},
+                        onSelectionChanged: (set) => controller.setUiPrefs(
+                          s.ui.copyWith(messageStyle: set.first),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    _PrefRow(
+                      label: '内容宽度',
+                      child: SegmentedButton<ContentWidthPref>(
+                        segments: [
+                          for (final v in ContentWidthPref.values)
+                            ButtonSegment(value: v, label: Text(v.label)),
+                        ],
+                        selected: {s.ui.contentWidth},
+                        onSelectionChanged: (set) => controller.setUiPrefs(
+                          s.ui.copyWith(contentWidth: set.first),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '内容宽度主要影响平板 / 桌面宽屏；手机上消息仍铺满可用宽度。',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    const SizedBox(height: 12),
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('流式实时 Markdown'),
+                      subtitle: const Text(
+                        '开启后生成过程中即渲染格式；关闭则先纯文本、结束后再排版。',
+                      ),
+                      value: s.ui.liveMarkdown,
+                      onChanged: (v) =>
+                          controller.setUiPrefs(s.ui.copyWith(liveMarkdown: v)),
                     ),
                     const SizedBox(height: 32),
                     const _SectionTitle('联网搜索'),
@@ -202,6 +301,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                       'API Key 通过系统安全存储保存在本机，不会上传到任何服务器。',
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
+                    const SizedBox(height: 32),
+                    const _SectionTitle('关于与更新'),
+                    const _AboutUpdateTile(),
                   ],
                 ),
               ),
@@ -463,6 +565,73 @@ class _ProfileEditPageState extends State<_ProfileEditPage> {
               reasonerModel: reasoner,
             );
     Navigator.of(context).pop(profile);
+  }
+}
+
+class _PrefRow extends StatelessWidget {
+  const _PrefRow({required this.label, required this.child});
+
+  final String label;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          label,
+          style: Theme.of(context).textTheme.labelLarge?.copyWith(
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: 8),
+        child,
+      ],
+    );
+  }
+}
+
+class _AboutUpdateTile extends StatefulWidget {
+  const _AboutUpdateTile();
+
+  @override
+  State<_AboutUpdateTile> createState() => _AboutUpdateTileState();
+}
+
+class _AboutUpdateTileState extends State<_AboutUpdateTile> {
+  String _version = '…';
+
+  @override
+  void initState() {
+    super.initState();
+    PackageInfo.fromPlatform().then((info) {
+      if (!mounted) return;
+      setState(() => _version = 'v${info.version} (${info.buildNumber})');
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Column(
+        children: [
+          ListTile(
+            leading: const Icon(Icons.info_outline),
+            title: const Text('Expert Chat'),
+            subtitle: Text('当前版本 $_version'),
+          ),
+          const Divider(height: 1),
+          ListTile(
+            leading: const Icon(Icons.system_update_alt),
+            title: const Text('检查更新'),
+            subtitle: const Text('从 GitHub Releases 获取最新安装包'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => checkForUpdatesInteractive(context),
+          ),
+        ],
+      ),
+    );
   }
 }
 

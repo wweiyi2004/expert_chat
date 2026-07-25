@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/providers.dart';
 import '../data/provider_profile.dart';
+import '../data/ui_prefs.dart';
 import '../domain/llm/llm_provider.dart';
 import '../domain/tools/search_provider.dart';
 
@@ -22,6 +23,7 @@ class SettingsState {
     this.searchBackend = SearchBackend.duckduckgo,
     this.searchApiKey = '',
     this.systemPrompt = '',
+    this.ui = const UiPrefs(),
   });
 
   final List<ProviderProfile> profiles;
@@ -41,6 +43,9 @@ class SettingsState {
   /// Optional global preset/persona prompt, prepended as a `system` message on
   /// every request. Empty = no preset (model uses its own default behavior).
   final String systemPrompt;
+
+  /// Appearance / reading preferences (text scale, density, message style…).
+  final UiPrefs ui;
 
   bool get searchConfigured => searchApiKey.trim().isNotEmpty;
 
@@ -74,6 +79,7 @@ class SettingsState {
     SearchBackend? searchBackend,
     String? searchApiKey,
     String? systemPrompt,
+    UiPrefs? ui,
   }) => SettingsState(
     profiles: profiles ?? this.profiles,
     activeProfileId: activeProfileId ?? this.activeProfileId,
@@ -85,6 +91,7 @@ class SettingsState {
     searchBackend: searchBackend ?? this.searchBackend,
     searchApiKey: searchApiKey ?? this.searchApiKey,
     systemPrompt: systemPrompt ?? this.systemPrompt,
+    ui: ui ?? this.ui,
   );
 
   static const _sentinel = Object();
@@ -97,6 +104,7 @@ const _kThemeMode = 'themeMode';
 const _kSearchBackend = 'searchBackend';
 const _kSearchApiKeySecure = 'search_api_key';
 const _kSystemPrompt = 'systemPrompt';
+const _kUiPrefs = 'uiPrefs';
 
 // Legacy M1 keys (single-config) — read once for migration.
 const _kLegacyBaseUrl = 'baseUrl';
@@ -189,7 +197,18 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       ),
       searchApiKey: searchApiKey,
       systemPrompt: prefs.getString(_kSystemPrompt) ?? '',
+      ui: _readUiPrefs(prefs),
     );
+  }
+
+  static UiPrefs _readUiPrefs(SharedPreferences prefs) {
+    final raw = prefs.getString(_kUiPrefs);
+    if (raw == null || raw.isEmpty) return const UiPrefs();
+    try {
+      return UiPrefs.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+    } catch (_) {
+      return const UiPrefs();
+    }
   }
 
   /// A DeepSeek profile still carrying the old default model list (so we can
@@ -247,6 +266,14 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       }
     }
     if (themeMode != null) await prefs.setInt(_kThemeMode, themeMode.index);
+  }
+
+  /// Patch appearance prefs and persist as JSON.
+  Future<void> setUiPrefs(UiPrefs ui) async {
+    state = AsyncData(_current.copyWith(ui: ui));
+    await ref
+        .read(sharedPrefsProvider)
+        .setString(_kUiPrefs, jsonEncode(ui.toJson()));
   }
 
   /// Set the API key for the active profile.
@@ -345,16 +372,24 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     final prefs = ref.read(sharedPrefsProvider);
     if (remaining.isEmpty) {
       final fresh = ProviderPreset.presets.first.toProfile();
+      // Keep search + system-prompt settings: only the LLM profile is being
+      // replaced. Dropping them here would clear the in-memory form while the
+      // secure-storage / prefs values still exist, so a restart "revives" them.
       state = AsyncData(
         SettingsState(
           profiles: [fresh],
           activeProfileId: fresh.id,
           apiKey: '',
           themeMode: _current.themeMode,
+          searchBackend: _current.searchBackend,
+          searchApiKey: _current.searchApiKey,
+          systemPrompt: _current.systemPrompt,
+          ui: _current.ui,
         ),
       );
       await _writeProfiles(prefs, [fresh]);
       await prefs.setString(_kActiveProfile, fresh.id);
+      await prefs.remove(_kSelectedModel);
       return;
     }
 

@@ -7,6 +7,7 @@ import 'conversation_repository.dart';
 // the drift `Message` row type is still used below for mapping.
 import 'db/app_database.dart' hide Conversation;
 import 'models.dart';
+import 'story_models.dart';
 
 /// Drift/SQLite-backed [ConversationRepository]. A drop-in replacement for
 /// [JsonConversationRepository]: it implements the same `loadAll`/`saveAll`
@@ -41,6 +42,15 @@ class DriftConversationRepository implements ConversationRepository {
           messages: [
             for (final m in byConvo[c.id] ?? const <Message>[]) _toMessage(m),
           ],
+          mode: ConversationMode.fromWire(c.mode),
+          characterId: c.characterId,
+          participantIds: _decodeStringList(c.participantIdsJson),
+          worldInfoIds: _decodeStringList(c.worldInfoIdsJson),
+          outline: c.outline,
+          authorNote: c.authorNote,
+          plotCursor: c.plotCursor,
+          venue: c.venue,
+          nextSpeakerIndex: c.nextSpeakerIndex,
         ),
     ];
   }
@@ -52,6 +62,15 @@ class DriftConversationRepository implements ConversationRepository {
       return map.map((k, v) => MapEntry(k, v as String));
     } catch (_) {
       return {};
+    }
+  }
+
+  List<String> _decodeStringList(String? raw) {
+    if (raw == null || raw.isEmpty) return const [];
+    try {
+      return (jsonDecode(raw) as List<dynamic>).map((e) => e.toString()).toList();
+    } catch (_) {
+      return const [];
     }
   }
 
@@ -88,6 +107,12 @@ class DriftConversationRepository implements ConversationRepository {
     final activeChildrenJson = convo.activeChildren.isEmpty
         ? null
         : jsonEncode(convo.activeChildren);
+    final worldInfoIdsJson = convo.worldInfoIds.isEmpty
+        ? null
+        : jsonEncode(convo.worldInfoIds);
+    final participantIdsJson = convo.participantIds.isEmpty
+        ? null
+        : jsonEncode(convo.participantIds);
     final storedConvo = await (_db.select(
       _db.conversations,
     )..where((c) => c.id.equals(convo.id))).getSingleOrNull();
@@ -95,7 +120,16 @@ class DriftConversationRepository implements ConversationRepository {
     if (storedConvo == null ||
         storedConvo.title != convo.title ||
         !_matchesStoredTimestamp(storedConvo.updatedAt, convo.updatedAt) ||
-        storedConvo.activeChildrenJson != activeChildrenJson) {
+        storedConvo.activeChildrenJson != activeChildrenJson ||
+        storedConvo.mode != convo.mode.wire ||
+        storedConvo.characterId != convo.characterId ||
+        storedConvo.worldInfoIdsJson != worldInfoIdsJson ||
+        storedConvo.participantIdsJson != participantIdsJson ||
+        storedConvo.outline != convo.outline ||
+        storedConvo.authorNote != convo.authorNote ||
+        storedConvo.plotCursor != convo.plotCursor ||
+        storedConvo.venue != convo.venue ||
+        storedConvo.nextSpeakerIndex != convo.nextSpeakerIndex) {
       await _db
           .into(_db.conversations)
           .insertOnConflictUpdate(
@@ -104,6 +138,15 @@ class DriftConversationRepository implements ConversationRepository {
               title: Value(convo.title),
               updatedAt: convo.updatedAt,
               activeChildrenJson: Value(activeChildrenJson),
+              mode: Value(convo.mode.wire),
+              characterId: Value(convo.characterId),
+              worldInfoIdsJson: Value(worldInfoIdsJson),
+              participantIdsJson: Value(participantIdsJson),
+              outline: Value(convo.outline),
+              authorNote: Value(convo.authorNote),
+              plotCursor: Value(convo.plotCursor),
+              venue: Value(convo.venue),
+              nextSpeakerIndex: Value(convo.nextSpeakerIndex),
             ),
           );
     }
@@ -155,6 +198,8 @@ class DriftConversationRepository implements ConversationRepository {
       stored.reasoning == message.reasoning &&
       stored.model == message.model &&
       stored.thinkingMillis == message.thinkingMillis &&
+      stored.speakerId == message.speakerId &&
+      stored.speakerName == message.speakerName &&
       stored.attachmentsJson == _attachmentsJson(message) &&
       stored.citationsJson == _citationsJson(message) &&
       _matchesStoredTimestamp(stored.createdAt, message.createdAt) &&
@@ -198,6 +243,8 @@ class DriftConversationRepository implements ConversationRepository {
     reasoning: m.reasoning,
     model: m.model,
     thinkingMillis: m.thinkingMillis,
+    speakerId: m.speakerId,
+    speakerName: m.speakerName,
     createdAt: m.createdAt,
     attachments: _decodeList(m.attachmentsJson, (e) => Attachment.fromJson(e)),
     citations: _decodeList(m.citationsJson, (e) => Citation.fromJson(e)),
@@ -221,6 +268,8 @@ class DriftConversationRepository implements ConversationRepository {
         reasoning: Value(m.reasoning),
         model: Value(m.model),
         thinkingMillis: Value(m.thinkingMillis),
+        speakerId: Value(m.speakerId),
+        speakerName: Value(m.speakerName),
         attachmentsJson: Value(_attachmentsJson(m)),
         citationsJson: Value(_citationsJson(m)),
         createdAt: m.createdAt,

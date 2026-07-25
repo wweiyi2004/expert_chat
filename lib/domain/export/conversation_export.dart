@@ -13,25 +13,60 @@ class ConversationExport {
   /// export is a faithful record of the session. Only the currently visible
   /// branch ([Conversation.activePath]) is exported — discarded edit/regenerate
   /// branches are left out so the document matches what the user sees.
-  static String toMarkdown(Conversation convo) {
+  ///
+  /// [characterName] labels assistant turns in story exports.
+  static String toMarkdown(Conversation convo, {String? characterName}) {
     final b = StringBuffer()
       ..writeln('# ${convo.title}')
       ..writeln()
-      ..writeln('_导出时间：${DateTime.now().toIso8601String()}_')
-      ..writeln();
+      ..writeln('_导出时间：${DateTime.now().toIso8601String()}_');
+    if (convo.isStory) {
+      b.writeln('_模式：故事_');
+      final name = characterName?.trim();
+      if (name != null && name.isNotEmpty) {
+        b.writeln('_角色：${name}_');
+      }
+      if (convo.outline.trim().isNotEmpty) {
+        b
+          ..writeln()
+          ..writeln('## 大纲')
+          ..writeln()
+          ..writeln(convo.outline.trim())
+          ..writeln()
+          ..writeln('进度：${convo.plotCursor}');
+      }
+      if (convo.authorNote.trim().isNotEmpty) {
+        b
+          ..writeln()
+          ..writeln('## 导演指令')
+          ..writeln()
+          ..writeln(convo.authorNote.trim());
+      }
+    }
+    b.writeln();
+
+    final assistantLabel = () {
+      final name = characterName?.trim();
+      if (name != null && name.isNotEmpty) return name;
+      return '助手';
+    }();
 
     for (final m in convo.activePath) {
       switch (m.role) {
         case MessageRole.user:
           b.writeln('## 🧑 用户');
           for (final a in m.attachments) {
-            b.writeln('> 📎 ${a.name}'
-                '${a.parseError != null ? '（${a.parseError}）' : ''}');
+            b.writeln(
+              '> 📎 ${a.name}'
+              '${a.parseError != null ? '（${a.parseError}）' : ''}',
+            );
           }
           if (m.content.isNotEmpty) b.writeln(m.content);
         case MessageRole.assistant:
-          b.writeln('## 🤖 助手'
-              '${m.model != null ? ' · `${m.model}`' : ''}');
+          b.writeln(
+            '## 🤖 $assistantLabel'
+            '${m.model != null ? ' · `${m.model}`' : ''}',
+          );
           if (m.reasoning.trim().isNotEmpty) {
             b
               ..writeln('<details><summary>深度思考</summary>')
@@ -63,8 +98,11 @@ class ConversationExport {
 
   /// Saves the conversation as a `.md` file via a native picker. Returns the
   /// saved path, or null if the user cancelled. Throws on write failure.
-  static Future<String?> saveMarkdown(Conversation convo) async {
-    final markdown = toMarkdown(convo);
+  static Future<String?> saveMarkdown(
+    Conversation convo, {
+    String? characterName,
+  }) async {
+    final markdown = toMarkdown(convo, characterName: characterName);
     final bytes = Uint8List.fromList(utf8.encode(markdown));
     final safeTitle = convo.title
         .replaceAll(RegExp(r'[\\/:*?"<>|]'), '_')

@@ -76,15 +76,17 @@ class _ThinkingPanelState extends State<ThinkingPanel>
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       decoration: BoxDecoration(
-        color: scheme.surfaceContainer,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: scheme.outlineVariant),
+        color: scheme.secondaryContainer.withValues(alpha: 0.35),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: scheme.secondary.withValues(alpha: 0.18),
+        ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           InkWell(
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(14),
             onTap: () => setState(() {
               _expanded = !_expanded;
               _userToggled = true;
@@ -99,13 +101,13 @@ class _ThinkingPanelState extends State<ThinkingPanel>
                           child: Icon(
                             Icons.psychology,
                             size: 18,
-                            color: scheme.primary,
+                            color: scheme.secondary,
                           ),
                         )
                       : Icon(
                           Icons.psychology_outlined,
                           size: 18,
-                          color: scheme.primary,
+                          color: scheme.secondary,
                         ),
                   const SizedBox(width: 8),
                   Text(
@@ -113,7 +115,7 @@ class _ThinkingPanelState extends State<ThinkingPanel>
                     style: TextStyle(
                       fontSize: 13,
                       color: scheme.onSurfaceVariant,
-                      fontWeight: FontWeight.w500,
+                      fontWeight: FontWeight.w600,
                     ),
                   ),
                   const Spacer(),
@@ -134,8 +136,8 @@ class _ThinkingPanelState extends State<ThinkingPanel>
                 widget.reasoning,
                 style: TextStyle(
                   fontSize: 13,
-                  height: 1.5,
-                  color: scheme.onSurfaceVariant.withValues(alpha: 0.85),
+                  height: 1.55,
+                  color: scheme.onSurfaceVariant.withValues(alpha: 0.88),
                 ),
               ),
             ),

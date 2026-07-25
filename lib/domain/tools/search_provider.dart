@@ -59,7 +59,7 @@ extension SearchBackendInfo on SearchBackend {
 abstract class SearchProvider {
   Future<List<SearchResult>> search(
     String query, {
-    int maxResults = 5,
+    int maxResults = 8,
     CancelToken? cancelToken,
   });
 }
@@ -104,13 +104,15 @@ class HttpSearchProvider implements SearchProvider {
 
   /// Never ask a backend for an unbounded number of results. It also bounds
   /// the amount of third-party page fetching the free DDG path can trigger.
-  static const _maxSearchResults = 8;
+  static const _maxSearchResults = 12;
 
   /// Article bodies are only supplemental context; a multi-megabyte document
   /// should not be downloaded into the app just to extract a short snippet.
   static const _maxPageBytes = 1024 * 1024;
-  static const _maxConcurrentPageFetches = 2;
+  static const _maxConcurrentPageFetches = 3;
   static const _pageReadIdleTimeout = Duration(seconds: 15);
+  /// Per-page extract cap before ToolEngine applies its own budget.
+  static const _pageExtractChars = 12000;
 
   /// Resolves and validates a page URL without issuing an HTTP request.
   /// Exposed so security-sensitive URL policy can be regression-tested.
@@ -120,7 +122,7 @@ class HttpSearchProvider implements SearchProvider {
   @override
   Future<List<SearchResult>> search(
     String query, {
-    int maxResults = 5,
+    int maxResults = 8,
     CancelToken? cancelToken,
   }) async {
     final normalizedQuery = query.trim();
@@ -389,7 +391,7 @@ class HttpSearchProvider implements SearchProvider {
       if (!looksHtml) {
         if (contentType.startsWith('text/') ||
             contentType.contains('application/json')) {
-          return _clip(_cleanText(raw), 10000);
+          return _clip(_cleanText(raw), _pageExtractChars);
         }
         return '';
       }
@@ -425,7 +427,7 @@ class HttpSearchProvider implements SearchProvider {
         final text = _cleanText(candidate.text);
         if (text.length > best.length) best = text;
       }
-      return _clip(best, 10000);
+      return _clip(best, _pageExtractChars);
     } on DioException catch (e) {
       if (CancelToken.isCancel(e)) rethrow;
       return '';
@@ -488,6 +490,8 @@ class HttpSearchProvider implements SearchProvider {
     int maxResults,
     CancelToken? cancelToken,
   ) async {
+    // advanced + answer costs more credits than basic, but yields denser
+    // context for the model — the main complaint with the previous defaults.
     final r = await _dio.post<Map<String, dynamic>>(
       'https://api.tavily.com/search',
       options: Options(headers: {'Authorization': 'Bearer $apiKey'}),
@@ -495,21 +499,36 @@ class HttpSearchProvider implements SearchProvider {
       data: {
         'query': query,
         'max_results': maxResults,
-        'search_depth': 'basic',
+        'search_depth': 'advanced',
         'include_raw_content': 'text',
-        'include_answer': false,
+        'include_answer': true,
       },
     );
-    final results = (r.data?['results'] as List<dynamic>? ?? []);
-    return [
+    final data = r.data ?? const <String, dynamic>{};
+    final answer = (data['answer'] as String?)?.trim() ?? '';
+    final results = (data['results'] as List<dynamic>? ?? []);
+    final out = <SearchResult>[
+      if (answer.isNotEmpty)
+        SearchResult(
+          title: '综合摘要',
+          // Stable public URL so citation badges stay clickable / safe.
+          url: 'https://tavily.com/',
+          snippet: answer,
+          content: answer,
+        ),
       for (final e in results.cast<Map<String, dynamic>>())
         SearchResult(
           title: e['title'] as String? ?? '',
           url: e['url'] as String? ?? '',
           snippet: e['content'] as String? ?? '',
-          content: e['raw_content'] as String? ?? '',
+          content: () {
+            final raw = e['raw_content'];
+            if (raw is String && raw.trim().isNotEmpty) return raw;
+            return e['content'] as String? ?? '';
+          }(),
         ),
     ];
+    return out;
   }
 
   Future<List<SearchResult>> _bocha(
@@ -541,7 +560,13 @@ class HttpSearchProvider implements SearchProvider {
           title: e['name'] as String? ?? '',
           url: e['url'] as String? ?? '',
           snippet: e['snippet'] as String? ?? '',
-          content: e['summary'] as String? ?? '',
+          // Prefer the longer of summary / snippet when both exist.
+          content: () {
+            final summary = (e['summary'] as String? ?? '').trim();
+            final snippet = (e['snippet'] as String? ?? '').trim();
+            if (summary.length >= snippet.length) return summary;
+            return snippet;
+          }(),
         ),
     ];
   }
@@ -559,7 +584,13 @@ class HttpSearchProvider implements SearchProvider {
         'query': query,
         'numResults': maxResults,
         'type': 'auto',
-        'contents': {'text': true},
+        'contents': {
+          'text': {'maxCharacters': 8000},
+          'highlights': {
+            'maxCharacters': 2000,
+            'numSentences': 3,
+          },
+        },
       },
     );
     final results = (r.data?['results'] as List<dynamic>? ?? []);
@@ -568,10 +599,24 @@ class HttpSearchProvider implements SearchProvider {
         SearchResult(
           title: e['title'] as String? ?? '',
           url: e['url'] as String? ?? '',
-          snippet: '',
-          content: e['text'] as String? ?? '',
+          snippet: _exaHighlights(e),
+          content: () {
+            final text = e['text'];
+            if (text is String && text.trim().isNotEmpty) return text;
+            return _exaHighlights(e);
+          }(),
         ),
     ];
+  }
+
+  /// Exa may return highlights as a list of strings or a single string.
+  static String _exaHighlights(Map<String, dynamic> e) {
+    final h = e['highlights'];
+    if (h is String) return h;
+    if (h is List) {
+      return h.map((x) => x.toString().trim()).where((s) => s.isNotEmpty).join('\n');
+    }
+    return '';
   }
 
   Map<String, String> get _browserHeaders => const {

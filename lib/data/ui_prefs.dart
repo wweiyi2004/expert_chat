@@ -1,0 +1,138 @@
+/// User-facing appearance / reading preferences (persisted in settings).
+enum TextScalePref {
+  small,
+  medium,
+  large;
+
+  String get label => switch (this) {
+    TextScalePref.small => '小',
+    TextScalePref.medium => '中',
+    TextScalePref.large => '大',
+  };
+
+  double get scale => switch (this) {
+    TextScalePref.small => 0.9,
+    TextScalePref.medium => 1.0,
+    TextScalePref.large => 1.12,
+  };
+
+  String get wire => name;
+
+  static TextScalePref fromWire(String? v) => TextScalePref.values.firstWhere(
+    (e) => e.name == v,
+    orElse: () => TextScalePref.medium,
+  );
+}
+
+enum DensityPref {
+  comfortable,
+  compact;
+
+  String get label => switch (this) {
+    DensityPref.comfortable => '舒适',
+    DensityPref.compact => '紧凑',
+  };
+
+  String get wire => name;
+
+  static DensityPref fromWire(String? v) => DensityPref.values.firstWhere(
+    (e) => e.name == v,
+    orElse: () => DensityPref.comfortable,
+  );
+}
+
+enum MessageStylePref {
+  bubble,
+  document;
+
+  String get label => switch (this) {
+    MessageStylePref.bubble => '气泡',
+    MessageStylePref.document => '文档',
+  };
+
+  String get wire => name;
+
+  static MessageStylePref fromWire(String? v) =>
+      MessageStylePref.values.firstWhere(
+        (e) => e.name == v,
+        orElse: () => MessageStylePref.bubble,
+      );
+}
+
+enum ContentWidthPref {
+  narrow,
+  regular,
+  wide;
+
+  String get label => switch (this) {
+    ContentWidthPref.narrow => '窄',
+    ContentWidthPref.regular => '标准',
+    ContentWidthPref.wide => '宽',
+  };
+
+  /// Max width of the message column (phone ignores — full width).
+  double get maxWidth => switch (this) {
+    ContentWidthPref.narrow => 640,
+    ContentWidthPref.regular => 800,
+    ContentWidthPref.wide => 1100,
+  };
+
+  String get wire => name;
+
+  static ContentWidthPref fromWire(String? v) =>
+      ContentWidthPref.values.firstWhere(
+        (e) => e.name == v,
+        orElse: () => ContentWidthPref.regular,
+      );
+}
+
+class UiPrefs {
+  const UiPrefs({
+    this.textScale = TextScalePref.medium,
+    this.density = DensityPref.comfortable,
+    this.messageStyle = MessageStylePref.bubble,
+    this.contentWidth = ContentWidthPref.regular,
+    this.liveMarkdown = true,
+  });
+
+  final TextScalePref textScale;
+  final DensityPref density;
+  final MessageStylePref messageStyle;
+  final ContentWidthPref contentWidth;
+
+  /// When true, stream assistant replies as live Markdown (not plain text).
+  final bool liveMarkdown;
+
+  UiPrefs copyWith({
+    TextScalePref? textScale,
+    DensityPref? density,
+    MessageStylePref? messageStyle,
+    ContentWidthPref? contentWidth,
+    bool? liveMarkdown,
+  }) => UiPrefs(
+    textScale: textScale ?? this.textScale,
+    density: density ?? this.density,
+    messageStyle: messageStyle ?? this.messageStyle,
+    contentWidth: contentWidth ?? this.contentWidth,
+    liveMarkdown: liveMarkdown ?? this.liveMarkdown,
+  );
+
+  Map<String, dynamic> toJson() => {
+    'textScale': textScale.wire,
+    'density': density.wire,
+    'messageStyle': messageStyle.wire,
+    'contentWidth': contentWidth.wire,
+    'liveMarkdown': liveMarkdown,
+  };
+
+  factory UiPrefs.fromJson(Map<String, dynamic>? json) {
+    if (json == null) return const UiPrefs();
+    return UiPrefs(
+      textScale: TextScalePref.fromWire(json['textScale'] as String?),
+      density: DensityPref.fromWire(json['density'] as String?),
+      messageStyle: MessageStylePref.fromWire(json['messageStyle'] as String?),
+      contentWidth: ContentWidthPref.fromWire(json['contentWidth'] as String?),
+      liveMarkdown: json['liveMarkdown'] as bool? ?? true,
+    );
+  }
+}

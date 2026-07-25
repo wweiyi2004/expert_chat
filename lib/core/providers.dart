@@ -2,9 +2,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../data/character_repository.dart';
 import '../data/conversation_repository.dart';
 import '../data/db/app_database.dart';
 import '../data/drift_conversation_repository.dart';
+import '../data/world_info_repository.dart';
 import '../domain/llm/llm_provider.dart';
 import '../domain/llm/openai_compatible_provider.dart';
 import '../domain/tools/file_parser.dart';
@@ -37,6 +39,14 @@ final driftConversationRepositoryProvider =
 /// Interface used by the controllers (drift-backed).
 final conversationRepositoryProvider = Provider<ConversationRepository>(
   (ref) => ref.read(driftConversationRepositoryProvider),
+);
+
+final characterRepositoryProvider = Provider<CharacterRepository>(
+  (ref) => CharacterRepository(ref.read(appDatabaseProvider)),
+);
+
+final worldInfoRepositoryProvider = Provider<WorldInfoRepository>(
+  (ref) => WorldInfoRepository(ref.read(appDatabaseProvider)),
 );
 
 final llmProvider = Provider<LlmProvider>((ref) => OpenAiCompatibleProvider());

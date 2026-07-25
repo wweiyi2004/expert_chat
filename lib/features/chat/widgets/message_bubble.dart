@@ -4,6 +4,7 @@ import 'package:gpt_markdown/gpt_markdown.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../data/models.dart';
+import '../../../data/ui_prefs.dart';
 import 'attachment_chip.dart';
 import 'citations_bar.dart';
 import 'thinking_panel.dart';
@@ -26,18 +27,24 @@ class MessageBubble extends StatefulWidget {
     super.key,
     required this.message,
     required this.isStreaming,
+    this.speakerName,
     this.onRegenerate,
     this.onEdit,
     this.branchIndex = 0,
     this.branchCount = 1,
     this.onPrevBranch,
     this.onNextBranch,
+    this.messageStyle = MessageStylePref.bubble,
+    this.liveMarkdown = true,
   });
 
   final ChatMessage message;
 
   /// Whether THIS message is the one currently being streamed.
   final bool isStreaming;
+
+  /// Optional label above assistant bubbles (e.g. character card name).
+  final String? speakerName;
 
   /// Assistant only: regenerate as a new branch.
   final VoidCallback? onRegenerate;
@@ -50,6 +57,9 @@ class MessageBubble extends StatefulWidget {
   final int branchCount;
   final VoidCallback? onPrevBranch;
   final VoidCallback? onNextBranch;
+
+  final MessageStylePref messageStyle;
+  final bool liveMarkdown;
 
   @override
   State<MessageBubble> createState() => _MessageBubbleState();
@@ -80,17 +90,60 @@ class _MessageBubbleState extends State<MessageBubble> {
     }
   }
 
+  bool get _document => widget.messageStyle == MessageStylePref.document;
+
+  Widget _assistantMarkdown(ChatMessage m) {
+    final useMarkdown = !widget.isStreaming || widget.liveMarkdown;
+    return Builder(
+      builder: (context) {
+        final scheme = Theme.of(context).colorScheme;
+        // Must set [color] explicitly. gpt_markdown caches parsed spans and only
+        // rebuilds them when config changes; without a theme-tied style, LaTeX
+        // (flutter_math) keeps the light-mode black glyphs after a theme switch.
+        final baseStyle = Theme.of(context).textTheme.bodyLarge?.copyWith(
+          height: 1.65,
+          color: scheme.onSurface,
+        );
+        if (!useMarkdown) {
+          return SelectableText(m.content, style: baseStyle);
+        }
+        return SelectionArea(
+          // Key by brightness so the whole markdown tree is recreated on theme
+          // change (covers any internal cache that ignores TextStyle equality).
+          key: ValueKey(Theme.of(context).brightness),
+          child: GptMarkdown(
+            m.content,
+            style: baseStyle,
+            useDollarSignsForLatex: true,
+            onLinkTap: (url, _) => _openUrl(url),
+            sourceTagBuilder: (context, content, style) {
+              final n = int.tryParse(content.trim());
+              final isCitation = m.citations.any((c) => c.index == n);
+              if (!isCitation) {
+                return Text('[$content]', style: style);
+              }
+              return _CitationBadge(number: content, citations: m.citations);
+            },
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final m = widget.message;
     final isUser = m.role == MessageRole.user;
+    final doc = _document;
 
     if (isUser) {
       return Align(
-        alignment: Alignment.centerRight,
+        alignment: doc ? Alignment.centerLeft : Alignment.centerRight,
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.end,
+          crossAxisAlignment: doc
+              ? CrossAxisAlignment.start
+              : CrossAxisAlignment.end,
           children: [
             if (m.attachments.isNotEmpty)
               Padding(
@@ -113,24 +166,76 @@ class _MessageBubbleState extends State<MessageBubble> {
               )
             else if (m.content.isNotEmpty)
               Container(
-                margin: const EdgeInsets.symmetric(vertical: 8),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 10,
+                margin: EdgeInsets.symmetric(vertical: doc ? 8 : 6),
+                padding: EdgeInsets.symmetric(
+                  horizontal: doc ? 4 : 16,
+                  vertical: doc ? 8 : 12,
                 ),
-                constraints: const BoxConstraints(maxWidth: 560),
-                decoration: BoxDecoration(
-                  color: scheme.primary,
-                  borderRadius: BorderRadius.circular(18),
-                ),
-                child: SelectableText(
-                  m.content,
-                  style: TextStyle(color: scheme.onPrimary, height: 1.5),
+                constraints: BoxConstraints(maxWidth: doc ? 900 : 560),
+                width: doc ? double.infinity : null,
+                decoration: doc
+                    ? BoxDecoration(
+                        border: Border(
+                          left: BorderSide(
+                            color: scheme.primary.withValues(alpha: 0.45),
+                            width: 3,
+                          ),
+                        ),
+                      )
+                    : BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [
+                            scheme.primary,
+                            Color.lerp(scheme.primary, scheme.secondary, 0.22)!,
+                          ],
+                        ),
+                        borderRadius: const BorderRadius.only(
+                          topLeft: Radius.circular(20),
+                          topRight: Radius.circular(20),
+                          bottomLeft: Radius.circular(20),
+                          bottomRight: Radius.circular(6),
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: scheme.primary.withValues(alpha: 0.18),
+                            blurRadius: 16,
+                            offset: const Offset(0, 6),
+                          ),
+                        ],
+                      ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (doc)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 4),
+                        child: Text(
+                          '你',
+                          style: Theme.of(context).textTheme.labelMedium
+                              ?.copyWith(
+                                color: scheme.primary,
+                                fontWeight: FontWeight.w700,
+                              ),
+                        ),
+                      ),
+                    SelectableText(
+                      m.content,
+                      style: TextStyle(
+                        color: doc ? scheme.onSurface : scheme.onPrimary,
+                        height: 1.55,
+                        fontSize: 15,
+                      ),
+                    ),
+                  ],
                 ),
               ),
             if (!_editing)
               Row(
-                mainAxisAlignment: MainAxisAlignment.end,
+                mainAxisAlignment: doc
+                    ? MainAxisAlignment.start
+                    : MainAxisAlignment.end,
                 children: [
                   _branchNav(scheme),
                   if (widget.onEdit != null && !widget.isStreaming)
@@ -152,15 +257,41 @@ class _MessageBubbleState extends State<MessageBubble> {
     final hasReasoning = m.reasoning.trim().isNotEmpty;
     final stillThinking = widget.isStreaming && m.content.isEmpty;
     final showCursor = widget.isStreaming && m.content.isEmpty && !hasReasoning;
+    final speaker = widget.speakerName?.trim();
 
     return Align(
       alignment: Alignment.centerLeft,
       child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 10),
-        constraints: const BoxConstraints(maxWidth: 760),
+        margin: EdgeInsets.symmetric(vertical: doc ? 12 : 10),
+        constraints: BoxConstraints(maxWidth: doc ? 900 : 760),
+        width: doc ? double.infinity : null,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if (speaker != null && speaker.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(left: 2, bottom: 6),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: scheme.primaryContainer.withValues(alpha: 0.55),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(
+                      color: scheme.primary.withValues(alpha: 0.18),
+                    ),
+                  ),
+                  child: Text(
+                    speaker,
+                    style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                      color: scheme.onPrimaryContainer,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ),
             if (hasReasoning)
               ThinkingPanel(
                 reasoning: m.reasoning,
@@ -168,59 +299,60 @@ class _MessageBubbleState extends State<MessageBubble> {
                 thinkingMillis: m.thinkingMillis,
               ),
             if (showCursor)
-              const SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(strokeWidth: 2),
+              Padding(
+                padding: const EdgeInsets.only(left: 4, top: 4),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: scheme.primary,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Text(
+                      '正在书写…',
+                      style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
               )
             else if (m.content.isNotEmpty)
               Container(
                 margin: EdgeInsets.only(top: hasReasoning ? 10 : 0),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 14,
+                padding: EdgeInsets.symmetric(
+                  horizontal: doc ? 2 : 16,
+                  vertical: doc ? 4 : 14,
                 ),
-                decoration: BoxDecoration(
-                  color: scheme.surfaceContainer,
-                  borderRadius: BorderRadius.circular(18),
-                  border: Border.all(color: scheme.outlineVariant),
-                ),
-                child: widget.isStreaming
-                    // Parsing a growing Markdown document is needlessly
-                    // expensive and can make long streams stutter. Show the
-                    // live text directly, then render full Markdown once the
-                    // response is complete.
-                    ? SelectableText(
-                        m.content,
-                        style: Theme.of(
-                          context,
-                        ).textTheme.bodyLarge?.copyWith(height: 1.65),
-                      )
-                    : SelectionArea(
-                        child: GptMarkdown(
-                          m.content,
-                          useDollarSignsForLatex: true,
-                          onLinkTap: (url, _) => _openUrl(url),
-                          // Always handle [n] ourselves: render a tappable badge only
-                          // when it maps to a real citation, otherwise keep it as plain
-                          // text (gpt_markdown's default would badge ANY [number]).
-                          sourceTagBuilder: (context, content, style) {
-                            final n = int.tryParse(content.trim());
-                            final isCitation = m.citations.any(
-                              (c) => c.index == n,
-                            );
-                            if (!isCitation) {
-                              return Text('[$content]', style: style);
-                            }
-                            return _CitationBadge(
-                              number: content,
-                              citations: m.citations,
-                            );
-                          },
+                decoration: doc
+                    ? null
+                    : BoxDecoration(
+                        color: scheme.surfaceContainer,
+                        borderRadius: const BorderRadius.only(
+                          topLeft: Radius.circular(6),
+                          topRight: Radius.circular(20),
+                          bottomLeft: Radius.circular(20),
+                          bottomRight: Radius.circular(20),
                         ),
+                        border: Border.all(
+                          color: scheme.outlineVariant.withValues(alpha: 0.95),
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: scheme.shadow.withValues(alpha: 0.05),
+                            blurRadius: 18,
+                            offset: const Offset(0, 8),
+                          ),
+                        ],
                       ),
+                child: _assistantMarkdown(m),
               ),
-            if (m.citations.isNotEmpty && !widget.isStreaming)
+            if (m.citations.isNotEmpty)
               CitationsBar(
                 citations: m.citations,
                 onTap: (c) => _openUrl(c.url),

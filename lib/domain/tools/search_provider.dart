@@ -119,6 +119,37 @@ class HttpSearchProvider implements SearchProvider {
   Future<bool> isSafeFetchUrl(String url, {CancelToken? cancelToken}) async =>
       await _validateFetchTarget(url, cancelToken) != null;
 
+  /// Fetches a single page and returns readable text (SSRF-safe).
+  /// Used by the "读取网页" path when the user pastes a URL without searching.
+  Future<SearchResult> fetchPage(
+    String url, {
+    CancelToken? cancelToken,
+  }) async {
+    final trimmed = url.trim();
+    if (!isSafeHttpUrl(trimmed)) {
+      return SearchResult(title: trimmed, url: trimmed, snippet: '', content: '');
+    }
+    final content = await _fetchReadableText(trimmed, cancelToken);
+    final title = _guessTitle(content, trimmed);
+    return SearchResult(
+      title: title,
+      url: trimmed,
+      snippet: content.characters.take(200).toString(),
+      content: content,
+    );
+  }
+
+  static String _guessTitle(String text, String url) {
+    final first = text
+        .split(RegExp(r'\r?\n'))
+        .map((l) => l.trim())
+        .firstWhere((l) => l.isNotEmpty, orElse: () => '');
+    if (first.isEmpty) return url;
+    return first.characters.length > 80
+        ? '${first.characters.take(80)}…'
+        : first;
+  }
+
   @override
   Future<List<SearchResult>> search(
     String query, {

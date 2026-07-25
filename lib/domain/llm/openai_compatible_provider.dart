@@ -7,7 +7,8 @@ import 'package:dio/dio.dart';
 import 'llm_provider.dart';
 
 /// LLM provider for any OpenAI-compatible `/chat/completions` SSE endpoint.
-/// DeepSeek, OpenAI, Kimi, 智谱 etc. all share this wire format.
+/// DeepSeek, OpenAI, xAI Grok, Kimi, 智谱 etc. all share this wire format
+/// (`Authorization: Bearer` + SSE `data:` chunks).
 class OpenAiCompatibleProvider implements LlmProvider {
   OpenAiCompatibleProvider({Dio? dio})
     : _dio =
@@ -54,6 +55,16 @@ class OpenAiCompatibleProvider implements LlmProvider {
     // OpenAI-compatible providers never receive it (which would 400).
     if (thinking != null && config.capabilities.sendThinkingField) {
       body['thinking'] = {'type': thinking ? 'enabled' : 'disabled'};
+    }
+    // Current xAI models use the OpenAI-compatible `reasoning_effort` field.
+    // Grok 4.3 accepts `none`; Grok 4.5 always reasons, so normal mode leaves
+    // its provider default untouched while deep-think requests high effort.
+    if (thinking != null && config.capabilities.supportsReasoningEffort) {
+      if (thinking) {
+        body['reasoning_effort'] = 'high';
+      } else if (config.capabilities.reasoningCanBeDisabled) {
+        body['reasoning_effort'] = 'none';
+      }
     }
     // Some legacy reasoner endpoints reject `tools`; callers avoid those paths,
     // but guard here too so a stray tool list can't break the request.
@@ -131,9 +142,14 @@ class OpenAiCompatibleProvider implements LlmProvider {
           continue;
         }
 
+        // Reasoning field names vary across OpenAI-compatible vendors:
+        // DeepSeek → reasoning_content; some Grok / gateways → reasoning.
+        final reasoning =
+            delta['reasoning_content'] as String? ??
+            delta['reasoning'] as String?;
         yield ChatChunk(
           contentDelta: delta['content'] as String?,
-          reasoningDelta: delta['reasoning_content'] as String?,
+          reasoningDelta: reasoning,
           toolCalls: _parseToolCalls(delta['tool_calls']),
           finishReason: finishReason,
         );

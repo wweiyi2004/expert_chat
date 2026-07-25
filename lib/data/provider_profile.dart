@@ -13,8 +13,8 @@ class ProviderProfile {
     required this.chatModel,
     required this.reasonerModel,
     List<String>? models,
-  })  : id = id ?? _uuid.v4(),
-        models = models ?? const [];
+  }) : id = id ?? _uuid.v4(),
+       models = models ?? const [];
 
   final String id;
 
@@ -40,24 +40,23 @@ class ProviderProfile {
     String? chatModel,
     String? reasonerModel,
     List<String>? models,
-  }) =>
-      ProviderProfile(
-        id: id,
-        name: name ?? this.name,
-        baseUrl: baseUrl ?? this.baseUrl,
-        chatModel: chatModel ?? this.chatModel,
-        reasonerModel: reasonerModel ?? this.reasonerModel,
-        models: models ?? this.models,
-      );
+  }) => ProviderProfile(
+    id: id,
+    name: name ?? this.name,
+    baseUrl: baseUrl ?? this.baseUrl,
+    chatModel: chatModel ?? this.chatModel,
+    reasonerModel: reasonerModel ?? this.reasonerModel,
+    models: models ?? this.models,
+  );
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'name': name,
-        'baseUrl': baseUrl,
-        'chatModel': chatModel,
-        'reasonerModel': reasonerModel,
-        'models': models,
-      };
+    'id': id,
+    'name': name,
+    'baseUrl': baseUrl,
+    'chatModel': chatModel,
+    'reasonerModel': reasonerModel,
+    'models': models,
+  };
 
   factory ProviderProfile.fromJson(Map<String, dynamic> json) =>
       ProviderProfile(
@@ -65,7 +64,8 @@ class ProviderProfile {
         name: json['name'] as String? ?? '未命名',
         baseUrl: json['baseUrl'] as String? ?? '',
         chatModel: json['chatModel'] as String? ?? '',
-        reasonerModel: json['reasonerModel'] as String? ??
+        reasonerModel:
+            json['reasonerModel'] as String? ??
             json['chatModel'] as String? ??
             '',
         models: (json['models'] as List<dynamic>? ?? [])
@@ -93,12 +93,12 @@ class ProviderPreset {
   final List<String> models;
 
   ProviderProfile toProfile() => ProviderProfile(
-        name: name,
-        baseUrl: baseUrl,
-        chatModel: chatModel,
-        reasonerModel: reasonerModel,
-        models: models,
-      );
+    name: name,
+    baseUrl: baseUrl,
+    chatModel: chatModel,
+    reasonerModel: reasonerModel,
+    models: models,
+  );
 
   static const presets = <ProviderPreset>[
     ProviderPreset(
@@ -107,6 +107,24 @@ class ProviderPreset {
       chatModel: 'deepseek-v4-flash',
       reasonerModel: 'deepseek-v4-pro',
       models: ['deepseek-v4-flash', 'deepseek-v4-pro'],
+    ),
+
+    /// xAI Grok — OpenAI-compatible Chat Completions at `/v1/chat/completions`.
+    /// Docs: https://docs.x.ai — Base URL must include `/v1`.
+    ProviderPreset(
+      name: 'Grok (xAI)',
+      baseUrl: 'https://api.x.ai/v1',
+      chatModel: 'grok-4.3',
+      reasonerModel: 'grok-4.5',
+      models: [
+        'grok-4.3',
+        'grok-4.5',
+        'grok-4.20-0309-non-reasoning',
+        'grok-4.20-0309-reasoning',
+        'grok-4.20-multi-agent-0309',
+        'grok-build-0.1',
+        'grok-2-vision-1212',
+      ],
     ),
     ProviderPreset(
       name: 'OpenAI',

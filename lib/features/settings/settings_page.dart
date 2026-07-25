@@ -7,6 +7,8 @@ import '../../data/provider_profile.dart';
 import '../../data/ui_prefs.dart';
 import '../../domain/llm/llm_provider.dart';
 import '../../domain/tools/search_provider.dart';
+import '../../domain/update/shorebird_patch.dart';
+import '../../domain/update/shorebird_ui.dart';
 import '../../domain/update/update_ui.dart';
 import '../../state/settings_controller.dart';
 
@@ -35,13 +37,12 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     super.initState();
     // Sync text fields outside build: writing controllers during build can
     // assert or fight focus when the provider rebuilds mid-frame.
-    ref.listenManual<AsyncValue<SettingsState>>(
-      settingsControllerProvider,
-      (previous, next) {
-        next.whenData(_syncFieldsFromState);
-      },
-      fireImmediately: true,
-    );
+    ref.listenManual<AsyncValue<SettingsState>>(settingsControllerProvider, (
+      previous,
+      next,
+    ) {
+      next.whenData(_syncFieldsFromState);
+    }, fireImmediately: true);
   }
 
   void _syncFieldsFromState(SettingsState s) {
@@ -252,9 +253,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                     SwitchListTile(
                       contentPadding: EdgeInsets.zero,
                       title: const Text('流式实时 Markdown'),
-                      subtitle: const Text(
-                        '开启后生成过程中即渲染格式；关闭则先纯文本、结束后再排版。',
-                      ),
+                      subtitle: const Text('开启后生成过程中即渲染格式；关闭则先纯文本、结束后再排版。'),
                       value: s.ui.liveMarkdown,
                       onChanged: (v) =>
                           controller.setUiPrefs(s.ui.copyWith(liveMarkdown: v)),
@@ -601,6 +600,7 @@ class _AboutUpdateTile extends StatefulWidget {
 
 class _AboutUpdateTileState extends State<_AboutUpdateTile> {
   String _version = '…';
+  String _patchLabel = '补丁：检测中…';
 
   @override
   void initState() {
@@ -608,6 +608,20 @@ class _AboutUpdateTileState extends State<_AboutUpdateTile> {
     PackageInfo.fromPlatform().then((info) {
       if (!mounted) return;
       setState(() => _version = 'v${info.version} (${info.buildNumber})');
+    });
+    final patchService = ShorebirdPatchService();
+    if (!patchService.isAvailable) {
+      _patchLabel = '代码补丁：当前安装包未启用 Shorebird';
+    }
+    patchService.currentPatchNumber().then((n) {
+      if (!mounted) return;
+      setState(() {
+        _patchLabel = !patchService.isAvailable
+            ? '代码补丁：当前安装包未启用 Shorebird'
+            : n == null
+            ? '代码补丁：基座版本（暂无补丁）'
+            : '代码补丁：#$n';
+      });
     });
   }
 
@@ -619,13 +633,22 @@ class _AboutUpdateTileState extends State<_AboutUpdateTile> {
           ListTile(
             leading: const Icon(Icons.info_outline),
             title: const Text('Expert Chat'),
-            subtitle: Text('当前版本 $_version'),
+            subtitle: Text('$_version\n$_patchLabel'),
+            isThreeLine: true,
+          ),
+          const Divider(height: 1),
+          ListTile(
+            leading: const Icon(Icons.bolt_outlined),
+            title: const Text('检查代码补丁'),
+            subtitle: const Text('Shorebird OTA：免重装，下次冷启动生效'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => checkShorebirdPatchInteractive(context),
           ),
           const Divider(height: 1),
           ListTile(
             leading: const Icon(Icons.system_update_alt),
-            title: const Text('检查更新'),
-            subtitle: const Text('从 GitHub Releases 获取最新安装包'),
+            title: const Text('检查整包更新'),
+            subtitle: const Text('从 GitHub Releases 下载 APK / zip 安装包'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => checkForUpdatesInteractive(context),
           ),

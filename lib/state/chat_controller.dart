@@ -10,8 +10,10 @@ import '../data/models.dart';
 import '../data/story_models.dart';
 import '../domain/llm/llm_provider.dart';
 import '../domain/story/story_prompt_assembler.dart';
+import '../domain/tools/search_provider.dart';
 import '../domain/tools/search_query.dart';
 import '../domain/tools/tool_engine.dart';
+import '../domain/tools/url_extract.dart';
 import 'settings_controller.dart';
 
 class ChatState {
@@ -369,7 +371,8 @@ class ChatController extends AsyncNotifier<ChatState> {
     _set(_s.copyWith(conversations: _replace(updated)));
     _persistSoon(
       _enqueueWrite(
-        () => ref.read(conversationRepositoryProvider).saveConversation(updated),
+        () =>
+            ref.read(conversationRepositoryProvider).saveConversation(updated),
       ),
     );
   }
@@ -379,7 +382,9 @@ class ChatController extends AsyncNotifier<ChatState> {
     final convo = _s.current;
     if (convo == null || !convo.isStory) return;
     final beats = convo.outlineBeats;
-    final max = beats.isEmpty ? convo.plotCursor + delta.abs() + 1 : beats.length;
+    final max = beats.isEmpty
+        ? convo.plotCursor + delta.abs() + 1
+        : beats.length;
     final next = (convo.plotCursor + delta).clamp(0, max);
     updateStoryMeta(plotCursor: next);
   }
@@ -864,6 +869,18 @@ class ChatController extends AsyncNotifier<ChatState> {
   }) async {
     final searchAllowed = _s.searchEnabled && searchQuery.trim().isNotEmpty;
     final useWebSearchTool = searchAllowed && config.capabilities.supportsTools;
+    // Only expose direct page fetching when this turn actually contains a URL.
+    // The executor also restricts calls to this exact allow-list so a model
+    // cannot invent unrelated network targets while "联网" is off.
+    final pastedUrls = extractHttpUrls(searchQuery);
+    final useFetchUrlTool =
+        pastedUrls.isNotEmpty && config.capabilities.supportsTools;
+    final enableTools = useWebSearchTool || useFetchUrlTool;
+    final toolSpecs = <ToolSpec>[
+      if (useWebSearchTool) ToolEngine.webSearchTool,
+      if (useFetchUrlTool) ToolEngine.fetchUrlTool,
+    ];
+    final allowedFetchUrls = {for (final url in pastedUrls) _fetchUrlKey(url)};
 
     // One token covers the whole generation (search pre-step + all tool
     // rounds); stop() fires it.
@@ -898,25 +915,57 @@ class ChatController extends AsyncNotifier<ChatState> {
       _set(_s.copyWith(error: '本地保存失败：$e'));
     }
 
-    // Fallback for legacy models that reject tool-call parameters: keep the old
-    // explicit search-first behavior so the feature still works.
+    // Pre-steps that inject context before the model answers:
+    // 1) fetch any URLs the user pasted (works with or without "联网")
+    // 2) optional web search for reasoners that cannot use tools
     SearchContext? searchContext;
-    if (searchAllowed && !useWebSearchTool) {
+    // Tool-capable models can decide when the pasted link is relevant. Models
+    // without function calling keep the deterministic pre-fetch fallback.
+    final needPreFetch = pastedUrls.isNotEmpty && !useFetchUrlTool;
+    final needPreSearch = searchAllowed && !useWebSearchTool;
+    if (needPreFetch || needPreSearch) {
       _set(_s.copyWith(isSearching: true));
       try {
         final engine = ref.read(toolEngineFactoryProvider)(
           backend: settings.searchBackend,
           apiKey: settings.searchApiKey,
         );
-        searchContext = await engine.runSearch(
-          normalizeSearchQuery(searchQuery),
-          cancelToken: cancelToken,
-        );
-        if (searchContext.citations.isNotEmpty) {
+        final citations = <Citation>[];
+        final blocks = <String>[];
+
+        if (needPreFetch) {
+          final fetched = await engine.runFetchUrls(
+            pastedUrls,
+            startIndex: 1,
+            cancelToken: cancelToken,
+          );
+          if (fetched.citations.isNotEmpty) {
+            citations.addAll(fetched.citations);
+            blocks.add(fetched.contextText);
+          }
+        }
+
+        if (needPreSearch) {
+          final searched = await engine.runSearch(
+            normalizeSearchQuery(searchQuery),
+            startIndex: citations.length + 1,
+            cancelToken: cancelToken,
+          );
+          if (searched.citations.isNotEmpty) {
+            citations.addAll(searched.citations);
+            blocks.add(searched.contextText);
+          }
+        }
+
+        if (citations.isNotEmpty) {
+          searchContext = SearchContext(
+            contextText: blocks.join('\n'),
+            citations: List.unmodifiable(citations),
+          );
           _setCitations(working.id, assistantId, searchContext.citations);
         }
       } catch (e) {
-        // Stop pressed during the search is not an error.
+        // Stop pressed during the search/fetch is not an error.
         if (!_isCancel(e)) _set(_s.copyWith(error: e.toString()));
       } finally {
         _set(_s.copyWith(isSearching: false));
@@ -1047,7 +1096,10 @@ class ChatController extends AsyncNotifier<ChatState> {
       thinking: thinking,
       settings: settings,
       fallbackSearchQuery: searchQuery,
-      enableWebSearchTool: useWebSearchTool,
+      enableTools: enableTools,
+      toolSpecs: toolSpecs,
+      initialCitations: searchContext?.citations ?? const <Citation>[],
+      allowedFetchUrls: Set<String>.unmodifiable(allowedFetchUrls),
       cancelToken: cancelToken,
     );
 
@@ -1082,12 +1134,17 @@ class ChatController extends AsyncNotifier<ChatState> {
     required bool thinking,
     required SettingsState settings,
     required String fallbackSearchQuery,
-    required bool enableWebSearchTool,
+    required bool enableTools,
+    required List<ToolSpec> toolSpecs,
+    required List<Citation> initialCitations,
+    required Set<String> allowedFetchUrls,
     required CancelToken cancelToken,
   }) async {
     final llm = ref.read(llmProvider);
     final requestMessages = List<LlmRequestMessage>.of(history);
-    final citations = <Citation>[];
+    // Pre-fetch/pre-search citations must stay in the same numbering space as
+    // citations produced by later model tool calls.
+    final citations = List<Citation>.of(initialCitations);
     final content = StringBuffer();
     final reasoning = StringBuffer();
     // Stopwatch for "已深度思考 N 秒": starts on first reasoning delta, freezes
@@ -1146,11 +1203,12 @@ class ChatController extends AsyncNotifier<ChatState> {
 
         // On the LAST round drop the tool list entirely so the model is forced
         // to answer from what it has, instead of us erroring out mid-answer.
-        final allowTools = enableWebSearchTool && round < _maxToolRounds - 1;
+        final allowTools =
+            enableTools && toolSpecs.isNotEmpty && round < _maxToolRounds - 1;
         final stream = llm.streamChat(
           config: config,
           messages: requestMessages,
-          tools: allowTools ? const [ToolEngine.webSearchTool] : null,
+          tools: allowTools ? toolSpecs : null,
           thinking: thinking,
           cancelToken: cancelToken,
         );
@@ -1251,6 +1309,7 @@ class ChatController extends AsyncNotifier<ChatState> {
           convoId: convoId,
           assistantId: assistantId,
           citations: citations,
+          allowedFetchUrls: allowedFetchUrls,
           cancelToken: cancelToken,
         );
         if (!_s.isStreaming) {
@@ -1296,6 +1355,7 @@ class ChatController extends AsyncNotifier<ChatState> {
     required String convoId,
     required String assistantId,
     required List<Citation> citations,
+    required Set<String> allowedFetchUrls,
     required CancelToken cancelToken,
   }) async {
     final out = <LlmRequestMessage>[];
@@ -1310,10 +1370,8 @@ class ChatController extends AsyncNotifier<ChatState> {
           // Every requested call still gets a protocol-valid tool response, but
           // an untrusted/misbehaving model cannot fan out an unbounded number
           // of network requests in one turn.
-          toolContent = '本轮最多执行 $_maxToolCallsPerRound 次联网搜索；其余请求已跳过。';
-        } else if (call.name != ToolEngine.webSearchTool.name) {
-          toolContent = '不支持的工具：${call.name ?? 'unknown'}';
-        } else {
+          toolContent = '本轮最多执行 $_maxToolCallsPerRound 次工具调用；其余请求已跳过。';
+        } else if (call.name == ToolEngine.webSearchTool.name) {
           toolContent = await _runWebSearchTool(
             call,
             settings,
@@ -1323,6 +1381,18 @@ class ChatController extends AsyncNotifier<ChatState> {
             citations,
             cancelToken,
           );
+        } else if (call.name == ToolEngine.fetchUrlTool.name) {
+          toolContent = await _runFetchUrlTool(
+            call,
+            settings,
+            convoId,
+            assistantId,
+            citations,
+            allowedFetchUrls,
+            cancelToken,
+          );
+        } else {
+          toolContent = '不支持的工具：${call.name ?? 'unknown'}';
         }
         out.add(
           LlmRequestMessage(
@@ -1373,6 +1443,44 @@ class ChatController extends AsyncNotifier<ChatState> {
     }
   }
 
+  Future<String> _runFetchUrlTool(
+    ToolCall call,
+    SettingsState settings,
+    String convoId,
+    String assistantId,
+    List<Citation> citations,
+    Set<String> allowedFetchUrls,
+    CancelToken cancelToken,
+  ) async {
+    final url = _urlFromArgs(call.argumentsJson);
+    if (url == null) {
+      return '无效的 URL 参数；请提供完整的 http(s) 网址。';
+    }
+    if (!allowedFetchUrls.contains(_fetchUrlKey(url))) {
+      return '已拒绝读取：fetch_url 只能访问用户在本轮消息中明确提供的网址。';
+    }
+    try {
+      final engine = ref.read(toolEngineFactoryProvider)(
+        backend: settings.searchBackend,
+        apiKey: settings.searchApiKey,
+      );
+      final context = await engine.runFetchUrls(
+        [url],
+        startIndex: citations.length + 1,
+        cancelToken: cancelToken,
+      );
+      if (context.citations.isNotEmpty) {
+        citations.addAll(context.citations);
+        _setCitations(convoId, assistantId, List<Citation>.of(citations));
+      }
+      return context.contextText.isEmpty ? '未能读取网页：$url' : context.contextText;
+    } catch (e) {
+      if (_isCancel(e)) return '网页读取已取消。';
+      _set(_s.copyWith(error: e.toString()));
+      return '读取网页失败：$e';
+    }
+  }
+
   String _searchQueryFromArgs(String raw, String fallback) {
     try {
       final decoded = jsonDecode(raw);
@@ -1384,6 +1492,36 @@ class ChatController extends AsyncNotifier<ChatState> {
       // Fall through to the user turn if the model returned malformed JSON.
     }
     return normalizeSearchQuery(fallback);
+  }
+
+  /// Parse a single URL from a tool-call arguments JSON blob.
+  String? _urlFromArgs(String raw) {
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map && decoded['url'] is String) {
+        final url = (decoded['url'] as String).trim();
+        if (url.isNotEmpty && HttpSearchProvider.isSafeHttpUrl(url)) {
+          return url;
+        }
+      }
+    } catch (_) {
+      // Malformed JSON from the model.
+    }
+    return null;
+  }
+
+  /// Canonical comparison key for the per-turn fetch allow-list.
+  String _fetchUrlKey(String url) {
+    final uri = Uri.parse(url);
+    return uri
+        .replace(
+          scheme: uri.scheme.toLowerCase(),
+          host: uri.host.toLowerCase(),
+          path: uri.path.isEmpty ? '/' : uri.path,
+          fragment: '',
+        )
+        .normalizePath()
+        .toString();
   }
 
   void _setCitations(String convoId, String msgId, List<Citation> citations) {

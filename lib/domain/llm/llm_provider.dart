@@ -196,6 +196,8 @@ class ModelCapabilities {
     required this.supportsTools,
     required this.sendThinkingField,
     required this.supportsVision,
+    this.supportsReasoningEffort = false,
+    this.reasoningCanBeDisabled = false,
   });
 
   /// Streams a separate `reasoning_content` field (drives the thinking panel).
@@ -208,6 +210,13 @@ class ModelCapabilities {
   /// DeepSeek V4 models do; sending it to other providers risks a 400.
   final bool sendThinkingField;
 
+  /// Accepts OpenAI's `reasoning_effort` request field.
+  final bool supportsReasoningEffort;
+
+  /// Accepts `reasoning_effort: none`; always-reasoning models omit the field
+  /// in normal mode and use their provider default instead.
+  final bool reasoningCanBeDisabled;
+
   /// Accepts image content parts (`image_url`) — i.e. is a vision model. When
   /// false, image attachments are described in text rather than sent.
   final bool supportsVision;
@@ -219,7 +228,7 @@ class ModelCapabilities {
     final m = model.toLowerCase();
     // Broadened vs. the old check to also catch `*-thinking-*` reasoners (e.g.
     // kimi-thinking-preview, GLM thinking variants), which previously did not
-    // light up the panel.
+    // light up the panel. xAI Grok: `grok-*-reasoning` / mini reasoning paths.
     final reasoner =
         m.contains('reasoner') ||
         m.contains('reasoning') ||
@@ -228,18 +237,26 @@ class ModelCapabilities {
         m.startsWith('o1') ||
         m.startsWith('o3') ||
         m.contains('-r1') ||
-        m.endsWith('r1');
+        m.endsWith('r1') ||
+        m.startsWith('grok-4.5') ||
+        // Grok mini often used as the "think" model in dual-model setups.
+        (m.startsWith('grok') &&
+            m.contains('mini') &&
+            !m.contains('non-reasoning'));
 
     // DeepSeek V4 supports tools in both thinking and non-thinking modes;
     // older/legacy reasoner endpoints (deepseek-reasoner, o1, *reasoning*)
-    // reject tool-call parameters.
+    // reject tool-call parameters. Grok OpenAI-compatible endpoints accept tools
+    // on the main chat models.
     bool tools;
-    if (m.startsWith('deepseek-v4') || m == 'deepseek-chat') {
+    if (m.startsWith('deepseek-v4') ||
+        m == 'deepseek-chat' ||
+        m.startsWith('grok')) {
       tools = true;
     } else if (m == 'deepseek-reasoner' ||
         m.startsWith('o1') ||
         m.contains('reasoner') ||
-        m.contains('reasoning')) {
+        (m.contains('reasoning') && !m.startsWith('grok'))) {
       tools = false;
     } else {
       tools = true;
@@ -261,13 +278,24 @@ class ModelCapabilities {
         m.contains('claude-4') ||
         m.contains('pixtral') ||
         m.contains('llava') ||
-        m.contains('internvl');
+        m.contains('internvl') ||
+        (m.startsWith('grok') &&
+            (m.contains('vision') ||
+                (m.startsWith('grok-4.') && !m.contains('build'))));
+
+    final grok43 =
+        m == 'grok-4.3' || m.startsWith('grok-4.3-') || m == 'grok-4.3-latest';
+    final grok45 =
+        m == 'grok-4.5' || m.startsWith('grok-4.5-') || m == 'grok-4.5-latest';
 
     return ModelCapabilities(
       isReasoner: reasoner,
       supportsTools: tools,
+      // DeepSeek-only request body field — never send to xAI/OpenAI/etc.
       sendThinkingField: m.startsWith('deepseek-v4'),
       supportsVision: vision,
+      supportsReasoningEffort: grok43 || grok45,
+      reasoningCanBeDisabled: grok43,
     );
   }
 }

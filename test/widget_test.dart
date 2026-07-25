@@ -296,7 +296,9 @@ void main() {
       SearchResult(
         title: 'Flutter',
         url: 'https://flutter.dev',
-        snippet: 'UI toolkit',
+        snippet:
+            'Flutter is a cross-platform UI toolkit powered by the Dart '
+            'programming language.',
       ),
     ]);
     final c = _container(
@@ -336,6 +338,109 @@ void main() {
     expect(assistant.content, 'Use Flutter with Dart [1].');
     expect(assistant.citations.single.url, 'https://flutter.dev');
   });
+
+  test('fetch_url is not exposed without a URL in the current turn', () async {
+    final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'hello')]);
+    final c = _container(llm, InMemoryRepo());
+    addTearDown(c.dispose);
+
+    final ctrl = c.read(chatControllerProvider.notifier);
+    await c.read(chatControllerProvider.future);
+    await ctrl.sendMessage('普通离线问题');
+
+    expect(llm.callCount, 1);
+    expect(llm.toolCalls.single, isNull);
+  });
+
+  test(
+    'fetch_url rejects model-invented URLs outside the turn allow-list',
+    () async {
+      final llm = FakeLlmProvider(
+        const [],
+        scriptedChunks: const [
+          [
+            ChatChunk(
+              toolCalls: [
+                ToolCall(
+                  index: 0,
+                  id: 'fetch_1',
+                  name: 'fetch_url',
+                  argumentsJson: '{"url":"https://other.example/private"}',
+                ),
+              ],
+              finishReason: 'tool_calls',
+            ),
+          ],
+          [ChatChunk(contentDelta: '无法读取未授权网址。')],
+        ],
+      );
+      final c = _container(llm, InMemoryRepo());
+      addTearDown(c.dispose);
+
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
+      await ctrl.sendMessage('请读取 https://allowed.example/page');
+
+      expect(llm.toolCalls.first?.single.name, 'fetch_url');
+      expect(
+        llm.calls[1].any(
+          (m) =>
+              m.role == MessageRole.tool &&
+              m.toolCallId == 'fetch_1' &&
+              m.content.contains('只能访问用户在本轮消息中明确提供的网址'),
+        ),
+        isTrue,
+      );
+    },
+  );
+
+  test(
+    'fetch_url reads an allowed pasted URL and preserves its citation',
+    () async {
+      final llm = FakeLlmProvider(
+        const [],
+        scriptedChunks: const [
+          [
+            ChatChunk(
+              toolCalls: [
+                ToolCall(
+                  index: 0,
+                  id: 'fetch_2',
+                  name: 'fetch_url',
+                  argumentsJson: '{"url":"https://allowed.example/page"}',
+                ),
+              ],
+              finishReason: 'tool_calls',
+            ),
+          ],
+          [ChatChunk(contentDelta: '页面内容见 [1]。')],
+        ],
+      );
+      final pages = _StubPageSearch();
+      final c = _container(
+        llm,
+        InMemoryRepo(),
+        toolEngineFactory: ({required backend, required apiKey}) =>
+            ToolEngine(pages),
+      );
+      addTearDown(c.dispose);
+
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
+      await ctrl.sendMessage('请读取 https://allowed.example/page');
+
+      expect(pages.fetchCalls, 1);
+      final assistant = c
+          .read(chatControllerProvider)
+          .value!
+          .current!
+          .activePath
+          .last;
+      expect(assistant.content, '页面内容见 [1]。');
+      expect(assistant.citations.single.index, 1);
+      expect(assistant.citations.single.url, 'https://allowed.example/page');
+    },
+  );
 
   test('caps network work while replying to every model tool call', () async {
     final llm = FakeLlmProvider(
@@ -651,18 +756,21 @@ void main() {
       expect(HttpSearchProvider.isSafeHttpUrl('file:///tmp/x'), isFalse);
     });
 
-    test('normalizes chatty pre-search queries before calling the provider', () async {
-      final search = _CountingSearch([
-        const SearchResult(
-          title: 'Public',
-          url: 'https://example.com/',
-          content: richExample,
-        ),
-      ]);
-      final engine = ToolEngine(search);
-      await engine.runSearch('请问  DeepSeek V3 定价是多少？   ');
-      expect(search.lastQuery, 'DeepSeek V3 定价是多少？');
-    });
+    test(
+      'normalizes chatty pre-search queries before calling the provider',
+      () async {
+        final search = _CountingSearch([
+          const SearchResult(
+            title: 'Public',
+            url: 'https://example.com/',
+            content: richExample,
+          ),
+        ]);
+        final engine = ToolEngine(search);
+        await engine.runSearch('请问  DeepSeek V3 定价是多少？   ');
+        expect(search.lastQuery, 'DeepSeek V3 定价是多少？');
+      },
+    );
   });
 
   test('failed async delete restores only the deleted conversation', () async {
@@ -716,9 +824,7 @@ void main() {
   });
 
   test('advancePlot increments plotCursor after a successful reply', () async {
-    final llm = FakeLlmProvider([
-      const ChatChunk(contentDelta: '第二节正文'),
-    ]);
+    final llm = FakeLlmProvider([const ChatChunk(contentDelta: '第二节正文')]);
     final card = CharacterCard(name: '作者', firstMes: '开场');
     final c = _container(llm, InMemoryRepo());
     await c.read(characterRepositoryProvider).save(card);
@@ -734,33 +840,33 @@ void main() {
     final convo = c.read(chatControllerProvider).value!.current!;
     expect(convo.plotCursor, 1);
     expect(convo.activePath.last.content, '第二节正文');
-    expect(
-      convo.activePath.any((m) => m.content == '（推进情节）'),
-      isTrue,
-    );
+    expect(convo.activePath.any((m) => m.content == '（推进情节）'), isTrue);
   });
 
-  test('newEnsembleConversation requires two characters and sets cast', () async {
-    final c = _container(FakeLlmProvider(const []), InMemoryRepo());
-    final ctrl = c.read(chatControllerProvider.notifier);
-    await c.read(chatControllerProvider.future);
+  test(
+    'newEnsembleConversation requires two characters and sets cast',
+    () async {
+      final c = _container(FakeLlmProvider(const []), InMemoryRepo());
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
 
-    final a = CharacterCard(name: '甲', firstMes: '甲到场');
-    final b = CharacterCard(name: '乙', firstMes: '乙到场');
-    await ctrl.newEnsembleConversation(
-      cast: [a, b],
-      venue: '擂台中央',
-      authorNote: '火药味',
-      worldInfoIds: const [],
-    );
+      final a = CharacterCard(name: '甲', firstMes: '甲到场');
+      final b = CharacterCard(name: '乙', firstMes: '乙到场');
+      await ctrl.newEnsembleConversation(
+        cast: [a, b],
+        venue: '擂台中央',
+        authorNote: '火药味',
+        worldInfoIds: const [],
+      );
 
-    final convo = c.read(chatControllerProvider).value!.current!;
-    expect(convo.isEnsemble, isTrue);
-    expect(convo.castIds, [a.id, b.id]);
-    expect(convo.venue, '擂台中央');
-    expect(convo.authorNote, '火药味');
-    expect(convo.activePath.first.content, contains('擂台中央'));
-  });
+      final convo = c.read(chatControllerProvider).value!.current!;
+      expect(convo.isEnsemble, isTrue);
+      expect(convo.castIds, [a.id, b.id]);
+      expect(convo.venue, '擂台中央');
+      expect(convo.authorNote, '火药味');
+      expect(convo.activePath.first.content, contains('擂台中央'));
+    },
+  );
 
   test('ensembleNextTurn labels speaker and advances index', () async {
     final llm = FakeLlmProvider([const ChatChunk(contentDelta: '看招！')]);
@@ -809,11 +915,7 @@ void main() {
   test('stop aborts a send that is still waiting for settings', () async {
     final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'late')]);
     final delayed = DelayedReadySettings();
-    final c = _container(
-      llm,
-      InMemoryRepo(),
-      settingsBuilder: () => delayed,
-    );
+    final c = _container(llm, InMemoryRepo(), settingsBuilder: () => delayed);
     addTearDown(c.dispose);
 
     final ctrl = c.read(chatControllerProvider.notifier);
@@ -839,8 +941,9 @@ void main() {
     () async {
       SharedPreferences.setMockInitialValues({});
       final secureData = <String, String>{};
-      FlutterSecureStoragePlatform.instance =
-          TestFlutterSecureStoragePlatform(secureData);
+      FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
+        secureData,
+      );
       addTearDown(() {
         FlutterSecureStoragePlatform.instance =
             TestFlutterSecureStoragePlatform({});
@@ -862,8 +965,10 @@ void main() {
       await settings.setSearchApiKey('search-secret');
       await settings.setSystemPrompt('你是专业助手');
 
-      final onlyId =
-          container.read(settingsControllerProvider).value!.activeProfileId!;
+      final onlyId = container
+          .read(settingsControllerProvider)
+          .value!
+          .activeProfileId!;
       await settings.deleteProfile(onlyId);
 
       final next = container.read(settingsControllerProvider).value!;
@@ -923,6 +1028,22 @@ void main() {
       final c = ModelCapabilities.resolve('kimi-thinking-preview');
       expect(c.isReasoner, isTrue);
       expect(c.sendThinkingField, isFalse); // not a DeepSeek model
+    });
+
+    test('current Grok models expose the correct capabilities', () {
+      final chat = ModelCapabilities.resolve('grok-4.3');
+      expect(chat.isReasoner, isFalse);
+      expect(chat.supportsTools, isTrue);
+      expect(chat.supportsVision, isTrue);
+      expect(chat.supportsReasoningEffort, isTrue);
+      expect(chat.reasoningCanBeDisabled, isTrue);
+
+      final reasoner = ModelCapabilities.resolve('grok-4.5');
+      expect(reasoner.isReasoner, isTrue);
+      expect(reasoner.supportsTools, isTrue);
+      expect(reasoner.supportsVision, isTrue);
+      expect(reasoner.supportsReasoningEffort, isTrue);
+      expect(reasoner.reasoningCanBeDisabled, isFalse);
     });
 
     test('vision detection: gpt-4o yes, deepseek-v4 no, qwen-vl yes', () {
@@ -1316,5 +1437,23 @@ class _CountingSearch implements SearchProvider {
     calls++;
     lastQuery = query;
     return results.take(maxResults).toList();
+  }
+}
+
+class _StubPageSearch extends HttpSearchProvider {
+  _StubPageSearch() : super(backend: SearchBackend.duckduckgo, apiKey: '');
+
+  int fetchCalls = 0;
+
+  @override
+  Future<SearchResult> fetchPage(String url, {CancelToken? cancelToken}) async {
+    fetchCalls++;
+    return SearchResult(
+      title: 'Allowed page',
+      url: url,
+      content:
+          'This is readable page content long enough to pass the minimum '
+          'source threshold used by the tool engine.',
+    );
   }
 }

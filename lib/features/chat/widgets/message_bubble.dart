@@ -5,8 +5,11 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../../data/models.dart';
 import '../../../data/ui_prefs.dart';
+import '../../../domain/html/html_snippet.dart';
 import 'attachment_chip.dart';
 import 'citations_bar.dart';
+import 'html_preview_page.dart';
+import 'previewable_code_block.dart';
 import 'thinking_panel.dart';
 
 Future<void> _openUrl(String url) async {
@@ -116,6 +119,11 @@ class _MessageBubbleState extends State<MessageBubble> {
             style: baseStyle,
             useDollarSignsForLatex: true,
             onLinkTap: (url, _) => _openUrl(url),
+            codeBuilder: (context, name, code, closed) => PreviewableCodeBlock(
+              name: name,
+              code: code,
+              closed: closed,
+            ),
             sourceTagBuilder: (context, content, style) {
               final n = int.tryParse(content.trim());
               final isCitation = m.citations.any((c) => c.index == n);
@@ -381,6 +389,17 @@ class _MessageBubbleState extends State<MessageBubble> {
                         }
                       },
                     ),
+                    if (messageHasHtmlPreview(m.content))
+                      IconButton(
+                        iconSize: 18,
+                        tooltip: '预览网页',
+                        color: scheme.primary,
+                        icon: const Icon(Icons.visibility_outlined),
+                        onPressed: () {
+                          final snippets = extractHtmlSnippets(m.content);
+                          HtmlPreviewPage.open(context, snippets: snippets);
+                        },
+                      ),
                     if (widget.onRegenerate != null)
                       IconButton(
                         iconSize: 18,

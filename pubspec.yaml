@@ -1,5 +1,5 @@
 name: expert_chat
-description: "跨平台 Flutter LLM 客户端：支持任意 OpenAI 兼容 API（DeepSeek/Kimi/OpenAI/智谱等），含深度思考、联网搜索与本地文件解析。"
+description: "跨平台 Flutter LLM 客户端：支持任意 OpenAI 兼容 API（DeepSeek/Grok/Kimi/OpenAI/智谱等），含深度思考、联网搜索与本地文件解析。"
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -67,10 +67,15 @@ dependencies:
   share_plus: ^12.0.2
   # App version + GitHub Releases update check
   package_info_plus: ^8.3.0
+  # Shorebird code-push (Dart OTA patches; requires Shorebird-built release)
+  shorebird_code_push: ^2.0.7
+  webview_flutter: ^4.14.1
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  # Tests install the package's fake platform implementation directly.
+  flutter_secure_storage_platform_interface: ^2.0.1
   # M2 — drift codegen (keep drift_dev on the same minor as drift)
   drift_dev: ^2.33.0
   build_runner: ^2.15.0
@@ -100,6 +105,8 @@ flutter:
     - family: NotoSansSC
       fonts:
         - asset: assets/fonts/NotoSansSC.ttf
+  assets:
+    - shorebird.yaml
 
   # To add assets to your application, add an assets section, like this:
   # assets:

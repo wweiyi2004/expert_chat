@@ -124,7 +124,8 @@ class _StoryPanelBodyState extends ConsumerState<StoryPanelBody> {
           worldInfoIds: _selectedWi.toList(),
           venue: _venue.text,
         );
-    if (mounted) setState(() => _status = '已自动保存');
+    // Meta is read when the next model turn starts — make that explicit.
+    if (mounted) setState(() => _status = '已保存 · 下轮生效');
   }
 
   void _toggleWi(String id, bool? selected) {
@@ -213,8 +214,8 @@ class _StoryPanelBodyState extends ConsumerState<StoryPanelBody> {
         const SizedBox(height: 4),
         Text(
           convo.localCast.isNotEmpty
-              ? '修改后自动保存，点「继续下一节」按当前节拍演绎'
-              : '修改后自动保存，点「推进」按当前节拍续写',
+              ? '大纲、导演指令与世界书修改会自动保存，并在下一轮生成时生效；点「继续下一节」按当前节拍演绎。'
+              : '大纲、导演指令与世界书修改会自动保存，并在下一轮生成时生效；点「推进情节」按当前节拍续写。',
           style: Theme.of(
             context,
           ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),

@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:drift/drift.dart';
 
+import '../domain/story/story_prompt_assembler.dart' show WorldInfoHit;
 import 'conversation_repository.dart';
 // Hide drift's generated `Conversation` data class so our domain model wins;
 // the drift `Message` row type is still used below for mapping.
@@ -212,6 +213,7 @@ class DriftConversationRepository implements ConversationRepository {
       stored.attachmentsJson == _attachmentsJson(message) &&
       stored.citationsJson == _citationsJson(message) &&
       stored.searchActivitiesJson == _searchActivitiesJson(message) &&
+      stored.appliedWorldInfoJson == _appliedWorldInfoJson(message) &&
       _matchesStoredTimestamp(stored.createdAt, message.createdAt) &&
       stored.seq == seq;
 
@@ -266,6 +268,10 @@ class DriftConversationRepository implements ConversationRepository {
       m.searchActivitiesJson,
       (e) => SearchActivity.fromJson(e),
     ),
+    appliedWorldInfo: _decodeList(
+      m.appliedWorldInfoJson,
+      (e) => WorldInfoHit.fromJson(e),
+    ),
   );
 
   String? _attachmentsJson(ChatMessage message) => message.attachments.isEmpty
@@ -280,6 +286,11 @@ class DriftConversationRepository implements ConversationRepository {
       message.searchActivities.isEmpty
       ? null
       : jsonEncode(message.searchActivities.map((a) => a.toJson()).toList());
+
+  String? _appliedWorldInfoJson(ChatMessage message) =>
+      message.appliedWorldInfo.isEmpty
+      ? null
+      : jsonEncode(message.appliedWorldInfo.map((a) => a.toJson()).toList());
 
   MessagesCompanion _toCompanion(ChatMessage m, String convoId, int seq) =>
       MessagesCompanion.insert(
@@ -297,6 +308,7 @@ class DriftConversationRepository implements ConversationRepository {
         attachmentsJson: Value(_attachmentsJson(m)),
         citationsJson: Value(_citationsJson(m)),
         searchActivitiesJson: Value(_searchActivitiesJson(m)),
+        appliedWorldInfoJson: Value(_appliedWorldInfoJson(m)),
         createdAt: m.createdAt,
         seq: Value(seq),
       );

@@ -1354,7 +1354,10 @@ class ChatController extends AsyncNotifier<ChatState> {
         ensembleTurn: ensemble,
         directorMode: directorStory,
       );
-      history.insertAll(0, prefix);
+      if (prefix.worldInfoHits.isNotEmpty) {
+        _setAppliedWorldInfo(working.id, assistantId, prefix.worldInfoHits);
+      }
+      history.insertAll(0, prefix.messages);
     } else {
       final preset = settings.systemPrompt.trim();
       if (preset.isNotEmpty) {
@@ -1969,6 +1972,23 @@ class ChatController extends AsyncNotifier<ChatState> {
     final messages = [
       for (final m in convo.messages)
         if (m.id == msgId) m.copyWith(citations: citations) else m,
+    ];
+    _set(
+      _s.copyWith(conversations: _replace(convo.copyWith(messages: messages))),
+    );
+  }
+
+  void _setAppliedWorldInfo(
+    String convoId,
+    String msgId,
+    List<WorldInfoHit> hits,
+  ) {
+    final idx = _s.conversations.indexWhere((c) => c.id == convoId);
+    if (idx < 0) return;
+    final convo = _s.conversations[idx];
+    final messages = [
+      for (final m in convo.messages)
+        if (m.id == msgId) m.copyWith(appliedWorldInfo: hits) else m,
     ];
     _set(
       _s.copyWith(conversations: _replace(convo.copyWith(messages: messages))),

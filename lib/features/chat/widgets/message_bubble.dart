@@ -6,6 +6,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../../data/models.dart';
 import '../../../data/ui_prefs.dart';
 import '../../../domain/html/html_snippet.dart';
+import '../../../domain/story/story_prompt_assembler.dart' show WorldInfoHit;
 import 'attachment_chip.dart';
 import 'citations_bar.dart';
 import 'html_preview_page.dart';
@@ -332,6 +333,8 @@ class _MessageBubbleState extends State<MessageBubble> {
                 activities: m.searchActivities,
                 isStreaming: widget.isStreaming,
               ),
+            if (m.appliedWorldInfo.isNotEmpty)
+              _AppliedWorldInfoBar(hits: m.appliedWorldInfo),
             if (hasReasoning)
               ThinkingPanel(
                 reasoning: m.reasoning,
@@ -506,6 +509,61 @@ class _MessageBubbleState extends State<MessageBubble> {
               : null,
         ),
       ],
+    );
+  }
+}
+
+/// Compact strip listing world-info entries injected for this story turn.
+class _AppliedWorldInfoBar extends StatelessWidget {
+  const _AppliedWorldInfoBar({required this.hits});
+
+  final List<WorldInfoHit> hits;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final labels = hits.map((h) => h.displayTitle).toList();
+    final summary = labels.join(' · ');
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Tooltip(
+        message: '本轮注入的世界书设定：\n${labels.map((t) => '· $t').join('\n')}',
+        child: Container(
+          key: const ValueKey('applied-world-info-bar'),
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          decoration: BoxDecoration(
+            color: scheme.tertiaryContainer.withValues(alpha: 0.45),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: scheme.tertiary.withValues(alpha: 0.22),
+            ),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                Icons.menu_book_outlined,
+                size: 16,
+                color: scheme.onTertiaryContainer,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '本轮设定：$summary',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                    color: scheme.onTertiaryContainer,
+                    fontWeight: FontWeight.w600,
+                    height: 1.3,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

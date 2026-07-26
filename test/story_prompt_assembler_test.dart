@@ -47,7 +47,7 @@ void main() {
       );
       final path = [ChatMessage(role: MessageRole.user, content: '拔剑吧')];
 
-      final prefix = assembler.buildSystemPrefix(
+      final build = assembler.buildSystemPrefix(
         globalSystemPrompt: '全局人设',
         character: card,
         worldInfoPool: [wi],
@@ -55,6 +55,7 @@ void main() {
         historyPath: path,
       );
 
+      final prefix = build.messages;
       final joined = prefix.map((m) => m.content).join('\n---\n');
       expect(prefix, isNotEmpty);
       expect(prefix.every((m) => m.role == MessageRole.system), isTrue);
@@ -64,6 +65,7 @@ void main() {
       expect(joined, contains('导演指令'));
       expect(joined, contains('文风偏冷'));
       expect(joined, contains('当前节拍'));
+      expect(build.worldInfoHits.map((h) => h.title), contains('剑法'));
     });
 
     test('always-on world info injects without keyword', () {
@@ -79,14 +81,16 @@ void main() {
         mode: ConversationMode.story,
         worldInfoIds: [wi.id],
       );
-      final prefix = assembler.buildSystemPrefix(
+      final build = assembler.buildSystemPrefix(
         globalSystemPrompt: '',
         character: null,
         worldInfoPool: [wi],
         conversation: convo,
         historyPath: const [],
       );
-      expect(prefix.map((m) => m.content).join(), contains('魔力潮汐'));
+      expect(build.messages.map((m) => m.content).join(), contains('魔力潮汐'));
+      expect(build.worldInfoHits.single.title, '魔法');
+      expect(build.worldInfoHits.single.alwaysOn, isTrue);
     });
 
     test('skips world info not selected by session', () {
@@ -101,14 +105,18 @@ void main() {
         mode: ConversationMode.story,
         worldInfoIds: const [], // not selected
       );
-      final prefix = assembler.buildSystemPrefix(
+      final build = assembler.buildSystemPrefix(
         globalSystemPrompt: '',
         character: null,
         worldInfoPool: [wi],
         conversation: convo,
         historyPath: const [],
       );
-      expect(prefix.map((m) => m.content).join(), isNot(contains('不该出现')));
+      expect(
+        build.messages.map((m) => m.content).join(),
+        isNot(contains('不该出现')),
+      );
+      expect(build.worldInfoHits, isEmpty);
     });
 
     test('advancePlot adds instruction block', () {
@@ -117,7 +125,7 @@ void main() {
         outline: '- A\n- B',
         plotCursor: 0,
       );
-      final prefix = assembler.buildSystemPrefix(
+      final build = assembler.buildSystemPrefix(
         globalSystemPrompt: '',
         character: null,
         worldInfoPool: const [],
@@ -125,7 +133,7 @@ void main() {
         historyPath: const [],
         advancePlot: true,
       );
-      expect(prefix.map((m) => m.content).join(), contains('推进情节'));
+      expect(build.messages.map((m) => m.content).join(), contains('推进情节'));
     });
 
     test('director mode assigns every story role to the AI', () {
@@ -149,7 +157,7 @@ void main() {
         outline: '- 记者在休眠舱醒来\n- 零号现身',
       );
 
-      final prefix = assembler.buildSystemPrefix(
+      final build = assembler.buildSystemPrefix(
         globalSystemPrompt: '',
         cast: cast,
         worldInfoPool: const [],
@@ -159,7 +167,7 @@ void main() {
         directorMode: true,
       );
 
-      final joined = prefix.map((m) => m.content).join('\n');
+      final joined = build.messages.map((m) => m.content).join('\n');
       expect(joined, contains('用户是导演'));
       expect(joined, contains('旁白和全部角色'));
       expect(joined, contains('沈砚'));

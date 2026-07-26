@@ -20,6 +20,7 @@ import 'package:expert_chat/data/world_info_repository.dart';
 import 'package:expert_chat/domain/export/conversation_export.dart';
 import 'package:expert_chat/domain/llm/llm_provider.dart';
 import 'package:expert_chat/domain/media/openai_compatible_media_provider.dart';
+import 'package:expert_chat/domain/story/story_prompt_assembler.dart';
 import 'package:expert_chat/domain/tools/file_parser.dart';
 import 'package:expert_chat/domain/tools/search_provider.dart';
 import 'package:expert_chat/domain/tools/tool_engine.dart';
@@ -1443,6 +1444,22 @@ void main() {
     expect(updated.searchActivities, hasLength(1));
     expect(updated.searchActivities[0].status, SearchActivityStatus.done);
     expect(updated.searchActivities[0].resultCount, 2);
+  });
+
+  test('ChatMessage preserves appliedWorldInfo through JSON round-trip', () {
+    final msg = ChatMessage(
+      role: MessageRole.assistant,
+      content: '夜雨中的剑光',
+      appliedWorldInfo: const [
+        WorldInfoHit(id: 'w1', title: '青锋剑法', alwaysOn: false),
+        WorldInfoHit(id: 'w2', title: '王城律法', alwaysOn: true),
+      ],
+    );
+    final restored = ChatMessage.fromJson(msg.toJson());
+    expect(restored.appliedWorldInfo, hasLength(2));
+    expect(restored.appliedWorldInfo[0].title, '青锋剑法');
+    expect(restored.appliedWorldInfo[1].alwaysOn, isTrue);
+    expect(restored.appliedWorldInfo[1].displayTitle, '王城律法');
   });
 
   test(

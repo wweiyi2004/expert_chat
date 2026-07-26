@@ -2304,8 +2304,12 @@ class _StorySessionBar extends StatelessWidget {
               ? '点「情节」写大纲与导演指令'
               : '导演指令已设置 · 可写大纲后推进')
         : cursor < beats.length
-        ? beats[cursor.clamp(0, beats.length - 1)]
-        : '大纲已走完';
+        ? '当前：${beats[cursor.clamp(0, beats.length - 1)]}'
+        : '大纲已走完 · 可自由续写';
+    final noteHint = conversation.authorNote.trim().isEmpty
+        ? null
+        : '导演指令已启用';
+    final wiCount = conversation.worldInfoIds.length;
 
     return Material(
       color: Color.lerp(scheme.surface, accent, 0.08),
@@ -2334,7 +2338,11 @@ class _StorySessionBar extends StatelessWidget {
                         if (characterName != null && characterName!.isNotEmpty)
                           characterName!,
                         '节拍 $progress',
+                        if (wiCount > 0) '设定 $wiCount',
+                        ?noteHint,
                       ].join(' · '),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: Theme.of(context).textTheme.labelMedium?.copyWith(
                         color: scheme.onSurfaceVariant,
                         fontWeight: FontWeight.w600,

@@ -56,6 +56,8 @@ class Messages extends Table {
   TextColumn get kind => text().withDefault(const Constant('text'))();
   // Web-search process steps shown in the bubble (v7).
   TextColumn get searchActivitiesJson => text().nullable()();
+  // World-info entries injected for this story turn (v8).
+  TextColumn get appliedWorldInfoJson => text().nullable()();
 
   @override
   Set<Column> get primaryKey => {id};
@@ -103,7 +105,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase([QueryExecutor? executor]) : super(executor ?? _open());
 
   @override
-  int get schemaVersion => 7;
+  int get schemaVersion => 8;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -149,6 +151,9 @@ class AppDatabase extends _$AppDatabase {
       }
       if (from < 7) {
         await m.addColumn(messages, messages.searchActivitiesJson);
+      }
+      if (from < 8) {
+        await m.addColumn(messages, messages.appliedWorldInfoJson);
       }
     },
     beforeOpen: (details) async {

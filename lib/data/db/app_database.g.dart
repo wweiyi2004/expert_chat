@@ -1014,6 +1014,17 @@ class $MessagesTable extends Messages with TableInfo<$MessagesTable, Message> {
         type: DriftSqlType.string,
         requiredDuringInsert: false,
       );
+  static const VerificationMeta _appliedWorldInfoJsonMeta =
+      const VerificationMeta('appliedWorldInfoJson');
+  @override
+  late final GeneratedColumn<String> appliedWorldInfoJson =
+      GeneratedColumn<String>(
+        'applied_world_info_json',
+        aliasedName,
+        true,
+        type: DriftSqlType.string,
+        requiredDuringInsert: false,
+      );
   @override
   List<GeneratedColumn> get $columns => [
     id,
@@ -1032,6 +1043,7 @@ class $MessagesTable extends Messages with TableInfo<$MessagesTable, Message> {
     speakerName,
     kind,
     searchActivitiesJson,
+    appliedWorldInfoJson,
   ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -1163,6 +1175,15 @@ class $MessagesTable extends Messages with TableInfo<$MessagesTable, Message> {
         ),
       );
     }
+    if (data.containsKey('applied_world_info_json')) {
+      context.handle(
+        _appliedWorldInfoJsonMeta,
+        appliedWorldInfoJson.isAcceptableOrUnknown(
+          data['applied_world_info_json']!,
+          _appliedWorldInfoJsonMeta,
+        ),
+      );
+    }
     return context;
   }
 
@@ -1236,6 +1257,10 @@ class $MessagesTable extends Messages with TableInfo<$MessagesTable, Message> {
         DriftSqlType.string,
         data['${effectivePrefix}search_activities_json'],
       ),
+      appliedWorldInfoJson: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}applied_world_info_json'],
+      ),
     );
   }
 
@@ -1262,6 +1287,7 @@ class Message extends DataClass implements Insertable<Message> {
   final String? speakerName;
   final String kind;
   final String? searchActivitiesJson;
+  final String? appliedWorldInfoJson;
   const Message({
     required this.id,
     required this.convoId,
@@ -1279,6 +1305,7 @@ class Message extends DataClass implements Insertable<Message> {
     this.speakerName,
     required this.kind,
     this.searchActivitiesJson,
+    this.appliedWorldInfoJson,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -1312,6 +1339,9 @@ class Message extends DataClass implements Insertable<Message> {
     map['kind'] = Variable<String>(kind);
     if (!nullToAbsent || searchActivitiesJson != null) {
       map['search_activities_json'] = Variable<String>(searchActivitiesJson);
+    }
+    if (!nullToAbsent || appliedWorldInfoJson != null) {
+      map['applied_world_info_json'] = Variable<String>(appliedWorldInfoJson);
     }
     return map;
   }
@@ -1348,6 +1378,9 @@ class Message extends DataClass implements Insertable<Message> {
       searchActivitiesJson: searchActivitiesJson == null && nullToAbsent
           ? const Value.absent()
           : Value(searchActivitiesJson),
+      appliedWorldInfoJson: appliedWorldInfoJson == null && nullToAbsent
+          ? const Value.absent()
+          : Value(appliedWorldInfoJson),
     );
   }
 
@@ -1375,6 +1408,9 @@ class Message extends DataClass implements Insertable<Message> {
       searchActivitiesJson: serializer.fromJson<String?>(
         json['searchActivitiesJson'],
       ),
+      appliedWorldInfoJson: serializer.fromJson<String?>(
+        json['appliedWorldInfoJson'],
+      ),
     );
   }
   @override
@@ -1397,6 +1433,7 @@ class Message extends DataClass implements Insertable<Message> {
       'speakerName': serializer.toJson<String?>(speakerName),
       'kind': serializer.toJson<String>(kind),
       'searchActivitiesJson': serializer.toJson<String?>(searchActivitiesJson),
+      'appliedWorldInfoJson': serializer.toJson<String?>(appliedWorldInfoJson),
     };
   }
 
@@ -1417,6 +1454,7 @@ class Message extends DataClass implements Insertable<Message> {
     Value<String?> speakerName = const Value.absent(),
     String? kind,
     Value<String?> searchActivitiesJson = const Value.absent(),
+    Value<String?> appliedWorldInfoJson = const Value.absent(),
   }) => Message(
     id: id ?? this.id,
     convoId: convoId ?? this.convoId,
@@ -1440,6 +1478,9 @@ class Message extends DataClass implements Insertable<Message> {
     searchActivitiesJson: searchActivitiesJson.present
         ? searchActivitiesJson.value
         : this.searchActivitiesJson,
+    appliedWorldInfoJson: appliedWorldInfoJson.present
+        ? appliedWorldInfoJson.value
+        : this.appliedWorldInfoJson,
   );
   Message copyWithCompanion(MessagesCompanion data) {
     return Message(
@@ -1469,6 +1510,9 @@ class Message extends DataClass implements Insertable<Message> {
       searchActivitiesJson: data.searchActivitiesJson.present
           ? data.searchActivitiesJson.value
           : this.searchActivitiesJson,
+      appliedWorldInfoJson: data.appliedWorldInfoJson.present
+          ? data.appliedWorldInfoJson.value
+          : this.appliedWorldInfoJson,
     );
   }
 
@@ -1490,7 +1534,8 @@ class Message extends DataClass implements Insertable<Message> {
           ..write('speakerId: $speakerId, ')
           ..write('speakerName: $speakerName, ')
           ..write('kind: $kind, ')
-          ..write('searchActivitiesJson: $searchActivitiesJson')
+          ..write('searchActivitiesJson: $searchActivitiesJson, ')
+          ..write('appliedWorldInfoJson: $appliedWorldInfoJson')
           ..write(')'))
         .toString();
   }
@@ -1513,6 +1558,7 @@ class Message extends DataClass implements Insertable<Message> {
     speakerName,
     kind,
     searchActivitiesJson,
+    appliedWorldInfoJson,
   );
   @override
   bool operator ==(Object other) =>
@@ -1533,7 +1579,8 @@ class Message extends DataClass implements Insertable<Message> {
           other.speakerId == this.speakerId &&
           other.speakerName == this.speakerName &&
           other.kind == this.kind &&
-          other.searchActivitiesJson == this.searchActivitiesJson);
+          other.searchActivitiesJson == this.searchActivitiesJson &&
+          other.appliedWorldInfoJson == this.appliedWorldInfoJson);
 }
 
 class MessagesCompanion extends UpdateCompanion<Message> {
@@ -1553,6 +1600,7 @@ class MessagesCompanion extends UpdateCompanion<Message> {
   final Value<String?> speakerName;
   final Value<String> kind;
   final Value<String?> searchActivitiesJson;
+  final Value<String?> appliedWorldInfoJson;
   final Value<int> rowid;
   const MessagesCompanion({
     this.id = const Value.absent(),
@@ -1571,6 +1619,7 @@ class MessagesCompanion extends UpdateCompanion<Message> {
     this.speakerName = const Value.absent(),
     this.kind = const Value.absent(),
     this.searchActivitiesJson = const Value.absent(),
+    this.appliedWorldInfoJson = const Value.absent(),
     this.rowid = const Value.absent(),
   });
   MessagesCompanion.insert({
@@ -1590,6 +1639,7 @@ class MessagesCompanion extends UpdateCompanion<Message> {
     this.speakerName = const Value.absent(),
     this.kind = const Value.absent(),
     this.searchActivitiesJson = const Value.absent(),
+    this.appliedWorldInfoJson = const Value.absent(),
     this.rowid = const Value.absent(),
   }) : id = Value(id),
        convoId = Value(convoId),
@@ -1613,6 +1663,7 @@ class MessagesCompanion extends UpdateCompanion<Message> {
     Expression<String>? speakerName,
     Expression<String>? kind,
     Expression<String>? searchActivitiesJson,
+    Expression<String>? appliedWorldInfoJson,
     Expression<int>? rowid,
   }) {
     return RawValuesInsertable({
@@ -1633,6 +1684,8 @@ class MessagesCompanion extends UpdateCompanion<Message> {
       if (kind != null) 'kind': kind,
       if (searchActivitiesJson != null)
         'search_activities_json': searchActivitiesJson,
+      if (appliedWorldInfoJson != null)
+        'applied_world_info_json': appliedWorldInfoJson,
       if (rowid != null) 'rowid': rowid,
     });
   }
@@ -1654,6 +1707,7 @@ class MessagesCompanion extends UpdateCompanion<Message> {
     Value<String?>? speakerName,
     Value<String>? kind,
     Value<String?>? searchActivitiesJson,
+    Value<String?>? appliedWorldInfoJson,
     Value<int>? rowid,
   }) {
     return MessagesCompanion(
@@ -1673,6 +1727,7 @@ class MessagesCompanion extends UpdateCompanion<Message> {
       speakerName: speakerName ?? this.speakerName,
       kind: kind ?? this.kind,
       searchActivitiesJson: searchActivitiesJson ?? this.searchActivitiesJson,
+      appliedWorldInfoJson: appliedWorldInfoJson ?? this.appliedWorldInfoJson,
       rowid: rowid ?? this.rowid,
     );
   }
@@ -1730,6 +1785,11 @@ class MessagesCompanion extends UpdateCompanion<Message> {
         searchActivitiesJson.value,
       );
     }
+    if (appliedWorldInfoJson.present) {
+      map['applied_world_info_json'] = Variable<String>(
+        appliedWorldInfoJson.value,
+      );
+    }
     if (rowid.present) {
       map['rowid'] = Variable<int>(rowid.value);
     }
@@ -1755,6 +1815,7 @@ class MessagesCompanion extends UpdateCompanion<Message> {
           ..write('speakerName: $speakerName, ')
           ..write('kind: $kind, ')
           ..write('searchActivitiesJson: $searchActivitiesJson, ')
+          ..write('appliedWorldInfoJson: $appliedWorldInfoJson, ')
           ..write('rowid: $rowid')
           ..write(')'))
         .toString();
@@ -3473,6 +3534,7 @@ typedef $$MessagesTableCreateCompanionBuilder =
       Value<String?> speakerName,
       Value<String> kind,
       Value<String?> searchActivitiesJson,
+      Value<String?> appliedWorldInfoJson,
       Value<int> rowid,
     });
 typedef $$MessagesTableUpdateCompanionBuilder =
@@ -3493,6 +3555,7 @@ typedef $$MessagesTableUpdateCompanionBuilder =
       Value<String?> speakerName,
       Value<String> kind,
       Value<String?> searchActivitiesJson,
+      Value<String?> appliedWorldInfoJson,
       Value<int> rowid,
     });
 
@@ -3604,6 +3667,11 @@ class $$MessagesTableFilterComposer
     builder: (column) => ColumnFilters(column),
   );
 
+  ColumnFilters<String> get appliedWorldInfoJson => $composableBuilder(
+    column: $table.appliedWorldInfoJson,
+    builder: (column) => ColumnFilters(column),
+  );
+
   $$ConversationsTableFilterComposer get convoId {
     final $$ConversationsTableFilterComposer composer = $composerBuilder(
       composer: this,
@@ -3712,6 +3780,11 @@ class $$MessagesTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get appliedWorldInfoJson => $composableBuilder(
+    column: $table.appliedWorldInfoJson,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   $$ConversationsTableOrderingComposer get convoId {
     final $$ConversationsTableOrderingComposer composer = $composerBuilder(
       composer: this,
@@ -3800,6 +3873,11 @@ class $$MessagesTableAnnotationComposer
     builder: (column) => column,
   );
 
+  GeneratedColumn<String> get appliedWorldInfoJson => $composableBuilder(
+    column: $table.appliedWorldInfoJson,
+    builder: (column) => column,
+  );
+
   $$ConversationsTableAnnotationComposer get convoId {
     final $$ConversationsTableAnnotationComposer composer = $composerBuilder(
       composer: this,
@@ -3868,6 +3946,7 @@ class $$MessagesTableTableManager
                 Value<String?> speakerName = const Value.absent(),
                 Value<String> kind = const Value.absent(),
                 Value<String?> searchActivitiesJson = const Value.absent(),
+                Value<String?> appliedWorldInfoJson = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => MessagesCompanion(
                 id: id,
@@ -3886,6 +3965,7 @@ class $$MessagesTableTableManager
                 speakerName: speakerName,
                 kind: kind,
                 searchActivitiesJson: searchActivitiesJson,
+                appliedWorldInfoJson: appliedWorldInfoJson,
                 rowid: rowid,
               ),
           createCompanionCallback:
@@ -3906,6 +3986,7 @@ class $$MessagesTableTableManager
                 Value<String?> speakerName = const Value.absent(),
                 Value<String> kind = const Value.absent(),
                 Value<String?> searchActivitiesJson = const Value.absent(),
+                Value<String?> appliedWorldInfoJson = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => MessagesCompanion.insert(
                 id: id,
@@ -3924,6 +4005,7 @@ class $$MessagesTableTableManager
                 speakerName: speakerName,
                 kind: kind,
                 searchActivitiesJson: searchActivitiesJson,
+                appliedWorldInfoJson: appliedWorldInfoJson,
                 rowid: rowid,
               ),
           withReferenceMapper: (p0) => p0

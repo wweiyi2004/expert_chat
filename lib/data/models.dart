@@ -1,5 +1,6 @@
 import 'package:uuid/uuid.dart';
 
+import '../domain/story/story_prompt_assembler.dart' show WorldInfoHit;
 import 'story_models.dart';
 
 const _uuid = Uuid();
@@ -249,11 +250,13 @@ class ChatMessage {
     List<Attachment>? attachments,
     List<Citation>? citations,
     List<SearchActivity>? searchActivities,
+    List<WorldInfoHit>? appliedWorldInfo,
     DateTime? createdAt,
   }) : id = id ?? _uuid.v4(),
        attachments = attachments ?? const [],
        citations = citations ?? const [],
        searchActivities = searchActivities ?? const [],
+       appliedWorldInfo = appliedWorldInfo ?? const [],
        createdAt = createdAt ?? DateTime.now();
 
   final String id;
@@ -289,6 +292,10 @@ class ChatMessage {
   /// pages read). Empty for messages produced without web access.
   final List<SearchActivity> searchActivities;
 
+  /// World-info / lorebook entries injected into the system prompt for this
+  /// assistant turn (story / ensemble). Empty when none fired.
+  final List<WorldInfoHit> appliedWorldInfo;
+
   final DateTime createdAt;
 
   ChatMessage copyWith({
@@ -302,6 +309,7 @@ class ChatMessage {
     List<Attachment>? attachments,
     List<Citation>? citations,
     List<SearchActivity>? searchActivities,
+    List<WorldInfoHit>? appliedWorldInfo,
   }) => ChatMessage(
     id: id,
     role: role,
@@ -320,6 +328,7 @@ class ChatMessage {
     attachments: attachments ?? this.attachments,
     citations: citations ?? this.citations,
     searchActivities: searchActivities ?? this.searchActivities,
+    appliedWorldInfo: appliedWorldInfo ?? this.appliedWorldInfo,
     createdAt: createdAt,
   );
 
@@ -342,6 +351,8 @@ class ChatMessage {
       'citations': citations.map((c) => c.toJson()).toList(),
     if (searchActivities.isNotEmpty)
       'searchActivities': searchActivities.map((a) => a.toJson()).toList(),
+    if (appliedWorldInfo.isNotEmpty)
+      'appliedWorldInfo': appliedWorldInfo.map((a) => a.toJson()).toList(),
     'createdAt': createdAt.toIso8601String(),
   };
 
@@ -367,6 +378,9 @@ class ChatMessage {
         .toList(),
     searchActivities: (json['searchActivities'] as List<dynamic>? ?? [])
         .map((e) => SearchActivity.fromJson(e as Map<String, dynamic>))
+        .toList(),
+    appliedWorldInfo: (json['appliedWorldInfo'] as List<dynamic>? ?? [])
+        .map((e) => WorldInfoHit.fromJson(e as Map<String, dynamic>))
         .toList(),
     createdAt: _parseStoredTime(json['createdAt']),
   );

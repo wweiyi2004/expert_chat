@@ -12,6 +12,14 @@ import '../data/ui_prefs.dart';
 import '../domain/llm/llm_provider.dart';
 import '../domain/tools/search_provider.dart';
 
+/// Bounds / defaults for the web-search knobs surfaced in settings.
+const int kDefaultSearchMaxRounds = 3;
+const int kMinSearchMaxRounds = 1;
+const int kMaxSearchMaxRounds = 5;
+const int kDefaultSearchMaxResults = 8;
+const int kMinSearchMaxResults = 4;
+const int kMaxSearchMaxResults = 12;
+
 /// App settings: a list of named provider profiles (one active at a time),
 /// the per-profile API key (kept in secure storage), an optional model
 /// override within the active profile, and the theme mode.
@@ -24,6 +32,9 @@ class SettingsState {
     this.themeMode = ThemeMode.system,
     this.searchBackend = SearchBackend.duckduckgo,
     this.searchApiKey = '',
+    this.searchBrainModel,
+    this.searchMaxRounds = kDefaultSearchMaxRounds,
+    this.searchMaxResults = kDefaultSearchMaxResults,
     this.systemPrompt = '',
     this.ui = const UiPrefs(),
     this.visionApi = const MediaApiConfig(),
@@ -48,6 +59,16 @@ class SettingsState {
   /// Web-search backend + its key (for the "联网搜索" feature, M5).
   final SearchBackend searchBackend;
   final String searchApiKey;
+
+  /// Model that plans multi-round retrieval for models without function
+  /// calling ("搜索大脑"). Null/empty = follow the active profile's chat model.
+  final String? searchBrainModel;
+
+  /// Max search rounds per answer (brain orchestration AND the tool loop).
+  final int searchMaxRounds;
+
+  /// Results requested per search call.
+  final int searchMaxResults;
 
   /// Optional global preset/persona prompt, prepended as a `system` message on
   /// every request. Empty = no preset (model uses its own default behavior).
@@ -85,6 +106,14 @@ class SettingsState {
   /// Model used when "深度思考" is on — the active profile's reasoner.
   String get reasonerModel => active?.reasonerModel ?? model;
 
+  /// Resolved "搜索大脑" model: the explicit choice, else the active profile's
+  /// chat model (NOT the possibly-reasoner override, which can't call tools).
+  String get effectiveSearchBrainModel {
+    final chosen = searchBrainModel?.trim() ?? '';
+    if (chosen.isNotEmpty) return chosen;
+    return active?.chatModel ?? model;
+  }
+
   /// Models offered in the picker for the active profile.
   List<String> get availableModels =>
       active?.models ?? const [KnownModels.chat, KnownModels.reasoner];
@@ -112,6 +141,9 @@ class SettingsState {
     ThemeMode? themeMode,
     SearchBackend? searchBackend,
     String? searchApiKey,
+    Object? searchBrainModel = _sentinel,
+    int? searchMaxRounds,
+    int? searchMaxResults,
     String? systemPrompt,
     UiPrefs? ui,
     MediaApiConfig? visionApi,
@@ -131,6 +163,11 @@ class SettingsState {
     themeMode: themeMode ?? this.themeMode,
     searchBackend: searchBackend ?? this.searchBackend,
     searchApiKey: searchApiKey ?? this.searchApiKey,
+    searchBrainModel: identical(searchBrainModel, _sentinel)
+        ? this.searchBrainModel
+        : searchBrainModel as String?,
+    searchMaxRounds: searchMaxRounds ?? this.searchMaxRounds,
+    searchMaxResults: searchMaxResults ?? this.searchMaxResults,
     systemPrompt: systemPrompt ?? this.systemPrompt,
     ui: ui ?? this.ui,
     visionApi: visionApi ?? this.visionApi,
@@ -151,6 +188,9 @@ const _kSelectedModel = 'selectedModel';
 const _kThemeMode = 'themeMode';
 const _kSearchBackend = 'searchBackend';
 const _kSearchApiKeySecure = 'search_api_key';
+const _kSearchBrainModel = 'searchBrainModel';
+const _kSearchMaxRounds = 'searchMaxRounds';
+const _kSearchMaxResults = 'searchMaxResults';
 const _kSystemPrompt = 'systemPrompt';
 const _kUiPrefs = 'uiPrefs';
 const _kVisionApi = 'visionApi';
@@ -255,6 +295,13 @@ class SettingsController extends AsyncNotifier<SettingsState> {
         prefs.getString(_kSearchBackend),
       ),
       searchApiKey: searchApiKey,
+      searchBrainModel: prefs.getString(_kSearchBrainModel),
+      searchMaxRounds: (prefs.getInt(_kSearchMaxRounds) ??
+              kDefaultSearchMaxRounds)
+          .clamp(kMinSearchMaxRounds, kMaxSearchMaxRounds),
+      searchMaxResults: (prefs.getInt(_kSearchMaxResults) ??
+              kDefaultSearchMaxResults)
+          .clamp(kMinSearchMaxResults, kMaxSearchMaxResults),
       systemPrompt: prefs.getString(_kSystemPrompt) ?? '',
       ui: _readUiPrefs(prefs),
       visionApi: _readMediaApi(prefs, _kVisionApi),
@@ -388,6 +435,30 @@ class SettingsController extends AsyncNotifier<SettingsState> {
         .write(key: _kSearchApiKeySecure, value: key);
   }
 
+  /// Pick the "搜索大脑" model; null/empty follows the profile's chat model.
+  Future<void> setSearchBrainModel(String? model) async {
+    final normalized = (model?.trim().isEmpty ?? true) ? null : model!.trim();
+    state = AsyncData(_current.copyWith(searchBrainModel: normalized));
+    final prefs = ref.read(sharedPrefsProvider);
+    if (normalized == null) {
+      await prefs.remove(_kSearchBrainModel);
+    } else {
+      await prefs.setString(_kSearchBrainModel, normalized);
+    }
+  }
+
+  Future<void> setSearchMaxRounds(int rounds) async {
+    final bounded = rounds.clamp(kMinSearchMaxRounds, kMaxSearchMaxRounds);
+    state = AsyncData(_current.copyWith(searchMaxRounds: bounded));
+    await ref.read(sharedPrefsProvider).setInt(_kSearchMaxRounds, bounded);
+  }
+
+  Future<void> setSearchMaxResults(int results) async {
+    final bounded = results.clamp(kMinSearchMaxResults, kMaxSearchMaxResults);
+    state = AsyncData(_current.copyWith(searchMaxResults: bounded));
+    await ref.read(sharedPrefsProvider).setInt(_kSearchMaxResults, bounded);
+  }
+
   /// Set the global preset/system prompt (persisted in shared preferences).
   Future<void> setSystemPrompt(String prompt) async {
     state = AsyncData(_current.copyWith(systemPrompt: prompt));
@@ -510,6 +581,9 @@ class SettingsController extends AsyncNotifier<SettingsState> {
           themeMode: _current.themeMode,
           searchBackend: _current.searchBackend,
           searchApiKey: _current.searchApiKey,
+          searchBrainModel: _current.searchBrainModel,
+          searchMaxRounds: _current.searchMaxRounds,
+          searchMaxResults: _current.searchMaxResults,
           systemPrompt: _current.systemPrompt,
           ui: _current.ui,
           visionApi: _current.visionApi,

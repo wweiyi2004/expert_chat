@@ -81,6 +81,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   bool _searchKeySynced = false;
   bool _systemPromptSynced = false;
   bool _clearingCache = false;
+  bool _testingSearch = false;
+  String? _searchTestResult;
   _SettingsCategory _category = _SettingsCategory.model;
 
   @override
@@ -118,6 +120,39 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     _searchKey.dispose();
     _systemPrompt.dispose();
     super.dispose();
+  }
+
+  /// Fires one real search against the configured backend so the user learns
+  /// right here whether key/network work — instead of at first use in chat.
+  Future<void> _testSearch() async {
+    final s = ref.read(settingsControllerProvider).value;
+    if (s == null || _testingSearch) return;
+    setState(() {
+      _testingSearch = true;
+      _searchTestResult = null;
+    });
+    final stopwatch = Stopwatch()..start();
+    try {
+      final engine = ref.read(toolEngineFactoryProvider)(
+        backend: s.searchBackend,
+        apiKey: s.searchApiKey,
+      );
+      final context = await engine.runSearch('Flutter 最新稳定版本', maxResults: 3);
+      stopwatch.stop();
+      if (!mounted) return;
+      final sources = context.citations.length;
+      final seconds = (stopwatch.elapsedMilliseconds / 1000).toStringAsFixed(1);
+      setState(
+        () => _searchTestResult = sources > 0
+            ? '连通正常：返回 $sources 个来源，耗时 $seconds 秒。'
+            : '已连通，但未返回可用结果；可尝试更换搜索服务。',
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _searchTestResult = '测试失败：$e');
+    } finally {
+      if (mounted) setState(() => _testingSearch = false);
+    }
   }
 
   @override
@@ -422,6 +457,12 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                           ],
                           if (_category == _SettingsCategory.capabilities) ...[
                             const _SectionTitle('联网搜索'),
+                            Text(
+                              '聊天输入框的「联网」开关分三档：关闭 / 自动（模型自行判断）/ '
+                              '强制（先搜索再回答）。搜索过程会在回答上方逐步展示。',
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                            const SizedBox(height: 12),
                             DropdownButtonFormField<SearchBackend>(
                               isExpanded: true,
                               initialValue: s.searchBackend,
@@ -465,6 +506,108 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                 ),
                               ),
                               onChanged: controller.setSearchApiKey,
+                            ),
+                            const SizedBox(height: 12),
+                            Row(
+                              children: [
+                                OutlinedButton.icon(
+                                  onPressed: _testingSearch
+                                      ? null
+                                      : _testSearch,
+                                  icon: _testingSearch
+                                      ? const SizedBox.square(
+                                          dimension: 16,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                          ),
+                                        )
+                                      : const Icon(
+                                          Icons.network_check_outlined,
+                                          size: 18,
+                                        ),
+                                  label: Text(
+                                    _testingSearch ? '测试中…' : '测试搜索连通性',
+                                  ),
+                                ),
+                              ],
+                            ),
+                            if (_searchTestResult != null) ...[
+                              const SizedBox(height: 8),
+                              Text(
+                                _searchTestResult!,
+                                style: Theme.of(context).textTheme.bodySmall
+                                    ?.copyWith(
+                                      color:
+                                          _searchTestResult!.startsWith('测试失败')
+                                          ? Theme.of(
+                                              context,
+                                            ).colorScheme.error
+                                          : null,
+                                    ),
+                              ),
+                            ],
+                            const SizedBox(height: 16),
+                            DropdownButtonFormField<String>(
+                              isExpanded: true,
+                              initialValue:
+                                  (s.searchBrainModel != null &&
+                                      (active?.models.contains(
+                                            s.searchBrainModel,
+                                          ) ??
+                                          false))
+                                  ? s.searchBrainModel
+                                  : null,
+                              decoration: const InputDecoration(
+                                labelText: '搜索规划模型（搜索大脑）',
+                                helperText:
+                                    '为深度思考等不支持工具调用的模型改写搜索词并编排多轮检索；'
+                                    '默认跟随当前配置的对话模型。',
+                                helperMaxLines: 3,
+                              ),
+                              items: [
+                                const DropdownMenuItem<String>(
+                                  value: null,
+                                  child: Text('跟随对话模型（默认）'),
+                                ),
+                                for (final m
+                                    in active?.models ?? const <String>[])
+                                  if (ModelCapabilities.resolve(
+                                    m,
+                                  ).supportsTools)
+                                    DropdownMenuItem(value: m, child: Text(m)),
+                              ],
+                              onChanged: controller.setSearchBrainModel,
+                            ),
+                            const SizedBox(height: 8),
+                            ListTile(
+                              contentPadding: EdgeInsets.zero,
+                              title: const Text('最多搜索轮数'),
+                              subtitle: Slider(
+                                value: s.searchMaxRounds.toDouble(),
+                                min: kMinSearchMaxRounds.toDouble(),
+                                max: kMaxSearchMaxRounds.toDouble(),
+                                divisions:
+                                    kMaxSearchMaxRounds - kMinSearchMaxRounds,
+                                label: '${s.searchMaxRounds}',
+                                onChanged: (v) =>
+                                    controller.setSearchMaxRounds(v.round()),
+                              ),
+                              trailing: Text('${s.searchMaxRounds} 轮'),
+                            ),
+                            ListTile(
+                              contentPadding: EdgeInsets.zero,
+                              title: const Text('单次搜索结果数'),
+                              subtitle: Slider(
+                                value: s.searchMaxResults.toDouble(),
+                                min: kMinSearchMaxResults.toDouble(),
+                                max: kMaxSearchMaxResults.toDouble(),
+                                divisions:
+                                    kMaxSearchMaxResults - kMinSearchMaxResults,
+                                label: '${s.searchMaxResults}',
+                                onChanged: (v) =>
+                                    controller.setSearchMaxResults(v.round()),
+                              ),
+                              trailing: Text('${s.searchMaxResults} 条'),
                             ),
                             const SizedBox(height: 32),
                           ],

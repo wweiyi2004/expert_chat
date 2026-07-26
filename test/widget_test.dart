@@ -1333,6 +1333,118 @@ void main() {
     expect(SearchBackend.tavily.requiresApiKey, isTrue);
   });
 
+  test('SearchMode cycles through all three states', () {
+    expect(SearchMode.off.next, SearchMode.auto);
+    expect(SearchMode.auto.next, SearchMode.always);
+    expect(SearchMode.always.next, SearchMode.off);
+    expect(SearchMode.off.composerLabel, '联网');
+    expect(SearchMode.auto.composerLabel, '联网·自动');
+    expect(SearchMode.always.composerLabel, '联网·强制');
+  });
+
+  test('ToolEngine.dateLine produces the expected format', () {
+    final line = ToolEngine.dateLine(DateTime(2026, 7, 26));
+    expect(line, '今天是 2026-07-26（周日）');
+    final monday = ToolEngine.dateLine(DateTime(2026, 7, 27));
+    expect(monday, '今天是 2026-07-27（周一）');
+  });
+
+  test('SearchActivity JSON round-trips all statuses', () {
+    final running = SearchActivity(
+      kind: SearchActivityKind.search,
+      query: 'flutter news',
+    );
+    final done = running.copyWith(
+      status: SearchActivityStatus.done,
+      resultCount: 5,
+    );
+    final failed = running.copyWith(
+      status: SearchActivityStatus.failed,
+      error: 'timeout',
+    );
+    for (final a in [done, failed]) {
+      final json = a.toJson();
+      final restored = SearchActivity.fromJson(json);
+      expect(restored.id, a.id);
+      expect(restored.kind, a.kind);
+      expect(restored.query, a.query);
+      expect(restored.status, a.status);
+      expect(restored.resultCount, a.resultCount);
+      expect(restored.error, a.error);
+    }
+    // Running → failed on reload (the process that tracked it is gone).
+    final json = running.toJson();
+    final reloaded = SearchActivity.fromJson(json);
+    expect(reloaded.status, SearchActivityStatus.failed);
+  });
+
+  test('ChatMessage preserves searchActivities through JSON round-trip', () {
+    final activities = [
+      SearchActivity(
+        kind: SearchActivityKind.search,
+        query: 'dart 3.12',
+        status: SearchActivityStatus.done,
+        resultCount: 3,
+      ),
+      SearchActivity(
+        kind: SearchActivityKind.fetch,
+        query: 'https://dart.dev',
+        status: SearchActivityStatus.failed,
+        error: '404',
+      ),
+    ];
+    final msg = ChatMessage(
+      role: MessageRole.assistant,
+      content: 'answer',
+      searchActivities: activities,
+    );
+    final json = msg.toJson();
+    final restored = ChatMessage.fromJson(json);
+    expect(restored.searchActivities, hasLength(2));
+    expect(restored.searchActivities[0].query, 'dart 3.12');
+    expect(restored.searchActivities[0].resultCount, 3);
+    expect(restored.searchActivities[1].query, 'https://dart.dev');
+    expect(restored.searchActivities[1].status, SearchActivityStatus.failed);
+  });
+
+  test('ChatMessage fromJson promotes running searchActivities to failed', () {
+    final msg = ChatMessage(
+      role: MessageRole.assistant,
+      content: 'interrupted',
+      searchActivities: [
+        SearchActivity(
+          kind: SearchActivityKind.search,
+          query: 'in-flight',
+          status: SearchActivityStatus.running,
+        ),
+      ],
+    );
+    final json = msg.toJson();
+    final restored = ChatMessage.fromJson(json);
+    expect(restored.searchActivities.single.status,
+        SearchActivityStatus.failed);
+  });
+
+  test('ChatMessage copyWith merges searchActivities', () {
+    final a1 = SearchActivity(
+      kind: SearchActivityKind.search,
+      query: 'q1',
+    );
+    final msg = ChatMessage(
+      role: MessageRole.assistant,
+      content: '',
+      searchActivities: [a1],
+    );
+    final a2 = a1.copyWith(
+      status: SearchActivityStatus.done,
+      resultCount: 2,
+    );
+    final updated = msg.copyWith(searchActivities: [a2]);
+    expect(updated.searchActivities, hasLength(1));
+    expect(updated.searchActivities[0].status, SearchActivityStatus.done);
+    expect(updated.searchActivities[0].resultCount, 2);
+  });
+
   test(
     'ConversationExport.toMarkdown renders roles, reasoning and sources',
     () {

@@ -98,6 +98,38 @@ class ToolCall {
   }
 }
 
+/// Accumulates streamed [ToolCall] deltas that share one `index` into a
+/// complete call (ids/names arrive once, argument JSON arrives in fragments).
+/// Used by every consumer that drives a function-calling loop.
+class ToolCallDraft {
+  ToolCallDraft(this.index);
+
+  final int index;
+  String? id;
+  String? name;
+  final StringBuffer _arguments = StringBuffer();
+
+  void merge(ToolCall call) {
+    id ??= call.id;
+    name ??= call.name;
+    if (call.argumentsJson.isNotEmpty) _arguments.write(call.argumentsJson);
+  }
+
+  ToolCall build() => ToolCall(
+    index: index,
+    id: id ?? 'call_${index}_${DateTime.now().microsecondsSinceEpoch}',
+    name: name,
+    argumentsJson: _arguments.toString(),
+  );
+
+  /// Builds the drafts into ordered calls, dropping nameless fragments.
+  static List<ToolCall> finalize(Map<int, ToolCallDraft> drafts) {
+    final calls = drafts.values.map((d) => d.build()).toList()
+      ..sort((a, b) => a.index.compareTo(b.index));
+    return calls.where((c) => (c.name ?? '').isNotEmpty).toList();
+  }
+}
+
 /// A single streamed delta from the model. Any field may be null/empty for a
 /// given chunk. [reasoningDelta] carries the chain-of-thought emitted by
 /// reasoning models such as `deepseek-reasoner`; [toolCalls] carries

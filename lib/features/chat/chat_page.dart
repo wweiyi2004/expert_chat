@@ -815,7 +815,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
           controller: _input,
           isStreaming: state.isStreaming,
           deepThink: state.deepThink,
-          searchEnabled: state.searchEnabled,
+          searchMode: state.searchMode,
           isSearching: state.isSearching,
           attachments: _attachments,
           picking: _picking,
@@ -847,7 +847,7 @@ class _Composer extends StatelessWidget {
     required this.controller,
     required this.isStreaming,
     required this.deepThink,
-    required this.searchEnabled,
+    required this.searchMode,
     required this.isSearching,
     required this.attachments,
     required this.picking,
@@ -871,7 +871,7 @@ class _Composer extends StatelessWidget {
   final TextEditingController controller;
   final bool isStreaming;
   final bool deepThink;
-  final bool searchEnabled;
+  final SearchMode searchMode;
   final bool isSearching;
   final List<Attachment> attachments;
   final bool picking;
@@ -977,11 +977,12 @@ class _Composer extends StatelessWidget {
                         ),
                         const SizedBox(width: 6),
                         _ComposerToggleChip(
-                          selected: searchEnabled,
+                          selected: searchMode != SearchMode.off,
                           icon: Icons.travel_explore,
-                          label: '联网',
+                          label: searchMode.composerLabel,
                           tooltip:
-                              '开启后可按需联网搜索；默认 DuckDuckGo，也可在「设置」配置 Tavily 等',
+                              '点击切换：关闭 → 自动（模型按需搜索）→ 强制（先搜索再回答）；'
+                              '搜索服务可在「设置」配置',
                           onSelected: onToggleSearch,
                         ),
                         if (isSearching) ...[

@@ -211,6 +211,7 @@ class DriftConversationRepository implements ConversationRepository {
       stored.kind == message.kind.name &&
       stored.attachmentsJson == _attachmentsJson(message) &&
       stored.citationsJson == _citationsJson(message) &&
+      stored.searchActivitiesJson == _searchActivitiesJson(message) &&
       _matchesStoredTimestamp(stored.createdAt, message.createdAt) &&
       stored.seq == seq;
 
@@ -261,6 +262,10 @@ class DriftConversationRepository implements ConversationRepository {
     createdAt: m.createdAt,
     attachments: _decodeList(m.attachmentsJson, (e) => Attachment.fromJson(e)),
     citations: _decodeList(m.citationsJson, (e) => Citation.fromJson(e)),
+    searchActivities: _decodeList(
+      m.searchActivitiesJson,
+      (e) => SearchActivity.fromJson(e),
+    ),
   );
 
   String? _attachmentsJson(ChatMessage message) => message.attachments.isEmpty
@@ -270,6 +275,11 @@ class DriftConversationRepository implements ConversationRepository {
   String? _citationsJson(ChatMessage message) => message.citations.isEmpty
       ? null
       : jsonEncode(message.citations.map((c) => c.toJson()).toList());
+
+  String? _searchActivitiesJson(ChatMessage message) =>
+      message.searchActivities.isEmpty
+      ? null
+      : jsonEncode(message.searchActivities.map((a) => a.toJson()).toList());
 
   MessagesCompanion _toCompanion(ChatMessage m, String convoId, int seq) =>
       MessagesCompanion.insert(
@@ -286,6 +296,7 @@ class DriftConversationRepository implements ConversationRepository {
         kind: Value(m.kind.name),
         attachmentsJson: Value(_attachmentsJson(m)),
         citationsJson: Value(_citationsJson(m)),
+        searchActivitiesJson: Value(_searchActivitiesJson(m)),
         createdAt: m.createdAt,
         seq: Value(seq),
       );

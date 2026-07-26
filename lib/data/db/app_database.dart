@@ -54,6 +54,8 @@ class Messages extends Table {
   TextColumn get speakerName => text().nullable()();
   // MessageKind wire name, e.g. generated-image bubbles (v6).
   TextColumn get kind => text().withDefault(const Constant('text'))();
+  // Web-search process steps shown in the bubble (v7).
+  TextColumn get searchActivitiesJson => text().nullable()();
 
   @override
   Set<Column> get primaryKey => {id};
@@ -101,7 +103,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase([QueryExecutor? executor]) : super(executor ?? _open());
 
   @override
-  int get schemaVersion => 6;
+  int get schemaVersion => 7;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -144,6 +146,9 @@ class AppDatabase extends _$AppDatabase {
       }
       if (from < 6) {
         await m.addColumn(messages, messages.kind);
+      }
+      if (from < 7) {
+        await m.addColumn(messages, messages.searchActivitiesJson);
       }
     },
     beforeOpen: (details) async {

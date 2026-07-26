@@ -145,6 +145,81 @@ class Citation {
   );
 }
 
+/// What a [SearchActivity] step did: a keyword search or reading one page.
+enum SearchActivityKind { search, fetch }
+
+/// Lifecycle of a [SearchActivity]. `running` steps drive the live indicator;
+/// terminal states stay in the transcript so past turns show what was done.
+enum SearchActivityStatus { running, done, failed }
+
+/// One visible step of the web-search process attached to an assistant
+/// message ("searched X → 8 results", "read example.com"). Persisted with the
+/// message so history shows how an answer was researched.
+class SearchActivity {
+  SearchActivity({
+    String? id,
+    required this.kind,
+    required this.query,
+    this.status = SearchActivityStatus.running,
+    this.resultCount = 0,
+    this.error,
+  }) : id = id ?? _uuid.v4();
+
+  final String id;
+  final SearchActivityKind kind;
+
+  /// Search keywords ([SearchActivityKind.search]) or the page URL
+  /// ([SearchActivityKind.fetch]).
+  final String query;
+  final SearchActivityStatus status;
+
+  /// Number of usable sources this step contributed (0 while running).
+  final int resultCount;
+
+  /// Short human-readable reason when [status] is failed.
+  final String? error;
+
+  SearchActivity copyWith({
+    SearchActivityStatus? status,
+    int? resultCount,
+    String? error,
+  }) => SearchActivity(
+    id: id,
+    kind: kind,
+    query: query,
+    status: status ?? this.status,
+    resultCount: resultCount ?? this.resultCount,
+    error: error ?? this.error,
+  );
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'kind': kind.name,
+    'query': query,
+    'status': status.name,
+    'resultCount': resultCount,
+    if (error != null) 'error': error,
+  };
+
+  factory SearchActivity.fromJson(Map<String, dynamic> json) => SearchActivity(
+    id: json['id'] as String?,
+    kind: SearchActivityKind.values.firstWhere(
+      (k) => k.name == json['kind'],
+      orElse: () => SearchActivityKind.search,
+    ),
+    query: json['query'] as String? ?? '',
+    // A step persisted mid-run (app killed during search) can never resume;
+    // load it as failed so the UI doesn't show a forever-spinning row.
+    status: switch (json['status']) {
+      'done' => SearchActivityStatus.done,
+      'failed' || 'running' => SearchActivityStatus.failed,
+      _ => SearchActivityStatus.failed,
+    },
+    resultCount: (json['resultCount'] as num?)?.toInt() ?? 0,
+    error: json['error'] as String?,
+  );
+}
+
 /// Parses a stored ISO-8601 timestamp. Returns null only when the field is
 /// genuinely absent (a fresh object, where the caller defaults to "now"). A
 /// present-but-corrupt value falls back to epoch so the record sorts oldest,
@@ -173,10 +248,12 @@ class ChatMessage {
     this.kind = MessageKind.text,
     List<Attachment>? attachments,
     List<Citation>? citations,
+    List<SearchActivity>? searchActivities,
     DateTime? createdAt,
   }) : id = id ?? _uuid.v4(),
        attachments = attachments ?? const [],
        citations = citations ?? const [],
+       searchActivities = searchActivities ?? const [],
        createdAt = createdAt ?? DateTime.now();
 
   final String id;
@@ -208,6 +285,10 @@ class ChatMessage {
   /// Web sources cited by the assistant — M5.
   final List<Citation> citations;
 
+  /// Visible steps of the web-search process for this answer (searches run,
+  /// pages read). Empty for messages produced without web access.
+  final List<SearchActivity> searchActivities;
+
   final DateTime createdAt;
 
   ChatMessage copyWith({
@@ -220,6 +301,7 @@ class ChatMessage {
     MessageKind? kind,
     List<Attachment>? attachments,
     List<Citation>? citations,
+    List<SearchActivity>? searchActivities,
   }) => ChatMessage(
     id: id,
     role: role,
@@ -237,6 +319,7 @@ class ChatMessage {
     kind: kind ?? this.kind,
     attachments: attachments ?? this.attachments,
     citations: citations ?? this.citations,
+    searchActivities: searchActivities ?? this.searchActivities,
     createdAt: createdAt,
   );
 
@@ -257,6 +340,8 @@ class ChatMessage {
       'attachments': attachments.map((a) => a.toJson()).toList(),
     if (citations.isNotEmpty)
       'citations': citations.map((c) => c.toJson()).toList(),
+    if (searchActivities.isNotEmpty)
+      'searchActivities': searchActivities.map((a) => a.toJson()).toList(),
     'createdAt': createdAt.toIso8601String(),
   };
 
@@ -279,6 +364,9 @@ class ChatMessage {
         .toList(),
     citations: (json['citations'] as List<dynamic>? ?? [])
         .map((e) => Citation.fromJson(e as Map<String, dynamic>))
+        .toList(),
+    searchActivities: (json['searchActivities'] as List<dynamic>? ?? [])
+        .map((e) => SearchActivity.fromJson(e as Map<String, dynamic>))
         .toList(),
     createdAt: _parseStoredTime(json['createdAt']),
   );

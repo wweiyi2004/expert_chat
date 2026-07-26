@@ -12,11 +12,31 @@ import '../data/story_models.dart';
 import '../domain/context/context_window_manager.dart';
 import '../domain/llm/llm_provider.dart';
 import '../domain/story/story_prompt_assembler.dart';
+import '../domain/tools/search_orchestrator.dart';
 import '../domain/tools/search_provider.dart';
 import '../domain/tools/search_query.dart';
 import '../domain/tools/tool_engine.dart';
 import '../domain/tools/url_extract.dart';
 import 'settings_controller.dart';
+
+/// Composer "联网" switch. [off] never searches; [auto] lets the model (or the
+/// planner, for tool-less models) decide per question; [always] guarantees at
+/// least one search before answering.
+enum SearchMode { off, auto, always }
+
+extension SearchModeInfo on SearchMode {
+  SearchMode get next => switch (this) {
+    SearchMode.off => SearchMode.auto,
+    SearchMode.auto => SearchMode.always,
+    SearchMode.always => SearchMode.off,
+  };
+
+  String get composerLabel => switch (this) {
+    SearchMode.off => '联网',
+    SearchMode.auto => '联网·自动',
+    SearchMode.always => '联网·强制',
+  };
+}
 
 class ChatState {
   const ChatState({
@@ -24,7 +44,7 @@ class ChatState {
     this.currentId,
     this.streamingConvoId,
     this.deepThink = false,
-    this.searchEnabled = false,
+    this.searchMode = SearchMode.off,
     this.isSearching = false,
     this.contextReports = const {},
     this.error,
@@ -44,8 +64,8 @@ class ChatState {
   /// configured default model (the "深度思考" toggle in the composer).
   final bool deepThink;
 
-  /// When true the model may call the `web_search` tool while answering.
-  final bool searchEnabled;
+  /// Current "联网" switch position (off / auto / always).
+  final SearchMode searchMode;
 
   /// True while a web-search tool call is running (drives a status hint).
   final bool isSearching;
@@ -65,7 +85,7 @@ class ChatState {
     String? currentId,
     Object? streamingConvoId = _sentinel,
     bool? deepThink,
-    bool? searchEnabled,
+    SearchMode? searchMode,
     bool? isSearching,
     Map<String, ContextWindowReport>? contextReports,
     Object? error = _sentinel,
@@ -76,7 +96,7 @@ class ChatState {
         ? this.streamingConvoId
         : streamingConvoId as String?,
     deepThink: deepThink ?? this.deepThink,
-    searchEnabled: searchEnabled ?? this.searchEnabled,
+    searchMode: searchMode ?? this.searchMode,
     isSearching: isSearching ?? this.isSearching,
     contextReports: contextReports ?? this.contextReports,
     error: identical(error, _sentinel) ? this.error : error as String?,
@@ -86,7 +106,6 @@ class ChatState {
 }
 
 class ChatController extends AsyncNotifier<ChatState> {
-  static const int _maxToolRounds = 3;
   static const int _maxToolCallsPerRound = 3;
 
   /// Streaming providers often emit many tiny SSE chunks per second. Coalescing
@@ -595,9 +614,9 @@ class ChatController extends AsyncNotifier<ChatState> {
     _set(_s.copyWith(deepThink: !_s.deepThink));
   }
 
-  /// Toggle the "联网" (web search) switch shown next to the composer.
+  /// Cycle the "联网" switch shown next to the composer: 关 → 自动 → 强制 → 关.
   void toggleSearch() {
-    _set(_s.copyWith(searchEnabled: !_s.searchEnabled));
+    _set(_s.copyWith(searchMode: _s.searchMode.next));
   }
 
   void renameConversation(String id, String title) {
@@ -1104,7 +1123,9 @@ class ChatController extends AsyncNotifier<ChatState> {
     bool advancePlot = false,
     CharacterCard? ensembleSpeaker,
   }) async {
-    final searchAllowed = _s.searchEnabled && searchQuery.trim().isNotEmpty;
+    final searchMode = _s.searchMode;
+    final searchAllowed =
+        searchMode != SearchMode.off && searchQuery.trim().isNotEmpty;
     final useWebSearchTool = searchAllowed && config.capabilities.supportsTools;
     // Only expose direct page fetching when this turn actually contains a URL.
     // The executor also restricts calls to this exact allow-list so a model
@@ -1159,15 +1180,22 @@ class ChatController extends AsyncNotifier<ChatState> {
 
     // Pre-steps that inject context before the model answers:
     // 1) fetch any URLs the user pasted (works with or without "联网")
-    // 2) optional web search for reasoners that cannot use tools
+    // 2) planner-orchestrated web search for models that cannot use tools
+    //    (deepseek-reasoner…), and for tool models when "联网·强制" is on —
+    //    which guarantees at least one search before the answer starts.
     SearchContext? searchContext;
     // Tool-capable models can decide when the pasted link is relevant. Models
     // without function calling keep the deterministic pre-fetch fallback.
     final needPreFetch =
         directPageFetchAllowed && pastedUrls.isNotEmpty && !useFetchUrlTool;
-    final needPreSearch = searchAllowed && !useWebSearchTool;
+    final needPreSearch =
+        searchAllowed &&
+        (!useWebSearchTool || searchMode == SearchMode.always);
     if (needPreFetch || needPreSearch) {
       _set(_s.copyWith(isSearching: true));
+      // Live progress steps land on the assistant placeholder as they happen.
+      void activitySink(SearchActivity activity) =>
+          _upsertSearchActivity(working.id, assistantId, activity);
       try {
         final engine = ref.read(toolEngineFactoryProvider)(
           backend: settings.searchBackend,
@@ -1180,6 +1208,7 @@ class ChatController extends AsyncNotifier<ChatState> {
           final fetched = await engine.runFetchUrls(
             pastedUrls,
             startIndex: 1,
+            onActivity: activitySink,
             cancelToken: cancelToken,
           );
           if (fetched.citations.isNotEmpty) {
@@ -1189,14 +1218,20 @@ class ChatController extends AsyncNotifier<ChatState> {
         }
 
         if (needPreSearch) {
-          final searched = await engine.runSearch(
-            normalizeSearchQuery(searchQuery),
+          final orchestration = await _runOrchestratedSearch(
+            engine: engine,
+            settings: settings,
+            working: working,
+            assistantId: assistantId,
+            searchQuery: searchQuery,
+            force: searchMode == SearchMode.always,
             startIndex: citations.length + 1,
+            onActivity: activitySink,
             cancelToken: cancelToken,
           );
-          if (searched.citations.isNotEmpty) {
-            citations.addAll(searched.citations);
-            blocks.add(searched.contextText);
+          if (orchestration.context.citations.isNotEmpty) {
+            citations.addAll(orchestration.context.citations);
+            blocks.add(orchestration.context.contextText);
           }
         }
 
@@ -1330,6 +1365,25 @@ class ChatController extends AsyncNotifier<ChatState> {
       }
     }
 
+    if (enableTools) {
+      // Ground tool-capable models in "now" so time-sensitive queries carry a
+      // year, and spell out when each tool applies.
+      final hint = StringBuffer(ToolEngine.dateLine())..write('。');
+      if (useWebSearchTool) {
+        hint.write(
+          '需要实时、最新或不确定的事实信息时，优先调用 web_search；'
+          '搜索关键词应自包含（把指代替换成具体名称，时效性问题带上年份）。',
+        );
+      }
+      if (useFetchUrlTool) {
+        hint.write('用户在本轮消息中给出的链接可用 fetch_url 读取。');
+      }
+      history.insert(
+        0,
+        LlmRequestMessage(role: MessageRole.system, content: hint.toString()),
+      );
+    }
+
     if (!_s.isStreaming) {
       await _persistById(working.id);
       return;
@@ -1457,9 +1511,12 @@ class ChatController extends AsyncNotifier<ChatState> {
     flushActiveStream = flushUi;
     _flushActiveStream = flushActiveStream;
 
+    // N search rounds (user-configurable) plus one final round with tools
+    // withheld so the model must produce an answer.
+    final maxToolRounds = settings.searchMaxRounds + 1;
     try {
-      for (var round = 0; round < _maxToolRounds; round++) {
-        final toolDrafts = <int, _ToolCallDraft>{};
+      for (var round = 0; round < maxToolRounds; round++) {
+        final toolDrafts = <int, ToolCallDraft>{};
         final turnContent = StringBuffer();
         final turnReasoning = StringBuffer();
         String? finishReason;
@@ -1468,7 +1525,7 @@ class ChatController extends AsyncNotifier<ChatState> {
         // On the LAST round drop the tool list entirely so the model is forced
         // to answer from what it has, instead of us erroring out mid-answer.
         final allowTools =
-            enableTools && toolSpecs.isNotEmpty && round < _maxToolRounds - 1;
+            enableTools && toolSpecs.isNotEmpty && round < maxToolRounds - 1;
         final stream = llm.streamChat(
           config: config,
           messages: requestMessages,
@@ -1499,9 +1556,9 @@ class ChatController extends AsyncNotifier<ChatState> {
               content.write(chunk.contentDelta!);
             }
             for (final call in chunk.toolCalls ?? const <ToolCall>[]) {
-              (toolDrafts[call.index] ??= _ToolCallDraft(
-                call.index,
-              )).merge(call);
+              (toolDrafts[call.index] ??= ToolCallDraft(call.index)).merge(
+                call,
+              );
             }
             scheduleUiFlush();
           },
@@ -1536,7 +1593,7 @@ class ChatController extends AsyncNotifier<ChatState> {
           flushUi();
         }
 
-        final toolCalls = _finalizeToolCalls(toolDrafts);
+        final toolCalls = ToolCallDraft.finalize(toolDrafts);
         final needsTools =
             allowTools &&
             (toolCalls.isNotEmpty || finishReason == 'tool_calls');
@@ -1622,12 +1679,6 @@ class ChatController extends AsyncNotifier<ChatState> {
     return succeeded;
   }
 
-  List<ToolCall> _finalizeToolCalls(Map<int, _ToolCallDraft> drafts) {
-    final calls = drafts.values.map((d) => d.build()).toList()
-      ..sort((a, b) => a.index.compareTo(b.index));
-    return calls.where((c) => (c.name ?? '').isNotEmpty).toList();
-  }
-
   Future<List<LlmRequestMessage>> _executeToolCalls({
     required List<ToolCall> toolCalls,
     required SettingsState settings,
@@ -1705,7 +1756,12 @@ class ChatController extends AsyncNotifier<ChatState> {
       );
       final context = await engine.runSearch(
         query,
+        maxResults: settings.searchMaxResults,
         startIndex: citations.length + 1,
+        // Sources already cited this answer are skipped so repeated/nearby
+        // queries surface new pages instead of duplicates.
+        excludeUrls: {for (final c in citations) c.url},
+        onActivity: (a) => _upsertSearchActivity(convoId, assistantId, a),
         cancelToken: cancelToken,
       );
       if (context.citations.isNotEmpty) {
@@ -1747,6 +1803,7 @@ class ChatController extends AsyncNotifier<ChatState> {
       final context = await engine.runFetchUrls(
         [url],
         startIndex: citations.length + 1,
+        onActivity: (a) => _upsertSearchActivity(convoId, assistantId, a),
         cancelToken: cancelToken,
       );
       if (context.citations.isNotEmpty) {
@@ -1802,6 +1859,107 @@ class ChatController extends AsyncNotifier<ChatState> {
         )
         .normalizePath()
         .toString();
+  }
+
+  /// Tool-capable config for the "搜索大脑" planner, or null when the chosen
+  /// model cannot do function calling (the caller then falls back to a plain
+  /// single-shot search).
+  LlmConfig? _searchBrainConfig(SettingsState settings) {
+    final config = LlmConfig(
+      baseUrl: settings.baseUrl,
+      apiKey: settings.apiKey,
+      model: settings.effectiveSearchBrainModel,
+    );
+    if (!config.isReady || !config.capabilities.supportsTools) return null;
+    return config;
+  }
+
+  /// Multi-round planner retrieval with graceful degradation to the classic
+  /// one-shot search when no tool-capable brain model is available.
+  Future<SearchOrchestration> _runOrchestratedSearch({
+    required ToolEngine engine,
+    required SettingsState settings,
+    required Conversation working,
+    required String assistantId,
+    required String searchQuery,
+    required bool force,
+    required int startIndex,
+    required SearchActivityListener onActivity,
+    required CancelToken cancelToken,
+  }) async {
+    final brain = _searchBrainConfig(settings);
+    if (brain == null) {
+      final searched = await engine.runSearch(
+        normalizeSearchQuery(searchQuery),
+        maxResults: settings.searchMaxResults,
+        startIndex: startIndex,
+        onActivity: onActivity,
+        cancelToken: cancelToken,
+      );
+      return SearchOrchestration(context: searched, searched: true);
+    }
+
+    // Planner context: the visible branch minus the assistant placeholder and
+    // minus the current question (passed separately as userQuery).
+    final path = working.activePath.where((m) => m.id != assistantId).toList();
+    if (path.isNotEmpty &&
+        path.last.role == MessageRole.user &&
+        path.last.content == searchQuery) {
+      path.removeLast();
+    }
+    final history = [
+      for (final m in path) LlmRequestMessage(role: m.role, content: m.content),
+    ];
+
+    final orchestrator = SearchOrchestrator(ref.read(llmProvider), engine);
+    return orchestrator.run(
+      brainConfig: brain,
+      history: history,
+      userQuery: searchQuery,
+      force: force,
+      maxRounds: settings.searchMaxRounds,
+      maxResults: settings.searchMaxResults,
+      startIndex: startIndex,
+      onActivity: onActivity,
+      cancelToken: cancelToken,
+    );
+  }
+
+  /// Adds or replaces (by id) one search-process step on the assistant bubble.
+  void _upsertSearchActivity(
+    String convoId,
+    String msgId,
+    SearchActivity activity,
+  ) {
+    final idx = _s.conversations.indexWhere((c) => c.id == convoId);
+    if (idx < 0) return; // conversation was deleted mid-stream
+    final convo = _s.conversations[idx];
+    final messages = [
+      for (final m in convo.messages)
+        if (m.id == msgId)
+          m.copyWith(
+            searchActivities: _mergeActivity(m.searchActivities, activity),
+          )
+        else
+          m,
+    ];
+    _set(
+      _s.copyWith(conversations: _replace(convo.copyWith(messages: messages))),
+    );
+  }
+
+  static List<SearchActivity> _mergeActivity(
+    List<SearchActivity> current,
+    SearchActivity update,
+  ) {
+    final out = List<SearchActivity>.of(current);
+    final i = out.indexWhere((a) => a.id == update.id);
+    if (i >= 0) {
+      out[i] = update;
+    } else {
+      out.add(update);
+    }
+    return List.unmodifiable(out);
   }
 
   void _setCitations(String convoId, String msgId, List<Citation> citations) {
@@ -1932,24 +2090,3 @@ final chatControllerProvider = AsyncNotifierProvider<ChatController, ChatState>(
   ChatController.new,
 );
 
-class _ToolCallDraft {
-  _ToolCallDraft(this.index);
-
-  final int index;
-  String? id;
-  String? name;
-  final StringBuffer _arguments = StringBuffer();
-
-  void merge(ToolCall call) {
-    id ??= call.id;
-    name ??= call.name;
-    if (call.argumentsJson.isNotEmpty) _arguments.write(call.argumentsJson);
-  }
-
-  ToolCall build() => ToolCall(
-    index: index,
-    id: id ?? 'call_${index}_${DateTime.now().microsecondsSinceEpoch}',
-    name: name,
-    argumentsJson: _arguments.toString(),
-  );
-}

@@ -10,6 +10,7 @@ import 'attachment_chip.dart';
 import 'citations_bar.dart';
 import 'html_preview_page.dart';
 import 'previewable_code_block.dart';
+import 'search_activity_panel.dart';
 import 'thinking_panel.dart';
 
 Future<void> _openUrl(String url) async {
@@ -325,6 +326,11 @@ class _MessageBubbleState extends State<MessageBubble> {
                     ),
                   ),
                 ),
+              ),
+            if (m.searchActivities.isNotEmpty)
+              SearchActivityPanel(
+                activities: m.searchActivities,
+                isStreaming: widget.isStreaming,
               ),
             if (hasReasoning)
               ThinkingPanel(

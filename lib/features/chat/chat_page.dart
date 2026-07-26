@@ -130,28 +130,50 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     }
   }
 
-  Future<void> _pickFiles() async {
+  static const _documentExtensions = [
+    'pdf',
+    'docx',
+    'xlsx',
+    'pptx',
+    'txt',
+    'md',
+    'csv',
+    'json',
+  ];
+  static const _imageExtensions = [
+    'png',
+    'jpg',
+    'jpeg',
+    'gif',
+    'webp',
+    'bmp',
+  ];
+
+  Future<void> _pickDocuments() => _pickFiles(imagesOnly: false);
+
+  Future<void> _pickImages() => _pickFiles(imagesOnly: true);
+
+  Future<void> _pickFiles({required bool imagesOnly}) async {
     if (_picking) return;
     setState(() => _picking = true);
     try {
-      final allowImages =
+      final visionOk =
           ref.read(settingsControllerProvider).value?.visionConfigured ?? false;
+      if (imagesOnly && !visionOk) {
+        _showAttachmentNotice('请先在设置中配置视觉 API，再上传图片。');
+        return;
+      }
       final result = await FilePicker.pickFiles(
         allowMultiple: true,
         withData: false,
         withReadStream: true,
         type: FileType.custom,
-        allowedExtensions: [
-          'pdf',
-          'docx',
-          'xlsx',
-          'pptx',
-          'txt',
-          'md',
-          'csv',
-          'json',
-          if (allowImages) ...['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'],
-        ],
+        allowedExtensions: imagesOnly
+            ? _imageExtensions
+            : [
+                ..._documentExtensions,
+                if (visionOk) ..._imageExtensions,
+              ],
       );
       if (result == null) return;
 
@@ -431,6 +453,13 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                 : beats.isEmpty
                 ? null
                 : '节拍 ${current.plotCursor.clamp(0, beats.length)}/${beats.length}';
+            final settings = ref.watch(settingsControllerProvider).value;
+            final contextEnabled = settings?.context.enabled ?? false;
+            final contextReport = current == null
+                ? null
+                : asyncState.value?.contextReports[current.id];
+            final contextInputBudget =
+                settings?.context.inputBudgetTokens ?? 0;
             return Scaffold(
               appBar: AppBar(
                 titleSpacing: dualPane ? 20 : 8,
@@ -520,6 +549,16 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                   ),
                 ),
                 actions: [
+                  if (contextEnabled)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 4),
+                      child: Center(
+                        child: _ContextUsageChip(
+                          report: contextReport,
+                          inputBudget: contextInputBudget,
+                        ),
+                      ),
+                    ),
                   if (dualPane)
                     IconButton(
                       tooltip: _historyOpen ? '隐藏会话列表' : '显示会话列表',
@@ -701,7 +740,6 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     final needsSetup = state.error != null && state.error!.contains('API Key');
     final settings = ref.watch(settingsControllerProvider).value;
     final ui = settings?.ui ?? const UiPrefs();
-    final contextReport = convo == null ? null : state.contextReports[convo.id];
     final contentMax = ui.contentWidth.maxWidth;
     final densityPad = ui.density == DensityPref.compact
         ? const EdgeInsets.fromLTRB(16, 12, 16, 20)
@@ -826,13 +864,11 @@ class _ChatPageState extends ConsumerState<ChatPage> {
               settings?.imageGenerationConfigured ?? false,
           imageMode:
               _imageMode && (settings?.imageGenerationConfigured ?? false),
-          contextEnabled: settings?.context.enabled ?? false,
-          contextReport: contextReport,
-          contextInputBudget: settings?.context.inputBudgetTokens ?? 0,
           onToggleDeepThink: controller.toggleDeepThink,
           onToggleSearch: controller.toggleSearch,
           onToggleImageMode: _toggleImageMode,
-          onPickFiles: _pickFiles,
+          onPickDocuments: _pickDocuments,
+          onPickImages: _pickImages,
           onRemoveAttachment: _removeAttachment,
           onSend: _send,
           onStop: controller.stop,
@@ -842,7 +878,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   }
 }
 
-class _Composer extends StatelessWidget {
+class _Composer extends StatefulWidget {
   const _Composer({
     required this.controller,
     required this.isStreaming,
@@ -856,13 +892,11 @@ class _Composer extends StatelessWidget {
     required this.visionConfigured,
     required this.imageGenerationConfigured,
     required this.imageMode,
-    required this.contextEnabled,
-    required this.contextReport,
-    required this.contextInputBudget,
     required this.onToggleDeepThink,
     required this.onToggleSearch,
     required this.onToggleImageMode,
-    required this.onPickFiles,
+    required this.onPickDocuments,
+    required this.onPickImages,
     required this.onRemoveAttachment,
     required this.onSend,
     required this.onStop,
@@ -880,28 +914,59 @@ class _Composer extends StatelessWidget {
   final bool visionConfigured;
   final bool imageGenerationConfigured;
   final bool imageMode;
-  final bool contextEnabled;
-  final ContextWindowReport? contextReport;
-  final int contextInputBudget;
   final VoidCallback onToggleDeepThink;
   final VoidCallback onToggleSearch;
   final VoidCallback onToggleImageMode;
-  final VoidCallback onPickFiles;
+  final VoidCallback onPickDocuments;
+  final VoidCallback onPickImages;
   final ValueChanged<String> onRemoveAttachment;
   final VoidCallback onSend;
   final VoidCallback onStop;
 
   @override
+  State<_Composer> createState() => _ComposerState();
+}
+
+class _ComposerState extends State<_Composer> {
+  /// DeepSeek-style expandable “+” tray for upload / image actions.
+  bool _plusOpen = false;
+
+  void _togglePlus() {
+    if (widget.isStreaming) return;
+    setState(() => _plusOpen = !_plusOpen);
+  }
+
+  void _closePlus() {
+    if (_plusOpen) setState(() => _plusOpen = false);
+  }
+
+  void _runAndClose(VoidCallback action) {
+    _closePlus();
+    action();
+  }
+
+  @override
+  void didUpdateWidget(covariant _Composer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Collapse the tray while a turn is in flight so it doesn't sit open over
+    // the stop button / streaming UI.
+    if (widget.isStreaming && _plusOpen) {
+      _plusOpen = false;
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final compactHeight = MediaQuery.sizeOf(context).height < 720;
-    final hint = imageMode
+    final hint = widget.imageMode
         ? '描述你想生成的图片…'
-        : directorMode
+        : widget.directorMode
         ? '输入导演指令，或点击“继续下一节”…'
-        : storyLike
+        : widget.storyLike
         ? '续写反应，或输入旁白…'
         : '写下你的想法…';
+    final canAttach = !widget.isStreaming && !widget.picking && !widget.imageMode;
     return Container(
       key: const ValueKey('chat-composer'),
       decoration: BoxDecoration(
@@ -921,71 +986,40 @@ class _Composer extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // Every action remains reachable in one horizontally
-                  // scrollable row. Context usage lives here instead of taking
-                  // a dedicated line above the composer.
+                  // Model-capability chips stay on the top strip; media actions
+                  // live in the expandable “+” tray (DeepSeek-style).
                   SingleChildScrollView(
                     scrollDirection: Axis.horizontal,
                     child: Row(
                       children: [
-                        _ComposerToolButton(
-                          tooltip: visionConfigured
-                              ? '上传文件或图片（最多 5 个，单个最大 10 MB）'
-                              : '上传文件；配置视觉 API 后可上传图片',
-                          onPressed: (isStreaming || picking || imageMode)
-                              ? null
-                              : onPickFiles,
-                          child: picking
-                              ? SizedBox(
-                                  width: 18,
-                                  height: 18,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    color: scheme.primary,
-                                  ),
-                                )
-                              : Icon(
-                                  Icons.attach_file_rounded,
-                                  size: 20,
-                                  color: scheme.primary,
-                                ),
-                        ),
-                        if (contextEnabled) ...[
-                          const SizedBox(width: 6),
-                          _ContextUsageChip(
-                            report: contextReport,
-                            inputBudget: contextInputBudget,
-                          ),
-                        ],
-                        const SizedBox(width: 6),
-                        if (imageGenerationConfigured) ...[
-                          _ComposerToggleChip(
-                            selected: imageMode,
-                            icon: Icons.auto_awesome_outlined,
-                            label: '生图',
-                            tooltip: '使用独立配置的图片生成 API',
-                            onSelected: onToggleImageMode,
-                          ),
-                          const SizedBox(width: 6),
-                        ],
                         _ComposerToggleChip(
-                          selected: deepThink,
+                          selected: widget.deepThink,
                           icon: Icons.psychology_outlined,
                           label: '深度思考',
                           tooltip: '开启后本次对话使用深度推理模型',
-                          onSelected: onToggleDeepThink,
+                          onSelected: widget.onToggleDeepThink,
                         ),
                         const SizedBox(width: 6),
                         _ComposerToggleChip(
-                          selected: searchMode != SearchMode.off,
+                          selected: widget.searchMode != SearchMode.off,
                           icon: Icons.travel_explore,
-                          label: searchMode.composerLabel,
+                          label: widget.searchMode.composerLabel,
                           tooltip:
                               '点击切换：关闭 → 自动（模型按需搜索）→ 强制（先搜索再回答）；'
                               '搜索服务可在「设置」配置',
-                          onSelected: onToggleSearch,
+                          onSelected: widget.onToggleSearch,
                         ),
-                        if (isSearching) ...[
+                        if (widget.imageMode) ...[
+                          const SizedBox(width: 6),
+                          _ComposerToggleChip(
+                            selected: true,
+                            icon: Icons.auto_awesome,
+                            label: '生图中',
+                            tooltip: '再次点击可退出生图模式',
+                            onSelected: widget.onToggleImageMode,
+                          ),
+                        ],
+                        if (widget.isSearching) ...[
                           const SizedBox(width: 6),
                           Container(
                             padding: const EdgeInsets.symmetric(
@@ -1025,9 +1059,39 @@ class _Composer extends StatelessWidget {
                       ],
                     ),
                   ),
+                  AnimatedSize(
+                    duration: const Duration(milliseconds: 180),
+                    curve: Curves.easeOutCubic,
+                    alignment: Alignment.topCenter,
+                    child: _plusOpen
+                        ? Padding(
+                            padding: const EdgeInsets.only(top: 8),
+                            child: _ComposerPlusTray(
+                              visionConfigured: widget.visionConfigured,
+                              imageGenerationConfigured:
+                                  widget.imageGenerationConfigured,
+                              imageMode: widget.imageMode,
+                              enabled: canAttach || widget.imageMode,
+                              picking: widget.picking,
+                              onPickDocuments: canAttach
+                                  ? () => _runAndClose(widget.onPickDocuments)
+                                  : null,
+                              onPickImages:
+                                  canAttach && widget.visionConfigured
+                                  ? () => _runAndClose(widget.onPickImages)
+                                  : null,
+                              onToggleImageMode: widget.isStreaming
+                                  ? null
+                                  : () => _runAndClose(
+                                      widget.onToggleImageMode,
+                                    ),
+                            ),
+                          )
+                        : const SizedBox.shrink(),
+                  ),
                   const SizedBox(height: 6),
                   Container(
-                    padding: const EdgeInsets.fromLTRB(10, 4, 6, 4),
+                    padding: const EdgeInsets.fromLTRB(6, 4, 6, 4),
                     decoration: BoxDecoration(
                       color: scheme.surfaceContainer,
                       borderRadius: BorderRadius.circular(18),
@@ -1046,26 +1110,32 @@ class _Composer extends StatelessWidget {
                       mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        if (attachments.isNotEmpty)
+                        if (widget.attachments.isNotEmpty)
                           Padding(
-                            padding: const EdgeInsets.only(bottom: 4),
+                            padding: const EdgeInsets.fromLTRB(4, 2, 4, 4),
                             child: SingleChildScrollView(
                               key: const ValueKey('composer-attachment-strip'),
                               scrollDirection: Axis.horizontal,
                               child: Row(
                                 children: [
-                                  for (var i = 0; i < attachments.length; i++)
+                                  for (
+                                    var i = 0;
+                                    i < widget.attachments.length;
+                                    i++
+                                  )
                                     Padding(
                                       padding: EdgeInsets.only(
-                                        right: i == attachments.length - 1
+                                        right:
+                                            i == widget.attachments.length - 1
                                             ? 0
                                             : 6,
                                       ),
                                       child: AttachmentChip(
-                                        attachment: attachments[i],
-                                        onRemove: () => onRemoveAttachment(
-                                          attachments[i].id,
-                                        ),
+                                        attachment: widget.attachments[i],
+                                        onRemove: () =>
+                                            widget.onRemoveAttachment(
+                                              widget.attachments[i].id,
+                                            ),
                                       ),
                                     ),
                                 ],
@@ -1075,23 +1145,34 @@ class _Composer extends StatelessWidget {
                         Row(
                           crossAxisAlignment: CrossAxisAlignment.end,
                           children: [
+                            _ComposerPlusButton(
+                              open: _plusOpen,
+                              enabled: !widget.isStreaming,
+                              picking: widget.picking,
+                              onPressed: _togglePlus,
+                            ),
                             Expanded(
                               child: CallbackShortcuts(
                                 bindings: {
                                   const SingleActivator(
                                     LogicalKeyboardKey.enter,
                                   ): () {
-                                    if (!isStreaming &&
-                                        !controller.value.composing.isValid) {
-                                      onSend();
+                                    if (!widget.isStreaming &&
+                                        !widget
+                                            .controller
+                                            .value
+                                            .composing
+                                            .isValid) {
+                                      onSendViaWidget();
                                     }
                                   },
                                 },
                                 child: TextField(
-                                  controller: controller,
+                                  controller: widget.controller,
                                   minLines: 1,
                                   maxLines: compactHeight ? 3 : 5,
                                   textInputAction: TextInputAction.newline,
+                                  onTap: _closePlus,
                                   decoration: InputDecoration(
                                     hintText: hint,
                                     filled: false,
@@ -1107,9 +1188,9 @@ class _Composer extends StatelessWidget {
                               ),
                             ),
                             const SizedBox(width: 4),
-                            isStreaming
+                            widget.isStreaming
                                 ? IconButton.filled(
-                                    onPressed: onStop,
+                                    onPressed: widget.onStop,
                                     icon: const Icon(Icons.stop_rounded),
                                     tooltip: '停止',
                                     style: IconButton.styleFrom(
@@ -1119,7 +1200,10 @@ class _Composer extends StatelessWidget {
                                     ),
                                   )
                                 : IconButton.filled(
-                                    onPressed: onSend,
+                                    onPressed: () {
+                                      _closePlus();
+                                      widget.onSend();
+                                    },
                                     icon: const Icon(
                                       Icons.arrow_upward_rounded,
                                     ),
@@ -1133,6 +1217,243 @@ class _Composer extends StatelessWidget {
                           ],
                         ),
                       ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void onSendViaWidget() {
+    _closePlus();
+    widget.onSend();
+  }
+}
+
+/// Circular “+” control that expands the media tray (DeepSeek-style).
+class _ComposerPlusButton extends StatelessWidget {
+  const _ComposerPlusButton({
+    required this.open,
+    required this.enabled,
+    required this.picking,
+    required this.onPressed,
+  });
+
+  final bool open;
+  final bool enabled;
+  final bool picking;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final active = open;
+    return Semantics(
+      key: const ValueKey('composer-plus-button'),
+      button: true,
+      enabled: enabled,
+      label: open ? '收起附件菜单' : '展开附件菜单',
+      excludeSemantics: true,
+      child: Tooltip(
+        message: open ? '收起' : '上传文件、图片等',
+        child: Padding(
+          padding: const EdgeInsets.only(bottom: 2, right: 2),
+          child: Material(
+            color: active
+                ? scheme.primaryContainer
+                : scheme.surfaceContainerHighest,
+            shape: const CircleBorder(),
+            child: InkWell(
+              customBorder: const CircleBorder(),
+              onTap: enabled ? onPressed : null,
+              child: SizedBox(
+                width: 36,
+                height: 36,
+                child: Center(
+                  child: picking
+                      ? SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: scheme.primary,
+                          ),
+                        )
+                      : AnimatedRotation(
+                          turns: open ? 0.125 : 0,
+                          duration: const Duration(milliseconds: 180),
+                          child: Icon(
+                            Icons.add_rounded,
+                            size: 22,
+                            color: enabled
+                                ? (active
+                                      ? scheme.onPrimaryContainer
+                                      : scheme.onSurfaceVariant)
+                                : scheme.onSurface.withValues(alpha: 0.38),
+                          ),
+                        ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Expandable action tray revealed by the composer “+” button.
+class _ComposerPlusTray extends StatelessWidget {
+  const _ComposerPlusTray({
+    required this.visionConfigured,
+    required this.imageGenerationConfigured,
+    required this.imageMode,
+    required this.enabled,
+    required this.picking,
+    required this.onPickDocuments,
+    required this.onPickImages,
+    required this.onToggleImageMode,
+  });
+
+  final bool visionConfigured;
+  final bool imageGenerationConfigured;
+  final bool imageMode;
+  final bool enabled;
+  final bool picking;
+  final VoidCallback? onPickDocuments;
+  final VoidCallback? onPickImages;
+  final VoidCallback? onToggleImageMode;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      key: const ValueKey('composer-plus-tray'),
+      padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: scheme.outlineVariant.withValues(alpha: 0.85),
+        ),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: _ComposerPlusAction(
+              icon: Icons.folder_open_outlined,
+              label: '上传文件',
+              tooltip: '上传 PDF / Office / 文本等（最多 5 个，单个最大 10 MB）',
+              enabled: onPickDocuments != null && !picking,
+              onTap: onPickDocuments,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: _ComposerPlusAction(
+              icon: Icons.image_outlined,
+              label: '上传图片',
+              tooltip: visionConfigured
+                  ? '上传图片供视觉模型分析（最多 5 个，单个最大 10 MB）'
+                  : '请先在设置中配置视觉 API',
+              enabled: onPickImages != null && !picking,
+              onTap: onPickImages,
+            ),
+          ),
+          if (imageGenerationConfigured) ...[
+            const SizedBox(width: 8),
+            Expanded(
+              child: _ComposerPlusAction(
+                icon: imageMode
+                    ? Icons.auto_awesome
+                    : Icons.auto_awesome_outlined,
+                label: imageMode ? '退出生图' : '图片生成',
+                tooltip: imageMode
+                    ? '退出生图模式，回到普通对话'
+                    : '使用独立配置的图片生成 API',
+                selected: imageMode,
+                enabled: onToggleImageMode != null,
+                onTap: onToggleImageMode,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _ComposerPlusAction extends StatelessWidget {
+  const _ComposerPlusAction({
+    required this.icon,
+    required this.label,
+    required this.tooltip,
+    required this.enabled,
+    required this.onTap,
+    this.selected = false,
+  });
+
+  final IconData icon;
+  final String label;
+  final String tooltip;
+  final bool enabled;
+  final bool selected;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final fg = !enabled
+        ? scheme.onSurface.withValues(alpha: 0.38)
+        : selected
+        ? scheme.primary
+        : scheme.onSurface;
+    final bg = selected
+        ? scheme.primaryContainer.withValues(alpha: 0.7)
+        : scheme.surface;
+    return Semantics(
+      button: true,
+      enabled: enabled,
+      label: '$label，$tooltip',
+      excludeSemantics: true,
+      child: Tooltip(
+        message: tooltip,
+        child: Material(
+          color: bg,
+          borderRadius: BorderRadius.circular(14),
+          child: InkWell(
+            onTap: enabled ? onTap : null,
+            borderRadius: BorderRadius.circular(14),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 44,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      color: selected
+                          ? scheme.primary.withValues(alpha: 0.14)
+                          : scheme.surfaceContainerHighest,
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Icon(icon, size: 22, color: fg),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    label,
+                    textAlign: TextAlign.center,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: fg,
                     ),
                   ),
                 ],
@@ -1172,7 +1493,7 @@ class _ContextUsageChip extends StatelessWidget {
         : '${_compactTokens(current)} / ${_compactTokens(budget)}'
               '${managed ? ' · 已压缩' : ''}';
     return Semantics(
-      key: const ValueKey('composer-context-usage'),
+      key: const ValueKey('chat-context-usage'),
       label: detail,
       value: '${(fraction * 100).round()}%',
       excludeSemantics: true,
@@ -1224,41 +1545,6 @@ class _ContextUsageChip extends StatelessWidget {
       return '${(value / 1000).toStringAsFixed(value % 1000 == 0 ? 0 : 1)}K';
     }
     return '$value';
-  }
-}
-
-class _ComposerToolButton extends StatelessWidget {
-  const _ComposerToolButton({
-    required this.child,
-    required this.onPressed,
-    required this.tooltip,
-  });
-
-  final Widget child;
-  final VoidCallback? onPressed;
-  final String tooltip;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Semantics(
-      button: true,
-      enabled: onPressed != null,
-      label: tooltip,
-      excludeSemantics: true,
-      child: Tooltip(
-        message: tooltip,
-        child: Material(
-          color: scheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(11),
-          child: InkWell(
-            onTap: onPressed,
-            borderRadius: BorderRadius.circular(11),
-            child: SizedBox(width: 32, height: 32, child: Center(child: child)),
-          ),
-        ),
-      ),
-    );
   }
 }
 

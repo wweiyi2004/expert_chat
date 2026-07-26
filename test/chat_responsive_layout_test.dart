@@ -70,7 +70,7 @@ void main() {
         findsOneWidget,
       );
       expect(
-        find.byKey(const ValueKey('composer-context-usage')),
+        find.byKey(const ValueKey('chat-context-usage')),
         findsOneWidget,
       );
       expect(find.byTooltip('上下文预算 251.9K'), findsOneWidget);
@@ -80,12 +80,28 @@ void main() {
           .height;
       expect(composerHeight, lessThan(125));
 
-      // All capabilities remain in the horizontal tool strip.
-      expect(find.byTooltip('上传文件或图片（最多 5 个，单个最大 10 MB）'), findsOneWidget);
-      expect(find.text('生图'), findsOneWidget);
+      // Context usage lives in the AppBar, not the composer tool strip.
+      final appBarTop = tester.getTopLeft(find.byType(AppBar)).dy;
+      final appBarBottom = tester.getBottomLeft(find.byType(AppBar)).dy;
+      final contextCenter = tester
+          .getCenter(find.byKey(const ValueKey('chat-context-usage')))
+          .dy;
+      expect(contextCenter, greaterThan(appBarTop));
+      expect(contextCenter, lessThan(appBarBottom));
+
+      // Model chips stay visible; media actions hide behind the “+” tray.
       expect(find.text('深度思考'), findsOneWidget);
       expect(find.text('联网'), findsOneWidget);
+      expect(find.byKey(const ValueKey('composer-plus-button')), findsOneWidget);
+      expect(find.byKey(const ValueKey('composer-plus-tray')), findsNothing);
       expect(find.byTooltip('发送'), findsOneWidget);
+
+      await tester.tap(find.byKey(const ValueKey('composer-plus-button')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('composer-plus-tray')), findsOneWidget);
+      expect(find.text('上传文件'), findsOneWidget);
+      expect(find.text('上传图片'), findsOneWidget);
+      expect(find.text('图片生成'), findsOneWidget);
 
       const filterKeys = [
         ValueKey('conversation-mode-filter-all'),

@@ -8,6 +8,7 @@ import '../../state/world_info_controller.dart';
 import 'character_library_page.dart';
 import 'director_story_setup_page.dart';
 import 'ensemble_setup_page.dart';
+import 'studio_asset_actions.dart';
 import 'world_info_page.dart';
 
 /// Creation hub: start paths + character / world-info libraries.
@@ -96,6 +97,37 @@ class _StudioPageState extends ConsumerState<StudioPage>
       appBar: AppBar(
         title: const Text('创作'),
         automaticallyImplyLeading: false,
+        actions: [
+          ListenableBuilder(
+            listenable: tabs,
+            builder: (context, _) {
+              if (tabs.index == 0) return const SizedBox.shrink();
+              final onCharacters = tabs.index == 1;
+              return PopupMenuButton<String>(
+                tooltip: '导入 / 导出',
+                onSelected: (v) async {
+                  if (onCharacters) {
+                    if (v == 'import') {
+                      await importCharactersAction(context, ref);
+                    } else if (v == 'export') {
+                      await exportAllCharactersAction(context, ref);
+                    }
+                  } else {
+                    if (v == 'import') {
+                      await importWorldInfoAction(context, ref);
+                    } else if (v == 'export') {
+                      await exportAllWorldInfoAction(context, ref);
+                    }
+                  }
+                },
+                itemBuilder: (_) => const [
+                  PopupMenuItem(value: 'import', child: Text('导入 JSON')),
+                  PopupMenuItem(value: 'export', child: Text('导出全部 JSON')),
+                ],
+              );
+            },
+          ),
+        ],
         bottom: TabBar(
           controller: tabs,
           tabs: const [

@@ -6,6 +6,7 @@ import '../../data/story_models.dart';
 import '../../domain/story/story_ai_assist.dart';
 import '../../state/world_info_controller.dart';
 import 'ai_assist_widgets.dart';
+import 'studio_asset_actions.dart';
 
 class WorldInfoPage extends ConsumerWidget {
   const WorldInfoPage({super.key});
@@ -13,7 +14,25 @@ class WorldInfoPage extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return Scaffold(
-      appBar: AppBar(title: const Text('世界书')),
+      appBar: AppBar(
+        title: const Text('世界书'),
+        actions: [
+          PopupMenuButton<String>(
+            tooltip: '导入 / 导出',
+            onSelected: (v) async {
+              if (v == 'import') {
+                await importWorldInfoAction(context, ref);
+              } else if (v == 'export') {
+                await exportAllWorldInfoAction(context, ref);
+              }
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem(value: 'import', child: Text('导入 JSON')),
+              PopupMenuItem(value: 'export', child: Text('导出全部 JSON')),
+            ],
+          ),
+        ],
+      ),
       floatingActionButton: FloatingActionButton.extended(
         tooltip: '新建条目',
         onPressed: () => editWorldInfoEntry(context, ref, null),
@@ -54,6 +73,12 @@ class WorldInfoBody extends ConsumerWidget {
                   icon: const Icon(Icons.add),
                   label: const Text('创建第一条设定'),
                 ),
+                const SizedBox(height: 8),
+                OutlinedButton.icon(
+                  onPressed: () => importWorldInfoAction(context, ref),
+                  icon: const Icon(Icons.file_upload_outlined, size: 18),
+                  label: const Text('导入 JSON'),
+                ),
               ],
             ),
           );
@@ -86,12 +111,15 @@ class WorldInfoBody extends ConsumerWidget {
                   onSelected: (v) async {
                     if (v == 'edit') {
                       await editWorldInfoEntry(context, ref, e);
+                    } else if (v == 'export') {
+                      await exportOneWorldInfoAction(context, ref, e);
                     } else if (v == 'delete') {
                       await ref.read(worldInfoProvider.notifier).delete(e.id);
                     }
                   },
                   itemBuilder: (_) => const [
                     PopupMenuItem(value: 'edit', child: Text('编辑')),
+                    PopupMenuItem(value: 'export', child: Text('导出 JSON')),
                     PopupMenuItem(value: 'delete', child: Text('删除')),
                   ],
                 ),

@@ -9,6 +9,7 @@ import '../../state/chat_controller.dart';
 import '../shell/shell_tab.dart';
 import 'ai_assist_widgets.dart';
 import 'director_story_setup_page.dart';
+import 'studio_asset_actions.dart';
 
 class CharacterLibraryPage extends ConsumerWidget {
   const CharacterLibraryPage({super.key, this.pickForChat = false});
@@ -19,7 +20,26 @@ class CharacterLibraryPage extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return Scaffold(
-      appBar: AppBar(title: Text(pickForChat ? '选择角色开聊' : '角色库')),
+      appBar: AppBar(
+        title: Text(pickForChat ? '选择角色开聊' : '角色库'),
+        actions: [
+          if (!pickForChat)
+            PopupMenuButton<String>(
+              tooltip: '导入 / 导出',
+              onSelected: (v) async {
+                if (v == 'import') {
+                  await importCharactersAction(context, ref);
+                } else if (v == 'export') {
+                  await exportAllCharactersAction(context, ref);
+                }
+              },
+              itemBuilder: (_) => const [
+                PopupMenuItem(value: 'import', child: Text('导入 JSON')),
+                PopupMenuItem(value: 'export', child: Text('导出全部 JSON')),
+              ],
+            ),
+        ],
+      ),
       floatingActionButton: FloatingActionButton.extended(
         tooltip: '新建角色',
         onPressed: () => editCharacterCard(context, ref, null),
@@ -48,6 +68,9 @@ class CharacterLibraryBody extends ConsumerWidget {
           return _CharacterEmptyState(
             pickForChat: pickForChat,
             onCreate: () => editCharacterCard(context, ref, null),
+            onImport: pickForChat
+                ? null
+                : () => importCharactersAction(context, ref),
             onDirector: pickForChat
                 ? null
                 : () {
@@ -149,6 +172,8 @@ class CharacterLibraryBody extends ConsumerWidget {
                             await editCharacterCard(context, ref, card);
                           } else if (v == 'chat') {
                             await startStoryChat(context, ref, card);
+                          } else if (v == 'export') {
+                            await exportOneCharacterAction(context, ref, card);
                           } else if (v == 'delete') {
                             await deleteCharacterCard(context, ref, card);
                           }
@@ -156,6 +181,7 @@ class CharacterLibraryBody extends ConsumerWidget {
                         itemBuilder: (_) => const [
                           PopupMenuItem(value: 'chat', child: Text('用此角色开聊')),
                           PopupMenuItem(value: 'edit', child: Text('编辑')),
+                          PopupMenuItem(value: 'export', child: Text('导出 JSON')),
                           PopupMenuItem(value: 'delete', child: Text('删除')),
                         ],
                       ),
@@ -188,11 +214,13 @@ class _CharacterEmptyState extends StatelessWidget {
   const _CharacterEmptyState({
     required this.pickForChat,
     required this.onCreate,
+    this.onImport,
     this.onDirector,
   });
 
   final bool pickForChat;
   final VoidCallback onCreate;
+  final VoidCallback? onImport;
   final VoidCallback? onDirector;
 
   @override
@@ -218,7 +246,7 @@ class _CharacterEmptyState extends StatelessWidget {
             Text(
               pickForChat
                   ? '创建一张角色卡后即可开聊；也可以返回用「导演故事」免卡开写。'
-                  : '建一张卡开聊，或先用「导演故事」——无需角色卡也能开写。',
+                  : '三步新建、导入 JSON，或用「导演故事」免卡开写。',
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                 color: scheme.onSurfaceVariant,
@@ -230,8 +258,16 @@ class _CharacterEmptyState extends StatelessWidget {
               icon: const Icon(Icons.add),
               label: const Text('创建第一个角色'),
             ),
+            if (onImport != null) ...[
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: onImport,
+                icon: const Icon(Icons.file_upload_outlined, size: 18),
+                label: const Text('导入 JSON'),
+              ),
+            ],
             if (onDirector != null) ...[
-              const SizedBox(height: 10),
+              const SizedBox(height: 8),
               TextButton.icon(
                 onPressed: onDirector,
                 icon: const Icon(Icons.auto_stories_outlined, size: 18),
@@ -318,6 +354,12 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
   String? _busyField;
   CancelToken? _cancel;
 
+  /// Create flow: 0 名称 · 1 人设 · 2 开场白. Edit mode ignores steps.
+  int _step = 0;
+  bool _showAdvanced = false;
+
+  bool get _isCreate => widget.existing == null;
+
   @override
   void initState() {
     super.initState();
@@ -329,6 +371,8 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
     _firstMes = TextEditingController(text: e?.firstMes ?? '');
     _example = TextEditingController(text: e?.exampleDialogs ?? '');
     _system = TextEditingController(text: e?.systemPrompt ?? '');
+    // Existing cards open fully expanded for editing.
+    _showAdvanced = !_isCreate;
   }
 
   @override
@@ -467,12 +511,46 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
     Navigator.of(context).pop(card);
   }
 
+  bool _canAdvanceFrom(int step) {
+    switch (step) {
+      case 0:
+        return _name.text.trim().isNotEmpty;
+      case 1:
+        return true; // personality optional
+      default:
+        return true;
+    }
+  }
+
+  void _nextStep() {
+    if (_step >= 2) {
+      _save();
+      return;
+    }
+    if (!_canAdvanceFrom(_step)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('请先填写角色名称'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+    setState(() => _step += 1);
+  }
+
+  void _prevStep() {
+    if (_step <= 0) return;
+    setState(() => _step -= 1);
+  }
+
   Widget _field({
     required String label,
     required TextEditingController controller,
     int minLines = 1,
     int maxLines = 1,
     String? helper,
+    String? hint,
     bool polishable = true,
   }) {
     return Column(
@@ -498,6 +576,7 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
           maxLines: maxLines,
           decoration: InputDecoration(
             helperText: helper,
+            hintText: hint,
             border: const OutlineInputBorder(),
           ),
         ),
@@ -506,19 +585,141 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
     );
   }
 
+  Widget _stepHeader(ColorScheme scheme) {
+    const labels = ['名称', '人设', '开场白'];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            for (var i = 0; i < labels.length; i++) ...[
+              if (i > 0)
+                Expanded(
+                  child: Container(
+                    height: 2,
+                    color: i <= _step
+                        ? scheme.primary.withValues(alpha: 0.55)
+                        : scheme.outlineVariant,
+                  ),
+                ),
+              CircleAvatar(
+                radius: 14,
+                backgroundColor: i <= _step
+                    ? scheme.primary
+                    : scheme.surfaceContainerHighest,
+                foregroundColor: i <= _step
+                    ? scheme.onPrimary
+                    : scheme.onSurfaceVariant,
+                child: Text(
+                  '${i + 1}',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+        const SizedBox(height: 8),
+        Text(
+          '第 ${_step + 1}/3 步 · ${labels[_step]}（约 30 秒可开聊）',
+          style: Theme.of(context).textTheme.labelMedium?.copyWith(
+            color: scheme.onSurfaceVariant,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: 12),
+      ],
+    );
+  }
+
+  List<Widget> _wizardFields() {
+    switch (_step) {
+      case 0:
+        return [
+          _field(
+            label: '名称 *',
+            controller: _name,
+            polishable: false,
+            hint: '例如：林晚',
+            helper: '角色在列表与故事中显示的名字',
+          ),
+        ];
+      case 1:
+        return [
+          _field(
+            label: '一句话人设',
+            controller: _personality,
+            minLines: 2,
+            maxLines: 4,
+            hint: '例如：冷淡的剑客，话少，护短',
+            helper: '写入「性格与说话语气」；可稍后在高级字段补充外貌与场景',
+          ),
+        ];
+      default:
+        return [
+          _field(
+            label: '开场白（可选）',
+            controller: _firstMes,
+            minLines: 2,
+            maxLines: 6,
+            hint: '新故事开始时角色说的第一句话',
+            helper: '可留空；保存后即可开聊',
+          ),
+        ];
+    }
+  }
+
+  List<Widget> _advancedFields() => [
+    _field(
+      label: '简介 / 外貌',
+      controller: _description,
+      minLines: 2,
+      maxLines: 5,
+    ),
+    _field(
+      label: '性格与说话语气',
+      controller: _personality,
+      minLines: 2,
+      maxLines: 5,
+    ),
+    _field(label: '场景', controller: _scenario, minLines: 2, maxLines: 4),
+    _field(
+      label: '开场白',
+      controller: _firstMes,
+      minLines: 2,
+      maxLines: 6,
+      helper: '新故事会话时作为角色的第一条消息',
+    ),
+    _field(
+      label: '示例对话（可选）',
+      controller: _example,
+      minLines: 2,
+      maxLines: 6,
+    ),
+    _field(
+      label: '额外系统提示（可选）',
+      controller: _system,
+      minLines: 2,
+      maxLines: 5,
+    ),
+  ];
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.existing == null ? '新建角色' : '编辑角色'),
+        title: Text(_isCreate ? '新建角色' : '编辑角色'),
         actions: [
           if (_busy)
             TextButton(
               onPressed: () => _cancel?.cancel(),
               child: const Text('取消生成'),
             ),
-          TextButton(onPressed: _busy ? null : _save, child: const Text('保存')),
+          if (!_isCreate || _step >= 2 || _showAdvanced)
+            TextButton(onPressed: _busy ? null : _save, child: const Text('保存')),
         ],
       ),
       body: ListView(
@@ -534,7 +735,9 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(
-                      '一句话描述角色，AI 可生成完整角色卡；各字段也可单独润色。',
+                      _isCreate
+                          ? '三步填完即可开聊；也可用 AI 一键生成完整角色卡。'
+                          : '一句话描述角色，AI 可生成完整角色卡；各字段也可单独润色。',
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                   ),
@@ -555,39 +758,46 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
             ),
           ),
           const SizedBox(height: 16),
-          _field(label: '名称', controller: _name, polishable: false),
-          _field(
-            label: '简介 / 外貌',
-            controller: _description,
-            minLines: 2,
-            maxLines: 5,
-          ),
-          _field(
-            label: '性格与说话语气',
-            controller: _personality,
-            minLines: 2,
-            maxLines: 5,
-          ),
-          _field(label: '场景', controller: _scenario, minLines: 2, maxLines: 4),
-          _field(
-            label: '开场白',
-            controller: _firstMes,
-            minLines: 2,
-            maxLines: 6,
-            helper: '新故事会话时作为角色的第一条消息',
-          ),
-          _field(
-            label: '示例对话（可选）',
-            controller: _example,
-            minLines: 2,
-            maxLines: 6,
-          ),
-          _field(
-            label: '额外系统提示（可选）',
-            controller: _system,
-            minLines: 2,
-            maxLines: 5,
-          ),
+          if (_isCreate && !_showAdvanced) ...[
+            _stepHeader(scheme),
+            ..._wizardFields(),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                if (_step > 0)
+                  TextButton(onPressed: _prevStep, child: const Text('上一步')),
+                const Spacer(),
+                FilledButton(
+                  onPressed: _busy ? null : _nextStep,
+                  child: Text(_step >= 2 ? '保存并完成' : '下一步'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            TextButton.icon(
+              onPressed: () => setState(() => _showAdvanced = true),
+              icon: const Icon(Icons.tune, size: 18),
+              label: const Text('展开全部高级字段'),
+            ),
+          ] else ...[
+            if (_isCreate)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: () => setState(() {
+                    _showAdvanced = false;
+                    _step = 0;
+                  }),
+                  icon: const Icon(Icons.view_week_outlined, size: 18),
+                  label: const Text('回到三步向导'),
+                ),
+              ),
+            if (!_isCreate)
+              _field(label: '名称', controller: _name, polishable: false),
+            if (_isCreate && _showAdvanced)
+              _field(label: '名称', controller: _name, polishable: false),
+            ..._advancedFields(),
+          ],
         ],
       ),
     );

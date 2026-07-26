@@ -14,9 +14,7 @@ class EnsembleSetupPage extends ConsumerStatefulWidget {
 }
 
 class _EnsembleSetupPageState extends ConsumerState<EnsembleSetupPage> {
-  final _venue = TextEditingController(
-    text: '废弃游乐场中央广场，霓虹闪烁，夜风很冷',
-  );
+  final _venue = TextEditingController(text: '废弃游乐场中央广场，霓虹闪烁，夜风很冷');
   final _note = TextEditingController();
   final _selected = <String>{};
   var _starting = false;
@@ -29,7 +27,10 @@ class _EnsembleSetupPageState extends ConsumerState<EnsembleSetupPage> {
   }
 
   Future<void> _start(List<CharacterCard> all) async {
-    final cast = [for (final c in all) if (_selected.contains(c.id)) c];
+    final cast = [
+      for (final c in all)
+        if (_selected.contains(c.id)) c,
+    ];
     if (cast.length < 2) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -74,7 +75,11 @@ class _EnsembleSetupPageState extends ConsumerState<EnsembleSetupPage> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(Icons.groups_outlined, size: 48, color: scheme.outline),
+                    Icon(
+                      Icons.groups_outlined,
+                      size: 48,
+                      color: scheme.outline,
+                    ),
                     const SizedBox(height: 12),
                     const Text('至少需要 2 张角色卡'),
                     const SizedBox(height: 8),

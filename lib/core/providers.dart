@@ -7,8 +7,11 @@ import '../data/conversation_repository.dart';
 import '../data/db/app_database.dart';
 import '../data/drift_conversation_repository.dart';
 import '../data/world_info_repository.dart';
+import '../domain/context/context_window_manager.dart';
+import '../domain/cache/app_cache_service.dart';
 import '../domain/llm/llm_provider.dart';
 import '../domain/llm/openai_compatible_provider.dart';
+import '../domain/media/openai_compatible_media_provider.dart';
 import '../domain/tools/file_parser.dart';
 import '../domain/tools/search_provider.dart';
 import '../domain/tools/tool_engine.dart';
@@ -51,6 +54,14 @@ final worldInfoRepositoryProvider = Provider<WorldInfoRepository>(
 
 final llmProvider = Provider<LlmProvider>((ref) => OpenAiCompatibleProvider());
 
+final mediaApiProvider = Provider<OpenAiCompatibleMediaProvider>(
+  (ref) => OpenAiCompatibleMediaProvider(),
+);
+
+final contextWindowManagerProvider = Provider<ContextWindowManager>(
+  (ref) => const ContextWindowManager(),
+);
+
 final fileParserProvider = Provider<FileParser>((ref) => FileParser());
 
 typedef ToolEngineFactory =
@@ -59,21 +70,43 @@ typedef ToolEngineFactory =
       required String apiKey,
     });
 
-final toolEngineFactoryProvider = Provider<ToolEngineFactory>((ref) {
-  // The factory is called for each search step. Reuse an engine for each
-  // backend/key pair so ToolEngine's short-lived result cache can help across
-  // turns without mixing results from different configured providers.
+class ToolEnginePool {
   final engines = <_ToolEngineConfigKey, ToolEngine>{};
-  ref.onDispose(engines.clear);
-  return ({required backend, required apiKey}) {
+
+  ToolEngine create({required SearchBackend backend, required String apiKey}) {
     final key = _ToolEngineConfigKey(backend, apiKey.trim());
     return engines.putIfAbsent(
       key,
       () =>
           ToolEngine(HttpSearchProvider(backend: backend, apiKey: key.apiKey)),
     );
-  };
+  }
+
+  void clear() {
+    for (final engine in engines.values) {
+      engine.clearCache();
+    }
+    engines.clear();
+  }
+}
+
+final toolEnginePoolProvider = Provider<ToolEnginePool>((ref) {
+  final pool = ToolEnginePool();
+  ref.onDispose(pool.clear);
+  return pool;
 });
+
+final toolEngineFactoryProvider = Provider<ToolEngineFactory>((ref) {
+  // Reuse an engine for each backend/key pair so the short-lived result cache
+  // can help across turns without mixing providers.
+  final pool = ref.watch(toolEnginePoolProvider);
+  return ({required backend, required apiKey}) =>
+      pool.create(backend: backend, apiKey: apiKey);
+});
+
+final appCacheServiceProvider = Provider<AppCacheService>(
+  (ref) => AppCacheService(),
+);
 
 class _ToolEngineConfigKey {
   const _ToolEngineConfigKey(this.backend, this.apiKey);

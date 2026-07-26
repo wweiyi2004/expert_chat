@@ -4,9 +4,10 @@
          release builds use only this main manifest.) -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <application
-        android:label="expert_chat"
+        android:label="Expert Chat"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher"
+        android:icon="@mipmap/ic_expert_chat"
+        android:roundIcon="@mipmap/ic_expert_chat"
         android:allowBackup="false"
         android:fullBackupContent="false">
         <activity

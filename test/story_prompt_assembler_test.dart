@@ -45,9 +45,7 @@ void main() {
         authorNote: '文风偏冷',
         plotCursor: 0,
       );
-      final path = [
-        ChatMessage(role: MessageRole.user, content: '拔剑吧'),
-      ];
+      final path = [ChatMessage(role: MessageRole.user, content: '拔剑吧')];
 
       final prefix = assembler.buildSystemPrefix(
         globalSystemPrompt: '全局人设',
@@ -128,6 +126,46 @@ void main() {
         advancePlot: true,
       );
       expect(prefix.map((m) => m.content).join(), contains('推进情节'));
+    });
+
+    test('director mode assigns every story role to the AI', () {
+      final cast = [
+        CharacterCard(
+          name: '沈砚',
+          description: '追查失踪案的记者',
+          personality: '谨慎而执着',
+          scenario: '负责推动调查线',
+        ),
+        CharacterCard(
+          name: '零号',
+          description: '身份不明的克隆人',
+          personality: '克制，几乎不使用反问句',
+          scenario: '掌握飞船秘密',
+        ),
+      ];
+      final convo = Conversation(
+        title: '失控航线',
+        mode: ConversationMode.story,
+        outline: '- 记者在休眠舱醒来\n- 零号现身',
+      );
+
+      final prefix = assembler.buildSystemPrefix(
+        globalSystemPrompt: '',
+        cast: cast,
+        worldInfoPool: const [],
+        conversation: convo,
+        historyPath: const [],
+        advancePlot: true,
+        directorMode: true,
+      );
+
+      final joined = prefix.map((m) => m.content).join('\n');
+      expect(joined, contains('用户是导演'));
+      expect(joined, contains('旁白和全部角色'));
+      expect(joined, contains('沈砚'));
+      expect(joined, contains('零号'));
+      expect(joined, contains('不要让导演成为故事角色'));
+      expect(joined, contains('当前节拍'));
     });
   });
 }

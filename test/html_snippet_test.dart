@@ -5,6 +5,21 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  group('buildSandboxedHtmlPreview policy injection', () {
+    test('lands in the real head, not a commented-out one', () {
+      final out = buildSandboxedHtmlPreview(
+        '<!-- <head> -->'
+        '<html><head><title>t</title></head><body>hi</body></html>',
+      );
+
+      final srcdoc = out.substring(out.indexOf('srcdoc="'));
+      final commentEnd = srcdoc.indexOf('--&gt;');
+      final policyPos = srcdoc.indexOf('Content-Security-Policy');
+      expect(commentEnd, greaterThan(-1));
+      expect(policyPos, greaterThan(commentEnd));
+    });
+  });
+
   group('extractHtmlSnippets', () {
     test('extracts fenced html blocks', () {
       const md = '''
@@ -75,6 +90,20 @@ void main() {}
       expect(preview, contains('sandbox="allow-scripts"'));
       expect(preview, contains("connect-src 'none'"));
       expect(preview, contains("frame-src 'none'"));
+      // `srcdoc` inherits the host CSP, so the host must not accidentally
+      // tighten away capabilities which the inner policy intentionally allows.
+      expect(
+        htmlPreviewHostContentSecurityPolicy,
+        contains("script-src 'unsafe-inline'"),
+      );
+      expect(
+        htmlPreviewHostContentSecurityPolicy,
+        contains('img-src data: blob:'),
+      );
+      expect(
+        htmlPreviewHostContentSecurityPolicy,
+        contains("frame-src 'self'"),
+      );
       expect(preview, contains('&lt;script&gt;'));
       expect(preview, isNot(contains('allow-same-origin')));
       expect(preview, isNot(contains('allow-popups')));

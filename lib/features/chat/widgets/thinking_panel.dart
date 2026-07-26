@@ -78,9 +78,7 @@ class _ThinkingPanelState extends State<ThinkingPanel>
       decoration: BoxDecoration(
         color: scheme.secondaryContainer.withValues(alpha: 0.35),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color: scheme.secondary.withValues(alpha: 0.18),
-        ),
+        border: Border.all(color: scheme.secondary.withValues(alpha: 0.18)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

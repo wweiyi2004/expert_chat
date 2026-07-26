@@ -31,6 +31,7 @@ class MessageBubble extends StatefulWidget {
     required this.message,
     required this.isStreaming,
     this.speakerName,
+    this.userLabel,
     this.onRegenerate,
     this.onEdit,
     this.branchIndex = 0,
@@ -39,6 +40,9 @@ class MessageBubble extends StatefulWidget {
     this.onNextBranch,
     this.messageStyle = MessageStylePref.bubble,
     this.liveMarkdown = true,
+    this.onSpeak,
+    this.isSpeechLoading = false,
+    this.isSpeaking = false,
   });
 
   final ChatMessage message;
@@ -48,6 +52,9 @@ class MessageBubble extends StatefulWidget {
 
   /// Optional label above assistant bubbles (e.g. character card name).
   final String? speakerName;
+
+  /// Optional label above user messages in document mode (e.g. "导演").
+  final String? userLabel;
 
   /// Assistant only: regenerate as a new branch.
   final VoidCallback? onRegenerate;
@@ -63,6 +70,9 @@ class MessageBubble extends StatefulWidget {
 
   final MessageStylePref messageStyle;
   final bool liveMarkdown;
+  final Future<void> Function()? onSpeak;
+  final bool isSpeechLoading;
+  final bool isSpeaking;
 
   @override
   State<MessageBubble> createState() => _MessageBubbleState();
@@ -93,6 +103,18 @@ class _MessageBubbleState extends State<MessageBubble> {
     }
   }
 
+  Future<void> _copyMessage(String content) async {
+    await Clipboard.setData(ClipboardData(text: content));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('已复制'),
+        duration: Duration(seconds: 1),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
   bool get _document => widget.messageStyle == MessageStylePref.document;
 
   Widget _assistantMarkdown(ChatMessage m) {
@@ -103,10 +125,9 @@ class _MessageBubbleState extends State<MessageBubble> {
         // Must set [color] explicitly. gpt_markdown caches parsed spans and only
         // rebuilds them when config changes; without a theme-tied style, LaTeX
         // (flutter_math) keeps the light-mode black glyphs after a theme switch.
-        final baseStyle = Theme.of(context).textTheme.bodyLarge?.copyWith(
-          height: 1.65,
-          color: scheme.onSurface,
-        );
+        final baseStyle = Theme.of(
+          context,
+        ).textTheme.bodyLarge?.copyWith(height: 1.65, color: scheme.onSurface);
         if (!useMarkdown) {
           return SelectableText(m.content, style: baseStyle);
         }
@@ -119,11 +140,8 @@ class _MessageBubbleState extends State<MessageBubble> {
             style: baseStyle,
             useDollarSignsForLatex: true,
             onLinkTap: (url, _) => _openUrl(url),
-            codeBuilder: (context, name, code, closed) => PreviewableCodeBlock(
-              name: name,
-              code: code,
-              closed: closed,
-            ),
+            codeBuilder: (context, name, code, closed) =>
+                PreviewableCodeBlock(name: name, code: code, closed: closed),
             sourceTagBuilder: (context, content, style) {
               final n = int.tryParse(content.trim());
               final isCitation = m.citations.any((c) => c.index == n);
@@ -220,7 +238,7 @@ class _MessageBubbleState extends State<MessageBubble> {
                       Padding(
                         padding: const EdgeInsets.only(bottom: 4),
                         child: Text(
-                          '你',
+                          widget.userLabel ?? '你',
                           style: Theme.of(context).textTheme.labelMedium
                               ?.copyWith(
                                 color: scheme.primary,
@@ -246,6 +264,14 @@ class _MessageBubbleState extends State<MessageBubble> {
                     : MainAxisAlignment.end,
                 children: [
                   _branchNav(scheme),
+                  if (m.content.isNotEmpty)
+                    IconButton(
+                      iconSize: 16,
+                      tooltip: '复制',
+                      color: scheme.onSurfaceVariant,
+                      icon: const Icon(Icons.copy_outlined),
+                      onPressed: () => _copyMessage(m.content),
+                    ),
                   if (widget.onEdit != null && !widget.isStreaming)
                     IconButton(
                       iconSize: 16,
@@ -330,36 +356,56 @@ class _MessageBubbleState extends State<MessageBubble> {
                   ],
                 ),
               )
-            else if (m.content.isNotEmpty)
-              Container(
-                margin: EdgeInsets.only(top: hasReasoning ? 10 : 0),
-                padding: EdgeInsets.symmetric(
-                  horizontal: doc ? 2 : 16,
-                  vertical: doc ? 4 : 14,
+            else ...[
+              if (m.attachments.any((a) => a.isImage && a.hasImageData))
+                Padding(
+                  padding: EdgeInsets.only(
+                    top: hasReasoning ? 10 : 0,
+                    bottom: m.content.isNotEmpty ? 10 : 0,
+                  ),
+                  child: Wrap(
+                    spacing: 10,
+                    runSpacing: 10,
+                    children: [
+                      for (final a in m.attachments)
+                        if (a.isImage && a.hasImageData)
+                          AttachmentImage(key: ValueKey(a.id), attachment: a),
+                    ],
+                  ),
                 ),
-                decoration: doc
-                    ? null
-                    : BoxDecoration(
-                        color: scheme.surfaceContainer,
-                        borderRadius: const BorderRadius.only(
-                          topLeft: Radius.circular(6),
-                          topRight: Radius.circular(20),
-                          bottomLeft: Radius.circular(20),
-                          bottomRight: Radius.circular(20),
-                        ),
-                        border: Border.all(
-                          color: scheme.outlineVariant.withValues(alpha: 0.95),
-                        ),
-                        boxShadow: [
-                          BoxShadow(
-                            color: scheme.shadow.withValues(alpha: 0.05),
-                            blurRadius: 18,
-                            offset: const Offset(0, 8),
+              if (m.content.isNotEmpty)
+                Container(
+                  margin: EdgeInsets.only(top: hasReasoning ? 10 : 0),
+                  padding: EdgeInsets.symmetric(
+                    horizontal: doc ? 2 : 16,
+                    vertical: doc ? 4 : 14,
+                  ),
+                  decoration: doc
+                      ? null
+                      : BoxDecoration(
+                          color: scheme.surfaceContainer,
+                          borderRadius: const BorderRadius.only(
+                            topLeft: Radius.circular(6),
+                            topRight: Radius.circular(20),
+                            bottomLeft: Radius.circular(20),
+                            bottomRight: Radius.circular(20),
                           ),
-                        ],
-                      ),
-                child: _assistantMarkdown(m),
-              ),
+                          border: Border.all(
+                            color: scheme.outlineVariant.withValues(
+                              alpha: 0.95,
+                            ),
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: scheme.shadow.withValues(alpha: 0.05),
+                              blurRadius: 18,
+                              offset: const Offset(0, 8),
+                            ),
+                          ],
+                        ),
+                  child: _assistantMarkdown(m),
+                ),
+            ],
             if (m.citations.isNotEmpty)
               CitationsBar(
                 citations: m.citations,
@@ -376,18 +422,7 @@ class _MessageBubbleState extends State<MessageBubble> {
                       tooltip: '复制',
                       color: scheme.onSurfaceVariant,
                       icon: const Icon(Icons.copy_outlined),
-                      onPressed: () async {
-                        await Clipboard.setData(ClipboardData(text: m.content));
-                        if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('已复制'),
-                              duration: Duration(seconds: 1),
-                              behavior: SnackBarBehavior.floating,
-                            ),
-                          );
-                        }
-                      },
+                      onPressed: () => _copyMessage(m.content),
                     ),
                     if (messageHasHtmlPreview(m.content))
                       IconButton(
@@ -399,6 +434,29 @@ class _MessageBubbleState extends State<MessageBubble> {
                           final snippets = extractHtmlSnippets(m.content);
                           HtmlPreviewPage.open(context, snippets: snippets);
                         },
+                      ),
+                    if (widget.onSpeak != null)
+                      IconButton(
+                        iconSize: 18,
+                        tooltip: widget.isSpeaking ? '停止朗读' : '朗读',
+                        color: widget.isSpeaking
+                            ? scheme.primary
+                            : scheme.onSurfaceVariant,
+                        icon: widget.isSpeechLoading
+                            ? const SizedBox.square(
+                                dimension: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : Icon(
+                                widget.isSpeaking
+                                    ? Icons.stop_circle_outlined
+                                    : Icons.volume_up_outlined,
+                              ),
+                        onPressed: widget.isSpeechLoading
+                            ? null
+                            : widget.onSpeak,
                       ),
                     if (widget.onRegenerate != null)
                       IconButton(

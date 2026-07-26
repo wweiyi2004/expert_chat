@@ -8,7 +8,7 @@ import '../settings/settings_page.dart';
 import '../story/studio_page.dart';
 import 'shell_tab.dart';
 
-/// Root chrome: 会话 / 创作 / 我的.
+/// Root chrome: 会话 / 创作 / 设置.
 ///
 /// Phone: bottom [NavigationBar]. Wide: [NavigationRail].
 /// [IndexedStack] preserves scroll position and draft input across switches.
@@ -23,7 +23,7 @@ class _AppShellState extends ConsumerState<AppShell> {
   static const _destinations = [
     (icon: Icons.forum_outlined, selected: Icons.forum, label: '会话'),
     (icon: Icons.menu_book_outlined, selected: Icons.menu_book, label: '创作'),
-    (icon: Icons.person_outline, selected: Icons.person, label: '我的'),
+    (icon: Icons.settings_outlined, selected: Icons.settings, label: '设置'),
   ];
 
   @override
@@ -43,8 +43,7 @@ class _AppShellState extends ConsumerState<AppShell> {
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final useRail =
-            constraints.maxWidth >= WorkspaceBreakpoints.shellRail;
+        final useRail = constraints.maxWidth >= WorkspaceBreakpoints.shellRail;
 
         final stack = IndexedStack(
           index: index,

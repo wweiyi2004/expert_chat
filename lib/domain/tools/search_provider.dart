@@ -111,6 +111,7 @@ class HttpSearchProvider implements SearchProvider {
   static const _maxPageBytes = 1024 * 1024;
   static const _maxConcurrentPageFetches = 3;
   static const _pageReadIdleTimeout = Duration(seconds: 15);
+
   /// Per-page extract cap before ToolEngine applies its own budget.
   static const _pageExtractChars = 12000;
 
@@ -121,13 +122,15 @@ class HttpSearchProvider implements SearchProvider {
 
   /// Fetches a single page and returns readable text (SSRF-safe).
   /// Used by the "读取网页" path when the user pastes a URL without searching.
-  Future<SearchResult> fetchPage(
-    String url, {
-    CancelToken? cancelToken,
-  }) async {
+  Future<SearchResult> fetchPage(String url, {CancelToken? cancelToken}) async {
     final trimmed = url.trim();
     if (!isSafeHttpUrl(trimmed)) {
-      return SearchResult(title: trimmed, url: trimmed, snippet: '', content: '');
+      return SearchResult(
+        title: trimmed,
+        url: trimmed,
+        snippet: '',
+        content: '',
+      );
     }
     final content = await _fetchReadableText(trimmed, cancelToken);
     final title = _guessTitle(content, trimmed);
@@ -617,10 +620,7 @@ class HttpSearchProvider implements SearchProvider {
         'type': 'auto',
         'contents': {
           'text': {'maxCharacters': 8000},
-          'highlights': {
-            'maxCharacters': 2000,
-            'numSentences': 3,
-          },
+          'highlights': {'maxCharacters': 2000, 'numSentences': 3},
         },
       },
     );
@@ -645,7 +645,10 @@ class HttpSearchProvider implements SearchProvider {
     final h = e['highlights'];
     if (h is String) return h;
     if (h is List) {
-      return h.map((x) => x.toString().trim()).where((s) => s.isNotEmpty).join('\n');
+      return h
+          .map((x) => x.toString().trim())
+          .where((s) => s.isNotEmpty)
+          .join('\n');
     }
     return '';
   }

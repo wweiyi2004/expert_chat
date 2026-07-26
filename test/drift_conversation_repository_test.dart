@@ -2,9 +2,194 @@ import 'package:drift/native.dart';
 import 'package:expert_chat/data/db/app_database.dart' hide Conversation;
 import 'package:expert_chat/data/drift_conversation_repository.dart';
 import 'package:expert_chat/data/models.dart';
+import 'package:expert_chat/data/story_models.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('story-local cast round-trips through JSON and copyWith', () {
+    final createdAt = DateTime.utc(2026, 2, 1);
+    final updatedAt = DateTime.utc(2026, 2, 2);
+    final card = CharacterCard(
+      id: 'local-detective',
+      name: '林默',
+      description: '调查失踪案的私家侦探',
+      personality: '冷静、谨慎',
+      scenario: '雨夜港口',
+      firstMes: '雾里有人。',
+      exampleDialogs: '林默：别碰那扇门。',
+      systemPrompt: '言简意赅地演绎林默。',
+      createdAt: createdAt,
+      updatedAt: updatedAt,
+    );
+    final conversation = Conversation(
+      id: 'story',
+      mode: ConversationMode.ensemble,
+      participantIds: const ['local-detective'],
+      localCast: [card],
+      updatedAt: updatedAt,
+    );
+
+    final restored = Conversation.fromJson(conversation.toJson());
+
+    expect(restored.localCast, hasLength(1));
+    expect(restored.localCast.single.id, 'local-detective');
+    expect(restored.localCast.single.name, '林默');
+    expect(restored.localCast.single.description, card.description);
+    expect(restored.localCast.single.personality, card.personality);
+    expect(restored.localCast.single.scenario, card.scenario);
+    expect(restored.localCast.single.firstMes, card.firstMes);
+    expect(restored.localCast.single.exampleDialogs, card.exampleDialogs);
+    expect(restored.localCast.single.systemPrompt, card.systemPrompt);
+    expect(restored.localCast.single.createdAt, createdAt);
+    expect(restored.localCast.single.updatedAt, updatedAt);
+
+    final replacement = CharacterCard(id: 'local-witness', name: '目击者');
+    expect(
+      conversation.copyWith(localCast: [replacement]).localCast.single.id,
+      'local-witness',
+    );
+
+    // Conversations serialized before localCast existed remain valid.
+    expect(
+      Conversation.fromJson(const {'id': 'legacy-story'}).localCast,
+      isEmpty,
+    );
+  });
+
+  test(
+    'persists story-local cast without adding it to the global library',
+    () async {
+      final db = AppDatabase(NativeDatabase.memory());
+      addTearDown(db.close);
+      final repo = DriftConversationRepository(db);
+      final timestamp = DateTime.utc(2026, 3, 1);
+      final conversation = Conversation(
+        id: 'generated-story',
+        title: '海上失踪案',
+        mode: ConversationMode.ensemble,
+        participantIds: const ['captain', 'doctor'],
+        localCast: [
+          CharacterCard(
+            id: 'captain',
+            name: '船长',
+            personality: '固执但重情',
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          ),
+          CharacterCard(
+            id: 'doctor',
+            name: '医生',
+            systemPrompt: '隐藏自己的真实目的。',
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          ),
+        ],
+        updatedAt: timestamp,
+      );
+
+      await repo.saveConversation(conversation);
+      final loaded = (await repo.loadAll()).single;
+
+      expect(loaded.localCast.map((card) => card.id), ['captain', 'doctor']);
+      expect(loaded.localCast.first.personality, '固执但重情');
+      expect(loaded.localCast.last.systemPrompt, '隐藏自己的真实目的。');
+      expect(await db.select(db.characterCards).get(), isEmpty);
+    },
+  );
+
+  test(
+    'migrates a v4 conversation database with an empty local cast',
+    () async {
+      final executor = NativeDatabase.memory(
+        setup: (rawDb) {
+          rawDb.execute('''
+          CREATE TABLE conversations (
+            id TEXT NOT NULL PRIMARY KEY,
+            title TEXT NOT NULL DEFAULT '新对话',
+            updated_at INTEGER NOT NULL,
+            active_children_json TEXT NULL,
+            mode TEXT NOT NULL DEFAULT 'chat',
+            character_id TEXT NULL,
+            world_info_ids_json TEXT NULL,
+            outline TEXT NOT NULL DEFAULT '',
+            author_note TEXT NOT NULL DEFAULT '',
+            plot_cursor INTEGER NOT NULL DEFAULT 0,
+            participant_ids_json TEXT NULL,
+            venue TEXT NOT NULL DEFAULT '',
+            next_speaker_index INTEGER NOT NULL DEFAULT 0
+          )
+        ''');
+          rawDb.execute('''
+          CREATE TABLE messages (
+            id TEXT NOT NULL PRIMARY KEY,
+            convo_id TEXT NOT NULL REFERENCES conversations (id)
+              ON DELETE CASCADE,
+            parent_id TEXT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            reasoning TEXT NOT NULL DEFAULT '',
+            model TEXT NULL,
+            thinking_millis INTEGER NOT NULL DEFAULT 0,
+            attachments_json TEXT NULL,
+            citations_json TEXT NULL,
+            created_at INTEGER NOT NULL,
+            seq INTEGER NOT NULL DEFAULT 0,
+            speaker_id TEXT NULL,
+            speaker_name TEXT NULL
+          )
+        ''');
+          rawDb.execute('''
+          CREATE TABLE character_cards (
+            id TEXT NOT NULL PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            personality TEXT NOT NULL DEFAULT '',
+            scenario TEXT NOT NULL DEFAULT '',
+            first_mes TEXT NOT NULL DEFAULT '',
+            example_dialogs TEXT NOT NULL DEFAULT '',
+            system_prompt TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+          )
+        ''');
+          rawDb.execute('''
+          CREATE TABLE world_info_entries (
+            id TEXT NOT NULL PRIMARY KEY,
+            title TEXT NOT NULL,
+            keys_json TEXT NOT NULL DEFAULT '[]',
+            content TEXT NOT NULL DEFAULT '',
+            always_on INTEGER NOT NULL DEFAULT 0,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            priority INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+          )
+        ''');
+          rawDb.execute(
+            "INSERT INTO conversations (id, title, updated_at, mode) "
+            "VALUES ('old-story', '旧故事', 0, 'story')",
+          );
+          rawDb.execute('PRAGMA user_version = 4');
+        },
+      );
+      final db = AppDatabase(executor);
+      addTearDown(db.close);
+
+      final columns = await db
+          .customSelect('PRAGMA table_info(conversations)')
+          .get();
+      expect(
+        columns.map((row) => row.read<String>('name')),
+        contains('local_cast_json'),
+      );
+
+      final loaded = (await DriftConversationRepository(db).loadAll()).single;
+      expect(loaded.id, 'old-story');
+      expect(loaded.title, '旧故事');
+      expect(loaded.localCast, isEmpty);
+    },
+  );
+
   test(
     'synchronizes only changed message rows and creates archive indexes',
     () async {
@@ -92,6 +277,128 @@ void main() {
       });
     },
   );
+
+  test('persists message kind across reload', () async {
+    final db = AppDatabase(NativeDatabase.memory());
+    addTearDown(db.close);
+    final repo = DriftConversationRepository(db);
+    final timestamp = DateTime.utc(2026, 4, 1);
+    final prompt = ChatMessage(
+      id: 'prompt',
+      role: MessageRole.user,
+      content: '画一只猫',
+      createdAt: timestamp,
+    );
+    final image = ChatMessage(
+      id: 'image',
+      role: MessageRole.assistant,
+      parentId: 'prompt',
+      content: '图片已生成',
+      kind: MessageKind.generatedImage,
+      createdAt: timestamp,
+    );
+
+    await repo.saveConversation(
+      Conversation(
+        id: 'image-convo',
+        title: '生图',
+        messages: [prompt, image],
+        updatedAt: timestamp,
+      ),
+    );
+    final loaded = (await repo.loadAll()).single;
+
+    expect(loaded.messages.first.kind, MessageKind.text);
+    expect(loaded.messages.last.kind, MessageKind.generatedImage);
+  });
+
+  test('migrates a v5 database adding the message kind column', () async {
+    final executor = NativeDatabase.memory(
+      setup: (rawDb) {
+        rawDb.execute('''
+          CREATE TABLE conversations (
+            id TEXT NOT NULL PRIMARY KEY,
+            title TEXT NOT NULL DEFAULT '新对话',
+            updated_at INTEGER NOT NULL,
+            active_children_json TEXT NULL,
+            mode TEXT NOT NULL DEFAULT 'chat',
+            character_id TEXT NULL,
+            world_info_ids_json TEXT NULL,
+            outline TEXT NOT NULL DEFAULT '',
+            author_note TEXT NOT NULL DEFAULT '',
+            plot_cursor INTEGER NOT NULL DEFAULT 0,
+            participant_ids_json TEXT NULL,
+            venue TEXT NOT NULL DEFAULT '',
+            next_speaker_index INTEGER NOT NULL DEFAULT 0,
+            local_cast_json TEXT NULL
+          )
+        ''');
+        rawDb.execute('''
+          CREATE TABLE messages (
+            id TEXT NOT NULL PRIMARY KEY,
+            convo_id TEXT NOT NULL REFERENCES conversations (id)
+              ON DELETE CASCADE,
+            parent_id TEXT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            reasoning TEXT NOT NULL DEFAULT '',
+            model TEXT NULL,
+            thinking_millis INTEGER NOT NULL DEFAULT 0,
+            attachments_json TEXT NULL,
+            citations_json TEXT NULL,
+            created_at INTEGER NOT NULL,
+            seq INTEGER NOT NULL DEFAULT 0,
+            speaker_id TEXT NULL,
+            speaker_name TEXT NULL
+          )
+        ''');
+        rawDb.execute('''
+          CREATE TABLE character_cards (
+            id TEXT NOT NULL PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            personality TEXT NOT NULL DEFAULT '',
+            scenario TEXT NOT NULL DEFAULT '',
+            first_mes TEXT NOT NULL DEFAULT '',
+            example_dialogs TEXT NOT NULL DEFAULT '',
+            system_prompt TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+          )
+        ''');
+        rawDb.execute('''
+          CREATE TABLE world_info_entries (
+            id TEXT NOT NULL PRIMARY KEY,
+            title TEXT NOT NULL,
+            keys_json TEXT NOT NULL DEFAULT '[]',
+            content TEXT NOT NULL DEFAULT '',
+            always_on INTEGER NOT NULL DEFAULT 0,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            priority INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+          )
+        ''');
+        rawDb.execute(
+          "INSERT INTO conversations (id, title, updated_at) "
+          "VALUES ('old-chat', '旧会话', 0)",
+        );
+        rawDb.execute(
+          "INSERT INTO messages (id, convo_id, role, content, created_at) "
+          "VALUES ('old-reply', 'old-chat', 'assistant', '旧回复', 0)",
+        );
+        rawDb.execute('PRAGMA user_version = 5');
+      },
+    );
+    final db = AppDatabase(executor);
+    addTearDown(db.close);
+
+    final columns = await db.customSelect('PRAGMA table_info(messages)').get();
+    expect(columns.map((row) => row.read<String>('name')), contains('kind'));
+
+    final loaded = (await DriftConversationRepository(db).loadAll()).single;
+    expect(loaded.messages.single.kind, MessageKind.text);
+  });
 }
 
 Future<List<String>> _auditOperations(AppDatabase db) async {

@@ -4,21 +4,19 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   group('extractHttpUrls', () {
     test('extracts bare http(s) urls', () {
-      expect(
-        extractHttpUrls('看看这个 https://example.com/a 和 http://foo.bar/x'),
-        ['https://example.com/a', 'http://foo.bar/x'],
-      );
+      expect(extractHttpUrls('看看这个 https://example.com/a 和 http://foo.bar/x'), [
+        'https://example.com/a',
+        'http://foo.bar/x',
+      ]);
     });
 
     test('strips trailing punctuation from chat text', () {
-      expect(
-        extractHttpUrls('链接：https://example.com/page。'),
-        ['https://example.com/page'],
-      );
-      expect(
-        extractHttpUrls('(https://example.com/docs)'),
-        ['https://example.com/docs'],
-      );
+      expect(extractHttpUrls('链接：https://example.com/page。'), [
+        'https://example.com/page',
+      ]);
+      expect(extractHttpUrls('(https://example.com/docs)'), [
+        'https://example.com/docs',
+      ]);
     });
 
     test('dedupes and respects limit', () {

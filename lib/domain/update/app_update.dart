@@ -71,8 +71,7 @@ class AppUpdateChecker {
     final data = response.data!;
     final tag = (data['tag_name'] as String? ?? '').trim();
     final latest = normalizeVersion(tag);
-    final htmlUrl =
-        (data['html_url'] as String?)?.trim().isNotEmpty == true
+    final htmlUrl = (data['html_url'] as String?)?.trim().isNotEmpty == true
         ? data['html_url'] as String
         : kGithubReleasesPage;
     final notes = (data['body'] as String? ?? '').trim();
@@ -94,15 +93,13 @@ class AppUpdateChecker {
     );
   }
 
-  /// Strip leading `v` and anything after `+` / pre-release junk for compare.
+  /// Strip a leading `v` and `+build` metadata. Pre-release identifiers are
+  /// kept so `1.2.0-beta` can order below `1.2.0` in [isNewer].
   static String normalizeVersion(String raw) {
     var v = raw.trim();
     if (v.startsWith('v') || v.startsWith('V')) v = v.substring(1);
     final plus = v.indexOf('+');
     if (plus >= 0) v = v.substring(0, plus);
-    // Keep only major.minor.patch prefix if suffix like -beta exists.
-    final dash = v.indexOf('-');
-    if (dash >= 0) v = v.substring(0, dash);
     return v.trim();
   }
 
@@ -111,9 +108,9 @@ class AppUpdateChecker {
     final b = _parse(current);
     if (a == null || b == null) return latest != current && latest.isNotEmpty;
     for (var i = 0; i < 3; i++) {
-      if (a[i] != b[i]) return a[i] > b[i];
+      if (a.nums[i] != b.nums[i]) return a.nums[i] > b.nums[i];
     }
-    return false;
+    return _comparePreRelease(a.pre, b.pre) > 0;
   }
 
   // Test aliases (same as public API).
@@ -121,8 +118,11 @@ class AppUpdateChecker {
   static bool isNewerForTest(String latest, String current) =>
       isNewer(latest, current);
 
-  static List<int>? _parse(String v) {
-    final parts = v.split('.');
+  static ({List<int> nums, String pre})? _parse(String v) {
+    final dash = v.indexOf('-');
+    final core = dash >= 0 ? v.substring(0, dash) : v;
+    final pre = dash >= 0 ? v.substring(dash + 1) : '';
+    final parts = core.split('.');
     if (parts.isEmpty) return null;
     final out = <int>[0, 0, 0];
     for (var i = 0; i < 3; i++) {
@@ -130,7 +130,34 @@ class AppUpdateChecker {
         out[i] = int.tryParse(parts[i]) ?? 0;
       }
     }
-    return out;
+    return (nums: out, pre: pre);
+  }
+
+  /// SemVer ordering for pre-release suffixes of the same core version: a
+  /// release outranks any pre-release, and two pre-releases compare identifier
+  /// by identifier (numeric identifiers numerically, others lexically).
+  static int _comparePreRelease(String a, String b) {
+    if (a.isEmpty && b.isEmpty) return 0;
+    if (a.isEmpty) return 1;
+    if (b.isEmpty) return -1;
+    final aParts = a.split('.');
+    final bParts = b.split('.');
+    for (var i = 0; i < aParts.length && i < bParts.length; i++) {
+      final an = int.tryParse(aParts[i]);
+      final bn = int.tryParse(bParts[i]);
+      final int cmp;
+      if (an != null && bn != null) {
+        cmp = an.compareTo(bn);
+      } else if (an != null) {
+        cmp = -1; // numeric identifiers sort below alphanumeric ones
+      } else if (bn != null) {
+        cmp = 1;
+      } else {
+        cmp = aParts[i].compareTo(bParts[i]);
+      }
+      if (cmp != 0) return cmp;
+    }
+    return aParts.length.compareTo(bParts.length);
   }
 
   String? _pickAssetUrl(List<Map<String, dynamic>> assets) {
@@ -162,7 +189,9 @@ class AppUpdateChecker {
         if (match(
           i,
           (n) =>
-              (n.endsWith('.zip') || n.endsWith('.msix') || n.endsWith('.exe')) &&
+              (n.endsWith('.zip') ||
+                  n.endsWith('.msix') ||
+                  n.endsWith('.exe')) &&
               n.contains('windows'),
         )) {
           return urlAt(i);
@@ -179,8 +208,7 @@ class AppUpdateChecker {
         if (match(
           i,
           (n) =>
-              n.contains('mac') &&
-              (n.endsWith('.dmg') || n.endsWith('.zip')),
+              n.contains('mac') && (n.endsWith('.dmg') || n.endsWith('.zip')),
         )) {
           return urlAt(i);
         }

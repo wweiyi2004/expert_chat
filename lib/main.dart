@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -12,7 +13,19 @@ import 'features/shell/app_shell.dart';
 import 'state/settings_controller.dart';
 
 Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
+  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows) {
+    // Flutter 3.44's Windows accessibility bridge can dereference a semantics
+    // node whose parent is null while UI Automation clients (including some
+    // IMEs) inspect a rapidly changing tree. The native crash is in
+    // AccessibilityBridge::CreateRemoveReparentedNodesUpdate.
+    //
+    // Keep the Windows semantics tree disabled until the engine fixes that
+    // null-parent path. Other platforms retain their normal accessibility
+    // behavior. Remove this binding once the engine fix is available.
+    _WindowsCrashWorkaroundBinding();
+  } else {
+    WidgetsFlutterBinding.ensureInitialized();
+  }
   final prefs = await SharedPreferences.getInstance();
 
   // Single shared DB instance; migrate the M1 JSON history into it once.
@@ -29,6 +42,11 @@ Future<void> main() async {
       child: const ExpertChatApp(),
     ),
   );
+}
+
+class _WindowsCrashWorkaroundBinding extends WidgetsFlutterBinding {
+  @override
+  bool get semanticsEnabled => false;
 }
 
 class ExpertChatApp extends ConsumerWidget {
@@ -58,9 +76,7 @@ class ExpertChatApp extends ConsumerWidget {
       builder: (context, child) {
         final mq = MediaQuery.of(context);
         return MediaQuery(
-          data: mq.copyWith(
-            textScaler: TextScaler.linear(ui.textScale.scale),
-          ),
+          data: mq.copyWith(textScaler: TextScaler.linear(ui.textScale.scale)),
           child: child ?? const SizedBox.shrink(),
         );
       },

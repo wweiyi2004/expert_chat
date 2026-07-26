@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="1024"
+     height="1024"
+     viewBox="0 0 1024 1024"
+     role="img"
+     aria-labelledby="title description">
+  <title id="title">Expert Chat app mark</title>
+  <desc id="description">
+    An open book inside a speech bubble, with a small gold sparkle.
+  </desc>
+
+  <!-- Warm paper canvas and ink-teal tile match the product UI. -->
+  <rect width="1024" height="1024" fill="#F6F0E7"/>
+  <rect x="64" y="64" width="896" height="896" rx="224" fill="#1F5C6B"/>
+
+  <!-- Conversation bubble. Its tail also reads as a page or bookmark. -->
+  <path
+    d="M330 188H694C752 188 800 236 800 294V560C800 618 752 666 694 666H484L326 796L360 666H330C272 666 224 618 224 560V294C224 236 272 188 330 188Z"
+    fill="#F6F0E7"/>
+
+  <!-- Open book / knowledge cue. -->
+  <path
+    d="M342 350C406 332 468 348 512 388C556 348 618 332 682 350V534C620 522 558 542 512 584C466 542 404 522 342 534V350Z"
+    fill="none"
+    stroke="#1F5C6B"
+    stroke-width="34"
+    stroke-linecap="round"
+    stroke-linejoin="round"/>
+  <path
+    d="M512 388V584"
+    fill="none"
+    stroke="#1F5C6B"
+    stroke-width="34"
+    stroke-linecap="round"/>
+
+  <!-- A restrained expert/insight sparkle. -->
+  <path
+    d="M728 218C728 263 753 288 798 288C753 288 728 313 728 358C728 313 703 288 658 288C703 288 728 263 728 218Z"
+    fill="#E7B252"/>
+</svg>

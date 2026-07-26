@@ -11,11 +11,12 @@ class WorldInfoRepository {
   final AppDatabase _db;
 
   Future<List<WorldInfoEntry>> loadAll() async {
-    final rows = await (_db.select(_db.worldInfoEntries)..orderBy([
-          (e) => OrderingTerm.desc(e.priority),
-          (e) => OrderingTerm.desc(e.updatedAt),
-        ]))
-        .get();
+    final rows =
+        await (_db.select(_db.worldInfoEntries)..orderBy([
+              (e) => OrderingTerm.desc(e.priority),
+              (e) => OrderingTerm.desc(e.updatedAt),
+            ]))
+            .get();
     return rows.map(_toEntry).toList();
   }
 
@@ -26,7 +27,10 @@ class WorldInfoRepository {
       _db.worldInfoEntries,
     )..where((e) => e.id.isIn(idList))).get();
     final byId = {for (final row in rows) row.id: _toEntry(row)};
-    return [for (final id in idList) if (byId[id] != null) byId[id]!];
+    return [
+      for (final id in idList)
+        if (byId[id] != null) byId[id]!,
+    ];
   }
 
   Future<void> save(WorldInfoEntry entry) async {

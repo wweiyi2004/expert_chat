@@ -11,6 +11,7 @@ import '../../core/workspace_layout.dart';
 import '../../data/models.dart';
 import '../../data/story_models.dart';
 import '../../data/ui_prefs.dart';
+import '../../domain/context/context_window_manager.dart';
 import '../../domain/export/conversation_export.dart';
 import '../../domain/tools/file_parser.dart';
 import '../../domain/tools/local_file_reader.dart';
@@ -18,9 +19,9 @@ import '../../state/character_controller.dart';
 import '../../state/chat_controller.dart';
 import '../../state/settings_controller.dart';
 import '../shell/shell_tab.dart';
+import '../story/director_story_setup_page.dart';
 import '../story/ensemble_setup_page.dart';
 import '../story/story_panel.dart';
-import '../story/studio_page.dart';
 import 'widgets/attachment_chip.dart';
 import 'widgets/message_bubble.dart';
 
@@ -36,9 +37,11 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   final _scroll = ScrollController();
   final List<Attachment> _attachments = [];
   bool _picking = false;
+  bool _imageMode = false;
 
   /// Wide-layout tools pane (story / ensemble plot). Ignored on phone.
   bool _toolsOpen = true;
+
   /// Wide-layout history pane toggle (desktop).
   bool _historyOpen = true;
   double _historyWidth = WorkspacePaneDefaults.historyWidth;
@@ -102,13 +105,21 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   Future<void> _send() async {
     final text = _input.text;
     if (text.trim().isEmpty && _attachments.isEmpty) return;
+    final settings = ref.read(settingsControllerProvider).value;
+    final useImageGeneration =
+        _imageMode && (settings?.imageGenerationConfigured ?? false);
+    if (useImageGeneration && _attachments.isNotEmpty) {
+      _showAttachmentNotice('生图模式暂不支持附件，请先移除附件。');
+      return;
+    }
     final attachments = List<Attachment>.of(_attachments);
     _input.clear();
     setState(_attachments.clear);
     _jumpToBottom();
-    final accepted = await ref
-        .read(chatControllerProvider.notifier)
-        .sendMessage(text, attachments: attachments);
+    final chat = ref.read(chatControllerProvider.notifier);
+    final accepted = useImageGeneration
+        ? await chat.generateImage(text)
+        : await chat.sendMessage(text, attachments: attachments);
     // Rejected (e.g. API key 未配置 / 正在生成中) → restore the draft so the
     // user's input isn't lost. Only restore when the field is still empty, so
     // we don't clobber anything the user started typing during the await.
@@ -123,12 +134,14 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     if (_picking) return;
     setState(() => _picking = true);
     try {
+      final allowImages =
+          ref.read(settingsControllerProvider).value?.visionConfigured ?? false;
       final result = await FilePicker.pickFiles(
         allowMultiple: true,
         withData: false,
         withReadStream: true,
         type: FileType.custom,
-        allowedExtensions: const [
+        allowedExtensions: [
           'pdf',
           'docx',
           'xlsx',
@@ -137,12 +150,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
           'md',
           'csv',
           'json',
-          'png',
-          'jpg',
-          'jpeg',
-          'gif',
-          'webp',
-          'bmp',
+          if (allowImages) ...['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'],
         ],
       );
       if (result == null) return;
@@ -270,6 +278,14 @@ class _ChatPageState extends ConsumerState<ChatPage> {
 
   void _removeAttachment(String id) {
     setState(() => _attachments.removeWhere((a) => a.id == id));
+  }
+
+  void _toggleImageMode() {
+    if (!_imageMode && _attachments.isNotEmpty) {
+      _showAttachmentNotice('请先移除附件，再进入生图模式。');
+      return;
+    }
+    setState(() => _imageMode = !_imageMode);
   }
 
   Future<void> _export(Conversation? convo) async {
@@ -451,7 +467,9 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
                                   _ModePill(
-                                    label: ModeStyle.label(mode),
+                                    label: current.localCast.isNotEmpty
+                                        ? '导演故事'
+                                        : ModeStyle.label(mode),
                                     color: modeColor,
                                     icon: ModeStyle.icon(mode),
                                   ),
@@ -532,8 +550,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                       } else if (v == 'story') {
                         Navigator.of(context).push(
                           MaterialPageRoute(
-                            builder: (_) =>
-                                const StudioPage(pickCharacter: true),
+                            builder: (_) => const DirectorStorySetupPage(),
                           ),
                         );
                       } else if (v == 'ensemble') {
@@ -568,10 +585,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                             ModeStyle.icon(ConversationMode.story),
                             color: ModeStyle.story,
                           ),
-                          title: Text(
-                            ModeStyle.longLabel(ConversationMode.story),
-                          ),
-                          subtitle: const Text('单角色开聊'),
+                          title: Text('导演故事'),
+                          subtitle: const Text('输入情节，AI 自动选角并编排'),
                         ),
                       ),
                       PopupMenuItem(
@@ -683,12 +698,10 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     // another conversation's stream must not light up bubbles here.
     final streamingHere = convo != null && state.streamingConvoId == convo.id;
     final speakerName = _characterNameFor(convo);
-    final needsSetup =
-        state.error != null && state.error!.contains('API Key');
-    final ui = ref.watch(settingsControllerProvider).maybeWhen(
-          data: (s) => s.ui,
-          orElse: () => const UiPrefs(),
-        );
+    final needsSetup = state.error != null && state.error!.contains('API Key');
+    final settings = ref.watch(settingsControllerProvider).value;
+    final ui = settings?.ui ?? const UiPrefs();
+    final contextReport = convo == null ? null : state.contextReports[convo.id];
     final contentMax = ui.contentWidth.maxWidth;
     final densityPad = ui.density == DensityPref.compact
         ? const EdgeInsets.fromLTRB(16, 12, 16, 20)
@@ -698,15 +711,22 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         if (state.error != null)
           _ErrorBanner(
             message: state.error!,
-            onRetry: state.isStreaming ? null : () => controller.retryLast(),
-            onOpenSettings: needsSetup
-                ? () => openShellTab(ref, 2)
-                : null,
+            onRetry:
+                state.isStreaming ||
+                    (convo != null &&
+                        convo.activePath.isNotEmpty &&
+                        convo.activePath.last.kind ==
+                            MessageKind.generatedImage)
+                ? null
+                : () => controller.retryLast(),
+            onOpenSettings: needsSetup ? () => openShellTab(ref, 2) : null,
           ),
         if (convo != null && convo.isStory)
           _StorySessionBar(
             conversation: convo,
-            characterName: speakerName,
+            characterName: convo.localCast.isNotEmpty
+                ? '导演模式 · ${convo.localCast.length} 位角色'
+                : speakerName,
             onOpenPlot: () => _openPlot(convo, canPinTools: canPinTools),
             onAdvance: state.isStreaming ? null : controller.advancePlot,
             onNudgeBack: () => controller.adjustPlotCursor(-1),
@@ -750,8 +770,13 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                               speakerName: m.role == MessageRole.assistant
                                   ? (m.speakerName ?? speakerName)
                                   : null,
+                              userLabel: convo.localCast.isNotEmpty
+                                  ? '导演'
+                                  : null,
                               onRegenerate:
-                                  (isLastAssistant && !state.isStreaming)
+                                  (isLastAssistant &&
+                                      !state.isStreaming &&
+                                      m.kind != MessageKind.generatedImage)
                                   ? controller.regenerate
                                   : null,
                               onEdit:
@@ -795,8 +820,18 @@ class _ChatPageState extends ConsumerState<ChatPage> {
           attachments: _attachments,
           picking: _picking,
           storyLike: convo != null && (convo.isStory || convo.isEnsemble),
+          directorMode: convo?.localCast.isNotEmpty ?? false,
+          visionConfigured: settings?.visionConfigured ?? false,
+          imageGenerationConfigured:
+              settings?.imageGenerationConfigured ?? false,
+          imageMode:
+              _imageMode && (settings?.imageGenerationConfigured ?? false),
+          contextEnabled: settings?.context.enabled ?? false,
+          contextReport: contextReport,
+          contextInputBudget: settings?.context.inputBudgetTokens ?? 0,
           onToggleDeepThink: controller.toggleDeepThink,
           onToggleSearch: controller.toggleSearch,
+          onToggleImageMode: _toggleImageMode,
           onPickFiles: _pickFiles,
           onRemoveAttachment: _removeAttachment,
           onSend: _send,
@@ -817,8 +852,16 @@ class _Composer extends StatelessWidget {
     required this.attachments,
     required this.picking,
     required this.storyLike,
+    required this.directorMode,
+    required this.visionConfigured,
+    required this.imageGenerationConfigured,
+    required this.imageMode,
+    required this.contextEnabled,
+    required this.contextReport,
+    required this.contextInputBudget,
     required this.onToggleDeepThink,
     required this.onToggleSearch,
+    required this.onToggleImageMode,
     required this.onPickFiles,
     required this.onRemoveAttachment,
     required this.onSend,
@@ -833,8 +876,16 @@ class _Composer extends StatelessWidget {
   final List<Attachment> attachments;
   final bool picking;
   final bool storyLike;
+  final bool directorMode;
+  final bool visionConfigured;
+  final bool imageGenerationConfigured;
+  final bool imageMode;
+  final bool contextEnabled;
+  final ContextWindowReport? contextReport;
+  final int contextInputBudget;
   final VoidCallback onToggleDeepThink;
   final VoidCallback onToggleSearch;
+  final VoidCallback onToggleImageMode;
   final VoidCallback onPickFiles;
   final ValueChanged<String> onRemoveAttachment;
   final VoidCallback onSend;
@@ -843,8 +894,16 @@ class _Composer extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final hint = storyLike ? '续写反应，或输入旁白…' : '写下你的想法…';
+    final compactHeight = MediaQuery.sizeOf(context).height < 720;
+    final hint = imageMode
+        ? '描述你想生成的图片…'
+        : directorMode
+        ? '输入导演指令，或点击“继续下一节”…'
+        : storyLike
+        ? '续写反应，或输入旁白…'
+        : '写下你的想法…';
     return Container(
+      key: const ValueKey('chat-composer'),
       decoration: BoxDecoration(
         color: scheme.surface.withValues(alpha: 0.94),
         border: Border(
@@ -857,19 +916,23 @@ class _Composer extends StatelessWidget {
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 900),
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
+              padding: EdgeInsets.fromLTRB(12, 6, 12, compactHeight ? 7 : 9),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // Tool row above the field (wireframe: horizontal tools).
+                  // Every action remains reachable in one horizontally
+                  // scrollable row. Context usage lives here instead of taking
+                  // a dedicated line above the composer.
                   SingleChildScrollView(
                     scrollDirection: Axis.horizontal,
                     child: Row(
                       children: [
                         _ComposerToolButton(
-                          tooltip: '上传文件（最多 5 个，单个最大 10 MB）',
-                          onPressed: (isStreaming || picking)
+                          tooltip: visionConfigured
+                              ? '上传文件或图片（最多 5 个，单个最大 10 MB）'
+                              : '上传文件；配置视觉 API 后可上传图片',
+                          onPressed: (isStreaming || picking || imageMode)
                               ? null
                               : onPickFiles,
                           child: picking
@@ -887,7 +950,24 @@ class _Composer extends StatelessWidget {
                                   color: scheme.primary,
                                 ),
                         ),
-                        const SizedBox(width: 8),
+                        if (contextEnabled) ...[
+                          const SizedBox(width: 6),
+                          _ContextUsageChip(
+                            report: contextReport,
+                            inputBudget: contextInputBudget,
+                          ),
+                        ],
+                        const SizedBox(width: 6),
+                        if (imageGenerationConfigured) ...[
+                          _ComposerToggleChip(
+                            selected: imageMode,
+                            icon: Icons.auto_awesome_outlined,
+                            label: '生图',
+                            tooltip: '使用独立配置的图片生成 API',
+                            onSelected: onToggleImageMode,
+                          ),
+                          const SizedBox(width: 6),
+                        ],
                         _ComposerToggleChip(
                           selected: deepThink,
                           icon: Icons.psychology_outlined,
@@ -895,21 +975,21 @@ class _Composer extends StatelessWidget {
                           tooltip: '开启后本次对话使用深度推理模型',
                           onSelected: onToggleDeepThink,
                         ),
-                        const SizedBox(width: 8),
+                        const SizedBox(width: 6),
                         _ComposerToggleChip(
                           selected: searchEnabled,
                           icon: Icons.travel_explore,
                           label: '联网',
                           tooltip:
-                              '开启后可按需联网搜索；默认 DuckDuckGo，也可在「我的」配置 Tavily 等',
+                              '开启后可按需联网搜索；默认 DuckDuckGo，也可在「设置」配置 Tavily 等',
                           onSelected: onToggleSearch,
                         ),
                         if (isSearching) ...[
-                          const SizedBox(width: 8),
+                          const SizedBox(width: 6),
                           Container(
                             padding: const EdgeInsets.symmetric(
-                              horizontal: 10,
-                              vertical: 7,
+                              horizontal: 9,
+                              vertical: 6,
                             ),
                             decoration: BoxDecoration(
                               color: scheme.primaryContainer.withValues(
@@ -944,12 +1024,12 @@ class _Composer extends StatelessWidget {
                       ],
                     ),
                   ),
-                  const SizedBox(height: 8),
+                  const SizedBox(height: 6),
                   Container(
-                    padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+                    padding: const EdgeInsets.fromLTRB(10, 4, 6, 4),
                     decoration: BoxDecoration(
                       color: scheme.surfaceContainer,
-                      borderRadius: BorderRadius.circular(20),
+                      borderRadius: BorderRadius.circular(18),
                       border: Border.all(
                         color: scheme.outlineVariant.withValues(alpha: 0.95),
                       ),
@@ -967,17 +1047,28 @@ class _Composer extends StatelessWidget {
                       children: [
                         if (attachments.isNotEmpty)
                           Padding(
-                            padding: const EdgeInsets.only(bottom: 8),
-                            child: Wrap(
-                              spacing: 8,
-                              runSpacing: 8,
-                              children: [
-                                for (final a in attachments)
-                                  AttachmentChip(
-                                    attachment: a,
-                                    onRemove: () => onRemoveAttachment(a.id),
-                                  ),
-                              ],
+                            padding: const EdgeInsets.only(bottom: 4),
+                            child: SingleChildScrollView(
+                              key: const ValueKey('composer-attachment-strip'),
+                              scrollDirection: Axis.horizontal,
+                              child: Row(
+                                children: [
+                                  for (var i = 0; i < attachments.length; i++)
+                                    Padding(
+                                      padding: EdgeInsets.only(
+                                        right: i == attachments.length - 1
+                                            ? 0
+                                            : 6,
+                                      ),
+                                      child: AttachmentChip(
+                                        attachment: attachments[i],
+                                        onRemove: () => onRemoveAttachment(
+                                          attachments[i].id,
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
                             ),
                           ),
                         Row(
@@ -998,7 +1089,7 @@ class _Composer extends StatelessWidget {
                                 child: TextField(
                                   controller: controller,
                                   minLines: 1,
-                                  maxLines: 6,
+                                  maxLines: compactHeight ? 3 : 5,
                                   textInputAction: TextInputAction.newline,
                                   decoration: InputDecoration(
                                     hintText: hint,
@@ -1007,21 +1098,21 @@ class _Composer extends StatelessWidget {
                                     enabledBorder: InputBorder.none,
                                     focusedBorder: InputBorder.none,
                                     contentPadding: const EdgeInsets.symmetric(
-                                      horizontal: 6,
-                                      vertical: 10,
+                                      horizontal: 4,
+                                      vertical: 7,
                                     ),
                                   ),
                                 ),
                               ),
                             ),
-                            const SizedBox(width: 6),
+                            const SizedBox(width: 4),
                             isStreaming
                                 ? IconButton.filled(
                                     onPressed: onStop,
                                     icon: const Icon(Icons.stop_rounded),
                                     tooltip: '停止',
                                     style: IconButton.styleFrom(
-                                      fixedSize: const Size.square(44),
+                                      fixedSize: const Size.square(40),
                                       backgroundColor: scheme.errorContainer,
                                       foregroundColor: scheme.onErrorContainer,
                                     ),
@@ -1033,7 +1124,7 @@ class _Composer extends StatelessWidget {
                                     ),
                                     tooltip: '发送',
                                     style: IconButton.styleFrom(
-                                      fixedSize: const Size.square(44),
+                                      fixedSize: const Size.square(40),
                                       backgroundColor: scheme.primary,
                                       foregroundColor: scheme.onPrimary,
                                     ),
@@ -1053,6 +1144,88 @@ class _Composer extends StatelessWidget {
   }
 }
 
+class _ContextUsageChip extends StatelessWidget {
+  const _ContextUsageChip({required this.report, required this.inputBudget});
+
+  final ContextWindowReport? report;
+  final int inputBudget;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final current = report?.sentTokens ?? 0;
+    final budget = report?.inputBudgetTokens ?? inputBudget;
+    final fraction = budget <= 0 ? 0.0 : (current / budget).clamp(0.0, 1.0);
+    final managed = report?.managed ?? false;
+    final color = fraction >= 0.9
+        ? scheme.error
+        : fraction >= 0.7
+        ? scheme.tertiary
+        : scheme.primary;
+    final detail = report == null
+        ? '上下文预算 ${_compactTokens(budget)}'
+        : '上下文约 ${_compactTokens(current)} / ${_compactTokens(budget)}'
+              '${managed ? ' · 已自动压缩' : ''}';
+    final label = report == null
+        ? _compactTokens(budget)
+        : '${_compactTokens(current)} / ${_compactTokens(budget)}'
+              '${managed ? ' · 已压缩' : ''}';
+    return Semantics(
+      key: const ValueKey('composer-context-usage'),
+      label: detail,
+      value: '${(fraction * 100).round()}%',
+      excludeSemantics: true,
+      child: Tooltip(
+        message: detail,
+        child: Container(
+          height: 32,
+          padding: const EdgeInsets.symmetric(horizontal: 9),
+          decoration: BoxDecoration(
+            color: managed
+                ? color.withValues(alpha: 0.12)
+                : scheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(999),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox.square(
+                dimension: 16,
+                child: CircularProgressIndicator(
+                  semanticsLabel: detail,
+                  semanticsValue: '${(fraction * 100).round()}%',
+                  value: fraction,
+                  strokeWidth: 2,
+                  color: color,
+                  backgroundColor: scheme.outlineVariant,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: managed ? color : scheme.onSurfaceVariant,
+                  fontWeight: managed ? FontWeight.w700 : FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  static String _compactTokens(int value) {
+    if (value >= 1000000) {
+      return '${(value / 1000000).toStringAsFixed(1)}M';
+    }
+    if (value >= 1000) {
+      return '${(value / 1000).toStringAsFixed(value % 1000 == 0 ? 0 : 1)}K';
+    }
+    return '$value';
+  }
+}
+
 class _ComposerToolButton extends StatelessWidget {
   const _ComposerToolButton({
     required this.child,
@@ -1067,15 +1240,21 @@ class _ComposerToolButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Tooltip(
-      message: tooltip,
-      child: Material(
-        color: scheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(12),
-        child: InkWell(
-          onTap: onPressed,
-          borderRadius: BorderRadius.circular(12),
-          child: SizedBox(width: 36, height: 36, child: Center(child: child)),
+    return Semantics(
+      button: true,
+      enabled: onPressed != null,
+      label: tooltip,
+      excludeSemantics: true,
+      child: Tooltip(
+        message: tooltip,
+        child: Material(
+          color: scheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(11),
+          child: InkWell(
+            onTap: onPressed,
+            borderRadius: BorderRadius.circular(11),
+            child: SizedBox(width: 32, height: 32, child: Center(child: child)),
+          ),
         ),
       ),
     );
@@ -1101,32 +1280,38 @@ class _ComposerToggleChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final fg = selected ? scheme.primary : scheme.onSurfaceVariant;
-    return Tooltip(
-      message: tooltip,
-      child: Material(
-        color: selected
-            ? scheme.primaryContainer.withValues(alpha: 0.75)
-            : scheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(999),
-        child: InkWell(
-          onTap: onSelected,
+    return Semantics(
+      button: true,
+      toggled: selected,
+      label: '$label，$tooltip',
+      excludeSemantics: true,
+      child: Tooltip(
+        message: tooltip,
+        child: Material(
+          color: selected
+              ? scheme.primaryContainer.withValues(alpha: 0.75)
+              : scheme.surfaceContainerHighest,
           borderRadius: BorderRadius.circular(999),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(icon, size: 18, color: fg),
-                const SizedBox(width: 6),
-                Text(
-                  label,
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: fg,
+          child: InkWell(
+            onTap: onSelected,
+            borderRadius: BorderRadius.circular(999),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(icon, size: 17, color: fg),
+                  const SizedBox(width: 5),
+                  Text(
+                    label,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: fg,
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
@@ -1192,6 +1377,7 @@ class _HistoryPanel extends ConsumerStatefulWidget {
 
 class _HistoryPanelState extends ConsumerState<_HistoryPanel> {
   String _query = '';
+
   /// null = all modes.
   ConversationMode? _modeFilter;
   String? _renamingId; // id of the conversation being renamed inline
@@ -1285,7 +1471,7 @@ class _HistoryPanelState extends ConsumerState<_HistoryPanel> {
     ];
 
     // Header is a solid, non-scrolling block so list items never paint under
-    // the filter chips (and Wrap keeps 乱斗 visible without horizontal scroll).
+    // the controls. The equal-width segmented filter stays on one clean row.
     final header = Material(
       color: scheme.surfaceContainerLow.withValues(alpha: 0.98),
       child: Column(
@@ -1314,24 +1500,9 @@ class _HistoryPanelState extends ConsumerState<_HistoryPanel> {
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-            child: Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                _ModeFilterChip(
-                  label: '全部',
-                  selected: _modeFilter == null,
-                  onSelected: () => setState(() => _modeFilter = null),
-                ),
-                for (final mode in ConversationMode.values)
-                  _ModeFilterChip(
-                    label: ModeStyle.label(mode),
-                    color: ModeStyle.color(mode),
-                    icon: ModeStyle.icon(mode),
-                    selected: _modeFilter == mode,
-                    onSelected: () => setState(() => _modeFilter = mode),
-                  ),
-              ],
+            child: _ModeFilterBar(
+              selected: _modeFilter,
+              onSelected: (mode) => setState(() => _modeFilter = mode),
             ),
           ),
           Padding(
@@ -1473,14 +1644,16 @@ class _HistoryPanelState extends ConsumerState<_HistoryPanel> {
                                                   .textTheme
                                                   .bodySmall
                                                   ?.copyWith(
-                                                    color: scheme
-                                                        .onSurfaceVariant,
+                                                    color:
+                                                        scheme.onSurfaceVariant,
                                                   ),
                                             ),
                                           ],
                                           const SizedBox(height: 4),
                                           Text(
-                                            ModeStyle.label(c.mode),
+                                            c.localCast.isNotEmpty
+                                                ? '导演故事'
+                                                : ModeStyle.label(c.mode),
                                             style: TextStyle(
                                               fontSize: 11,
                                               color: modeColor,
@@ -1576,46 +1749,150 @@ String _relativeTime(DateTime when) {
   return '$y-$m-$d';
 }
 
-class _ModeFilterChip extends StatelessWidget {
-  const _ModeFilterChip({
-    required this.label,
-    required this.selected,
-    required this.onSelected,
-    this.color,
-    this.icon,
-  });
+class _ModeFilterBar extends StatelessWidget {
+  const _ModeFilterBar({required this.selected, required this.onSelected});
 
-  final String label;
-  final bool selected;
-  final VoidCallback onSelected;
-  final Color? color;
-  final IconData? icon;
+  final ConversationMode? selected;
+  final ValueChanged<ConversationMode?> onSelected;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final accent = color ?? scheme.primary;
-    return FilterChip(
+    final options =
+        <({String id, String label, IconData icon, ConversationMode? mode})>[
+          (id: 'all', label: '全部', icon: Icons.apps_rounded, mode: null),
+          for (final mode in ConversationMode.values)
+            (
+              id: mode.name,
+              label: ModeStyle.label(mode),
+              icon: ModeStyle.icon(mode),
+              mode: mode,
+            ),
+        ];
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final showIcons =
+            constraints.maxWidth >= 264 &&
+            MediaQuery.textScalerOf(context).scale(12) <= 14.4;
+        return Container(
+          key: const ValueKey('conversation-mode-filter'),
+          height: 44,
+          padding: const EdgeInsets.all(3),
+          decoration: BoxDecoration(
+            color: scheme.surfaceContainerHighest.withValues(alpha: 0.68),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: scheme.outlineVariant.withValues(alpha: 0.72),
+            ),
+          ),
+          child: Row(
+            children: [
+              for (var index = 0; index < options.length; index++) ...[
+                if (index > 0) const SizedBox(width: 2),
+                Expanded(
+                  child: _ModeFilterSegment(
+                    key: ValueKey(
+                      'conversation-mode-filter-${options[index].id}',
+                    ),
+                    label: options[index].label,
+                    icon: showIcons ? options[index].icon : null,
+                    selected: selected == options[index].mode,
+                    onTap: () => onSelected(options[index].mode),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _ModeFilterSegment extends StatelessWidget {
+  const _ModeFilterSegment({
+    super.key,
+    required this.label,
+    required this.icon,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final IconData? icon;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final foreground = selected ? scheme.primary : scheme.onSurfaceVariant;
+
+    return Semantics(
+      button: true,
       selected: selected,
-      showCheckmark: false,
-      avatar: icon == null
-          ? null
-          : Icon(icon, size: 16, color: selected ? accent : scheme.onSurfaceVariant),
-      label: Text(label),
-      onSelected: (_) => onSelected(),
-      selectedColor: accent.withValues(alpha: 0.16),
-      labelStyle: TextStyle(
-        fontSize: 12,
-        fontWeight: FontWeight.w600,
-        color: selected ? accent : scheme.onSurfaceVariant,
+      label: '$label会话筛选',
+      child: ExcludeSemantics(
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 160),
+          curve: Curves.easeOutCubic,
+          decoration: BoxDecoration(
+            color: selected
+                ? Color.alphaBlend(
+                    scheme.primary.withValues(alpha: 0.10),
+                    scheme.surface,
+                  )
+                : Colors.transparent,
+            borderRadius: BorderRadius.circular(11),
+            border: Border.all(
+              color: selected
+                  ? scheme.primary.withValues(alpha: 0.24)
+                  : Colors.transparent,
+            ),
+            boxShadow: selected
+                ? [
+                    BoxShadow(
+                      color: scheme.shadow.withValues(alpha: 0.08),
+                      blurRadius: 4,
+                      offset: const Offset(0, 1),
+                    ),
+                  ]
+                : null,
+          ),
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(11),
+              onTap: onTap,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  if (icon != null) ...[
+                    Icon(icon, size: 16, color: foreground),
+                    const SizedBox(width: 5),
+                  ],
+                  Flexible(
+                    child: Text(
+                      label,
+                      maxLines: 1,
+                      softWrap: false,
+                      overflow: TextOverflow.fade,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: selected
+                            ? FontWeight.w700
+                            : FontWeight.w600,
+                        color: foreground,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
       ),
-      side: BorderSide(
-        color: selected
-            ? accent.withValues(alpha: 0.35)
-            : scheme.outlineVariant,
-      ),
-      visualDensity: VisualDensity.compact,
-      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
     );
   }
 }
@@ -1661,7 +1938,11 @@ class _EnsembleSessionBar extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
         child: Row(
           children: [
-            Icon(ModeStyle.icon(ConversationMode.ensemble), size: 18, color: accent),
+            Icon(
+              ModeStyle.icon(ConversationMode.ensemble),
+              size: 18,
+              color: accent,
+            ),
             const SizedBox(width: 8),
             Expanded(
               child: InkWell(
@@ -1696,10 +1977,7 @@ class _EnsembleSessionBar extends StatelessWidget {
               onPressed: onNext,
             ),
             const SizedBox(width: 6),
-            _SessionMiniButton(
-              label: '自动 ×6',
-              onPressed: onAuto,
-            ),
+            _SessionMiniButton(label: '自动 ×6', onPressed: onAuto),
           ],
         ),
       ),
@@ -1794,7 +2072,7 @@ class _StorySessionBar extends StatelessWidget {
               icon: const Icon(Icons.chevron_left, size: 22),
             ),
             _SessionMiniButton(
-              label: '推进情节',
+              label: conversation.localCast.isNotEmpty ? '继续下一节' : '推进情节',
               filled: true,
               color: accent,
               onPressed: onAdvance,
@@ -1955,7 +2233,9 @@ class _JumpToBottomButton extends StatelessWidget {
           elevation: 3,
           shadowColor: scheme.shadow.withValues(alpha: 0.2),
           shape: CircleBorder(
-            side: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.9)),
+            side: BorderSide(
+              color: scheme.outlineVariant.withValues(alpha: 0.9),
+            ),
           ),
           clipBehavior: Clip.antiAlias,
           child: InkWell(
@@ -1981,62 +2261,92 @@ class _EmptyState extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Center(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 360),
-        child: Container(
-          margin: const EdgeInsets.all(24),
-          padding: const EdgeInsets.fromLTRB(28, 28, 28, 24),
-          decoration: BoxDecoration(
-            color: scheme.surfaceContainer.withValues(alpha: 0.88),
-            borderRadius: BorderRadius.circular(24),
-            border: Border.all(
-              color: scheme.outlineVariant.withValues(alpha: 0.9),
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: scheme.shadow.withValues(alpha: 0.05),
-                blurRadius: 24,
-                offset: const Offset(0, 10),
-              ),
-            ],
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 56,
-                height: 56,
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [
-                      scheme.primary,
-                      Color.lerp(scheme.primary, scheme.secondary, 0.35)!,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact =
+            constraints.maxHeight < 300 || constraints.maxWidth < 320;
+        final edge = compact ? 12.0 : 24.0;
+        final minContentHeight = constraints.hasBoundedHeight
+            ? (constraints.maxHeight - edge * 2)
+                  .clamp(0.0, double.infinity)
+                  .toDouble()
+            : 0.0;
+        return SingleChildScrollView(
+          key: const ValueKey('chat-empty-state-scroll'),
+          padding: EdgeInsets.all(edge),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minHeight: minContentHeight),
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 360),
+                child: Container(
+                  padding: compact
+                      ? const EdgeInsets.fromLTRB(20, 18, 20, 18)
+                      : const EdgeInsets.fromLTRB(28, 28, 28, 24),
+                  decoration: BoxDecoration(
+                    color: scheme.surfaceContainer.withValues(alpha: 0.88),
+                    borderRadius: BorderRadius.circular(compact ? 20 : 24),
+                    border: Border.all(
+                      color: scheme.outlineVariant.withValues(alpha: 0.9),
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: scheme.shadow.withValues(alpha: 0.05),
+                        blurRadius: 24,
+                        offset: const Offset(0, 10),
+                      ),
                     ],
                   ),
-                  borderRadius: BorderRadius.circular(18),
-                ),
-                child: Icon(
-                  Icons.auto_awesome,
-                  color: scheme.onPrimary,
-                  size: 28,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: compact ? 44 : 56,
+                        height: compact ? 44 : 56,
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: [
+                              scheme.primary,
+                              Color.lerp(
+                                scheme.primary,
+                                scheme.secondary,
+                                0.35,
+                              )!,
+                            ],
+                          ),
+                          borderRadius: BorderRadius.circular(
+                            compact ? 15 : 18,
+                          ),
+                        ),
+                        child: Icon(
+                          Icons.auto_awesome,
+                          color: scheme.onPrimary,
+                          size: compact ? 23 : 28,
+                        ),
+                      ),
+                      SizedBox(height: compact ? 12 : 18),
+                      Text(
+                        '开始一段对话',
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                      SizedBox(height: compact ? 6 : 8),
+                      Text(
+                        '在下方输入消息；API Key 在底栏「设置」里配置。\n'
+                        '也可点右上角新建：普通对话 / 角色故事 / 大乱斗。',
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: scheme.onSurfaceVariant,
+                          height: compact ? 1.35 : 1.5,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
-              const SizedBox(height: 18),
-              Text('开始一段对话', style: Theme.of(context).textTheme.titleLarge),
-              const SizedBox(height: 8),
-              Text(
-                '在下方输入消息；API Key 在底栏「我的」里配置。\n也可点右上角新建：普通对话 / 角色故事 / 大乱斗。',
-                textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: scheme.onSurfaceVariant,
-                  height: 1.5,
-                ),
-              ),
-            ],
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 }

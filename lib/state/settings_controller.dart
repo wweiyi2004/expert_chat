@@ -5,6 +5,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/providers.dart';
+import '../data/context_prefs.dart';
+import '../data/media_api_config.dart';
 import '../data/provider_profile.dart';
 import '../data/ui_prefs.dart';
 import '../domain/llm/llm_provider.dart';
@@ -24,6 +26,13 @@ class SettingsState {
     this.searchApiKey = '',
     this.systemPrompt = '',
     this.ui = const UiPrefs(),
+    this.visionApi = const MediaApiConfig(),
+    this.visionApiKey = '',
+    this.imageGenerationApi = const MediaApiConfig(),
+    this.imageGenerationApiKey = '',
+    this.ttsApi = const MediaApiConfig(),
+    this.ttsApiKey = '',
+    this.context = const ContextPrefs(),
   });
 
   final List<ProviderProfile> profiles;
@@ -47,7 +56,20 @@ class SettingsState {
   /// Appearance / reading preferences (text scale, density, message style…).
   final UiPrefs ui;
 
+  /// Optional, independently configured multimedia endpoints.
+  final MediaApiConfig visionApi;
+  final String visionApiKey;
+  final MediaApiConfig imageGenerationApi;
+  final String imageGenerationApiKey;
+  final MediaApiConfig ttsApi;
+  final String ttsApiKey;
+  final ContextPrefs context;
+
   bool get searchConfigured => searchApiKey.trim().isNotEmpty;
+  bool get visionConfigured => visionApi.isConfiguredWith(visionApiKey);
+  bool get imageGenerationConfigured =>
+      imageGenerationApi.isConfiguredWith(imageGenerationApiKey);
+  bool get ttsConfigured => ttsApi.isConfiguredWith(ttsApiKey);
 
   ProviderProfile? get active {
     if (profiles.isEmpty) return null;
@@ -70,6 +92,18 @@ class SettingsState {
   LlmConfig get config =>
       LlmConfig(baseUrl: baseUrl, apiKey: apiKey, model: model);
 
+  LlmConfig get visionConfig => LlmConfig(
+    baseUrl: visionApi.baseUrl,
+    apiKey: visionApiKey,
+    model: visionApi.model,
+    capabilities: const ModelCapabilities(
+      isReasoner: false,
+      supportsTools: false,
+      sendThinkingField: false,
+      supportsVision: true,
+    ),
+  );
+
   SettingsState copyWith({
     List<ProviderProfile>? profiles,
     String? activeProfileId,
@@ -80,6 +114,13 @@ class SettingsState {
     String? searchApiKey,
     String? systemPrompt,
     UiPrefs? ui,
+    MediaApiConfig? visionApi,
+    String? visionApiKey,
+    MediaApiConfig? imageGenerationApi,
+    String? imageGenerationApiKey,
+    MediaApiConfig? ttsApi,
+    String? ttsApiKey,
+    ContextPrefs? context,
   }) => SettingsState(
     profiles: profiles ?? this.profiles,
     activeProfileId: activeProfileId ?? this.activeProfileId,
@@ -92,6 +133,13 @@ class SettingsState {
     searchApiKey: searchApiKey ?? this.searchApiKey,
     systemPrompt: systemPrompt ?? this.systemPrompt,
     ui: ui ?? this.ui,
+    visionApi: visionApi ?? this.visionApi,
+    visionApiKey: visionApiKey ?? this.visionApiKey,
+    imageGenerationApi: imageGenerationApi ?? this.imageGenerationApi,
+    imageGenerationApiKey: imageGenerationApiKey ?? this.imageGenerationApiKey,
+    ttsApi: ttsApi ?? this.ttsApi,
+    ttsApiKey: ttsApiKey ?? this.ttsApiKey,
+    context: context ?? this.context,
   );
 
   static const _sentinel = Object();
@@ -105,6 +153,13 @@ const _kSearchBackend = 'searchBackend';
 const _kSearchApiKeySecure = 'search_api_key';
 const _kSystemPrompt = 'systemPrompt';
 const _kUiPrefs = 'uiPrefs';
+const _kVisionApi = 'visionApi';
+const _kVisionApiKeySecure = 'vision_api_key';
+const _kImageGenerationApi = 'imageGenerationApi';
+const _kImageGenerationApiKeySecure = 'image_generation_api_key';
+const _kTtsApi = 'ttsApi';
+const _kTtsApiKeySecure = 'tts_api_key';
+const _kContextPrefs = 'contextPrefs';
 
 // Legacy M1 keys (single-config) — read once for migration.
 const _kLegacyBaseUrl = 'baseUrl';
@@ -170,6 +225,10 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     activeId ??= profiles.first.id;
     final apiKey = await secure.read(key: _secureKeyForProfile(activeId)) ?? '';
     final searchApiKey = await secure.read(key: _kSearchApiKeySecure) ?? '';
+    final visionApiKey = await secure.read(key: _kVisionApiKeySecure) ?? '';
+    final imageGenerationApiKey =
+        await secure.read(key: _kImageGenerationApiKeySecure) ?? '';
+    final ttsApiKey = await secure.read(key: _kTtsApiKeySecure) ?? '';
 
     // Drop a stored model override that no longer exists in the active
     // profile's model list (e.g. the profile was edited since), so requests
@@ -198,6 +257,13 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       searchApiKey: searchApiKey,
       systemPrompt: prefs.getString(_kSystemPrompt) ?? '',
       ui: _readUiPrefs(prefs),
+      visionApi: _readMediaApi(prefs, _kVisionApi),
+      visionApiKey: visionApiKey,
+      imageGenerationApi: _readMediaApi(prefs, _kImageGenerationApi),
+      imageGenerationApiKey: imageGenerationApiKey,
+      ttsApi: _readMediaApi(prefs, _kTtsApi),
+      ttsApiKey: ttsApiKey,
+      context: _readContextPrefs(prefs),
     );
   }
 
@@ -208,6 +274,26 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       return UiPrefs.fromJson(jsonDecode(raw) as Map<String, dynamic>);
     } catch (_) {
       return const UiPrefs();
+    }
+  }
+
+  static MediaApiConfig _readMediaApi(SharedPreferences prefs, String key) {
+    final raw = prefs.getString(key);
+    if (raw == null || raw.isEmpty) return const MediaApiConfig();
+    try {
+      return MediaApiConfig.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+    } catch (_) {
+      return const MediaApiConfig();
+    }
+  }
+
+  static ContextPrefs _readContextPrefs(SharedPreferences prefs) {
+    final raw = prefs.getString(_kContextPrefs);
+    if (raw == null || raw.isEmpty) return const ContextPrefs();
+    try {
+      return ContextPrefs.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+    } catch (_) {
+      return const ContextPrefs();
     }
   }
 
@@ -308,6 +394,47 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     await ref.read(sharedPrefsProvider).setString(_kSystemPrompt, prompt);
   }
 
+  Future<void> setContextPrefs(ContextPrefs context) async {
+    state = AsyncData(_current.copyWith(context: context));
+    await ref
+        .read(sharedPrefsProvider)
+        .setString(_kContextPrefs, jsonEncode(context.toJson()));
+  }
+
+  Future<void> setMediaApiConfig(
+    MediaApiKind kind,
+    MediaApiConfig config,
+  ) async {
+    final prefs = ref.read(sharedPrefsProvider);
+    final encoded = jsonEncode(config.toJson());
+    switch (kind) {
+      case MediaApiKind.vision:
+        state = AsyncData(_current.copyWith(visionApi: config));
+        await prefs.setString(_kVisionApi, encoded);
+      case MediaApiKind.imageGeneration:
+        state = AsyncData(_current.copyWith(imageGenerationApi: config));
+        await prefs.setString(_kImageGenerationApi, encoded);
+      case MediaApiKind.tts:
+        state = AsyncData(_current.copyWith(ttsApi: config));
+        await prefs.setString(_kTtsApi, encoded);
+    }
+  }
+
+  Future<void> setMediaApiKey(MediaApiKind kind, String key) async {
+    final secure = ref.read(secureStorageProvider);
+    switch (kind) {
+      case MediaApiKind.vision:
+        state = AsyncData(_current.copyWith(visionApiKey: key));
+        await secure.write(key: _kVisionApiKeySecure, value: key);
+      case MediaApiKind.imageGeneration:
+        state = AsyncData(_current.copyWith(imageGenerationApiKey: key));
+        await secure.write(key: _kImageGenerationApiKeySecure, value: key);
+      case MediaApiKind.tts:
+        state = AsyncData(_current.copyWith(ttsApiKey: key));
+        await secure.write(key: _kTtsApiKeySecure, value: key);
+    }
+  }
+
   /// Switch the active profile, loading its stored key.
   Future<void> selectProfile(String id) async {
     if (!_current.profiles.any((p) => p.id == id)) return;
@@ -385,6 +512,13 @@ class SettingsController extends AsyncNotifier<SettingsState> {
           searchApiKey: _current.searchApiKey,
           systemPrompt: _current.systemPrompt,
           ui: _current.ui,
+          visionApi: _current.visionApi,
+          visionApiKey: _current.visionApiKey,
+          imageGenerationApi: _current.imageGenerationApi,
+          imageGenerationApiKey: _current.imageGenerationApiKey,
+          ttsApi: _current.ttsApi,
+          ttsApiKey: _current.ttsApiKey,
+          context: _current.context,
         ),
       );
       await _writeProfiles(prefs, [fresh]);

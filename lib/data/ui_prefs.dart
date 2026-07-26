@@ -52,11 +52,8 @@ enum MessageStylePref {
 
   String get wire => name;
 
-  static MessageStylePref fromWire(String? v) =>
-      MessageStylePref.values.firstWhere(
-        (e) => e.name == v,
-        orElse: () => MessageStylePref.bubble,
-      );
+  static MessageStylePref fromWire(String? v) => MessageStylePref.values
+      .firstWhere((e) => e.name == v, orElse: () => MessageStylePref.bubble);
 }
 
 enum ContentWidthPref {
@@ -79,11 +76,8 @@ enum ContentWidthPref {
 
   String get wire => name;
 
-  static ContentWidthPref fromWire(String? v) =>
-      ContentWidthPref.values.firstWhere(
-        (e) => e.name == v,
-        orElse: () => ContentWidthPref.regular,
-      );
+  static ContentWidthPref fromWire(String? v) => ContentWidthPref.values
+      .firstWhere((e) => e.name == v, orElse: () => ContentWidthPref.regular);
 }
 
 class UiPrefs {

@@ -151,6 +151,17 @@ class $ConversationsTable extends Conversations
     requiredDuringInsert: false,
     defaultValue: const Constant(0),
   );
+  static const VerificationMeta _localCastJsonMeta = const VerificationMeta(
+    'localCastJson',
+  );
+  @override
+  late final GeneratedColumn<String> localCastJson = GeneratedColumn<String>(
+    'local_cast_json',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
   @override
   List<GeneratedColumn> get $columns => [
     id,
@@ -166,6 +177,7 @@ class $ConversationsTable extends Conversations
     participantIdsJson,
     venue,
     nextSpeakerIndex,
+    localCastJson,
   ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -273,6 +285,15 @@ class $ConversationsTable extends Conversations
         ),
       );
     }
+    if (data.containsKey('local_cast_json')) {
+      context.handle(
+        _localCastJsonMeta,
+        localCastJson.isAcceptableOrUnknown(
+          data['local_cast_json']!,
+          _localCastJsonMeta,
+        ),
+      );
+    }
     return context;
   }
 
@@ -334,6 +355,10 @@ class $ConversationsTable extends Conversations
         DriftSqlType.int,
         data['${effectivePrefix}next_speaker_index'],
       )!,
+      localCastJson: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}local_cast_json'],
+      ),
     );
   }
 
@@ -357,6 +382,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
   final String? participantIdsJson;
   final String venue;
   final int nextSpeakerIndex;
+  final String? localCastJson;
   const Conversation({
     required this.id,
     required this.title,
@@ -371,6 +397,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
     this.participantIdsJson,
     required this.venue,
     required this.nextSpeakerIndex,
+    this.localCastJson,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -396,6 +423,9 @@ class Conversation extends DataClass implements Insertable<Conversation> {
     }
     map['venue'] = Variable<String>(venue);
     map['next_speaker_index'] = Variable<int>(nextSpeakerIndex);
+    if (!nullToAbsent || localCastJson != null) {
+      map['local_cast_json'] = Variable<String>(localCastJson);
+    }
     return map;
   }
 
@@ -422,6 +452,9 @@ class Conversation extends DataClass implements Insertable<Conversation> {
           : Value(participantIdsJson),
       venue: Value(venue),
       nextSpeakerIndex: Value(nextSpeakerIndex),
+      localCastJson: localCastJson == null && nullToAbsent
+          ? const Value.absent()
+          : Value(localCastJson),
     );
   }
 
@@ -448,6 +481,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
       ),
       venue: serializer.fromJson<String>(json['venue']),
       nextSpeakerIndex: serializer.fromJson<int>(json['nextSpeakerIndex']),
+      localCastJson: serializer.fromJson<String?>(json['localCastJson']),
     );
   }
   @override
@@ -467,6 +501,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
       'participantIdsJson': serializer.toJson<String?>(participantIdsJson),
       'venue': serializer.toJson<String>(venue),
       'nextSpeakerIndex': serializer.toJson<int>(nextSpeakerIndex),
+      'localCastJson': serializer.toJson<String?>(localCastJson),
     };
   }
 
@@ -484,6 +519,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
     Value<String?> participantIdsJson = const Value.absent(),
     String? venue,
     int? nextSpeakerIndex,
+    Value<String?> localCastJson = const Value.absent(),
   }) => Conversation(
     id: id ?? this.id,
     title: title ?? this.title,
@@ -504,6 +540,9 @@ class Conversation extends DataClass implements Insertable<Conversation> {
         : this.participantIdsJson,
     venue: venue ?? this.venue,
     nextSpeakerIndex: nextSpeakerIndex ?? this.nextSpeakerIndex,
+    localCastJson: localCastJson.present
+        ? localCastJson.value
+        : this.localCastJson,
   );
   Conversation copyWithCompanion(ConversationsCompanion data) {
     return Conversation(
@@ -534,6 +573,9 @@ class Conversation extends DataClass implements Insertable<Conversation> {
       nextSpeakerIndex: data.nextSpeakerIndex.present
           ? data.nextSpeakerIndex.value
           : this.nextSpeakerIndex,
+      localCastJson: data.localCastJson.present
+          ? data.localCastJson.value
+          : this.localCastJson,
     );
   }
 
@@ -552,7 +594,8 @@ class Conversation extends DataClass implements Insertable<Conversation> {
           ..write('plotCursor: $plotCursor, ')
           ..write('participantIdsJson: $participantIdsJson, ')
           ..write('venue: $venue, ')
-          ..write('nextSpeakerIndex: $nextSpeakerIndex')
+          ..write('nextSpeakerIndex: $nextSpeakerIndex, ')
+          ..write('localCastJson: $localCastJson')
           ..write(')'))
         .toString();
   }
@@ -572,6 +615,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
     participantIdsJson,
     venue,
     nextSpeakerIndex,
+    localCastJson,
   );
   @override
   bool operator ==(Object other) =>
@@ -589,7 +633,8 @@ class Conversation extends DataClass implements Insertable<Conversation> {
           other.plotCursor == this.plotCursor &&
           other.participantIdsJson == this.participantIdsJson &&
           other.venue == this.venue &&
-          other.nextSpeakerIndex == this.nextSpeakerIndex);
+          other.nextSpeakerIndex == this.nextSpeakerIndex &&
+          other.localCastJson == this.localCastJson);
 }
 
 class ConversationsCompanion extends UpdateCompanion<Conversation> {
@@ -606,6 +651,7 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
   final Value<String?> participantIdsJson;
   final Value<String> venue;
   final Value<int> nextSpeakerIndex;
+  final Value<String?> localCastJson;
   final Value<int> rowid;
   const ConversationsCompanion({
     this.id = const Value.absent(),
@@ -621,6 +667,7 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
     this.participantIdsJson = const Value.absent(),
     this.venue = const Value.absent(),
     this.nextSpeakerIndex = const Value.absent(),
+    this.localCastJson = const Value.absent(),
     this.rowid = const Value.absent(),
   });
   ConversationsCompanion.insert({
@@ -637,6 +684,7 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
     this.participantIdsJson = const Value.absent(),
     this.venue = const Value.absent(),
     this.nextSpeakerIndex = const Value.absent(),
+    this.localCastJson = const Value.absent(),
     this.rowid = const Value.absent(),
   }) : id = Value(id),
        updatedAt = Value(updatedAt);
@@ -654,6 +702,7 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
     Expression<String>? participantIdsJson,
     Expression<String>? venue,
     Expression<int>? nextSpeakerIndex,
+    Expression<String>? localCastJson,
     Expression<int>? rowid,
   }) {
     return RawValuesInsertable({
@@ -672,6 +721,7 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
         'participant_ids_json': participantIdsJson,
       if (venue != null) 'venue': venue,
       if (nextSpeakerIndex != null) 'next_speaker_index': nextSpeakerIndex,
+      if (localCastJson != null) 'local_cast_json': localCastJson,
       if (rowid != null) 'rowid': rowid,
     });
   }
@@ -690,6 +740,7 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
     Value<String?>? participantIdsJson,
     Value<String>? venue,
     Value<int>? nextSpeakerIndex,
+    Value<String?>? localCastJson,
     Value<int>? rowid,
   }) {
     return ConversationsCompanion(
@@ -706,6 +757,7 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
       participantIdsJson: participantIdsJson ?? this.participantIdsJson,
       venue: venue ?? this.venue,
       nextSpeakerIndex: nextSpeakerIndex ?? this.nextSpeakerIndex,
+      localCastJson: localCastJson ?? this.localCastJson,
       rowid: rowid ?? this.rowid,
     );
   }
@@ -752,6 +804,9 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
     if (nextSpeakerIndex.present) {
       map['next_speaker_index'] = Variable<int>(nextSpeakerIndex.value);
     }
+    if (localCastJson.present) {
+      map['local_cast_json'] = Variable<String>(localCastJson.value);
+    }
     if (rowid.present) {
       map['rowid'] = Variable<int>(rowid.value);
     }
@@ -774,6 +829,7 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
           ..write('participantIdsJson: $participantIdsJson, ')
           ..write('venue: $venue, ')
           ..write('nextSpeakerIndex: $nextSpeakerIndex, ')
+          ..write('localCastJson: $localCastJson, ')
           ..write('rowid: $rowid')
           ..write(')'))
         .toString();
@@ -937,6 +993,16 @@ class $MessagesTable extends Messages with TableInfo<$MessagesTable, Message> {
     type: DriftSqlType.string,
     requiredDuringInsert: false,
   );
+  static const VerificationMeta _kindMeta = const VerificationMeta('kind');
+  @override
+  late final GeneratedColumn<String> kind = GeneratedColumn<String>(
+    'kind',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant('text'),
+  );
   @override
   List<GeneratedColumn> get $columns => [
     id,
@@ -953,6 +1019,7 @@ class $MessagesTable extends Messages with TableInfo<$MessagesTable, Message> {
     seq,
     speakerId,
     speakerName,
+    kind,
   ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -1069,6 +1136,12 @@ class $MessagesTable extends Messages with TableInfo<$MessagesTable, Message> {
         ),
       );
     }
+    if (data.containsKey('kind')) {
+      context.handle(
+        _kindMeta,
+        kind.isAcceptableOrUnknown(data['kind']!, _kindMeta),
+      );
+    }
     return context;
   }
 
@@ -1134,6 +1207,10 @@ class $MessagesTable extends Messages with TableInfo<$MessagesTable, Message> {
         DriftSqlType.string,
         data['${effectivePrefix}speaker_name'],
       ),
+      kind: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}kind'],
+      )!,
     );
   }
 
@@ -1158,6 +1235,7 @@ class Message extends DataClass implements Insertable<Message> {
   final int seq;
   final String? speakerId;
   final String? speakerName;
+  final String kind;
   const Message({
     required this.id,
     required this.convoId,
@@ -1173,6 +1251,7 @@ class Message extends DataClass implements Insertable<Message> {
     required this.seq,
     this.speakerId,
     this.speakerName,
+    required this.kind,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -1203,6 +1282,7 @@ class Message extends DataClass implements Insertable<Message> {
     if (!nullToAbsent || speakerName != null) {
       map['speaker_name'] = Variable<String>(speakerName);
     }
+    map['kind'] = Variable<String>(kind);
     return map;
   }
 
@@ -1234,6 +1314,7 @@ class Message extends DataClass implements Insertable<Message> {
       speakerName: speakerName == null && nullToAbsent
           ? const Value.absent()
           : Value(speakerName),
+      kind: Value(kind),
     );
   }
 
@@ -1257,6 +1338,7 @@ class Message extends DataClass implements Insertable<Message> {
       seq: serializer.fromJson<int>(json['seq']),
       speakerId: serializer.fromJson<String?>(json['speakerId']),
       speakerName: serializer.fromJson<String?>(json['speakerName']),
+      kind: serializer.fromJson<String>(json['kind']),
     );
   }
   @override
@@ -1277,6 +1359,7 @@ class Message extends DataClass implements Insertable<Message> {
       'seq': serializer.toJson<int>(seq),
       'speakerId': serializer.toJson<String?>(speakerId),
       'speakerName': serializer.toJson<String?>(speakerName),
+      'kind': serializer.toJson<String>(kind),
     };
   }
 
@@ -1295,6 +1378,7 @@ class Message extends DataClass implements Insertable<Message> {
     int? seq,
     Value<String?> speakerId = const Value.absent(),
     Value<String?> speakerName = const Value.absent(),
+    String? kind,
   }) => Message(
     id: id ?? this.id,
     convoId: convoId ?? this.convoId,
@@ -1314,6 +1398,7 @@ class Message extends DataClass implements Insertable<Message> {
     seq: seq ?? this.seq,
     speakerId: speakerId.present ? speakerId.value : this.speakerId,
     speakerName: speakerName.present ? speakerName.value : this.speakerName,
+    kind: kind ?? this.kind,
   );
   Message copyWithCompanion(MessagesCompanion data) {
     return Message(
@@ -1339,6 +1424,7 @@ class Message extends DataClass implements Insertable<Message> {
       speakerName: data.speakerName.present
           ? data.speakerName.value
           : this.speakerName,
+      kind: data.kind.present ? data.kind.value : this.kind,
     );
   }
 
@@ -1358,7 +1444,8 @@ class Message extends DataClass implements Insertable<Message> {
           ..write('createdAt: $createdAt, ')
           ..write('seq: $seq, ')
           ..write('speakerId: $speakerId, ')
-          ..write('speakerName: $speakerName')
+          ..write('speakerName: $speakerName, ')
+          ..write('kind: $kind')
           ..write(')'))
         .toString();
   }
@@ -1379,6 +1466,7 @@ class Message extends DataClass implements Insertable<Message> {
     seq,
     speakerId,
     speakerName,
+    kind,
   );
   @override
   bool operator ==(Object other) =>
@@ -1397,7 +1485,8 @@ class Message extends DataClass implements Insertable<Message> {
           other.createdAt == this.createdAt &&
           other.seq == this.seq &&
           other.speakerId == this.speakerId &&
-          other.speakerName == this.speakerName);
+          other.speakerName == this.speakerName &&
+          other.kind == this.kind);
 }
 
 class MessagesCompanion extends UpdateCompanion<Message> {
@@ -1415,6 +1504,7 @@ class MessagesCompanion extends UpdateCompanion<Message> {
   final Value<int> seq;
   final Value<String?> speakerId;
   final Value<String?> speakerName;
+  final Value<String> kind;
   final Value<int> rowid;
   const MessagesCompanion({
     this.id = const Value.absent(),
@@ -1431,6 +1521,7 @@ class MessagesCompanion extends UpdateCompanion<Message> {
     this.seq = const Value.absent(),
     this.speakerId = const Value.absent(),
     this.speakerName = const Value.absent(),
+    this.kind = const Value.absent(),
     this.rowid = const Value.absent(),
   });
   MessagesCompanion.insert({
@@ -1448,6 +1539,7 @@ class MessagesCompanion extends UpdateCompanion<Message> {
     this.seq = const Value.absent(),
     this.speakerId = const Value.absent(),
     this.speakerName = const Value.absent(),
+    this.kind = const Value.absent(),
     this.rowid = const Value.absent(),
   }) : id = Value(id),
        convoId = Value(convoId),
@@ -1469,6 +1561,7 @@ class MessagesCompanion extends UpdateCompanion<Message> {
     Expression<int>? seq,
     Expression<String>? speakerId,
     Expression<String>? speakerName,
+    Expression<String>? kind,
     Expression<int>? rowid,
   }) {
     return RawValuesInsertable({
@@ -1486,6 +1579,7 @@ class MessagesCompanion extends UpdateCompanion<Message> {
       if (seq != null) 'seq': seq,
       if (speakerId != null) 'speaker_id': speakerId,
       if (speakerName != null) 'speaker_name': speakerName,
+      if (kind != null) 'kind': kind,
       if (rowid != null) 'rowid': rowid,
     });
   }
@@ -1505,6 +1599,7 @@ class MessagesCompanion extends UpdateCompanion<Message> {
     Value<int>? seq,
     Value<String?>? speakerId,
     Value<String?>? speakerName,
+    Value<String>? kind,
     Value<int>? rowid,
   }) {
     return MessagesCompanion(
@@ -1522,6 +1617,7 @@ class MessagesCompanion extends UpdateCompanion<Message> {
       seq: seq ?? this.seq,
       speakerId: speakerId ?? this.speakerId,
       speakerName: speakerName ?? this.speakerName,
+      kind: kind ?? this.kind,
       rowid: rowid ?? this.rowid,
     );
   }
@@ -1571,6 +1667,9 @@ class MessagesCompanion extends UpdateCompanion<Message> {
     if (speakerName.present) {
       map['speaker_name'] = Variable<String>(speakerName.value);
     }
+    if (kind.present) {
+      map['kind'] = Variable<String>(kind.value);
+    }
     if (rowid.present) {
       map['rowid'] = Variable<int>(rowid.value);
     }
@@ -1594,6 +1693,7 @@ class MessagesCompanion extends UpdateCompanion<Message> {
           ..write('seq: $seq, ')
           ..write('speakerId: $speakerId, ')
           ..write('speakerName: $speakerName, ')
+          ..write('kind: $kind, ')
           ..write('rowid: $rowid')
           ..write(')'))
         .toString();
@@ -2816,6 +2916,7 @@ typedef $$ConversationsTableCreateCompanionBuilder =
       Value<String?> participantIdsJson,
       Value<String> venue,
       Value<int> nextSpeakerIndex,
+      Value<String?> localCastJson,
       Value<int> rowid,
     });
 typedef $$ConversationsTableUpdateCompanionBuilder =
@@ -2833,6 +2934,7 @@ typedef $$ConversationsTableUpdateCompanionBuilder =
       Value<String?> participantIdsJson,
       Value<String> venue,
       Value<int> nextSpeakerIndex,
+      Value<String?> localCastJson,
       Value<int> rowid,
     });
 
@@ -2938,6 +3040,11 @@ class $$ConversationsTableFilterComposer
     builder: (column) => ColumnFilters(column),
   );
 
+  ColumnFilters<String> get localCastJson => $composableBuilder(
+    column: $table.localCastJson,
+    builder: (column) => ColumnFilters(column),
+  );
+
   Expression<bool> messagesRefs(
     Expression<bool> Function($$MessagesTableFilterComposer f) f,
   ) {
@@ -3037,6 +3144,11 @@ class $$ConversationsTableOrderingComposer
     column: $table.nextSpeakerIndex,
     builder: (column) => ColumnOrderings(column),
   );
+
+  ColumnOrderings<String> get localCastJson => $composableBuilder(
+    column: $table.localCastJson,
+    builder: (column) => ColumnOrderings(column),
+  );
 }
 
 class $$ConversationsTableAnnotationComposer
@@ -3098,6 +3210,11 @@ class $$ConversationsTableAnnotationComposer
 
   GeneratedColumn<int> get nextSpeakerIndex => $composableBuilder(
     column: $table.nextSpeakerIndex,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get localCastJson => $composableBuilder(
+    column: $table.localCastJson,
     builder: (column) => column,
   );
 
@@ -3168,6 +3285,7 @@ class $$ConversationsTableTableManager
                 Value<String?> participantIdsJson = const Value.absent(),
                 Value<String> venue = const Value.absent(),
                 Value<int> nextSpeakerIndex = const Value.absent(),
+                Value<String?> localCastJson = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => ConversationsCompanion(
                 id: id,
@@ -3183,6 +3301,7 @@ class $$ConversationsTableTableManager
                 participantIdsJson: participantIdsJson,
                 venue: venue,
                 nextSpeakerIndex: nextSpeakerIndex,
+                localCastJson: localCastJson,
                 rowid: rowid,
               ),
           createCompanionCallback:
@@ -3200,6 +3319,7 @@ class $$ConversationsTableTableManager
                 Value<String?> participantIdsJson = const Value.absent(),
                 Value<String> venue = const Value.absent(),
                 Value<int> nextSpeakerIndex = const Value.absent(),
+                Value<String?> localCastJson = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => ConversationsCompanion.insert(
                 id: id,
@@ -3215,6 +3335,7 @@ class $$ConversationsTableTableManager
                 participantIdsJson: participantIdsJson,
                 venue: venue,
                 nextSpeakerIndex: nextSpeakerIndex,
+                localCastJson: localCastJson,
                 rowid: rowid,
               ),
           withReferenceMapper: (p0) => p0
@@ -3289,6 +3410,7 @@ typedef $$MessagesTableCreateCompanionBuilder =
       Value<int> seq,
       Value<String?> speakerId,
       Value<String?> speakerName,
+      Value<String> kind,
       Value<int> rowid,
     });
 typedef $$MessagesTableUpdateCompanionBuilder =
@@ -3307,6 +3429,7 @@ typedef $$MessagesTableUpdateCompanionBuilder =
       Value<int> seq,
       Value<String?> speakerId,
       Value<String?> speakerName,
+      Value<String> kind,
       Value<int> rowid,
     });
 
@@ -3408,6 +3531,11 @@ class $$MessagesTableFilterComposer
     builder: (column) => ColumnFilters(column),
   );
 
+  ColumnFilters<String> get kind => $composableBuilder(
+    column: $table.kind,
+    builder: (column) => ColumnFilters(column),
+  );
+
   $$ConversationsTableFilterComposer get convoId {
     final $$ConversationsTableFilterComposer composer = $composerBuilder(
       composer: this,
@@ -3506,6 +3634,11 @@ class $$MessagesTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get kind => $composableBuilder(
+    column: $table.kind,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   $$ConversationsTableOrderingComposer get convoId {
     final $$ConversationsTableOrderingComposer composer = $composerBuilder(
       composer: this,
@@ -3586,6 +3719,9 @@ class $$MessagesTableAnnotationComposer
     builder: (column) => column,
   );
 
+  GeneratedColumn<String> get kind =>
+      $composableBuilder(column: $table.kind, builder: (column) => column);
+
   $$ConversationsTableAnnotationComposer get convoId {
     final $$ConversationsTableAnnotationComposer composer = $composerBuilder(
       composer: this,
@@ -3652,6 +3788,7 @@ class $$MessagesTableTableManager
                 Value<int> seq = const Value.absent(),
                 Value<String?> speakerId = const Value.absent(),
                 Value<String?> speakerName = const Value.absent(),
+                Value<String> kind = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => MessagesCompanion(
                 id: id,
@@ -3668,6 +3805,7 @@ class $$MessagesTableTableManager
                 seq: seq,
                 speakerId: speakerId,
                 speakerName: speakerName,
+                kind: kind,
                 rowid: rowid,
               ),
           createCompanionCallback:
@@ -3686,6 +3824,7 @@ class $$MessagesTableTableManager
                 Value<int> seq = const Value.absent(),
                 Value<String?> speakerId = const Value.absent(),
                 Value<String?> speakerName = const Value.absent(),
+                Value<String> kind = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => MessagesCompanion.insert(
                 id: id,
@@ -3702,6 +3841,7 @@ class $$MessagesTableTableManager
                 seq: seq,
                 speakerId: speakerId,
                 speakerName: speakerName,
+                kind: kind,
                 rowid: rowid,
               ),
           withReferenceMapper: (p0) => p0

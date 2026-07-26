@@ -10,12 +10,7 @@ String normalizeSearchQuery(String raw, {int maxChars = 160}) {
 
   // Drop common chat wrappers that pollute keyword search.
   // Longer phrases first so "请问" is not partially eaten by "请".
-  q = q.replaceFirst(
-    RegExp(
-      r'^(请问|想问一下|我想知道|告诉我|麻烦|帮我|请)[，,：:\s]*',
-    ),
-    '',
-  );
+  q = q.replaceFirst(RegExp(r'^(请问|想问一下|我想知道|告诉我|麻烦|帮我|请)[，,：:\s]*'), '');
   q = q.replaceAll(RegExp(r'[ \t\r\f]+'), ' ');
   q = q.replaceAll(RegExp(r' *\n *'), '\n');
   q = q.replaceAll(RegExp(r'\n{2,}'), '\n');
@@ -35,7 +30,21 @@ String normalizeSearchQuery(String raw, {int maxChars = 160}) {
 }
 
 int _lastBreak(String s) {
-  const marks = [' ', '\n', '，', ',', '。', '.', '；', ';', '、', '？', '?', '！', '!'];
+  const marks = [
+    ' ',
+    '\n',
+    '，',
+    ',',
+    '。',
+    '.',
+    '；',
+    ';',
+    '、',
+    '？',
+    '?',
+    '！',
+    '!',
+  ];
   var best = -1;
   for (final m in marks) {
     final i = s.lastIndexOf(m);

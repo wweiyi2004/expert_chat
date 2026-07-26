@@ -42,6 +42,8 @@ class ToolEngine {
   static const int minSourceChars = 40;
   static const int maxTotalChars = 24000;
 
+  void clearCache() => _searchCache.clear();
+
   /// The OpenAI-format tool spec (used if a future agentic loop is added for
   /// function-calling-capable models).
   static const webSearchTool = ToolSpec(
@@ -72,10 +74,7 @@ class ToolEngine {
     parameters: {
       'type': 'object',
       'properties': {
-        'url': {
-          'type': 'string',
-          'description': '完整的 http(s) 网址',
-        },
+        'url': {'type': 'string', 'description': '完整的 http(s) 网址'},
       },
       'required': ['url'],
     },

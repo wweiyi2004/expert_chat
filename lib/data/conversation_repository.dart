@@ -26,7 +26,9 @@ class JsonConversationRepository implements ConversationRepository {
   Future<File> _file() async {
     if (_cachedFile != null) return _cachedFile!;
     final dir = await getApplicationSupportDirectory();
-    _cachedFile = File('${dir.path}${Platform.pathSeparator}conversations.json');
+    _cachedFile = File(
+      '${dir.path}${Platform.pathSeparator}conversations.json',
+    );
     return _cachedFile!;
   }
 

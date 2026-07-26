@@ -7,6 +7,8 @@ const _uuid = Uuid();
 /// Role of a chat message, mapped 1:1 to the OpenAI-compatible `role` field.
 enum MessageRole { system, user, assistant, tool }
 
+enum MessageKind { text, generatedImage }
+
 extension MessageRoleApi on MessageRole {
   String get wire => switch (this) {
     MessageRole.system => 'system',
@@ -33,6 +35,7 @@ class Attachment {
     this.truncated = false,
     this.parseError,
     this.imageBase64,
+    this.remoteUrl,
   }) : id = id ?? _uuid.v4();
 
   final String id;
@@ -51,19 +54,29 @@ class Attachment {
   /// non-images or images too large to attach.
   final String? imageBase64;
 
+  /// Optional remote image URL returned by a generation API. Base64 output is
+  /// preferred because it remains available offline; URLs are retained as a
+  /// compatibility fallback for providers that do not return `b64_json`.
+  final String? remoteUrl;
+
   bool get isImage => mimeType.startsWith('image/');
 
   /// True when this image can be sent to a vision model.
-  bool get hasImageData => imageBase64 != null && imageBase64!.isNotEmpty;
+  bool get hasImageData =>
+      (imageBase64 != null && imageBase64!.isNotEmpty) ||
+      (remoteUrl != null && remoteUrl!.isNotEmpty);
 
   /// `data:` URL for the OpenAI `image_url` content part (vision models).
-  String get imageDataUrl => 'data:$mimeType;base64,$imageBase64';
+  String get imageDataUrl => imageBase64 != null && imageBase64!.isNotEmpty
+      ? 'data:$mimeType;base64,$imageBase64'
+      : remoteUrl ?? '';
 
   Attachment copyWith({
     String? text,
     bool? truncated,
     String? parseError,
     String? imageBase64,
+    String? remoteUrl,
   }) => Attachment(
     id: id,
     name: name,
@@ -73,6 +86,7 @@ class Attachment {
     truncated: truncated ?? this.truncated,
     parseError: parseError ?? this.parseError,
     imageBase64: imageBase64 ?? this.imageBase64,
+    remoteUrl: remoteUrl ?? this.remoteUrl,
   );
 
   Map<String, dynamic> toJson() => {
@@ -84,6 +98,7 @@ class Attachment {
     'truncated': truncated,
     if (parseError != null) 'parseError': parseError,
     if (imageBase64 != null) 'imageBase64': imageBase64,
+    if (remoteUrl != null) 'remoteUrl': remoteUrl,
   };
 
   factory Attachment.fromJson(Map<String, dynamic> json) => Attachment(
@@ -95,6 +110,7 @@ class Attachment {
     truncated: json['truncated'] as bool? ?? false,
     parseError: json['parseError'] as String?,
     imageBase64: json['imageBase64'] as String?,
+    remoteUrl: json['remoteUrl'] as String?,
   );
 }
 
@@ -154,6 +170,7 @@ class ChatMessage {
     this.thinkingMillis = 0,
     this.speakerId,
     this.speakerName,
+    this.kind = MessageKind.text,
     List<Attachment>? attachments,
     List<Citation>? citations,
     DateTime? createdAt,
@@ -183,6 +200,7 @@ class ChatMessage {
 
   /// Display name for the speaker (ensemble / multi-character).
   final String? speakerName;
+  final MessageKind kind;
 
   /// Files attached by the user (user messages) — M4.
   final List<Attachment> attachments;
@@ -199,6 +217,7 @@ class ChatMessage {
     int? thinkingMillis,
     Object? speakerId = _msgSentinel,
     Object? speakerName = _msgSentinel,
+    MessageKind? kind,
     List<Attachment>? attachments,
     List<Citation>? citations,
   }) => ChatMessage(
@@ -215,6 +234,7 @@ class ChatMessage {
     speakerName: identical(speakerName, _msgSentinel)
         ? this.speakerName
         : speakerName as String?,
+    kind: kind ?? this.kind,
     attachments: attachments ?? this.attachments,
     citations: citations ?? this.citations,
     createdAt: createdAt,
@@ -232,6 +252,7 @@ class ChatMessage {
     'thinkingMillis': thinkingMillis,
     if (speakerId != null) 'speakerId': speakerId,
     if (speakerName != null) 'speakerName': speakerName,
+    if (kind != MessageKind.text) 'kind': kind.name,
     if (attachments.isNotEmpty)
       'attachments': attachments.map((a) => a.toJson()).toList(),
     if (citations.isNotEmpty)
@@ -249,6 +270,10 @@ class ChatMessage {
     thinkingMillis: (json['thinkingMillis'] as num?)?.toInt() ?? 0,
     speakerId: json['speakerId'] as String?,
     speakerName: json['speakerName'] as String?,
+    kind: MessageKind.values.firstWhere(
+      (value) => value.name == json['kind'],
+      orElse: () => MessageKind.text,
+    ),
     attachments: (json['attachments'] as List<dynamic>? ?? [])
         .map((e) => Attachment.fromJson(e as Map<String, dynamic>))
         .toList(),
@@ -276,6 +301,7 @@ class Conversation {
     this.mode = ConversationMode.chat,
     this.characterId,
     List<String>? participantIds,
+    List<CharacterCard>? localCast,
     List<String>? worldInfoIds,
     this.outline = '',
     this.authorNote = '',
@@ -286,8 +312,9 @@ class Conversation {
        messages = messages ?? [],
        activeChildren = activeChildren ?? {},
        updatedAt = updatedAt ?? DateTime.now(),
-       participantIds = participantIds ??
-           (characterId != null ? [characterId] : const []),
+       participantIds =
+           participantIds ?? (characterId != null ? [characterId] : const []),
+       localCast = localCast ?? const [],
        worldInfoIds = worldInfoIds ?? const [];
 
   final String id;
@@ -306,6 +333,11 @@ class Conversation {
 
   /// Cast for ensemble sessions (and single-story when length == 1).
   final List<String> participantIds;
+
+  /// Character cards generated specifically for this story. Unlike cards in
+  /// the global character library, these travel with the conversation and do
+  /// not pollute the reusable library.
+  final List<CharacterCard> localCast;
 
   /// World-info entry ids enabled for this session (global library opt-in).
   final List<String> worldInfoIds;
@@ -421,6 +453,7 @@ class Conversation {
     ConversationMode? mode,
     Object? characterId = _storySentinel,
     List<String>? participantIds,
+    List<CharacterCard>? localCast,
     List<String>? worldInfoIds,
     String? outline,
     String? authorNote,
@@ -438,6 +471,7 @@ class Conversation {
         ? this.characterId
         : characterId as String?,
     participantIds: participantIds ?? this.participantIds,
+    localCast: localCast ?? this.localCast,
     worldInfoIds: worldInfoIds ?? this.worldInfoIds,
     outline: outline ?? this.outline,
     authorNote: authorNote ?? this.authorNote,
@@ -457,6 +491,8 @@ class Conversation {
     'mode': mode.wire,
     if (characterId != null) 'characterId': characterId,
     if (participantIds.isNotEmpty) 'participantIds': participantIds,
+    if (localCast.isNotEmpty)
+      'localCast': localCast.map((card) => card.toJson()).toList(),
     if (worldInfoIds.isNotEmpty) 'worldInfoIds': worldInfoIds,
     if (outline.isNotEmpty) 'outline': outline,
     if (authorNote.isNotEmpty) 'authorNote': authorNote,
@@ -479,6 +515,13 @@ class Conversation {
     characterId: json['characterId'] as String?,
     participantIds: (json['participantIds'] as List<dynamic>? ?? [])
         .map((e) => e.toString())
+        .toList(),
+    localCast: (json['localCast'] as List<dynamic>? ?? [])
+        .map(
+          (e) => CharacterCard.fromJson(
+            Map<String, dynamic>.from(e as Map<dynamic, dynamic>),
+          ),
+        )
         .toList(),
     worldInfoIds: (json['worldInfoIds'] as List<dynamic>? ?? [])
         .map((e) => e.toString())

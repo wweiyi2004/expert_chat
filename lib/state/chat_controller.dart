@@ -3,11 +3,13 @@ import 'dart:convert';
 
 import 'package:characters/characters.dart';
 import 'package:dio/dio.dart' show CancelToken, DioException;
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/providers.dart';
 import '../data/models.dart';
 import '../data/story_models.dart';
+import '../domain/context/context_window_manager.dart';
 import '../domain/llm/llm_provider.dart';
 import '../domain/story/story_prompt_assembler.dart';
 import '../domain/tools/search_provider.dart';
@@ -24,6 +26,7 @@ class ChatState {
     this.deepThink = false,
     this.searchEnabled = false,
     this.isSearching = false,
+    this.contextReports = const {},
     this.error,
   });
 
@@ -46,6 +49,7 @@ class ChatState {
 
   /// True while a web-search tool call is running (drives a status hint).
   final bool isSearching;
+  final Map<String, ContextWindowReport> contextReports;
   final String? error;
 
   Conversation? get current {
@@ -63,6 +67,7 @@ class ChatState {
     bool? deepThink,
     bool? searchEnabled,
     bool? isSearching,
+    Map<String, ContextWindowReport>? contextReports,
     Object? error = _sentinel,
   }) => ChatState(
     conversations: conversations ?? this.conversations,
@@ -73,6 +78,7 @@ class ChatState {
     deepThink: deepThink ?? this.deepThink,
     searchEnabled: searchEnabled ?? this.searchEnabled,
     isSearching: isSearching ?? this.isSearching,
+    contextReports: contextReports ?? this.contextReports,
     error: identical(error, _sentinel) ? this.error : error as String?,
   );
 
@@ -282,6 +288,59 @@ class ChatController extends AsyncNotifier<ChatState> {
     _persistSoon(_persist());
   }
 
+  /// Create a story in which the model performs the narrator and every
+  /// story-local character while the user acts only as the director.
+  Future<void> newDirectorStoryConversation({
+    required String title,
+    required String premise,
+    required List<CharacterCard> cast,
+    required String outline,
+    String authorNote = '',
+    List<String>? worldInfoIds,
+  }) async {
+    final usableCast = cast
+        .where((card) => card.name.trim().isNotEmpty)
+        .toList();
+    if (usableCast.isEmpty) {
+      _set(_s.copyWith(error: '导演故事至少需要一个 AI 角色。'));
+      return;
+    }
+    if (outline.trim().isEmpty) {
+      _set(_s.copyWith(error: '请先生成或填写故事大纲。'));
+      return;
+    }
+
+    final ids = worldInfoIds ?? await _defaultWorldInfoIds();
+    final premiseText = premise.trim();
+    final noteText = authorNote.trim();
+    final combinedNote = [
+      if (noteText.isNotEmpty) noteText,
+      if (premiseText.isNotEmpty) '【故事原始情节】\n$premiseText',
+    ].join('\n\n');
+    final resolvedTitle = title.trim().isEmpty
+        ? (premiseText.isEmpty ? '导演故事' : premiseText)
+        : title.trim();
+
+    final fresh = Conversation(
+      title: resolvedTitle,
+      mode: ConversationMode.story,
+      participantIds: [for (final card in usableCast) card.id],
+      localCast: List.unmodifiable(usableCast),
+      worldInfoIds: ids,
+      outline: outline.trim(),
+      authorNote: combinedNote,
+      plotCursor: 0,
+    );
+    _set(
+      _s.copyWith(
+        conversations: [fresh, ..._s.conversations],
+        currentId: fresh.id,
+        error: null,
+      ),
+    );
+    _persistSoon(_persist());
+  }
+
   /// Multi-character ensemble: cast in one [venue], taking turns.
   Future<void> newEnsembleConversation({
     required List<CharacterCard> cast,
@@ -405,9 +464,12 @@ class ChatController extends AsyncNotifier<ChatState> {
       final parentId = convo.activePath.isEmpty
           ? null
           : convo.activePath.last.id;
+      final directorCue = convo.plotCursor == 0 && convo.activePath.isEmpty
+          ? '（导演：开始第一节）'
+          : '（导演：继续下一节）';
       final userMsg = ChatMessage(
         role: MessageRole.user,
-        content: '（推进情节）',
+        content: convo.localCast.isNotEmpty ? directorCue : '（推进情节）',
         parentId: parentId,
       );
       final assistantMsg = ChatMessage(
@@ -586,6 +648,7 @@ class ChatController extends AsyncNotifier<ChatState> {
       beforeDeletion.copyWith(
         conversations: nextConversations,
         currentId: nextCurrent,
+        contextReports: {...beforeDeletion.contextReports}..remove(id),
         error: null,
       ),
     );
@@ -649,11 +712,27 @@ class ChatController extends AsyncNotifier<ChatState> {
     _starting = true;
     _cancelStart = false;
     try {
-      final settings = await _readySettings();
-      if (settings == null || _cancelStart) return false;
-      final config = _configFor(settings);
-
       final convo = _s.current ?? Conversation();
+      final hasImages =
+          attachments.any((a) => a.isImage && a.hasImageData) ||
+          convo.activePath.any(
+            (m) =>
+                m.role == MessageRole.user &&
+                m.attachments.any((a) => a.isImage && a.hasImageData),
+          );
+      final requiresVision = attachments.any(
+        (a) => a.isImage && a.hasImageData,
+      );
+      final settings = await _readySettingsForTurn(
+        hasImages: hasImages,
+        requireVision: requiresVision,
+      );
+      if (settings == null || _cancelStart) return false;
+      final config = _configFor(
+        settings,
+        vision: hasImages && settings.visionConfigured,
+      );
+
       final parentId = convo.activePath.isEmpty
           ? null
           : convo.activePath.last.id;
@@ -726,14 +805,32 @@ class ChatController extends AsyncNotifier<ChatState> {
     _starting = true;
     _cancelStart = false;
     try {
-      final settings = await _readySettings();
-      if (settings == null || _cancelStart) return;
-      final config = _configFor(settings);
+      final nextAttachments = attachments ?? old.attachments;
+      // Only ancestors of the edited turn stay in the regenerated branch;
+      // descendants (and their images) are discarded, so they must not pull
+      // the request over to the vision endpoint.
+      final ancestors = convo.activePath.takeWhile((m) => m.id != old.id);
+      final hasImages =
+          nextAttachments.any((a) => a.isImage && a.hasImageData) ||
+          ancestors.any(
+            (m) =>
+                m.role == MessageRole.user &&
+                m.attachments.any((a) => a.isImage && a.hasImageData),
+          );
+      final turnSettings = await _readySettingsForTurn(
+        hasImages: hasImages,
+        requireVision: nextAttachments.any((a) => a.isImage && a.hasImageData),
+      );
+      if (turnSettings == null || _cancelStart) return;
+      final config = _configFor(
+        turnSettings,
+        vision: hasImages && turnSettings.visionConfigured,
+      );
 
       final userMsg = ChatMessage(
         role: MessageRole.user,
         content: trimmed,
-        attachments: attachments ?? old.attachments,
+        attachments: nextAttachments,
         parentId: old.parentId,
       );
       final assistantMsg = ChatMessage(
@@ -757,7 +854,7 @@ class ChatController extends AsyncNotifier<ChatState> {
         working: working,
         assistantId: assistantMsg.id,
         config: config,
-        settings: settings,
+        settings: turnSettings,
         searchQuery: trimmed,
         thinking: _s.deepThink,
       );
@@ -780,9 +877,17 @@ class ChatController extends AsyncNotifier<ChatState> {
     _starting = true;
     _cancelStart = false;
     try {
-      final settings = await _readySettings();
+      final hasImages = path.any(
+        (m) =>
+            m.role == MessageRole.user &&
+            m.attachments.any((a) => a.isImage && a.hasImageData),
+      );
+      final settings = await _readySettingsForTurn(hasImages: hasImages);
       if (settings == null || _cancelStart) return;
-      final config = _configFor(settings);
+      final config = _configFor(
+        settings,
+        vision: hasImages && settings.visionConfigured,
+      );
 
       final assistantMsg = ChatMessage(
         role: MessageRole.assistant,
@@ -840,6 +945,119 @@ class ChatController extends AsyncNotifier<ChatState> {
   /// Resend the last user turn after a failure (the error banner's "重试").
   Future<void> retryLast() => regenerate();
 
+  /// Generate an image as a normal conversation turn. This endpoint is wholly
+  /// optional and does not depend on the main chat provider being configured.
+  Future<bool> generateImage(String prompt) async {
+    final trimmed = prompt.trim();
+    if (trimmed.isEmpty || _s.isStreaming || _starting) return false;
+    _starting = true;
+    _cancelStart = false;
+    try {
+      final settings = await ref.read(settingsControllerProvider.future);
+      if (!settings.imageGenerationConfigured) {
+        _set(_s.copyWith(error: '请先在设置中完整配置图片生成 API。'));
+        return false;
+      }
+      if (_cancelStart) return false;
+
+      final convo = _s.current ?? Conversation();
+      final parentId = convo.activePath.isEmpty
+          ? null
+          : convo.activePath.last.id;
+      final userMsg = ChatMessage(
+        role: MessageRole.user,
+        content: trimmed,
+        parentId: parentId,
+      );
+      final assistantMsg = ChatMessage(
+        role: MessageRole.assistant,
+        content: '',
+        model: settings.imageGenerationApi.model,
+        kind: MessageKind.generatedImage,
+        parentId: userMsg.id,
+      );
+      final isFirst = convo.messages.isEmpty;
+      final working = convo.copyWith(
+        title: isFirst ? _truncateTitle(trimmed) : convo.title,
+        messages: [...convo.messages, userMsg, assistantMsg],
+        activeChildren: {
+          ...convo.activeChildren,
+          parentId ?? kRootKey: userMsg.id,
+          userMsg.id: assistantMsg.id,
+        },
+      );
+      final cancelToken = CancelToken();
+      _cancelToken = cancelToken;
+      _set(
+        _s.copyWith(
+          conversations: [
+            working,
+            ..._s.conversations.where((c) => c.id != working.id),
+          ],
+          currentId: working.id,
+          streamingConvoId: working.id,
+          isSearching: false,
+          error: null,
+        ),
+      );
+      try {
+        await _persistById(working.id);
+      } catch (e) {
+        // Same contract as _generate: a transient local-storage failure must
+        // not abort the turn (and must never strand streamingConvoId); the
+        // final/checkpoint writes below retry through the serialized queue.
+        _set(_s.copyWith(error: '本地保存失败：$e'));
+      }
+
+      try {
+        final generated = await ref
+            .read(mediaApiProvider)
+            .generateImage(
+              config: settings.imageGenerationApi,
+              apiKey: settings.imageGenerationApiKey,
+              prompt: trimmed,
+              cancelToken: cancelToken,
+            );
+        if (!_s.isStreaming || cancelToken.isCancelled) {
+          await _persistById(working.id);
+          return true;
+        }
+        final sizeBytes = generated.base64 == null
+            ? 0
+            : (generated.base64!.length * 3 / 4).round();
+        final attachment = Attachment(
+          name: 'generated-${DateTime.now().millisecondsSinceEpoch}.png',
+          mimeType: generated.mimeType,
+          sizeBytes: sizeBytes,
+          imageBase64: generated.base64,
+          remoteUrl: generated.remoteUrl,
+        );
+        final revised = generated.revisedPrompt?.trim();
+        _updateGeneratedImage(
+          working.id,
+          assistantMsg.id,
+          content: revised == null || revised.isEmpty
+              ? '图片已生成'
+              : '图片已生成\n\n优化后的提示词：$revised',
+          attachment: attachment,
+        );
+        _set(_s.copyWith(streamingConvoId: null, error: null));
+        await _persistById(working.id);
+        return true;
+      } catch (e) {
+        if (!(e is DioException && CancelToken.isCancel(e))) {
+          _set(_s.copyWith(streamingConvoId: null, error: e.toString()));
+        }
+        await _persistById(working.id);
+        return true;
+      } finally {
+        if (identical(_cancelToken, cancelToken)) _cancelToken = null;
+      }
+    } finally {
+      _starting = false;
+    }
+  }
+
   /// Validate settings; returns null (and sets an error) when not ready.
   Future<SettingsState?> _readySettings() async {
     final settings = await ref.read(settingsControllerProvider.future);
@@ -850,8 +1068,27 @@ class ChatController extends AsyncNotifier<ChatState> {
     return settings;
   }
 
+  Future<SettingsState?> _readySettingsForTurn({
+    required bool hasImages,
+    bool requireVision = false,
+  }) async {
+    final settings = await ref.read(settingsControllerProvider.future);
+    if (hasImages && settings.visionConfigured) return settings;
+    if (requireVision) {
+      _set(_s.copyWith(error: '图片消息需要先在设置中完整配置视觉 API。'));
+      return null;
+    }
+    if (!settings.config.isReady) {
+      _set(_s.copyWith(error: '请先在设置中填写 API Key。'));
+      return null;
+    }
+    return settings;
+  }
+
   /// The deep-think toggle routes to the active profile's reasoner model.
-  LlmConfig _configFor(SettingsState settings) => _s.deepThink
+  LlmConfig _configFor(SettingsState settings, {bool vision = false}) => vision
+      ? settings.visionConfig
+      : _s.deepThink
       ? settings.config.copyWith(model: settings.reasonerModel)
       : settings.config;
 
@@ -873,8 +1110,13 @@ class ChatController extends AsyncNotifier<ChatState> {
     // The executor also restricts calls to this exact allow-list so a model
     // cannot invent unrelated network targets while "联网" is off.
     final pastedUrls = extractHttpUrls(searchQuery);
+    // Browser clients cannot safely pin DNS and arbitrary pages are normally
+    // CORS-blocked. Until a trusted fetch proxy exists, keep direct fetch off.
+    final directPageFetchAllowed = !kIsWeb;
     final useFetchUrlTool =
-        pastedUrls.isNotEmpty && config.capabilities.supportsTools;
+        directPageFetchAllowed &&
+        pastedUrls.isNotEmpty &&
+        config.capabilities.supportsTools;
     final enableTools = useWebSearchTool || useFetchUrlTool;
     final toolSpecs = <ToolSpec>[
       if (useWebSearchTool) ToolEngine.webSearchTool,
@@ -921,7 +1163,8 @@ class ChatController extends AsyncNotifier<ChatState> {
     SearchContext? searchContext;
     // Tool-capable models can decide when the pasted link is relevant. Models
     // without function calling keep the deterministic pre-fetch fallback.
-    final needPreFetch = pastedUrls.isNotEmpty && !useFetchUrlTool;
+    final needPreFetch =
+        directPageFetchAllowed && pastedUrls.isNotEmpty && !useFetchUrlTool;
     final needPreSearch = searchAllowed && !useWebSearchTool;
     if (needPreFetch || needPreSearch) {
       _set(_s.copyWith(isSearching: true));
@@ -1016,7 +1259,10 @@ class ChatController extends AsyncNotifier<ChatState> {
       CharacterCard? card;
       var cast = const <CharacterCard>[];
       final ensemble = cur.isEnsemble && ensembleSpeaker != null;
-      if (ensemble) {
+      final directorStory = cur.isStory && cur.localCast.isNotEmpty;
+      if (directorStory) {
+        cast = cur.localCast;
+      } else if (ensemble) {
         final loaded = <CharacterCard>[];
         for (final id in cur.castIds) {
           final c = await ref.read(characterRepositoryProvider).getById(id);
@@ -1071,6 +1317,7 @@ class ChatController extends AsyncNotifier<ChatState> {
         historyPath: pathForScan,
         advancePlot: advancePlot,
         ensembleTurn: ensemble,
+        directorMode: directorStory,
       );
       history.insertAll(0, prefix);
     } else {
@@ -1088,9 +1335,26 @@ class ChatController extends AsyncNotifier<ChatState> {
       return;
     }
 
+    final contextResult = ref
+        .read(contextWindowManagerProvider)
+        .manage(history, settings.context);
+    _recordContextReport(working.id, contextResult.report);
+    if (settings.context.enabled &&
+        contextResult.report.sentTokens >
+            contextResult.report.inputBudgetTokens) {
+      _set(
+        _s.copyWith(
+          streamingConvoId: null,
+          error: '当前消息和图片超过上下文预算，请减少附件或在设置中增大上下文窗口。',
+        ),
+      );
+      await _persistById(working.id);
+      return;
+    }
+
     final succeeded = await _streamAnswer(
       config: config,
-      history: history,
+      history: contextResult.messages,
       convoId: working.id,
       assistantId: assistantId,
       thinking: thinking,
@@ -1317,6 +1581,22 @@ class ChatController extends AsyncNotifier<ChatState> {
           return false;
         }
         requestMessages.addAll(toolMessages);
+
+        // Tool responses can be much larger than the original conversation.
+        // Re-budget before the next model round while keeping each assistant
+        // tool-call and its tool results as an indivisible protocol unit.
+        final roundContext = ref
+            .read(contextWindowManagerProvider)
+            .manage(requestMessages, settings.context);
+        requestMessages
+          ..clear()
+          ..addAll(roundContext.messages);
+        _recordContextReport(convoId, roundContext.report, accumulate: true);
+        if (settings.context.enabled &&
+            roundContext.report.sentTokens >
+                roundContext.report.inputBudgetTokens) {
+          throw Exception('工具结果超过上下文预算，请减少附件、关闭联网搜索，或在设置中增大上下文窗口。');
+        }
       }
     } catch (e) {
       flushUi();
@@ -1542,7 +1822,9 @@ class ChatController extends AsyncNotifier<ChatState> {
   /// when [vision] is true, otherwise described in text. Messages with no
   /// attachments pass through unchanged.
   LlmRequestMessage _toRequestMessage(ChatMessage m, {required bool vision}) {
-    if (m.attachments.isEmpty) return LlmRequestMessage.fromChatMessage(m);
+    if (m.attachments.isEmpty || m.role != MessageRole.user) {
+      return LlmRequestMessage.fromChatMessage(m);
+    }
 
     final buffer = StringBuffer();
     final images = <String>[];
@@ -1599,6 +1881,49 @@ class ChatController extends AsyncNotifier<ChatState> {
     ];
     _set(
       _s.copyWith(conversations: _replace(convo.copyWith(messages: messages))),
+    );
+  }
+
+  void _updateGeneratedImage(
+    String convoId,
+    String msgId, {
+    required String content,
+    required Attachment attachment,
+  }) {
+    final idx = _s.conversations.indexWhere((c) => c.id == convoId);
+    if (idx < 0) return;
+    final convo = _s.conversations[idx];
+    final messages = [
+      for (final m in convo.messages)
+        if (m.id == msgId)
+          m.copyWith(content: content, attachments: [attachment])
+        else
+          m,
+    ];
+    _set(
+      _s.copyWith(conversations: _replace(convo.copyWith(messages: messages))),
+    );
+  }
+
+  void _recordContextReport(
+    String convoId,
+    ContextWindowReport report, {
+    bool accumulate = false,
+  }) {
+    final previous = accumulate ? _s.contextReports[convoId] : null;
+    final combined = previous == null
+        ? report
+        : ContextWindowReport(
+            originalTokens: previous.originalTokens > report.originalTokens
+                ? previous.originalTokens
+                : report.originalTokens,
+            sentTokens: report.sentTokens,
+            inputBudgetTokens: report.inputBudgetTokens,
+            droppedMessages: previous.droppedMessages + report.droppedMessages,
+            truncated: previous.truncated || report.truncated,
+          );
+    _set(
+      _s.copyWith(contextReports: {..._s.contextReports, convoId: combined}),
     );
   }
 }

@@ -9,14 +9,17 @@ import 'package:flutter/material.dart';
 import 'package:expert_chat/core/providers.dart';
 import 'package:expert_chat/data/character_repository.dart';
 import 'package:expert_chat/data/conversation_repository.dart';
+import 'package:expert_chat/data/context_prefs.dart';
 import 'package:expert_chat/data/db/app_database.dart' show AppDatabase;
 import 'package:expert_chat/data/drift_conversation_repository.dart';
+import 'package:expert_chat/data/media_api_config.dart';
 import 'package:expert_chat/data/models.dart';
 import 'package:expert_chat/data/provider_profile.dart';
 import 'package:expert_chat/data/story_models.dart';
 import 'package:expert_chat/data/world_info_repository.dart';
 import 'package:expert_chat/domain/export/conversation_export.dart';
 import 'package:expert_chat/domain/llm/llm_provider.dart';
+import 'package:expert_chat/domain/media/openai_compatible_media_provider.dart';
 import 'package:expert_chat/domain/tools/file_parser.dart';
 import 'package:expert_chat/domain/tools/search_provider.dart';
 import 'package:expert_chat/domain/tools/tool_engine.dart';
@@ -103,6 +106,30 @@ class DelayedFailDeleteRepo extends InMemoryRepo {
   }
 }
 
+class FailingSaveRepo extends InMemoryRepo {
+  bool failNextSave = false;
+
+  @override
+  Future<void> saveConversation(Conversation c) async {
+    if (failNextSave) {
+      failNextSave = false;
+      throw Exception('simulated storage failure');
+    }
+    return super.saveConversation(c);
+  }
+}
+
+/// Media provider that returns a canned image without any network I/O.
+class FakeMediaProvider extends OpenAiCompatibleMediaProvider {
+  @override
+  Future<GeneratedImage> generateImage({
+    required MediaApiConfig config,
+    required String apiKey,
+    required String prompt,
+    CancelToken? cancelToken,
+  }) async => const GeneratedImage(base64: 'QUFBQQ==');
+}
+
 /// Settings controller that returns a ready config without touching storage.
 class FakeSettings extends SettingsController {
   @override
@@ -119,6 +146,20 @@ class FakeSettings extends SettingsController {
       activeProfileId: profile.id,
       apiKey: 'sk-test',
       searchApiKey: 'search-key',
+    );
+  }
+}
+
+class FakeSmallContextSettings extends FakeSettings {
+  @override
+  Future<SettingsState> build() async {
+    final base = await super.build();
+    return base.copyWith(
+      context: const ContextPrefs(
+        contextWindowTokens: 4096,
+        reservedOutputTokens: 3072,
+        maxHistoryMessages: 6,
+      ),
     );
   }
 }
@@ -152,6 +193,55 @@ class FakeVisionSettings extends SettingsController {
       chatModel: 'gpt-4o',
       reasonerModel: 'o3-mini',
       models: const ['gpt-4o', 'o3-mini'],
+    );
+    return SettingsState(
+      profiles: [profile],
+      activeProfileId: profile.id,
+      apiKey: 'sk-test',
+      visionApi: const MediaApiConfig(
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-4o',
+      ),
+      visionApiKey: 'sk-vision-test',
+    );
+  }
+}
+
+/// Settings with the optional image-generation endpoint configured.
+class FakeImageGenSettings extends SettingsController {
+  @override
+  Future<SettingsState> build() async {
+    final profile = ProviderProfile(
+      name: 'DeepSeek',
+      baseUrl: 'https://api.deepseek.com',
+      chatModel: KnownModels.chat,
+      reasonerModel: KnownModels.reasoner,
+      models: const [KnownModels.chat, KnownModels.reasoner],
+    );
+    return SettingsState(
+      profiles: [profile],
+      activeProfileId: profile.id,
+      apiKey: 'sk-test',
+      imageGenerationApi: const MediaApiConfig(
+        baseUrl: 'https://media.example/v1',
+        model: 'img-model',
+      ),
+      imageGenerationApiKey: 'sk-img-test',
+    );
+  }
+}
+
+/// Settings for an arbitrary OpenAI-compatible model whose tool support is
+/// unknown. It should remain usable when a message contains a URL.
+class FakeUnknownModelSettings extends SettingsController {
+  @override
+  Future<SettingsState> build() async {
+    final profile = ProviderProfile(
+      name: 'Custom',
+      baseUrl: 'https://llm.example/v1',
+      chatModel: 'plain-chat-model',
+      reasonerModel: 'plain-chat-model',
+      models: const ['plain-chat-model'],
     );
     return SettingsState(
       profiles: [profile],
@@ -191,6 +281,7 @@ ProviderContainer _container(
   InMemoryRepo repo, {
   ToolEngineFactory? toolEngineFactory,
   SettingsController Function() settingsBuilder = FakeSettings.new,
+  OpenAiCompatibleMediaProvider? mediaProvider,
 }) {
   final db = AppDatabase(NativeDatabase.memory());
   final characters = CharacterRepository(db);
@@ -205,6 +296,8 @@ ProviderContainer _container(
       worldInfoRepositoryProvider.overrideWithValue(worldInfo),
       if (toolEngineFactory != null)
         toolEngineFactoryProvider.overrideWithValue(toolEngineFactory),
+      if (mediaProvider != null)
+        mediaApiProvider.overrideWithValue(mediaProvider),
     ],
   );
   // Memory DB is not opened via path_provider; close it when the test ends.
@@ -221,6 +314,14 @@ void main() {
       reasoning: 'thinking',
       model: 'deepseek-reasoner',
       thinkingMillis: 4200,
+      kind: MessageKind.generatedImage,
+      attachments: [
+        Attachment(
+          name: 'generated.png',
+          mimeType: 'image/png',
+          remoteUrl: 'https://cdn.example.com/generated.png',
+        ),
+      ],
       citations: const [Citation(index: 1, title: 'T', url: 'https://x')],
     );
     final restored = ChatMessage.fromJson(msg.toJson());
@@ -228,6 +329,11 @@ void main() {
     expect(restored.reasoning, 'thinking');
     expect(restored.model, 'deepseek-reasoner');
     expect(restored.thinkingMillis, 4200);
+    expect(restored.kind, MessageKind.generatedImage);
+    expect(
+      restored.attachments.single.remoteUrl,
+      'https://cdn.example.com/generated.png',
+    );
     expect(restored.citations.single.url, 'https://x');
   });
 
@@ -268,6 +374,31 @@ void main() {
       expect(llm.lastThinking, isFalse); // normal mode disables thinking
     },
   );
+
+  test('context management compacts only the transient request', () async {
+    final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'ok')]);
+    final repo = InMemoryRepo();
+    final c = _container(
+      llm,
+      repo,
+      settingsBuilder: FakeSmallContextSettings.new,
+    );
+    addTearDown(c.dispose);
+    final ctrl = c.read(chatControllerProvider.notifier);
+    await c.read(chatControllerProvider.future);
+
+    for (var i = 0; i < 10; i++) {
+      await ctrl.sendMessage('turn-$i ${'x' * 600}');
+    }
+
+    final state = c.read(chatControllerProvider).value!;
+    final report = state.contextReports[state.current!.id]!;
+    expect(report.managed, isTrue);
+    expect(report.sentTokens, lessThanOrEqualTo(report.inputBudgetTokens));
+    expect(llm.calls.last.last.content, contains('turn-9'));
+    // The database still has every original user/assistant node.
+    expect(repo.store.single.messages, hasLength(20));
+  });
 
   test('web_search tool runs only when the model requests it', () async {
     final llm = FakeLlmProvider(
@@ -439,6 +570,39 @@ void main() {
       expect(assistant.content, '页面内容见 [1]。');
       expect(assistant.citations.single.index, 1);
       expect(assistant.citations.single.url, 'https://allowed.example/page');
+    },
+  );
+
+  test(
+    'unknown models pre-fetch pasted URLs without receiving tool definitions',
+    () async {
+      final llm = FakeLlmProvider([
+        const ChatChunk(contentDelta: '页面摘要见 [1]。'),
+      ]);
+      final pages = _StubPageSearch();
+      final c = _container(
+        llm,
+        InMemoryRepo(),
+        settingsBuilder: FakeUnknownModelSettings.new,
+        toolEngineFactory: ({required backend, required apiKey}) =>
+            ToolEngine(pages),
+      );
+      addTearDown(c.dispose);
+
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
+      await ctrl.sendMessage('请读取 https://allowed.example/page');
+
+      expect(pages.fetchCalls, 1);
+      expect(llm.toolCalls.single, isNull);
+      expect(
+        llm.calls.single.any(
+          (m) =>
+              m.role == MessageRole.system &&
+              m.content.contains('This is readable page content'),
+        ),
+        isTrue,
+      );
     },
   );
 
@@ -823,6 +987,53 @@ void main() {
     expect(convo.worldInfoIds, isEmpty);
   });
 
+  test(
+    'director story keeps a local cast and AI performs every role',
+    () async {
+      final llm = FakeLlmProvider([
+        const ChatChunk(contentDelta: '沈砚推开休眠舱，零号正在舷窗前等他。'),
+      ]);
+      final c = _container(llm, InMemoryRepo());
+      addTearDown(c.dispose);
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
+
+      final cast = [
+        CharacterCard(name: '沈砚', description: '失忆的调查记者', personality: '谨慎而执着'),
+        CharacterCard(name: '零号', description: '掌握真相的克隆人', personality: '冷静克制'),
+      ];
+      await ctrl.newDirectorStoryConversation(
+        title: '失控航线',
+        premise: '记者从陌生飞船醒来，发现其他乘员都是自己的克隆体。',
+        cast: cast,
+        outline: '- 从休眠舱醒来\n- 与零号第一次对峙',
+        authorNote: '使用第三人称有限视角。',
+        worldInfoIds: const [],
+      );
+
+      var convo = c.read(chatControllerProvider).value!.current!;
+      expect(convo.isStory, isTrue);
+      expect(convo.characterId, isNull);
+      expect(convo.localCast.map((card) => card.name), ['沈砚', '零号']);
+      expect(convo.authorNote, contains('故事原始情节'));
+      expect(convo.authorNote, contains('第三人称有限视角'));
+
+      await ctrl.advancePlot();
+
+      convo = c.read(chatControllerProvider).value!.current!;
+      expect(convo.plotCursor, 1);
+      expect(convo.activePath.first.content, '（导演：开始第一节）');
+      expect(convo.activePath.last.content, contains('零号'));
+      final request = llm.calls.single
+          .map((message) => message.content)
+          .join('\n');
+      expect(request, contains('用户是导演'));
+      expect(request, contains('旁白和全部角色'));
+      expect(request, contains('沈砚'));
+      expect(request, contains('零号'));
+    },
+  );
+
   test('advancePlot increments plotCursor after a successful reply', () async {
     final llm = FakeLlmProvider([const ChatChunk(contentDelta: '第二节正文')]);
     final card = CharacterCard(name: '作者', firstMes: '开场');
@@ -1044,6 +1255,49 @@ void main() {
       expect(reasoner.supportsVision, isTrue);
       expect(reasoner.supportsReasoningEffort, isTrue);
       expect(reasoner.reasoningCanBeDisabled, isFalse);
+
+      final fixedReasoner = ModelCapabilities.resolve(
+        'grok-4.20-0309-reasoning',
+      );
+      expect(fixedReasoner.isReasoner, isTrue);
+
+      final nonReasoner = ModelCapabilities.resolve(
+        'grok-4.20-0309-non-reasoning',
+      );
+      expect(nonReasoner.isReasoner, isFalse);
+      expect(nonReasoner.supportsTools, isTrue);
+
+      final multiAgent = ModelCapabilities.resolve(
+        'grok-4.20-multi-agent-0309',
+      );
+      expect(multiAgent.isReasoner, isTrue);
+      expect(multiAgent.supportsTools, isTrue);
+    });
+
+    test('unknown models fail closed for tool support', () {
+      final c = ModelCapabilities.resolve('plain-chat-model');
+      expect(c.supportsTools, isFalse);
+    });
+
+    test('tool support covers aggregator-prefixed and newer model ids', () {
+      expect(ModelCapabilities.resolve('qwen3-max').supportsTools, isTrue);
+      expect(ModelCapabilities.resolve('qwen/qwen3-max').supportsTools, isTrue);
+      expect(
+        ModelCapabilities.resolve('deepseek-ai/DeepSeek-V4').supportsTools,
+        isTrue,
+      );
+      expect(
+        ModelCapabilities.resolve('deepseek-ai/DeepSeek-V4').sendThinkingField,
+        isTrue,
+      );
+      expect(ModelCapabilities.resolve('o4-mini').supportsTools, isTrue);
+      expect(ModelCapabilities.resolve('o4-mini').isReasoner, isTrue);
+      expect(ModelCapabilities.resolve('minimax-m2.1').supportsTools, isTrue);
+      expect(
+        ModelCapabilities.resolve('doubao-seed-2.0').supportsTools,
+        isTrue,
+      );
+      expect(ModelCapabilities.resolve('hunyuan-turbos').supportsTools, isTrue);
     });
 
     test('vision detection: gpt-4o yes, deepseek-v4 no, qwen-vl yes', () {
@@ -1159,6 +1413,52 @@ void main() {
     expect(md, contains('月光下'));
   });
 
+  test('ConversationExport.toMarkdown labels director and local AI cast', () {
+    final director = ChatMessage(
+      role: MessageRole.user,
+      content: '让两人在这里发生第一次冲突。',
+    );
+    final story = ChatMessage(
+      role: MessageRole.assistant,
+      content: '舱门合拢，争执随之爆发。',
+      parentId: director.id,
+    );
+    final convo = Conversation(
+      title: '失控航线',
+      mode: ConversationMode.story,
+      localCast: [
+        CharacterCard(name: '沈砚'),
+        CharacterCard(name: '零号'),
+      ],
+      messages: [director, story],
+      activeChildren: {kRootKey: director.id, director.id: story.id},
+    );
+
+    final md = ConversationExport.toMarkdown(convo);
+    expect(md, contains('模式：导演故事'));
+    expect(md, contains('AI 角色：沈砚、零号'));
+    expect(md, contains('## 🎬 导演'));
+    expect(md, contains('## 🤖 旁白与角色'));
+  });
+
+  test('ConversationExport.toMarkdown escapes hostile character names', () {
+    final director = ChatMessage(role: MessageRole.user, content: '开始。');
+    final convo = Conversation(
+      title: '转义测试',
+      mode: ConversationMode.story,
+      localCast: [
+        CharacterCard(name: 'K_9'),
+        CharacterCard(name: '艾拉\n# 系统公告'),
+      ],
+      messages: [director],
+      activeChildren: {kRootKey: director.id},
+    );
+
+    final md = ConversationExport.toMarkdown(convo);
+    expect(md, contains(r'K\_9'));
+    expect(md, isNot(contains('\n# 系统公告')));
+  });
+
   test('LlmRequestMessage serializes images as multimodal content parts', () {
     const msg = LlmRequestMessage(
       role: MessageRole.user,
@@ -1197,7 +1497,7 @@ void main() {
   });
 
   test(
-    'non-vision model describes images in text, not as image parts',
+    'image send is rejected when the optional vision API is not configured',
     () async {
       final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'ok')]);
       final c = _container(llm, InMemoryRepo()); // default DeepSeek (no vision)
@@ -1205,7 +1505,7 @@ void main() {
       final ctrl = c.read(chatControllerProvider.notifier);
       await c.read(chatControllerProvider.future);
 
-      await ctrl.sendMessage(
+      final accepted = await ctrl.sendMessage(
         'what is this?',
         attachments: [
           Attachment(
@@ -1216,11 +1516,86 @@ void main() {
         ],
       );
 
-      final user = llm.calls.last.firstWhere((m) => m.role == MessageRole.user);
-      expect(user.imageDataUrls, isEmpty);
-      expect(user.content, contains('不支持图片'));
+      expect(accepted, isFalse);
+      expect(llm.calls, isEmpty);
+      expect(c.read(chatControllerProvider).value!.error, contains('视觉 API'));
     },
   );
+
+  test('editMessage of a plain turn does not route to the vision model', () async {
+    final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'ok')]);
+    final c = _container(
+      llm,
+      InMemoryRepo(),
+      settingsBuilder: FakeVisionSettings.new,
+    );
+    addTearDown(c.dispose);
+    final ctrl = c.read(chatControllerProvider.notifier);
+    await c.read(chatControllerProvider.future);
+
+    await ctrl.sendMessage('第一句纯文本');
+    await ctrl.sendMessage(
+      '看看这张图',
+      attachments: [
+        Attachment(name: 'pic.png', mimeType: 'image/png', imageBase64: 'AAAA'),
+      ],
+    );
+    expect(llm.lastConfig!.apiKey, 'sk-vision-test');
+
+    // Editing the first (plain) turn discards the image turn; the regenerated
+    // branch contains no images, so it must use the plain chat credentials.
+    final convo = c.read(chatControllerProvider).value!.current!;
+    final firstUser = convo.activePath.firstWhere(
+      (m) => m.role == MessageRole.user,
+    );
+    await ctrl.editMessage(firstUser.id, '改写第一句');
+
+    expect(llm.lastConfig!.apiKey, 'sk-test');
+  });
+
+  test('deleteConversation drops its context report', () async {
+    final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'ok')]);
+    final c = _container(llm, InMemoryRepo());
+    addTearDown(c.dispose);
+    final ctrl = c.read(chatControllerProvider.notifier);
+    await c.read(chatControllerProvider.future);
+
+    await ctrl.sendMessage('hello');
+    final state = c.read(chatControllerProvider).value!;
+    final id = state.currentId!;
+    expect(state.contextReports, contains(id));
+
+    await ctrl.deleteConversation(id);
+    expect(
+      c.read(chatControllerProvider).value!.contextReports.containsKey(id),
+      isFalse,
+    );
+  });
+
+  test('generateImage recovers when the placeholder persist fails', () async {
+    final repo = FailingSaveRepo();
+    final c = _container(
+      FakeLlmProvider(const []),
+      repo,
+      settingsBuilder: FakeImageGenSettings.new,
+      mediaProvider: FakeMediaProvider(),
+    );
+    addTearDown(c.dispose);
+    final ctrl = c.read(chatControllerProvider.notifier);
+    await c.read(chatControllerProvider.future);
+
+    repo.failNextSave = true;
+    final ok = await ctrl.generateImage('画一只猫');
+
+    expect(ok, isTrue);
+    final state = c.read(chatControllerProvider).value!;
+    expect(state.isStreaming, isFalse);
+    final path = state.current!.activePath;
+    expect(path.last.kind, MessageKind.generatedImage);
+    expect(path.last.attachments, isNotEmpty);
+    // Later checkpoint writes still reach storage once it recovers.
+    expect(repo.store, isNotEmpty);
+  });
 
   test(
     'regenerate creates a new assistant branch and switches between them',

@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/models.dart';
+import '../../data/story_models.dart';
+import '../../state/character_controller.dart';
 import '../../state/chat_controller.dart';
 import '../../state/world_info_controller.dart';
 import 'studio_page.dart';
@@ -140,8 +142,19 @@ class _StoryPanelBodyState extends ConsumerState<StoryPanelBody> {
     if (!widget.embedded && Navigator.of(context).canPop()) {
       Navigator.of(context).pop();
     }
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const StudioPage(initialTab: 1)),
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const StudioPage(initialTab: 1)));
+  }
+
+  Future<void> _saveLocalCharacter(CharacterCard card) async {
+    await ref.read(characterCardsProvider.notifier).save(card);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('“${card.name}”已保存到角色库'),
+        behavior: SnackBarBehavior.floating,
+      ),
     );
   }
 
@@ -184,9 +197,9 @@ class _StoryPanelBodyState extends ConsumerState<StoryPanelBody> {
             ),
             Text(
               _status,
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                color: scheme.onSurfaceVariant,
-              ),
+              style: Theme.of(
+                context,
+              ).textTheme.labelSmall?.copyWith(color: scheme.onSurfaceVariant),
             ),
             if (widget.onClose != null)
               IconButton(
@@ -198,10 +211,12 @@ class _StoryPanelBodyState extends ConsumerState<StoryPanelBody> {
         ),
         const SizedBox(height: 4),
         Text(
-          '修改后自动保存，点「推进」按当前节拍续写',
-          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-            color: scheme.onSurfaceVariant,
-          ),
+          convo.localCast.isNotEmpty
+              ? '修改后自动保存，点「继续下一节」按当前节拍演绎'
+              : '修改后自动保存，点「推进」按当前节拍续写',
+          style: Theme.of(
+            context,
+          ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
         ),
         const SizedBox(height: 16),
         Container(
@@ -247,6 +262,71 @@ class _StoryPanelBodyState extends ConsumerState<StoryPanelBody> {
           ),
         ),
         const SizedBox(height: 18),
+        if (convo.localCast.isNotEmpty) ...[
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '本故事角色卡',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+              ),
+              Text(
+                '${convo.localCast.length} 位 · AI 创建',
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '这些角色只属于当前故事；需要复用时可单独保存到角色库。',
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+          ),
+          const SizedBox(height: 8),
+          for (final card in convo.localCast)
+            Card(
+              margin: const EdgeInsets.only(bottom: 8),
+              child: ExpansionTile(
+                leading: CircleAvatar(
+                  child: Text(
+                    card.name.trim().isEmpty
+                        ? '?'
+                        : String.fromCharCode(card.name.runes.first),
+                  ),
+                ),
+                title: Text(card.name),
+                subtitle: card.description.trim().isEmpty
+                    ? null
+                    : Text(
+                        card.description,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                children: [
+                  if (card.personality.trim().isNotEmpty)
+                    _CharacterDetail(label: '性格与动机', value: card.personality),
+                  if (card.scenario.trim().isNotEmpty)
+                    _CharacterDetail(label: '剧情定位', value: card.scenario),
+                  if (card.systemPrompt.trim().isNotEmpty)
+                    _CharacterDetail(label: '演绎约束', value: card.systemPrompt),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton.icon(
+                      onPressed: () => _saveLocalCharacter(card),
+                      icon: const Icon(Icons.bookmark_add_outlined),
+                      label: const Text('保存到角色库'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          const SizedBox(height: 10),
+        ],
         Text('大纲', style: Theme.of(context).textTheme.titleSmall),
         const SizedBox(height: 8),
         TextField(
@@ -341,6 +421,34 @@ class _StoryPanelBodyState extends ConsumerState<StoryPanelBody> {
     return Material(
       color: scheme.surfaceContainerLow.withValues(alpha: 0.96),
       child: content,
+    );
+  }
+}
+
+class _CharacterDetail extends StatelessWidget {
+  const _CharacterDetail({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Text.rich(
+          TextSpan(
+            children: [
+              TextSpan(
+                text: '$label：',
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+              TextSpan(text: value),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

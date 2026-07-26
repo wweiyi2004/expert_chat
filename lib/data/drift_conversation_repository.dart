@@ -45,6 +45,7 @@ class DriftConversationRepository implements ConversationRepository {
           mode: ConversationMode.fromWire(c.mode),
           characterId: c.characterId,
           participantIds: _decodeStringList(c.participantIdsJson),
+          localCast: _decodeList(c.localCastJson, CharacterCard.fromJson),
           worldInfoIds: _decodeStringList(c.worldInfoIdsJson),
           outline: c.outline,
           authorNote: c.authorNote,
@@ -68,7 +69,9 @@ class DriftConversationRepository implements ConversationRepository {
   List<String> _decodeStringList(String? raw) {
     if (raw == null || raw.isEmpty) return const [];
     try {
-      return (jsonDecode(raw) as List<dynamic>).map((e) => e.toString()).toList();
+      return (jsonDecode(raw) as List<dynamic>)
+          .map((e) => e.toString())
+          .toList();
     } catch (_) {
       return const [];
     }
@@ -113,6 +116,9 @@ class DriftConversationRepository implements ConversationRepository {
     final participantIdsJson = convo.participantIds.isEmpty
         ? null
         : jsonEncode(convo.participantIds);
+    final localCastJson = convo.localCast.isEmpty
+        ? null
+        : jsonEncode(convo.localCast.map((card) => card.toJson()).toList());
     final storedConvo = await (_db.select(
       _db.conversations,
     )..where((c) => c.id.equals(convo.id))).getSingleOrNull();
@@ -125,6 +131,7 @@ class DriftConversationRepository implements ConversationRepository {
         storedConvo.characterId != convo.characterId ||
         storedConvo.worldInfoIdsJson != worldInfoIdsJson ||
         storedConvo.participantIdsJson != participantIdsJson ||
+        storedConvo.localCastJson != localCastJson ||
         storedConvo.outline != convo.outline ||
         storedConvo.authorNote != convo.authorNote ||
         storedConvo.plotCursor != convo.plotCursor ||
@@ -142,6 +149,7 @@ class DriftConversationRepository implements ConversationRepository {
               characterId: Value(convo.characterId),
               worldInfoIdsJson: Value(worldInfoIdsJson),
               participantIdsJson: Value(participantIdsJson),
+              localCastJson: Value(localCastJson),
               outline: Value(convo.outline),
               authorNote: Value(convo.authorNote),
               plotCursor: Value(convo.plotCursor),
@@ -200,6 +208,7 @@ class DriftConversationRepository implements ConversationRepository {
       stored.thinkingMillis == message.thinkingMillis &&
       stored.speakerId == message.speakerId &&
       stored.speakerName == message.speakerName &&
+      stored.kind == message.kind.name &&
       stored.attachmentsJson == _attachmentsJson(message) &&
       stored.citationsJson == _citationsJson(message) &&
       _matchesStoredTimestamp(stored.createdAt, message.createdAt) &&
@@ -245,6 +254,10 @@ class DriftConversationRepository implements ConversationRepository {
     thinkingMillis: m.thinkingMillis,
     speakerId: m.speakerId,
     speakerName: m.speakerName,
+    kind: MessageKind.values.firstWhere(
+      (value) => value.name == m.kind,
+      orElse: () => MessageKind.text,
+    ),
     createdAt: m.createdAt,
     attachments: _decodeList(m.attachmentsJson, (e) => Attachment.fromJson(e)),
     citations: _decodeList(m.citationsJson, (e) => Citation.fromJson(e)),
@@ -270,6 +283,7 @@ class DriftConversationRepository implements ConversationRepository {
         thinkingMillis: Value(m.thinkingMillis),
         speakerId: Value(m.speakerId),
         speakerName: Value(m.speakerName),
+        kind: Value(m.kind.name),
         attachmentsJson: Value(_attachmentsJson(m)),
         citationsJson: Value(_citationsJson(m)),
         createdAt: m.createdAt,

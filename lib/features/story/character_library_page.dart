@@ -17,9 +17,7 @@ class CharacterLibraryPage extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return Scaffold(
-      appBar: AppBar(
-        title: Text(pickForChat ? '选择角色开聊' : '角色库'),
-      ),
+      appBar: AppBar(title: Text(pickForChat ? '选择角色开聊' : '角色库')),
       floatingActionButton: FloatingActionButton.extended(
         tooltip: '新建角色',
         onPressed: () => editCharacterCard(context, ref, null),
@@ -198,9 +196,7 @@ Future<void> editCharacterCard(
   CharacterCard? existing,
 ) async {
   final result = await Navigator.of(context).push<CharacterCard>(
-    MaterialPageRoute(
-      builder: (_) => CharacterEditPage(existing: existing),
-    ),
+    MaterialPageRoute(builder: (_) => CharacterEditPage(existing: existing)),
   );
   if (result != null) {
     await ref.read(characterCardsProvider.notifier).save(result);
@@ -397,9 +393,7 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
               AiAssistChip(
                 label: '润色',
                 busy: _busy && _busyField == label,
-                onPressed: _busy
-                    ? null
-                    : () => _polishField(label, controller),
+                onPressed: _busy ? null : () => _polishField(label, controller),
               ),
           ],
         ),
@@ -480,12 +474,7 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
             minLines: 2,
             maxLines: 5,
           ),
-          _field(
-            label: '场景',
-            controller: _scenario,
-            minLines: 2,
-            maxLines: 4,
-          ),
+          _field(label: '场景', controller: _scenario, minLines: 2, maxLines: 4),
           _field(
             label: '开场白',
             controller: _firstMes,

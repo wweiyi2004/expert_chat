@@ -6,7 +6,11 @@ import 'world_info_page.dart';
 
 /// Unified hub: character cards + world info in one place.
 class StudioPage extends ConsumerStatefulWidget {
-  const StudioPage({super.key, this.initialTab = 0, this.pickCharacter = false});
+  const StudioPage({
+    super.key,
+    this.initialTab = 0,
+    this.pickCharacter = false,
+  });
 
   final int initialTab;
 

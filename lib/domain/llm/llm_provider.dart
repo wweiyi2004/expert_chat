@@ -225,33 +225,58 @@ class ModelCapabilities {
   /// single place so adding a provider/model means editing only here. Mirrors
   /// the previous scattered `KnownModels` checks exactly.
   factory ModelCapabilities.resolve(String model) {
-    final m = model.toLowerCase();
+    // Aggregator gateways expose ids as vendor/model (qwen/qwen3-max,
+    // deepseek-ai/deepseek-v4); capabilities depend on the model segment only.
+    final m = model.toLowerCase().split('/').last;
+    final nonReasoning = m.contains('non-reasoning');
+    final grok43 =
+        m == 'grok-4.3' || m.startsWith('grok-4.3-') || m == 'grok-4.3-latest';
+    final grok45 =
+        m == 'grok-4.5' || m.startsWith('grok-4.5-') || m == 'grok-4.5-latest';
+
     // Broadened vs. the old check to also catch `*-thinking-*` reasoners (e.g.
     // kimi-thinking-preview, GLM thinking variants), which previously did not
     // light up the panel. xAI Grok: `grok-*-reasoning` / mini reasoning paths.
     final reasoner =
         m.contains('reasoner') ||
-        m.contains('reasoning') ||
+        (m.contains('reasoning') && !nonReasoning) ||
         m.contains('thinking') ||
         m.contains('v4-pro') ||
         m.startsWith('o1') ||
         m.startsWith('o3') ||
+        m.startsWith('o4') ||
         m.contains('-r1') ||
         m.endsWith('r1') ||
-        m.startsWith('grok-4.5') ||
+        grok45 ||
+        m.startsWith('grok-4.20-multi-agent') ||
         // Grok mini often used as the "think" model in dual-model setups.
-        (m.startsWith('grok') &&
-            m.contains('mini') &&
-            !m.contains('non-reasoning'));
+        (m.startsWith('grok') && m.contains('mini') && !nonReasoning);
 
     // DeepSeek V4 supports tools in both thinking and non-thinking modes;
     // older/legacy reasoner endpoints (deepseek-reasoner, o1, *reasoning*)
     // reject tool-call parameters. Grok OpenAI-compatible endpoints accept tools
-    // on the main chat models.
+    // on the main chat models. Unknown model ids default to false: adding
+    // `tools` to an otherwise compatible endpoint can turn a normal URL-bearing
+    // message into a 400 response, while the controller has deterministic
+    // pre-search/pre-fetch fallbacks when tools are unavailable.
     bool tools;
     if (m.startsWith('deepseek-v4') ||
         m == 'deepseek-chat' ||
-        m.startsWith('grok')) {
+        m.startsWith('grok') ||
+        m.startsWith('gpt-') ||
+        m.startsWith('chatgpt-') ||
+        m.startsWith('o3') ||
+        m.startsWith('o4') ||
+        m.startsWith('moonshot-') ||
+        m.startsWith('kimi-') ||
+        m.startsWith('glm-') ||
+        m.startsWith('qwen') ||
+        m.startsWith('minimax') ||
+        m.startsWith('doubao') ||
+        m.startsWith('hunyuan') ||
+        m.startsWith('gemini-') ||
+        m.startsWith('claude-') ||
+        m.startsWith('mistral-')) {
       tools = true;
     } else if (m == 'deepseek-reasoner' ||
         m.startsWith('o1') ||
@@ -259,7 +284,7 @@ class ModelCapabilities {
         (m.contains('reasoning') && !m.startsWith('grok'))) {
       tools = false;
     } else {
-      tools = true;
+      tools = false;
     }
 
     // Well-known OpenAI-compatible vision models. Conservative: unknown models
@@ -282,11 +307,6 @@ class ModelCapabilities {
         (m.startsWith('grok') &&
             (m.contains('vision') ||
                 (m.startsWith('grok-4.') && !m.contains('build'))));
-
-    final grok43 =
-        m == 'grok-4.3' || m.startsWith('grok-4.3-') || m == 'grok-4.3-latest';
-    final grok45 =
-        m == 'grok-4.5' || m.startsWith('grok-4.5-') || m == 'grok-4.5-latest';
 
     return ModelCapabilities(
       isReasoner: reasoner,

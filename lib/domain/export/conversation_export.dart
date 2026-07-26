@@ -14,6 +14,16 @@ class ConversationExport {
   /// branch ([Conversation.activePath]) is exported — discarded edit/regenerate
   /// branches are left out so the document matches what the user sees.
   ///
+  /// Cast/character names come from LLM output; collapse whitespace and
+  /// escape Markdown markers so label lines (`_…_`, `## …`) stay intact.
+  static String _inlineLabel(String value) => value
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .replaceAll('\\', r'\\')
+      .replaceAll('_', r'\_')
+      .replaceAll('*', r'\*')
+      .replaceAll('`', r'\`')
+      .trim();
+
   /// [characterName] labels assistant turns in story exports.
   static String toMarkdown(Conversation convo, {String? characterName}) {
     final b = StringBuffer()
@@ -21,10 +31,19 @@ class ConversationExport {
       ..writeln()
       ..writeln('_导出时间：${DateTime.now().toIso8601String()}_');
     if (convo.isStory) {
-      b.writeln('_模式：故事_');
-      final name = characterName?.trim();
-      if (name != null && name.isNotEmpty) {
-        b.writeln('_角色：${name}_');
+      if (convo.localCast.isNotEmpty) {
+        b
+          ..writeln('_模式：导演故事_')
+          ..writeln(
+            '_AI 角色：'
+            '${convo.localCast.map((card) => _inlineLabel(card.name)).join('、')}_',
+          );
+      } else {
+        b.writeln('_模式：故事_');
+        final name = characterName?.trim();
+        if (name != null && name.isNotEmpty) {
+          b.writeln('_角色：${_inlineLabel(name)}_');
+        }
       }
       if (convo.outline.trim().isNotEmpty) {
         b
@@ -46,15 +65,16 @@ class ConversationExport {
     b.writeln();
 
     final assistantLabel = () {
+      if (convo.localCast.isNotEmpty) return '旁白与角色';
       final name = characterName?.trim();
-      if (name != null && name.isNotEmpty) return name;
+      if (name != null && name.isNotEmpty) return _inlineLabel(name);
       return '助手';
     }();
 
     for (final m in convo.activePath) {
       switch (m.role) {
         case MessageRole.user:
-          b.writeln('## 🧑 用户');
+          b.writeln(convo.localCast.isNotEmpty ? '## 🎬 导演' : '## 🧑 用户');
           for (final a in m.attachments) {
             b.writeln(
               '> 📎 ${a.name}'
@@ -109,7 +129,8 @@ class ConversationExport {
         .trim();
     final fileName = '${safeTitle.isEmpty ? 'conversation' : safeTitle}.md';
 
-    final isMobile = defaultTargetPlatform == TargetPlatform.android ||
+    final isMobile =
+        defaultTargetPlatform == TargetPlatform.android ||
         defaultTargetPlatform == TargetPlatform.iOS;
 
     final path = await FilePicker.saveFile(

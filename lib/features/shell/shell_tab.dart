@@ -1,8 +1,9 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-/// Bottom / rail tab index for [AppShell]: 0 会话 · 1 创作 · 2 我的.
-final shellTabIndexProvider =
-    NotifierProvider<ShellTabIndex, int>(ShellTabIndex.new);
+/// Bottom / rail tab index for [AppShell]: 0 会话 · 1 创作 · 2 设置.
+final shellTabIndexProvider = NotifierProvider<ShellTabIndex, int>(
+  ShellTabIndex.new,
+);
 
 class ShellTabIndex extends Notifier<int> {
   @override

@@ -25,6 +25,7 @@ class StoryPromptAssembler {
     required List<ChatMessage> historyPath,
     bool advancePlot = false,
     bool ensembleTurn = false,
+    bool directorMode = false,
   }) {
     final blocks = <String>[];
 
@@ -33,7 +34,9 @@ class StoryPromptAssembler {
       blocks.add(global);
     }
 
-    if (ensembleTurn && cast.isNotEmpty) {
+    if (directorMode && cast.isNotEmpty) {
+      blocks.add(_directorStoryBlock(cast));
+    } else if (ensembleTurn && cast.isNotEmpty) {
       final ensembleBlock = _ensembleBlock(
         cast: cast,
         speakingAs: speakingAs,
@@ -64,16 +67,19 @@ class StoryPromptAssembler {
 
     final note = conversation.authorNote.trim();
     if (note.isNotEmpty) {
-      blocks.add(
-        '【导演指令 / Author Note】\n${_clip(note, maxAuthorNoteChars)}',
-      );
+      blocks.add('【导演指令 / Author Note】\n${_clip(note, maxAuthorNoteChars)}');
     }
 
     if (advancePlot) {
       blocks.add(
-        '【推进情节】请根据当前大纲节拍与导演指令，续写下一节叙事。'
-        '保持角色口吻与已有情节连贯；不要剧透后续未到达的大纲节拍；'
-        '本回合直接输出正文，不要复述指令。',
+        directorMode
+            ? '【推进情节】请根据当前大纲节拍与导演指令，续写一节完整故事正文。'
+                  '你负责旁白和所有登场角色，按剧情需要安排人物行动与对白；'
+                  '保持角色设定和已有情节连贯，不要让导演成为故事角色；'
+                  '不要剧透后续未到达的大纲节拍；本回合直接输出正文，不要复述指令。'
+            : '【推进情节】请根据当前大纲节拍与导演指令，续写下一节叙事。'
+                  '保持角色口吻与已有情节连贯；不要剧透后续未到达的大纲节拍；'
+                  '本回合直接输出正文，不要复述指令。',
       );
     }
 
@@ -116,6 +122,35 @@ class StoryPromptAssembler {
     }
     b.writeln('请始终以该角色的身份与口吻回应（除非用户使用导演指令要求旁白）。');
     return _clip(b.toString().trim(), maxCharacterBlockChars);
+  }
+
+  String _directorStoryBlock(List<CharacterCard> cast) {
+    final b = StringBuffer()
+      ..writeln('【导演故事模式】')
+      ..writeln('用户是导演，只提供情节要求、调度和修改意见，不扮演故事中的任何角色。')
+      ..writeln('你同时承担编剧、旁白和全部角色的演绎；输出连贯的故事正文，而不是与用户闲聊。')
+      ..writeln('角色的身份、动机、性格、关系和说话方式必须前后一致。')
+      ..writeln('除非导演明确修改设定，不得擅自替换角色核心目标或让导演进入故事。')
+      ..writeln('【本故事角色卡】');
+    for (final c in cast) {
+      b.writeln('— ${c.name}');
+      if (c.description.trim().isNotEmpty) {
+        b.writeln('  身份与背景：${_clip(c.description.trim(), 600)}');
+      }
+      if (c.personality.trim().isNotEmpty) {
+        b.writeln('  性格与说话方式：${_clip(c.personality.trim(), 450)}');
+      }
+      if (c.scenario.trim().isNotEmpty) {
+        b.writeln('  剧情定位：${_clip(c.scenario.trim(), 450)}');
+      }
+      if (c.systemPrompt.trim().isNotEmpty) {
+        b.writeln('  演绎约束：${_clip(c.systemPrompt.trim(), 400)}');
+      }
+      if (c.exampleDialogs.trim().isNotEmpty) {
+        b.writeln('  台词风格参考：${_clip(c.exampleDialogs.trim(), 300)}');
+      }
+    }
+    return _clip(b.toString().trim(), maxCharacterBlockChars * 2);
   }
 
   String _ensembleBlock({

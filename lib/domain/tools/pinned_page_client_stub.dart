@@ -6,7 +6,9 @@ class PinnedPageClient {
 
   final Dio dio;
 
-  Future<List<String>> resolveHost(String host) async => const ['1.1.1.1'];
+  /// Browser builds cannot resolve and pin DNS independently of the browser.
+  /// Returning no addresses makes secure direct page fetching fail closed.
+  Future<List<String>> resolveHost(String host) async => const [];
 
   void pinHost(String host, List<String> addresses) {}
 }

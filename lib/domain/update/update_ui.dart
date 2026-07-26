@@ -98,10 +98,7 @@ Future<void> showUpdateResultDialog(
               ),
               if (shortNotes.isNotEmpty) ...[
                 const SizedBox(height: 12),
-                Text(
-                  shortNotes,
-                  style: Theme.of(ctx).textTheme.bodySmall,
-                ),
+                Text(shortNotes, style: Theme.of(ctx).textTheme.bodySmall),
               ],
             ],
           ),

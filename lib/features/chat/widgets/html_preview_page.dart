@@ -1,15 +1,12 @@
-import 'dart:convert';
-import 'dart:io';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import '../../../domain/html/html_preview_sandbox.dart';
 import '../../../domain/html/html_snippet.dart';
+import 'html_preview_launcher_web.dart'
+    if (dart.library.io) 'html_preview_launcher_io.dart';
 
 /// Full-screen (or desktop) preview of AI-generated HTML.
 ///
@@ -69,7 +66,21 @@ class _HtmlPreviewPageState extends State<HtmlPreviewPage> {
 
     // Prefer in-app WebView on mobile; desktop often lacks a stable plugin.
     final mobile =
-        !kIsWeb && (Platform.isAndroid || Platform.isIOS || Platform.isMacOS);
+        !kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.android ||
+            defaultTargetPlatform == TargetPlatform.iOS ||
+            defaultTargetPlatform == TargetPlatform.macOS);
+
+    // Browsers require opening a new tab from a direct user gesture. Keep the
+    // route visible and let the button below invoke the blob-URL launcher.
+    if (kIsWeb) {
+      if (!mounted) return;
+      setState(() {
+        _useWebView = false;
+        _loading = false;
+      });
+      return;
+    }
 
     if (mobile) {
       try {
@@ -132,21 +143,14 @@ class _HtmlPreviewPageState extends State<HtmlPreviewPage> {
 
   Future<void> _openInExternalBrowser() async {
     try {
-      final dir = await getTemporaryDirectory();
-      final file = File(
-        '${dir.path}${Platform.pathSeparator}expert_chat_preview_$_index.html',
-      );
-      await file.writeAsString(
+      await launchHtmlPreview(
         buildSandboxedHtmlPreview(_current.html),
-        encoding: utf8,
+        fileName: 'expert_chat_preview_$_index.html',
       );
-      final uri = Uri.file(file.path);
-      final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
-      if (!ok && mounted) {
-        setState(() => _error = '无法打开系统浏览器预览');
-      }
     } catch (e) {
-      if (mounted) setState(() => _error = '预览失败：$e');
+      // StateError.toString() prefixes "Bad state:"; show the message alone.
+      final message = e is StateError ? e.message : '$e';
+      if (mounted) setState(() => _error = '预览失败：$message');
     }
   }
 
@@ -246,7 +250,11 @@ class _HtmlPreviewPageState extends State<HtmlPreviewPage> {
                     ),
                     const SizedBox(height: 12),
                     Text(
-                      _error == null ? '已在系统浏览器中打开预览' : _error!,
+                      _error == null
+                          ? kIsWeb
+                                ? '点击下方按钮，在新标签页中打开安全预览'
+                                : '已在系统浏览器中打开预览'
+                          : _error!,
                       textAlign: TextAlign.center,
                     ),
                     const SizedBox(height: 16),

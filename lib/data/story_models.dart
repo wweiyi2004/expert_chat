@@ -6,6 +6,7 @@ const _uuid = Uuid();
 enum ConversationMode {
   chat,
   story,
+
   /// Multiple character cards in one venue, taking turns.
   ensemble;
 

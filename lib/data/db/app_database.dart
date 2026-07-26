@@ -24,6 +24,9 @@ class Conversations extends Table {
   TextColumn get venue => text().withDefault(const Constant(''))();
   IntColumn get nextSpeakerIndex => integer().withDefault(const Constant(0))();
 
+  // Story-local, AI-generated character cards (v5).
+  TextColumn get localCastJson => text().nullable()();
+
   @override
   Set<Column> get primaryKey => {id};
 }
@@ -49,6 +52,8 @@ class Messages extends Table {
   // Ensemble speaker (v4).
   TextColumn get speakerId => text().nullable()();
   TextColumn get speakerName => text().nullable()();
+  // MessageKind wire name, e.g. generated-image bubbles (v6).
+  TextColumn get kind => text().withDefault(const Constant('text'))();
 
   @override
   Set<Column> get primaryKey => {id};
@@ -96,7 +101,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase([QueryExecutor? executor]) : super(executor ?? _open());
 
   @override
-  int get schemaVersion => 4;
+  int get schemaVersion => 6;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -133,6 +138,12 @@ class AppDatabase extends _$AppDatabase {
         await m.addColumn(conversations, conversations.nextSpeakerIndex);
         await m.addColumn(messages, messages.speakerId);
         await m.addColumn(messages, messages.speakerName);
+      }
+      if (from < 5) {
+        await m.addColumn(conversations, conversations.localCastJson);
+      }
+      if (from < 6) {
+        await m.addColumn(messages, messages.kind);
       }
     },
     beforeOpen: (details) async {

@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../data/story_models.dart';
 import '../../state/character_controller.dart';
 import '../../state/chat_controller.dart';
+import '../shell/shell_tab.dart';
 
 /// Pick 2+ characters, set a venue, start multi-character dialogue.
 class EnsembleSetupPage extends ConsumerStatefulWidget {
@@ -50,6 +51,7 @@ class _EnsembleSetupPageState extends ConsumerState<EnsembleSetupPage> {
             authorNote: _note.text,
           );
       if (mounted) {
+        openShellTab(ref, 0);
         Navigator.of(context).popUntil((r) => r.isFirst);
       }
     } finally {

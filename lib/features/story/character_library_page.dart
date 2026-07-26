@@ -6,7 +6,9 @@ import '../../data/story_models.dart';
 import '../../domain/story/story_ai_assist.dart';
 import '../../state/character_controller.dart';
 import '../../state/chat_controller.dart';
+import '../shell/shell_tab.dart';
 import 'ai_assist_widgets.dart';
+import 'director_story_setup_page.dart';
 
 class CharacterLibraryPage extends ConsumerWidget {
   const CharacterLibraryPage({super.key, this.pickForChat = false});
@@ -43,28 +45,22 @@ class CharacterLibraryBody extends ConsumerWidget {
       error: (e, _) => Center(child: Text('加载失败：$e')),
       data: (cards) {
         if (cards.isEmpty) {
-          return Center(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  Icons.person_add_alt_1_outlined,
-                  size: 48,
-                  color: Theme.of(context).colorScheme.outline,
-                ),
-                const SizedBox(height: 12),
-                const Text('还没有角色卡'),
-                const SizedBox(height: 8),
-                FilledButton.tonalIcon(
-                  onPressed: () => editCharacterCard(context, ref, null),
-                  icon: const Icon(Icons.add),
-                  label: const Text('创建第一个角色'),
-                ),
-              ],
-            ),
+          return _CharacterEmptyState(
+            pickForChat: pickForChat,
+            onCreate: () => editCharacterCard(context, ref, null),
+            onDirector: pickForChat
+                ? null
+                : () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => const DirectorStorySetupPage(),
+                      ),
+                    );
+                  },
           );
         }
         return ListView.separated(
+          key: const ValueKey('character-library-list'),
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 88),
           itemCount: cards.length,
           separatorBuilder: (_, _) => const SizedBox(height: 8),
@@ -74,53 +70,80 @@ class CharacterLibraryBody extends ConsumerWidget {
             final initial = card.name.isEmpty
                 ? '?'
                 : String.fromCharCode(card.name.runes.first);
+            final summary = _characterSummary(card);
             return Card(
-              child: ListTile(
-                leading: Container(
-                  width: 44,
-                  height: 44,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(14),
-                    gradient: LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [
-                        scheme.primaryContainer,
-                        Color.lerp(
-                          scheme.primaryContainer,
-                          scheme.secondaryContainer,
-                          0.45,
-                        )!,
-                      ],
-                    ),
-                    border: Border.all(
-                      color: scheme.outlineVariant.withValues(alpha: 0.8),
-                    ),
-                  ),
-                  alignment: Alignment.center,
-                  child: Text(
-                    initial,
-                    style: TextStyle(
-                      fontWeight: FontWeight.w700,
-                      color: scheme.onPrimaryContainer,
-                      fontSize: 18,
-                    ),
-                  ),
-                ),
-                title: Text(card.name),
-                subtitle: Text(
-                  card.description.isEmpty
-                      ? (card.personality.isEmpty ? '无简介' : card.personality)
-                      : card.description,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                trailing: pickForChat
-                    ? FilledButton.tonal(
+              clipBehavior: Clip.antiAlias,
+              child: InkWell(
+                // Primary path: start a story chat with this card.
+                onTap: () => startStoryChat(context, ref, card),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 10, 4, 10),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 48,
+                        height: 48,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(14),
+                          gradient: LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: [
+                              scheme.primaryContainer,
+                              Color.lerp(
+                                scheme.primaryContainer,
+                                scheme.secondaryContainer,
+                                0.45,
+                              )!,
+                            ],
+                          ),
+                          border: Border.all(
+                            color: scheme.outlineVariant.withValues(alpha: 0.8),
+                          ),
+                        ),
+                        alignment: Alignment.center,
+                        child: Text(
+                          initial,
+                          style: TextStyle(
+                            fontWeight: FontWeight.w700,
+                            color: scheme.onPrimaryContainer,
+                            fontSize: 18,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              card.name.isEmpty ? '未命名角色' : card.name,
+                              style: Theme.of(context).textTheme.titleSmall
+                                  ?.copyWith(fontWeight: FontWeight.w700),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              summary,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context).textTheme.bodySmall
+                                  ?.copyWith(
+                                    color: scheme.onSurfaceVariant,
+                                    height: 1.3,
+                                  ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      FilledButton.tonal(
                         onPressed: () => startStoryChat(context, ref, card),
                         child: const Text('开聊'),
-                      )
-                    : PopupMenuButton<String>(
+                      ),
+                      PopupMenuButton<String>(
+                        tooltip: '更多',
                         onSelected: (v) async {
                           if (v == 'edit') {
                             await editCharacterCard(context, ref, card);
@@ -136,18 +159,88 @@ class CharacterLibraryBody extends ConsumerWidget {
                           PopupMenuItem(value: 'delete', child: Text('删除')),
                         ],
                       ),
-                onTap: () async {
-                  if (pickForChat) {
-                    await startStoryChat(context, ref, card);
-                  } else {
-                    await editCharacterCard(context, ref, card);
-                  }
-                },
+                    ],
+                  ),
+                ),
               ),
             );
           },
         );
       },
+    );
+  }
+}
+
+String _characterSummary(CharacterCard card) {
+  for (final candidate in [
+    card.description,
+    card.personality,
+    card.scenario,
+    card.firstMes,
+  ]) {
+    final text = candidate.trim();
+    if (text.isNotEmpty) return text;
+  }
+  return '暂无简介 · 点「开聊」开始故事';
+}
+
+class _CharacterEmptyState extends StatelessWidget {
+  const _CharacterEmptyState({
+    required this.pickForChat,
+    required this.onCreate,
+    this.onDirector,
+  });
+
+  final bool pickForChat;
+  final VoidCallback onCreate;
+  final VoidCallback? onDirector;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.person_add_alt_1_outlined,
+              size: 48,
+              color: scheme.outline,
+            ),
+            const SizedBox(height: 12),
+            Text(
+              pickForChat ? '还没有可选的角色卡' : '还没有角色卡',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              pickForChat
+                  ? '创建一张角色卡后即可开聊；也可以返回用「导演故事」免卡开写。'
+                  : '建一张卡开聊，或先用「导演故事」——无需角色卡也能开写。',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 16),
+            FilledButton.tonalIcon(
+              onPressed: onCreate,
+              icon: const Icon(Icons.add),
+              label: const Text('创建第一个角色'),
+            ),
+            if (onDirector != null) ...[
+              const SizedBox(height: 10),
+              TextButton.icon(
+                onPressed: onDirector,
+                icon: const Icon(Icons.auto_stories_outlined, size: 18),
+                label: const Text('或直接开导演故事'),
+              ),
+            ],
+          ],
+        ),
+      ),
     );
   }
 }
@@ -158,9 +251,10 @@ Future<void> startStoryChat(
   CharacterCard card,
 ) async {
   await ref.read(chatControllerProvider.notifier).newStoryConversation(card);
-  if (context.mounted) {
-    Navigator.of(context).popUntil((route) => route.isFirst);
-  }
+  if (!context.mounted) return;
+  // Shell tabs use IndexedStack — also switch to 会话 so the new chat is visible.
+  openShellTab(ref, 0);
+  Navigator.of(context).popUntil((route) => route.isFirst);
 }
 
 Future<void> deleteCharacterCard(

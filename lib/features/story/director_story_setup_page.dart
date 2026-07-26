@@ -8,6 +8,7 @@ import '../../data/story_models.dart';
 import '../../domain/story/story_ai_assist.dart';
 import '../../state/chat_controller.dart';
 import '../../state/settings_controller.dart';
+import '../shell/shell_tab.dart';
 import 'ai_assist_widgets.dart';
 
 /// Creates a story from a premise without requiring a pre-existing character.
@@ -184,6 +185,7 @@ class _DirectorStorySetupPageState
 
       // Return to the chat workspace first so the opening section streams
       // visibly instead of making the user wait on this setup form.
+      openShellTab(ref, 0);
       Navigator.of(context).popUntil((route) => route.isFirst);
       unawaited(controller.advancePlot());
     } catch (e) {

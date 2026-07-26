@@ -144,7 +144,8 @@ class _StoryPanelBodyState extends ConsumerState<StoryPanelBody> {
     }
     Navigator.of(
       context,
-    ).push(MaterialPageRoute(builder: (_) => const StudioPage(initialTab: 1)));
+    // Tab 2 = 世界书（0 开始 · 1 角色 · 2 世界书）
+    ).push(MaterialPageRoute(builder: (_) => const StudioPage(initialTab: 2)));
   }
 
   Future<void> _saveLocalCharacter(CharacterCard card) async {

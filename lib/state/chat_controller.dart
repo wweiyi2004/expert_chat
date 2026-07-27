@@ -1,9 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:characters/characters.dart';
 import 'package:dio/dio.dart' show CancelToken, DioException;
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show compute, kIsWeb;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/providers.dart';
@@ -11,6 +12,8 @@ import '../data/models.dart';
 import '../data/story_models.dart';
 import '../domain/context/context_window_manager.dart';
 import '../domain/llm/llm_provider.dart';
+import '../domain/media/image_codec_util.dart';
+import '../domain/media/image_prompt_safety.dart';
 import '../domain/notify/generation_notify.dart';
 import '../domain/story/story_prompt_assembler.dart';
 import '../domain/tools/search_orchestrator.dart';
@@ -39,6 +42,35 @@ extension SearchModeInfo on SearchMode {
   };
 }
 
+/// Composer "配图" switch for **dialogue** image generation (not pure 生图 mode).
+///
+/// - [off]: model cannot generate images in chat
+/// - [auto]: tool-capable models may call `generate_image` at most once / turn
+/// - [always]: guarantee one SFW image before/with the answer (pre-gen)
+enum ImageGenMode { off, auto, always }
+
+extension ImageGenModeInfo on ImageGenMode {
+  ImageGenMode get next => switch (this) {
+    ImageGenMode.off => ImageGenMode.auto,
+    ImageGenMode.auto => ImageGenMode.always,
+    ImageGenMode.always => ImageGenMode.off,
+  };
+
+  String get composerLabel => switch (this) {
+    ImageGenMode.off => '配图',
+    ImageGenMode.auto => '配图·自动',
+    ImageGenMode.always => '配图·强制',
+  };
+}
+
+/// Per-user-turn budget: dialogue may produce at most one image.
+class _TurnImageBudget {
+  int used = 0;
+  static const maxPerTurn = 1;
+  bool get canGenerate => used < maxPerTurn;
+  void markUsed() => used++;
+}
+
 class ChatState {
   const ChatState({
     this.conversations = const [],
@@ -46,6 +78,7 @@ class ChatState {
     this.streamingConvoId,
     this.deepThink = false,
     this.searchMode = SearchMode.off,
+    this.imageGenMode = ImageGenMode.off,
     this.isSearching = false,
     this.contextReports = const {},
     this.error,
@@ -68,6 +101,10 @@ class ChatState {
   /// Current "联网" switch position (off / auto / always).
   final SearchMode searchMode;
 
+  /// Dialogue illustration mode (off / auto / always). Independent of the
+  /// composer's pure "图片生成" mode, which bypasses chat entirely.
+  final ImageGenMode imageGenMode;
+
   /// True while a web-search tool call is running (drives a status hint).
   final bool isSearching;
   final Map<String, ContextWindowReport> contextReports;
@@ -87,6 +124,7 @@ class ChatState {
     Object? streamingConvoId = _sentinel,
     bool? deepThink,
     SearchMode? searchMode,
+    ImageGenMode? imageGenMode,
     bool? isSearching,
     Map<String, ContextWindowReport>? contextReports,
     Object? error = _sentinel,
@@ -98,6 +136,7 @@ class ChatState {
         : streamingConvoId as String?,
     deepThink: deepThink ?? this.deepThink,
     searchMode: searchMode ?? this.searchMode,
+    imageGenMode: imageGenMode ?? this.imageGenMode,
     isSearching: isSearching ?? this.isSearching,
     contextReports: contextReports ?? this.contextReports,
     error: identical(error, _sentinel) ? this.error : error as String?,
@@ -318,6 +357,7 @@ class ChatController extends AsyncNotifier<ChatState> {
     String authorNote = '',
     String requirements = '',
     List<String>? worldInfoIds,
+    int targetTotalChars = 0,
   }) async {
     final usableCast = cast
         .where((card) => card.name.trim().isNotEmpty)
@@ -354,6 +394,7 @@ class ChatController extends AsyncNotifier<ChatState> {
       outline: outline.trim(),
       authorNote: combinedNote,
       plotCursor: 0,
+      targetTotalChars: targetTotalChars < 0 ? 0 : targetTotalChars,
     );
     _set(
       _s.copyWith(
@@ -422,6 +463,7 @@ class ChatController extends AsyncNotifier<ChatState> {
     String? venue,
     List<String>? participantIds,
     int? nextSpeakerIndex,
+    int? targetTotalChars,
   }) {
     final id = conversationId ?? _s.currentId;
     if (id == null) return;
@@ -442,6 +484,10 @@ class ChatController extends AsyncNotifier<ChatState> {
         ? null
         : (cast.isEmpty ? 0 : nextSpeakerIndex.clamp(0, cast.length - 1));
 
+    final nextTarget = targetTotalChars == null
+        ? null
+        : (targetTotalChars < 0 ? 0 : targetTotalChars);
+
     final updated = convo.copyWith(
       outline: outline,
       authorNote: authorNote,
@@ -450,6 +496,7 @@ class ChatController extends AsyncNotifier<ChatState> {
       venue: venue,
       participantIds: participantIds,
       nextSpeakerIndex: nextIdx,
+      targetTotalChars: nextTarget,
     );
     _set(_s.copyWith(conversations: _replace(updated)));
     _persistSoon(
@@ -622,6 +669,11 @@ class ChatController extends AsyncNotifier<ChatState> {
   /// Cycle the "联网" switch shown next to the composer: 关 → 自动 → 强制 → 关.
   void toggleSearch() {
     _set(_s.copyWith(searchMode: _s.searchMode.next));
+  }
+
+  /// Cycle dialogue "配图": 关 → 自动 → 强制 → 关.
+  void toggleImageGenMode() {
+    _set(_s.copyWith(imageGenMode: _s.imageGenMode.next));
   }
 
   void renameConversation(String id, String title) {
@@ -999,9 +1051,21 @@ class ChatController extends AsyncNotifier<ChatState> {
   Future<void> retryLast() => regenerate();
 
   /// Generate an image as a normal conversation turn. This endpoint is wholly
-  /// optional and does not depend on the main chat provider being configured.
-  Future<bool> generateImage(String prompt) async {
+  /// optional and does not depend on the main chat provider being configured
+  /// — unless [ChatState.deepThink] is on, in which case the chat/reasoner
+  /// model first rewrites the prompt, then the result is sent to the image API.
+  ///
+  /// When [referenceImages] contains an image with data, the request uses the
+  /// OpenAI-compatible `/images/edits` (图生图) path; otherwise text-to-image.
+  Future<bool> generateImage(
+    String prompt, {
+    List<Attachment> referenceImages = const [],
+  }) async {
     final trimmed = prompt.trim();
+    final refs = [
+      for (final a in referenceImages)
+        if (a.isImage && a.hasImageData) a,
+    ];
     if (trimmed.isEmpty || _s.isStreaming || _starting) return false;
     _starting = true;
     _cancelStart = false;
@@ -1011,7 +1075,19 @@ class ChatController extends AsyncNotifier<ChatState> {
         _set(_s.copyWith(error: '请先在设置中完整配置图片生成 API。'));
         return false;
       }
+      final useDeepThink = _s.deepThink;
+      if (useDeepThink && !settings.config.isReady) {
+        _set(
+          _s.copyWith(
+            error: '深度思考生图需要先配置对话 API（用于优化提示词）。',
+          ),
+        );
+        return false;
+      }
       if (_cancelStart) return false;
+
+      // Edits APIs typically take one source image; extra refs are ignored.
+      final reference = refs.isEmpty ? null : refs.first;
 
       final convo = _s.current ?? Conversation();
       final parentId = convo.activePath.isEmpty
@@ -1021,11 +1097,14 @@ class ChatController extends AsyncNotifier<ChatState> {
         role: MessageRole.user,
         content: trimmed,
         parentId: parentId,
+        attachments: reference == null ? const [] : [reference],
       );
       final assistantMsg = ChatMessage(
         role: MessageRole.assistant,
         content: '',
-        model: settings.imageGenerationApi.model,
+        model: useDeepThink
+            ? settings.reasonerModel
+            : settings.imageGenerationApi.model,
         kind: MessageKind.generatedImage,
         parentId: userMsg.id,
       );
@@ -1064,13 +1143,113 @@ class ChatController extends AsyncNotifier<ChatState> {
       }
 
       try {
+        var imagePrompt = trimmed;
+        var optimizedByModel = '';
+        var reasoning = '';
+        var thinkingMillis = 0;
+
+        if (useDeepThink) {
+          final refined = await _optimizeImagePrompt(
+            userPrompt: trimmed,
+            settings: settings,
+            cancelToken: cancelToken,
+            onReasoning: (text, millis) {
+              reasoning = text;
+              thinkingMillis = millis;
+              _updateAssistant(
+                working.id,
+                assistantMsg.id,
+                '',
+                reasoning,
+                thinkingMillis,
+              );
+            },
+          );
+          if (!_s.isStreaming || cancelToken.isCancelled) {
+            await _persistById(working.id);
+            unawaited(
+              GenerationNotify.onGenerationEnd(
+                success: false,
+                conversationTitle: working.title,
+                cancelled: true,
+              ),
+            );
+            return true;
+          }
+          optimizedByModel = refined;
+          if (refined.isNotEmpty) imagePrompt = refined;
+          _updateAssistant(
+            working.id,
+            assistantMsg.id,
+            '正在生成图片…',
+            reasoning,
+            thinkingMillis,
+          );
+        }
+
+        List<int>? refBytes;
+        var refMime = 'image/png';
+        var refName = 'reference.png';
+        if (reference != null) {
+          final b64 = reference.imageBase64;
+          if (b64 != null && b64.isNotEmpty) {
+            try {
+              // Large phone photos: decode base64 off the UI isolate, then
+              // downscale on the UI isolate (target-bound decode that never
+              // materialises the full-size buffer). References picked through
+              // the composer are already pre-scaled, so this is usually a
+              // no-op; it stays as a fallback for non-picker sources.
+              final raw = b64.length >= 256 * 1024
+                  ? await compute(base64Decode, b64)
+                  : base64Decode(b64);
+              final prepared = await ImageCodecUtil.prepareReferenceImage(
+                Uint8List.fromList(raw),
+                mimeType: reference.mimeType,
+                name: reference.name,
+              );
+              refBytes = prepared.bytes;
+              refMime = prepared.mimeType;
+              refName = prepared.name;
+            } on FormatException {
+              _set(_s.copyWith(error: '参考图数据无效，请重新选择图片。'));
+              _set(_s.copyWith(streamingConvoId: null));
+              await _persistById(working.id);
+              unawaited(
+                GenerationNotify.onGenerationEnd(
+                  success: false,
+                  conversationTitle: working.title,
+                ),
+              );
+              return true;
+            }
+          } else {
+            _set(
+              _s.copyWith(
+                error: '参考图缺少本地数据，请重新从相册/文件选择图片。',
+                streamingConvoId: null,
+              ),
+            );
+            await _persistById(working.id);
+            unawaited(
+              GenerationNotify.onGenerationEnd(
+                success: false,
+                conversationTitle: working.title,
+              ),
+            );
+            return true;
+          }
+        }
+
         final generated = await ref
             .read(mediaApiProvider)
             .generateImage(
               config: settings.imageGenerationApi,
               apiKey: settings.imageGenerationApiKey,
-              prompt: trimmed,
+              prompt: imagePrompt,
               cancelToken: cancelToken,
+              referenceImageBytes: refBytes,
+              referenceMimeType: refMime,
+              referenceFileName: refName,
             );
         if (!_s.isStreaming || cancelToken.isCancelled) {
           await _persistById(working.id);
@@ -1093,14 +1272,20 @@ class ChatController extends AsyncNotifier<ChatState> {
           imageBase64: generated.base64,
           remoteUrl: generated.remoteUrl,
         );
-        final revised = generated.revisedPrompt?.trim();
+        final content = _imageGenResultContent(
+          originalPrompt: trimmed,
+          optimizedByModel: optimizedByModel,
+          revisedByApi: generated.revisedPrompt,
+          usedReferenceImage: reference != null,
+        );
         _updateGeneratedImage(
           working.id,
           assistantMsg.id,
-          content: revised == null || revised.isEmpty
-              ? '图片已生成'
-              : '图片已生成\n\n优化后的提示词：$revised',
+          content: content,
           attachment: attachment,
+          reasoning: reasoning,
+          thinkingMillis: thinkingMillis,
+          model: settings.imageGenerationApi.model,
         );
         _set(_s.copyWith(streamingConvoId: null, error: null));
         await _persistById(working.id);
@@ -1115,7 +1300,7 @@ class ChatController extends AsyncNotifier<ChatState> {
       } catch (e) {
         final cancelled = e is DioException && CancelToken.isCancel(e);
         if (!cancelled) {
-          _set(_s.copyWith(streamingConvoId: null, error: e.toString()));
+          _set(_s.copyWith(streamingConvoId: null, error: _describeError(e)));
         }
         await _persistById(working.id);
         unawaited(
@@ -1132,6 +1317,99 @@ class ChatController extends AsyncNotifier<ChatState> {
     } finally {
       _starting = false;
     }
+  }
+
+  /// Uses the deep-think / reasoner model to rewrite [userPrompt] into a
+  /// stronger text-to-image prompt. Returns the cleaned prompt text (may be
+  /// empty if the model returned nothing useful — caller falls back to raw).
+  Future<String> _optimizeImagePrompt({
+    required String userPrompt,
+    required SettingsState settings,
+    required CancelToken cancelToken,
+    required void Function(String reasoning, int thinkingMillis) onReasoning,
+  }) async {
+    final config = _configFor(settings);
+    final llm = ref.read(llmProvider);
+    final contentBuf = StringBuffer();
+    final reasoningBuf = StringBuffer();
+    final sw = Stopwatch();
+    await for (final chunk in llm.streamChat(
+      config: config,
+      thinking: true,
+      cancelToken: cancelToken,
+      messages: [
+        const LlmRequestMessage(
+          role: MessageRole.system,
+          content: _kImagePromptOptimizerSystem,
+        ),
+        LlmRequestMessage(role: MessageRole.user, content: userPrompt),
+      ],
+    )) {
+      if (cancelToken.isCancelled) break;
+      if (chunk.reasoningDelta != null && chunk.reasoningDelta!.isNotEmpty) {
+        if (!sw.isRunning) sw.start();
+        reasoningBuf.write(chunk.reasoningDelta);
+        onReasoning(reasoningBuf.toString(), sw.elapsedMilliseconds);
+      }
+      if (chunk.contentDelta != null && chunk.contentDelta!.isNotEmpty) {
+        if (sw.isRunning) sw.stop();
+        contentBuf.write(chunk.contentDelta);
+      }
+    }
+    if (sw.isRunning) sw.stop();
+    if (reasoningBuf.isNotEmpty) {
+      onReasoning(reasoningBuf.toString(), sw.elapsedMilliseconds);
+    }
+    return _cleanOptimizedImagePrompt(contentBuf.toString());
+  }
+
+  static const _kImagePromptOptimizerSystem =
+      '你是文生图提示词优化助手。用户会给出简短、口语化或中文的画面描述。'
+      '请改写成高质量的文生图提示词：补全主体、场景、构图、光影、材质、风格与细节，'
+      '尽量使用英文（专有名词/书法文字可保留原文），适合常见文生图模型。'
+      '只输出最终提示词本身，不要解释、不要标题、不要引号或代码块围栏。';
+
+  /// Strip common model decorations so the image API gets a clean prompt.
+  static String _cleanOptimizedImagePrompt(String raw) {
+    var text = raw.trim();
+    if (text.isEmpty) return '';
+    // ```lang ... ``` or ``` ... ```
+    final fence = RegExp(
+      r'^```(?:\w+)?\s*([\s\S]*?)\s*```$',
+      multiLine: true,
+    );
+    final m = fence.firstMatch(text);
+    if (m != null) text = (m.group(1) ?? '').trim();
+    // Surrounding quotes.
+    if ((text.startsWith('"') && text.endsWith('"')) ||
+        (text.startsWith("'") && text.endsWith("'")) ||
+        (text.startsWith('“') && text.endsWith('”'))) {
+      text = text.substring(1, text.length - 1).trim();
+    }
+    return text;
+  }
+
+  static String _imageGenResultContent({
+    required String originalPrompt,
+    required String optimizedByModel,
+    String? revisedByApi,
+    bool usedReferenceImage = false,
+  }) {
+    final parts = <String>[
+      usedReferenceImage ? '图片已生成（图生图）' : '图片已生成',
+    ];
+    final opt = optimizedByModel.trim();
+    final revised = revisedByApi?.trim() ?? '';
+    if (opt.isNotEmpty && opt != originalPrompt.trim()) {
+      parts.add('深度思考优化后的提示词：$opt');
+    }
+    if (revised.isNotEmpty && revised != opt && revised != originalPrompt.trim()) {
+      parts.add('生图接口改写：$revised');
+    }
+    if (parts.length == 1 && revised.isNotEmpty) {
+      parts.add('优化后的提示词：$revised');
+    }
+    return parts.join('\n\n');
   }
 
   /// Validate settings; returns null (and sets an error) when not ready.
@@ -1195,12 +1473,18 @@ class ChatController extends AsyncNotifier<ChatState> {
         directPageFetchAllowed &&
         pastedUrls.isNotEmpty &&
         config.capabilities.supportsTools;
-    final enableTools = useWebSearchTool || useFetchUrlTool;
+    // Dialogue 配图 (not pure 生图 mode): auto exposes the tool; always also
+    // pre-generates one image so force works on tool-less reasoners.
+    final imageGenMode = _s.imageGenMode;
+    final imageGenConfigured = settings.imageGenerationConfigured;
+    final imageGenWanted =
+        imageGenMode != ImageGenMode.off && imageGenConfigured;
     final toolSpecs = <ToolSpec>[
       if (useWebSearchTool) ToolEngine.webSearchTool,
       if (useFetchUrlTool) ToolEngine.fetchUrlTool,
     ];
     final allowedFetchUrls = {for (final url in pastedUrls) _fetchUrlKey(url)};
+    final imageBudget = _TurnImageBudget();
 
     // One token covers the whole generation (search pre-step + all tool
     // rounds); stop() fires it.
@@ -1238,12 +1522,56 @@ class ChatController extends AsyncNotifier<ChatState> {
       _set(_s.copyWith(error: '本地保存失败：$e'));
     }
 
+    // Resolve which character (if any) owns this turn's portrait target.
+    final imageCharacter = await _resolveImageCharacter(
+      working,
+      ensembleSpeaker: ensembleSpeaker,
+    );
+
     // Pre-steps that inject context before the model answers:
     // 1) fetch any URLs the user pasted (works with or without "联网")
     // 2) planner-orchestrated web search for models that cannot use tools
     //    (deepseek-reasoner…), and for tool models when "联网·强制" is on —
     //    which guarantees at least one search before the answer starts.
+    // 3) 配图·强制: one SFW image (character portrait when a card is bound).
     SearchContext? searchContext;
+    var forceImageNote = '';
+    if (imageGenWanted &&
+        imageGenMode == ImageGenMode.always &&
+        imageBudget.canGenerate &&
+        _s.isStreaming) {
+      final pre = await _runDialogueImageGeneration(
+        settings: settings,
+        convoId: working.id,
+        assistantId: assistantId,
+        character: imageCharacter,
+        userText: searchQuery,
+        modelPrompt: null,
+        briefHint: null,
+        cancelToken: cancelToken,
+        optimizeWithDeepThink: _s.deepThink,
+      );
+      if (pre.ok) {
+        imageBudget.markUsed();
+        forceImageNote = imageCharacter != null
+            ? '本轮已为角色「${imageCharacter.name}」生成一张安全立绘配图，请结合该形象回答，无需再调用生图。'
+            : '本轮已生成一张安全配图并附在回复中，请结合配图回答，无需再调用生图。';
+      } else if (pre.error != null && pre.error!.isNotEmpty && _s.isStreaming) {
+        _set(_s.copyWith(error: pre.error));
+      }
+    }
+    // Auto: model may call once. Always: tool only if pre-gen still has budget
+    // (e.g. pre-gen failed) so force can still succeed via function calling.
+    final useImageGenTool =
+        imageGenWanted &&
+        imageBudget.canGenerate &&
+        config.capabilities.supportsTools &&
+        (imageGenMode == ImageGenMode.auto ||
+            imageGenMode == ImageGenMode.always);
+    if (useImageGenTool) {
+      toolSpecs.add(ToolEngine.generateImageTool);
+    }
+    final enableTools = toolSpecs.isNotEmpty;
     // Tool-capable models can decide when the pasted link is relevant. Models
     // without function calling keep the deterministic pre-fetch fallback.
     final needPreFetch =
@@ -1304,7 +1632,7 @@ class ChatController extends AsyncNotifier<ChatState> {
         }
       } catch (e) {
         // Stop pressed during the search/fetch is not an error.
-        if (!_isCancel(e)) _set(_s.copyWith(error: e.toString()));
+        if (!_isCancel(e)) _set(_s.copyWith(error: _describeError(e)));
       } finally {
         _set(_s.copyWith(isSearching: false));
       }
@@ -1437,6 +1765,13 @@ class ChatController extends AsyncNotifier<ChatState> {
       }
     }
 
+    if (forceImageNote.isNotEmpty) {
+      history.insert(
+        0,
+        LlmRequestMessage(role: MessageRole.system, content: forceImageNote),
+      );
+    }
+
     if (enableTools) {
       // Ground tool-capable models in "now" so time-sensitive queries carry a
       // year, and spell out when each tool applies.
@@ -1449,6 +1784,18 @@ class ChatController extends AsyncNotifier<ChatState> {
       }
       if (useFetchUrlTool) {
         hint.write('用户在本轮消息中给出的链接可用 fetch_url 读取。');
+      }
+      if (useImageGenTool) {
+        if (imageCharacter != null) {
+          hint.write(
+            '需要为角色「${imageCharacter.name}」配安全立绘时调用 generate_image（每轮最多一次）；'
+            '即使用户在写成人向内容，生图也只画干净角色形象，禁止色情提示词。',
+          );
+        } else {
+          hint.write(
+            '需要配图时调用 generate_image（每轮最多一次）；提示词必须 SFW，禁止色情内容。',
+          );
+        }
       }
       history.insert(
         0,
@@ -1497,6 +1844,8 @@ class ChatController extends AsyncNotifier<ChatState> {
       initialCitations: searchContext?.citations ?? const <Citation>[],
       allowedFetchUrls: Set<String>.unmodifiable(allowedFetchUrls),
       cancelToken: cancelToken,
+      imageBudget: imageBudget,
+      imageCharacter: imageCharacter,
     );
 
     unawaited(
@@ -1530,6 +1879,20 @@ class ChatController extends AsyncNotifier<ChatState> {
   static bool _isCancel(Object e) =>
       e is DioException && CancelToken.isCancel(e);
 
+  /// Error-banner text for a caught throwable.
+  ///
+  /// `Exception`s carry messages written for users, so the message survives as
+  /// written - only the bare `Exception: ` prefix that `toString()` bolts on is
+  /// dropped. An `Error` is always a bug and often stringifies to something
+  /// with no diagnostic value at all - `StackOverflowError` is literally
+  /// "Stack Overflow", which cost a full debugging session to trace back to a
+  /// regexp - so those get their type appended.
+  static String _describeError(Object e) {
+    final text = e.toString();
+    if (text.startsWith('Exception: ')) return text.substring(11);
+    return e is Exception ? text : '$text（${e.runtimeType}）';
+  }
+
   /// Returns true when the stream finished with an answer (not cancelled/errored).
   Future<bool> _streamAnswer({
     required LlmConfig config,
@@ -1544,6 +1907,8 @@ class ChatController extends AsyncNotifier<ChatState> {
     required List<Citation> initialCitations,
     required Set<String> allowedFetchUrls,
     required CancelToken cancelToken,
+    required _TurnImageBudget imageBudget,
+    CharacterCard? imageCharacter,
   }) async {
     final llm = ref.read(llmProvider);
     final requestMessages = List<LlmRequestMessage>.of(history);
@@ -1719,6 +2084,8 @@ class ChatController extends AsyncNotifier<ChatState> {
           citations: citations,
           allowedFetchUrls: allowedFetchUrls,
           cancelToken: cancelToken,
+          imageBudget: imageBudget,
+          imageCharacter: imageCharacter,
         );
         if (!_s.isStreaming) {
           await _persistById(convoId);
@@ -1750,7 +2117,7 @@ class ChatController extends AsyncNotifier<ChatState> {
           streamingConvoId: null,
           isSearching: false,
           // A cancellation raised by stop() is not an error to surface.
-          error: _isCancel(e) ? null : e.toString(),
+          error: _isCancel(e) ? null : _describeError(e),
         ),
       );
       await _persistById(convoId);
@@ -1775,9 +2142,12 @@ class ChatController extends AsyncNotifier<ChatState> {
     required List<Citation> citations,
     required Set<String> allowedFetchUrls,
     required CancelToken cancelToken,
+    required _TurnImageBudget imageBudget,
+    CharacterCard? imageCharacter,
   }) async {
     final out = <LlmRequestMessage>[];
     // Don't re-light the "正在联网搜索" hint if stop() already fired.
+    // Image gen also flips this briefly so the composer shows activity.
     if (_s.isStreaming) _set(_s.copyWith(isSearching: true));
     try {
       for (var callIndex = 0; callIndex < toolCalls.length; callIndex++) {
@@ -1808,6 +2178,17 @@ class ChatController extends AsyncNotifier<ChatState> {
             citations,
             allowedFetchUrls,
             cancelToken,
+          );
+        } else if (call.name == ToolEngine.generateImageTool.name) {
+          toolContent = await _runGenerateImageTool(
+            call,
+            settings: settings,
+            convoId: convoId,
+            assistantId: assistantId,
+            imageBudget: imageBudget,
+            imageCharacter: imageCharacter,
+            userText: fallbackSearchQuery,
+            cancelToken: cancelToken,
           );
         } else {
           toolContent = '不支持的工具：${call.name ?? 'unknown'}';
@@ -1861,7 +2242,7 @@ class ChatController extends AsyncNotifier<ChatState> {
     } catch (e) {
       // Stop pressed mid-search: the caller's !isStreaming check bails out.
       if (_isCancel(e)) return '搜索已取消。';
-      _set(_s.copyWith(error: e.toString()));
+      _set(_s.copyWith(error: _describeError(e)));
       return '联网搜索失败：$e';
     }
   }
@@ -1900,9 +2281,192 @@ class ChatController extends AsyncNotifier<ChatState> {
       return context.contextText.isEmpty ? '未能读取网页：$url' : context.contextText;
     } catch (e) {
       if (_isCancel(e)) return '网页读取已取消。';
-      _set(_s.copyWith(error: e.toString()));
+      _set(_s.copyWith(error: _describeError(e)));
       return '读取网页失败：$e';
     }
+  }
+
+  Future<String> _runGenerateImageTool(
+    ToolCall call, {
+    required SettingsState settings,
+    required String convoId,
+    required String assistantId,
+    required _TurnImageBudget imageBudget,
+    required CharacterCard? imageCharacter,
+    required String userText,
+    required CancelToken cancelToken,
+  }) async {
+    if (!imageBudget.canGenerate) {
+      return '本轮已生成过图片，每轮对话最多一张。';
+    }
+    if (!settings.imageGenerationConfigured) {
+      return '未配置图片生成 API，无法配图。';
+    }
+    final args = _imageToolArgs(call.argumentsJson);
+    final result = await _runDialogueImageGeneration(
+      settings: settings,
+      convoId: convoId,
+      assistantId: assistantId,
+      character: imageCharacter,
+      userText: userText,
+      modelPrompt: args.prompt,
+      briefHint: args.briefHint,
+      cancelToken: cancelToken,
+      // Tool path: model already wrote a prompt; skip a second LLM round.
+      optimizeWithDeepThink: false,
+    );
+    if (result.ok) {
+      imageBudget.markUsed();
+      return imageCharacter != null
+          ? '已为角色「${imageCharacter.name}」生成安全立绘，并附在本轮回复中。请用文字承接，勿再索取生图。'
+          : '配图已生成并附在本轮回复中。请用文字承接，勿再索取生图。';
+    }
+    if (cancelToken.isCancelled || !_s.isStreaming) {
+      return '生图已取消。';
+    }
+    return '生图失败：${result.error ?? '未知错误'}';
+  }
+
+  /// Which character card (if any) should own dialogue portrait generation.
+  Future<CharacterCard?> _resolveImageCharacter(
+    Conversation convo, {
+    CharacterCard? ensembleSpeaker,
+  }) async {
+    if (ensembleSpeaker != null) return ensembleSpeaker;
+    if (convo.isEnsemble) return null;
+    // Director multi-cast: no single "the character" — skip card portraits
+    // unless a dedicated speaker is provided above.
+    if (convo.isStory && convo.localCast.isNotEmpty) return null;
+    final id = convo.characterId;
+    if (id == null || id.isEmpty) return null;
+    return ref.read(characterRepositoryProvider).getById(id);
+  }
+
+  /// Shared path for force pre-gen and `generate_image` tool execution.
+  Future<({bool ok, String? error})> _runDialogueImageGeneration({
+    required SettingsState settings,
+    required String convoId,
+    required String assistantId,
+    required CharacterCard? character,
+    required String userText,
+    required String? modelPrompt,
+    required String? briefHint,
+    required CancelToken cancelToken,
+    required bool optimizeWithDeepThink,
+  }) async {
+    if (!settings.imageGenerationConfigured) {
+      return (ok: false, error: '请先在设置中完整配置图片生成 API。');
+    }
+    if (cancelToken.isCancelled || !_s.isStreaming) {
+      return (ok: false, error: null);
+    }
+
+    String prompt;
+    if (character != null) {
+      // Character book: portrait from card only. Never inject R18 user prose.
+      prompt = ImagePromptSafety.characterPortrait(
+        character,
+        userHint: briefHint,
+      );
+    } else {
+      final draft = (modelPrompt != null && modelPrompt.trim().isNotEmpty)
+          ? modelPrompt
+          : userText;
+      prompt = ImagePromptSafety.freeform(draft);
+      if (optimizeWithDeepThink && settings.config.isReady) {
+        try {
+          final refined = await _optimizeImagePrompt(
+            userPrompt: prompt,
+            settings: settings,
+            cancelToken: cancelToken,
+            onReasoning: (_, _) {},
+          );
+          if (refined.isNotEmpty) {
+            prompt = ImagePromptSafety.freeform(refined);
+          }
+        } catch (e) {
+          if (_isCancel(e) || cancelToken.isCancelled) {
+            return (ok: false, error: null);
+          }
+          // Fall through with the scrubbed draft.
+        }
+      }
+    }
+    if (prompt.trim().isEmpty) {
+      return (ok: false, error: '生图提示词为空。');
+    }
+
+    try {
+      final generated = await ref.read(mediaApiProvider).generateImage(
+            config: settings.imageGenerationApi,
+            apiKey: settings.imageGenerationApiKey,
+            prompt: prompt,
+            cancelToken: cancelToken,
+          );
+      if (cancelToken.isCancelled || !_s.isStreaming) {
+        return (ok: false, error: null);
+      }
+      final sizeBytes = generated.base64 == null
+          ? 0
+          : (generated.base64!.length * 3 / 4).round();
+      final attachment = Attachment(
+        name: 'dialogue-${DateTime.now().millisecondsSinceEpoch}.png',
+        mimeType: generated.mimeType,
+        sizeBytes: sizeBytes,
+        imageBase64: generated.base64,
+        remoteUrl: generated.remoteUrl,
+      );
+      _appendAssistantAttachment(convoId, assistantId, attachment);
+      return (ok: true, error: null);
+    } catch (e) {
+      if (_isCancel(e) || cancelToken.isCancelled) {
+        return (ok: false, error: null);
+      }
+      return (ok: false, error: _describeError(e));
+    }
+  }
+
+  void _appendAssistantAttachment(
+    String convoId,
+    String msgId,
+    Attachment attachment,
+  ) {
+    final idx = _s.conversations.indexWhere((c) => c.id == convoId);
+    if (idx < 0) return;
+    final convo = _s.conversations[idx];
+    final messages = [
+      for (final m in convo.messages)
+        if (m.id == msgId)
+          m.copyWith(attachments: [...m.attachments, attachment])
+        else
+          m,
+    ];
+    _set(
+      _s.copyWith(conversations: _replace(convo.copyWith(messages: messages))),
+    );
+  }
+
+  ({String? prompt, String? briefHint}) _imageToolArgs(String raw) {
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        final prompt = decoded['prompt'] is String
+            ? (decoded['prompt'] as String).trim()
+            : null;
+        final hint = decoded['brief_hint'] is String
+            ? (decoded['brief_hint'] as String).trim()
+            : (decoded['briefHint'] is String
+                  ? (decoded['briefHint'] as String).trim()
+                  : null);
+        return (
+          prompt: prompt?.isEmpty ?? true ? null : prompt,
+          briefHint: hint?.isEmpty ?? true ? null : hint,
+        );
+      }
+    } catch (_) {
+      // Malformed JSON from the model.
+    }
+    return (prompt: null, briefHint: null);
   }
 
   String _searchQueryFromArgs(String raw, String fallback) {
@@ -2151,6 +2715,9 @@ class ChatController extends AsyncNotifier<ChatState> {
     String msgId, {
     required String content,
     required Attachment attachment,
+    String? reasoning,
+    int? thinkingMillis,
+    String? model,
   }) {
     final idx = _s.conversations.indexWhere((c) => c.id == convoId);
     if (idx < 0) return;
@@ -2158,7 +2725,13 @@ class ChatController extends AsyncNotifier<ChatState> {
     final messages = [
       for (final m in convo.messages)
         if (m.id == msgId)
-          m.copyWith(content: content, attachments: [attachment])
+          m.copyWith(
+            content: content,
+            attachments: [attachment],
+            reasoning: reasoning,
+            thinkingMillis: thinkingMillis,
+            model: model,
+          )
         else
           m,
     ];

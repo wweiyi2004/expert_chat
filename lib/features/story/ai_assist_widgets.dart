@@ -105,7 +105,14 @@ String humanizeAiError(Object e) {
   if (e is DioException && CancelToken.isCancel(e)) {
     return '已取消';
   }
-  return e.toString().replaceFirst('Exception: ', '');
+  final text = e.toString();
+  // Anchor the prefix strip: a bare replaceFirst also matched the substring
+  // inside `FormatException: `, so "参考图数据无效…" reached the user as
+  // "Format参考图数据无效…".
+  if (text.startsWith('Exception: ')) return text.substring(11);
+  // An Error is always a bug, and some carry no diagnostic value on their own
+  // (StackOverflowError stringifies to exactly "Stack Overflow"), so name it.
+  return e is Exception ? text : '$text（${e.runtimeType}）';
 }
 
 Future<void> showAiError(BuildContext context, Object e) async {

@@ -331,7 +331,9 @@ class OpenAiCompatibleMediaProvider {
     String capability,
   ) {
     if (!config.isConfiguredWith(apiKey)) {
-      throw StateError('$capability API 尚未完整配置。');
+      // Not a StateError: an unfilled API key is a user condition, not a
+      // programming bug, and StateError.toString() would prefix "Bad state: ".
+      throw Exception('$capability API 尚未完整配置。');
     }
     final uri = Uri.tryParse(config.baseUrl.trim());
     if (uri == null ||

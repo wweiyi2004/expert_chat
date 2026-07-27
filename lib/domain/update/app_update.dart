@@ -238,9 +238,10 @@ class AppUpdateChecker {
         if (hit != null) return hit;
       }
 
-      return firstWhere((n) => n.endsWith('.apk') && n.contains('universal')) ??
-          firstWhere((n) => n.endsWith('.apk') && n.contains('android')) ??
-          firstWhere((n) => n.endsWith('.apk'));
+      // After an ABI-specific miss, only accept universal. Falling back to
+      // "any android apk" / "any apk" would hand an arm64-only release to a
+      // v7a device (install fail or UnsatisfiedLinkError).
+      return firstWhere((n) => n.endsWith('.apk') && n.contains('universal'));
     }
     if (!kIsWeb && plat == TargetPlatform.windows) {
       return firstWhere(

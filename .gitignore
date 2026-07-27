@@ -52,5 +52,11 @@ android/local.properties
 ios/Flutter/ephemeral/
 macos/Flutter/ephemeral/
 
+# Android release signing (never commit secrets or the upload keystore)
+android/key.properties
+android/*.jks
+android/*.keystore
+
+
 # Per-machine dev helpers (hard-coded local drive paths)
 scripts/use_e_drive.ps1

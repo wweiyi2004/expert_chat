@@ -100,4 +100,28 @@ void main() {
     expect(StoryLengthBudget.formatChars(1500), '1.5千');
     expect(StoryLengthBudget.formatChars(42), '42');
   });
+
+  test('near-end remaining (<200) does not throw on clamp', () {
+    for (final rem in [1, 50, 199, 200, 500, 899]) {
+      final written = 10000 - rem;
+      final body = '字' * written;
+      final assistant = ChatMessage(role: MessageRole.assistant, content: body);
+      final convo = Conversation(
+        mode: ConversationMode.story,
+        outline: '- 尾\n- 声',
+        plotCursor: 1,
+        targetTotalChars: 10000,
+        messages: [assistant],
+        activeChildren: {kRootKey: assistant.id},
+      );
+      final budget = StoryLengthBudget.forConversation(convo)!;
+      expect(budget.remaining, rem);
+      expect(budget.turnMin, lessThanOrEqualTo(budget.turnMax));
+      expect(budget.turnMax, lessThanOrEqualTo(budget.remaining));
+      expect(budget.turnMin, greaterThanOrEqualTo(0));
+      // sessionLabel / promptBlock must also be safe (they use turnMin/Max).
+      expect(budget.sessionLabel(), isNotEmpty);
+      expect(budget.promptBlock(advancePlot: true), contains('篇幅约束'));
+    }
+  });
 }

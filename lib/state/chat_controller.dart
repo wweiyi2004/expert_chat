@@ -82,6 +82,7 @@ class ChatState {
     this.isSearching = false,
     this.contextReports = const {},
     this.error,
+    this.errorConvoId,
   });
 
   final List<Conversation> conversations;
@@ -110,6 +111,18 @@ class ChatState {
   final Map<String, ContextWindowReport> contextReports;
   final String? error;
 
+  /// Conversation the [error] belongs to. Banner must not show on other
+  /// threads (e.g. A fails while the user is viewing B). Null = global /
+  /// settings-style errors that apply regardless of selection.
+  final String? errorConvoId;
+
+  /// Whether [error] should be shown for the currently selected conversation.
+  bool errorVisibleFor(String? convoId) {
+    if (error == null) return false;
+    if (errorConvoId == null) return true;
+    return errorConvoId == convoId;
+  }
+
   Conversation? get current {
     if (conversations.isEmpty) return null;
     return conversations.firstWhere(
@@ -128,19 +141,39 @@ class ChatState {
     bool? isSearching,
     Map<String, ContextWindowReport>? contextReports,
     Object? error = _sentinel,
-  }) => ChatState(
-    conversations: conversations ?? this.conversations,
-    currentId: currentId ?? this.currentId,
-    streamingConvoId: identical(streamingConvoId, _sentinel)
-        ? this.streamingConvoId
-        : streamingConvoId as String?,
-    deepThink: deepThink ?? this.deepThink,
-    searchMode: searchMode ?? this.searchMode,
-    imageGenMode: imageGenMode ?? this.imageGenMode,
-    isSearching: isSearching ?? this.isSearching,
-    contextReports: contextReports ?? this.contextReports,
-    error: identical(error, _sentinel) ? this.error : error as String?,
-  );
+    Object? errorConvoId = _sentinel,
+  }) {
+    final nextError = identical(error, _sentinel) ? this.error : error as String?;
+    final String? nextErrorConvoId;
+    if (identical(error, _sentinel)) {
+      nextErrorConvoId = identical(errorConvoId, _sentinel)
+          ? this.errorConvoId
+          : errorConvoId as String?;
+    } else if (nextError == null) {
+      // Clearing the message always clears the scope.
+      nextErrorConvoId = null;
+    } else if (identical(errorConvoId, _sentinel)) {
+      // New error without an explicit scope → global (settings / setup).
+      // Generation failures must pass [errorConvoId] via [_setScopedError].
+      nextErrorConvoId = null;
+    } else {
+      nextErrorConvoId = errorConvoId as String?;
+    }
+    return ChatState(
+      conversations: conversations ?? this.conversations,
+      currentId: currentId ?? this.currentId,
+      streamingConvoId: identical(streamingConvoId, _sentinel)
+          ? this.streamingConvoId
+          : streamingConvoId as String?,
+      deepThink: deepThink ?? this.deepThink,
+      searchMode: searchMode ?? this.searchMode,
+      imageGenMode: imageGenMode ?? this.imageGenMode,
+      isSearching: isSearching ?? this.isSearching,
+      contextReports: contextReports ?? this.contextReports,
+      error: nextError,
+      errorConvoId: nextErrorConvoId,
+    );
+  }
 
   static const _sentinel = Object();
 }
@@ -261,7 +294,7 @@ class ChatController extends AsyncNotifier<ChatState> {
     try {
       await write;
     } catch (e) {
-      if (ref.mounted) _set(_s.copyWith(error: '本地保存失败：$e'));
+      if (ref.mounted) _setScopedError('本地保存失败：$e');
     }
   }
 
@@ -279,6 +312,16 @@ class ChatController extends AsyncNotifier<ChatState> {
   }
 
   void _set(ChatState next) => state = AsyncData(next);
+
+  /// Error banner scoped to a conversation (in-flight stream or current).
+  void _setScopedError(String message, {String? convoId}) {
+    _set(
+      _s.copyWith(
+        error: message,
+        errorConvoId: convoId ?? _s.streamingConvoId ?? _s.currentId,
+      ),
+    );
+  }
 
   /// Replace the current conversation in the list with [updated].
   List<Conversation> _replace(Conversation updated) => [
@@ -744,7 +787,13 @@ class ChatController extends AsyncNotifier<ChatState> {
                 deletedConversation,
                 ...current.conversations.skip(deletedIndex),
               ];
-        _set(current.copyWith(conversations: restored, error: '本地删除失败：$e'));
+        _set(
+          current.copyWith(
+            conversations: restored,
+            error: '本地删除失败：$e',
+            errorConvoId: id,
+          ),
+        );
       }
       return;
     }
@@ -1048,7 +1097,18 @@ class ChatController extends AsyncNotifier<ChatState> {
   }
 
   /// Resend the last user turn after a failure (the error banner's "重试").
-  Future<void> retryLast() => regenerate();
+  ///
+  /// If the error belongs to another conversation (user switched mid-stream),
+  /// jump back to that conversation before regenerating.
+  Future<void> retryLast() async {
+    final failedId = _s.errorConvoId;
+    if (failedId != null &&
+        failedId != _s.currentId &&
+        _s.conversations.any((c) => c.id == failedId)) {
+      selectConversation(failedId);
+    }
+    await regenerate();
+  }
 
   /// Generate an image as a normal conversation turn. This endpoint is wholly
   /// optional and does not depend on the main chat provider being configured
@@ -1139,7 +1199,7 @@ class ChatController extends AsyncNotifier<ChatState> {
         // Same contract as _generate: a transient local-storage failure must
         // not abort the turn (and must never strand streamingConvoId); the
         // final/checkpoint writes below retry through the serialized queue.
-        _set(_s.copyWith(error: '本地保存失败：$e'));
+        _setScopedError('本地保存失败：$e', convoId: working.id);
       }
 
       try {
@@ -1211,7 +1271,7 @@ class ChatController extends AsyncNotifier<ChatState> {
               refMime = prepared.mimeType;
               refName = prepared.name;
             } on FormatException {
-              _set(_s.copyWith(error: '参考图数据无效，请重新选择图片。'));
+              _setScopedError('参考图数据无效，请重新选择图片。', convoId: working.id);
               _set(_s.copyWith(streamingConvoId: null));
               await _persistById(working.id);
               unawaited(
@@ -1226,6 +1286,7 @@ class ChatController extends AsyncNotifier<ChatState> {
             _set(
               _s.copyWith(
                 error: '参考图缺少本地数据，请重新从相册/文件选择图片。',
+                errorConvoId: working.id,
                 streamingConvoId: null,
               ),
             );
@@ -1300,7 +1361,13 @@ class ChatController extends AsyncNotifier<ChatState> {
       } catch (e) {
         final cancelled = e is DioException && CancelToken.isCancel(e);
         if (!cancelled) {
-          _set(_s.copyWith(streamingConvoId: null, error: _describeError(e)));
+          _set(
+            _s.copyWith(
+              streamingConvoId: null,
+              error: _describeError(e),
+              errorConvoId: working.id,
+            ),
+          );
         }
         await _persistById(working.id);
         unawaited(
@@ -1519,7 +1586,7 @@ class ChatController extends AsyncNotifier<ChatState> {
       // Don't crash the send action on a transient local-storage failure. The
       // final/checkpoint writes will retry through the serialized queue, while
       // the user gets a visible diagnostic instead of losing the live reply.
-      _set(_s.copyWith(error: '本地保存失败：$e'));
+      _setScopedError('本地保存失败：$e', convoId: working.id);
     }
 
     // Resolve which character (if any) owns this turn's portrait target.
@@ -1557,7 +1624,7 @@ class ChatController extends AsyncNotifier<ChatState> {
             ? '本轮已为角色「${imageCharacter.name}」生成一张安全立绘配图，请结合该形象回答，无需再调用生图。'
             : '本轮已生成一张安全配图并附在回复中，请结合配图回答，无需再调用生图。';
       } else if (pre.error != null && pre.error!.isNotEmpty && _s.isStreaming) {
-        _set(_s.copyWith(error: pre.error));
+        _setScopedError(pre.error!, convoId: working.id);
       }
     }
     // Auto: model may call once. Always: tool only if pre-gen still has budget
@@ -1632,7 +1699,9 @@ class ChatController extends AsyncNotifier<ChatState> {
         }
       } catch (e) {
         // Stop pressed during the search/fetch is not an error.
-        if (!_isCancel(e)) _set(_s.copyWith(error: _describeError(e)));
+        if (!_isCancel(e)) {
+          _setScopedError(_describeError(e), convoId: working.id);
+        }
       } finally {
         _set(_s.copyWith(isSearching: false));
       }
@@ -1819,6 +1888,7 @@ class ChatController extends AsyncNotifier<ChatState> {
         _s.copyWith(
           streamingConvoId: null,
           error: '当前消息和图片超过上下文预算，请减少附件或在设置中增大上下文窗口。',
+          errorConvoId: working.id,
         ),
       );
       await _persistById(working.id);
@@ -2118,6 +2188,7 @@ class ChatController extends AsyncNotifier<ChatState> {
           isSearching: false,
           // A cancellation raised by stop() is not an error to surface.
           error: _isCancel(e) ? null : _describeError(e),
+          errorConvoId: _isCancel(e) ? null : convoId,
         ),
       );
       await _persistById(convoId);
@@ -2242,7 +2313,7 @@ class ChatController extends AsyncNotifier<ChatState> {
     } catch (e) {
       // Stop pressed mid-search: the caller's !isStreaming check bails out.
       if (_isCancel(e)) return '搜索已取消。';
-      _set(_s.copyWith(error: _describeError(e)));
+      _setScopedError(_describeError(e), convoId: convoId);
       return '联网搜索失败：$e';
     }
   }
@@ -2281,7 +2352,7 @@ class ChatController extends AsyncNotifier<ChatState> {
       return context.contextText.isEmpty ? '未能读取网页：$url' : context.contextText;
     } catch (e) {
       if (_isCancel(e)) return '网页读取已取消。';
-      _set(_s.copyWith(error: _describeError(e)));
+      _setScopedError(_describeError(e), convoId: convoId);
       return '读取网页失败：$e';
     }
   }

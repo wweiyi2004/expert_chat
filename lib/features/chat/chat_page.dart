@@ -1014,7 +1014,9 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     // another conversation's stream must not light up bubbles here.
     final streamingHere = convo != null && state.streamingConvoId == convo.id;
     final speakerName = _characterNameFor(convo);
-    final needsSetup = state.error != null && state.error!.contains('API Key');
+    final showError = state.errorVisibleFor(convo?.id);
+    final needsSetup =
+        showError && state.error != null && state.error!.contains('API Key');
     final settings = ref.watch(settingsControllerProvider).value;
     final ui = settings?.ui ?? const UiPrefs();
     final contentMax = ui.contentWidth.maxWidth;
@@ -1023,7 +1025,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         : const EdgeInsets.fromLTRB(24, 18, 24, 28);
     return Column(
       children: [
-        if (state.error != null)
+        if (showError && state.error != null)
           _ErrorBanner(
             message: state.error!,
             onRetry:

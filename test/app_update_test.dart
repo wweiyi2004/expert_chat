@@ -78,6 +78,45 @@ void main() {
       expect(hit?.name, contains('universal'));
     });
 
+    test('v7a device does not pick arm64-only release assets', () {
+      final arm64Only = [
+        {
+          'name': 'expert-chat-android-arm64-v1.6.3.apk',
+          'browser_download_url': 'https://example/arm64.apk',
+        },
+        {
+          'name': 'expert-chat-windows-x64-v1.6.3.zip',
+          'browser_download_url': 'https://example/win.zip',
+        },
+      ];
+      final hit = AppUpdateChecker.pickAsset(
+        arm64Only,
+        abiHint: 'armeabi-v7a',
+        platform: TargetPlatform.android,
+      );
+      expect(hit, isNull);
+    });
+
+    test('arm64 miss falls back only to universal not arbitrary apk', () {
+      final mixed = [
+        {
+          'name': 'expert-chat-android-armeabi-v7a-v1.6.3.apk',
+          'browser_download_url': 'https://example/v7a.apk',
+        },
+        {
+          'name': 'expert-chat-android-universal-v1.6.3.apk',
+          'browser_download_url': 'https://example/uni.apk',
+        },
+      ];
+      // Unknown/empty ABI: universal only (not v7a).
+      final hit = AppUpdateChecker.pickAsset(
+        mixed,
+        abiHint: '',
+        platform: TargetPlatform.android,
+      );
+      expect(hit?.name, contains('universal'));
+    });
+
     test('picks windows zip on Windows', () {
       final hit = AppUpdateChecker.pickAsset(
         assets,

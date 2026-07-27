@@ -72,22 +72,29 @@ class StoryLengthBudget {
 
     // One "继续下一节" is a fraction of a beat — aim ~1/3 of remaining beat
     // budget, clamped so models get a usable band without dumping a whole act.
+    //
+    // Dart's num.clamp(lower, upper) requires lower <= upper. Near the end of a
+    // long novel, remaining can be < 200; never pass a lower bound above it.
     final int turnMin;
     final int turnMax;
     if (remaining <= 0) {
       turnMin = 0;
       turnMax = 0;
     } else if (remaining < 900) {
-      turnMin = (remaining * 0.6).round().clamp(200, remaining);
+      final softMin = (remaining * 0.6).round();
+      // Prefer ~60% of what's left, but never exceed remaining and never use
+      // clamp(200, remaining) when remaining < 200 (throws ArgumentError).
+      final minV = softMin.clamp(1, remaining);
+      turnMin = minV;
       turnMax = remaining;
     } else {
       final center = (perBeat * 0.34).round().clamp(700, 2800);
       final cappedCenter = center > remaining ? remaining : center;
-      var minV = (cappedCenter * 0.7).round().clamp(500, remaining);
+      var minV = (cappedCenter * 0.7).round().clamp(1, remaining);
       var maxV = (cappedCenter * 1.25).round();
       if (maxV > remaining) maxV = remaining;
       if (maxV > 3500) maxV = remaining < 3500 ? remaining : 3500;
-      if (minV > maxV) minV = (maxV * 0.75).round().clamp(1, maxV);
+      if (minV > maxV) minV = maxV < 1 ? 1 : (maxV * 0.75).round().clamp(1, maxV);
       turnMin = minV;
       turnMax = maxV;
     }

@@ -88,7 +88,8 @@ class AppUpdateChecker {
     final htmlUrl = (data['html_url'] as String?)?.trim().isNotEmpty == true
         ? data['html_url'] as String
         : kGithubReleasesPage;
-    final notes = (data['body'] as String? ?? '').trim();
+    var notes = (data['body'] as String? ?? '').trim();
+    if (notes.startsWith('\uFEFF')) notes = notes.substring(1).trim();
     final assets = (data['assets'] as List<dynamic>? ?? [])
         .whereType<Map>()
         .map((e) => Map<String, dynamic>.from(e))

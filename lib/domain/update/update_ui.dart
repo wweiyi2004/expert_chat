@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:gpt_markdown/gpt_markdown.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -69,13 +70,20 @@ Future<void> checkForUpdatesOnLaunch(BuildContext context) async {
   }
 }
 
+/// Normalize GitHub release body for in-app Markdown (BOM / empty).
+String _normalizeReleaseNotes(String raw) {
+  var notes = raw.trim();
+  // PowerShell Out-File -Encoding utf8 often prefixes U+FEFF.
+  if (notes.startsWith('\uFEFF')) notes = notes.substring(1).trim();
+  return notes;
+}
+
 Future<void> showUpdateResultDialog(
   BuildContext context,
   UpdateCheckResult result, {
   required bool manual,
 }) {
-  final notes = result.releaseNotes.trim();
-  final shortNotes = notes.length > 600 ? '${notes.substring(0, 600)}…' : notes;
+  final notes = _normalizeReleaseNotes(result.releaseNotes);
   final canInApp = !kIsWeb &&
       result.downloadUrl != null &&
       result.downloadUrl!.isNotEmpty &&
@@ -86,6 +94,12 @@ Future<void> showUpdateResultDialog(
   return showDialog<void>(
     context: context,
     builder: (ctx) {
+      final scheme = Theme.of(ctx).colorScheme;
+      final bodyStyle = Theme.of(ctx).textTheme.bodySmall?.copyWith(
+            color: scheme.onSurface,
+            height: 1.45,
+          );
+
       if (!result.hasUpdate) {
         return AlertDialog(
           icon: const Icon(Icons.verified_outlined),
@@ -110,26 +124,41 @@ Future<void> showUpdateResultDialog(
       return AlertDialog(
         icon: const Icon(Icons.system_update_alt),
         title: const Text('发现新版本'),
-        content: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                '当前 v${result.currentVersion}  →  最新 v${result.latestVersion}',
+        content: SizedBox(
+          // Cap height so long release notes scroll inside the dialog.
+          width: 420,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(ctx).height * 0.5,
+            ),
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    '当前 v${result.currentVersion}  →  最新 v${result.latestVersion}',
+                  ),
+                  if (result.assetName != null) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      '安装包：${result.assetName}',
+                      style: bodyStyle,
+                    ),
+                  ],
+                  if (notes.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    // GitHub release bodies are Markdown; plain Text shows raw
+                    // ## / ** / tables. Match chat bubbles via GptMarkdown.
+                    GptMarkdown(
+                      notes,
+                      style: bodyStyle,
+                      onLinkTap: (url, _) => _open(url),
+                    ),
+                  ],
+                ],
               ),
-              if (result.assetName != null) ...[
-                const SizedBox(height: 6),
-                Text(
-                  '安装包：${result.assetName}',
-                  style: Theme.of(ctx).textTheme.bodySmall,
-                ),
-              ],
-              if (shortNotes.isNotEmpty) ...[
-                const SizedBox(height: 12),
-                Text(shortNotes, style: Theme.of(ctx).textTheme.bodySmall),
-              ],
-            ],
+            ),
           ),
         ),
         actions: [

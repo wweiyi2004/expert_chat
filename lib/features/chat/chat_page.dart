@@ -535,6 +535,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     ref.listen(chatControllerProvider, (prev, next) {
       if (prev?.value?.currentId != next.value?.currentId) {
         _stick = true;
+        _messageKeys.clear();
         if (_selecting) {
           _selecting = false;
           _selectedIds.clear();

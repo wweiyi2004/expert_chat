@@ -1074,6 +1074,13 @@ class ChatController extends AsyncNotifier<ChatState> {
             );
         if (!_s.isStreaming || cancelToken.isCancelled) {
           await _persistById(working.id);
+          unawaited(
+            GenerationNotify.onGenerationEnd(
+              success: false,
+              conversationTitle: working.title,
+              cancelled: true,
+            ),
+          );
           return true;
         }
         final sizeBytes = generated.base64 == null
@@ -1306,6 +1313,15 @@ class ChatController extends AsyncNotifier<ChatState> {
     // The user may have pressed stop during the (awaited) search; honor it.
     if (!_s.isStreaming) {
       await _persistById(working.id);
+      // stop() already ends the notify session when the user pressed stop;
+      // still clear wakelock if streaming dropped for another reason.
+      unawaited(
+        GenerationNotify.onGenerationEnd(
+          success: false,
+          conversationTitle: working.title,
+          cancelled: _cancelStart,
+        ),
+      );
       return;
     }
 

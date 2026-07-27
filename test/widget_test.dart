@@ -1029,9 +1029,11 @@ void main() {
           .map((message) => message.content)
           .join('\n');
       expect(request, contains('用户是导演'));
-      expect(request, contains('旁白和全部角色'));
+      expect(request, contains('服从优先级'));
+      expect(request, contains('旁白和所有登场角色'));
       expect(request, contains('沈砚'));
       expect(request, contains('零号'));
+      expect(request, contains('第三人称有限视角'));
     },
   );
 

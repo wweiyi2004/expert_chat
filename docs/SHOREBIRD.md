@@ -19,14 +19,20 @@
 GitHub Release 资产建议：
 
 ```text
-expert-chat-android-arm64-vX.Y.Z.apk
+expert-chat-android-arm64-vX.Y.Z.apk      # 推荐：近 5 年手机（arm64）
 expert-chat-android-armeabi-v7a-vX.Y.Z.apk
-expert-chat-android-universal-vX.Y.Z.apk
+expert-chat-android-universal-vX.Y.Z.apk  # 不确定架构时
 expert-chat-android-x86_64-vX.Y.Z.apk
 expert-chat-windows-x64-vX.Y.Z.zip
 ```
 
-Android 会按设备 ABI 优先选 arm64 / v7a / x86_64，再回退 universal。
+应用内选包逻辑：
+
+1. 按设备 ABI 优先匹配 arm64 / v7a / x86_64 文件名  
+2. **仅当 ABI 未命中时**回退 `universal`  
+3. **不会**再回退到「任意 .apk」（避免把 arm64 包推给 v7a 设备）
+
+当前侧载列车可只发 **arm64 + Windows**；非 arm64 用户需 universal 或对应 ABI 包。Shorebird 基座须用 `shorebird release` 构建，与普通 `flutter build` 不通用。
 
 ## Shorebird 前置条件
 

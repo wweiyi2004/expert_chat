@@ -6,6 +6,17 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   group('AppUpdateChecker version compare', () {
+    test('normalizes GitHub asset digests', () {
+      expect(
+        AppUpdateChecker.normalizeAssetSha256(
+          'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        ),
+        '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+      );
+      expect(AppUpdateChecker.normalizeAssetSha256('not-a-hash'), isNull);
+      expect(AppUpdateChecker.normalizeAssetSha256(null), isNull);
+    });
+
     test('normalizes tags and build metadata', () {
       expect(AppUpdateChecker.normalizeVersionForTest('v1.2.0'), '1.2.0');
       expect(AppUpdateChecker.normalizeVersionForTest('1.2.0+3'), '1.2.0');

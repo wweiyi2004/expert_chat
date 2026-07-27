@@ -23,6 +23,7 @@ class UpdateCheckResult {
     this.downloadUrl,
     this.assetName,
     this.tagName,
+    this.assetSha256,
   });
 
   final String currentVersion;
@@ -35,6 +36,9 @@ class UpdateCheckResult {
   /// Matched release asset file name (for local save / install).
   final String? assetName;
   final String? tagName;
+
+  /// Optional GitHub asset digest (`sha256:…` stripped to bare hex).
+  final String? assetSha256;
 
   bool get isAndroidApk {
     final n = (assetName ?? downloadUrl ?? '').toLowerCase();
@@ -108,6 +112,7 @@ class AppUpdateChecker {
       downloadUrl: picked?.url,
       assetName: picked?.name,
       tagName: tag.isEmpty ? null : tag,
+      assetSha256: picked?.sha256,
     );
   }
 
@@ -178,10 +183,20 @@ class AppUpdateChecker {
     return aParts.length.compareTo(bParts.length);
   }
 
+  /// Strip `sha256:` prefix from a GitHub release asset `digest` field.
+  static String? normalizeAssetSha256(String? raw) {
+    if (raw == null) return null;
+    var d = raw.trim().toLowerCase();
+    if (d.startsWith('sha256:')) d = d.substring(7).trim();
+    if (d.isEmpty) return null;
+    if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(d)) return null;
+    return d;
+  }
+
   /// Public for tests. Picks the best installable asset for this platform.
   ///
   /// [platform] overrides the host platform (useful in unit tests).
-  static ({String name, String url})? pickAsset(
+  static ({String name, String url, String? sha256})? pickAsset(
     List<Map<String, dynamic>> assets, {
     String? abiHint,
     TargetPlatform? platform,
@@ -193,11 +208,15 @@ class AppUpdateChecker {
             ? TargetPlatform.android
             : defaultTargetPlatform);
 
-    ({String name, String url})? at(int i) {
+    ({String name, String url, String? sha256})? at(int i) {
       final name = (assets[i]['name'] as String? ?? '').trim();
       final url = (assets[i]['browser_download_url'] as String? ?? '').trim();
       if (name.isEmpty || url.isEmpty) return null;
-      return (name: name, url: url);
+      return (
+        name: name,
+        url: url,
+        sha256: normalizeAssetSha256(assets[i]['digest'] as String?),
+      );
     }
 
     bool match(int i, bool Function(String n) test) {
@@ -205,7 +224,9 @@ class AppUpdateChecker {
       return name.isNotEmpty && test(name);
     }
 
-    ({String name, String url})? firstWhere(bool Function(String n) test) {
+    ({String name, String url, String? sha256})? firstWhere(
+      bool Function(String n) test,
+    ) {
       for (var i = 0; i < assets.length; i++) {
         if (match(i, test)) return at(i);
       }
@@ -262,7 +283,13 @@ class AppUpdateChecker {
     for (final a in assets) {
       final name = (a['name'] as String? ?? '').trim();
       final u = (a['browser_download_url'] as String? ?? '').trim();
-      if (u.isNotEmpty) return (name: name.isEmpty ? 'download' : name, url: u);
+      if (u.isNotEmpty) {
+        return (
+          name: name.isEmpty ? 'download' : name,
+          url: u,
+          sha256: null,
+        );
+      }
     }
     return null;
   }

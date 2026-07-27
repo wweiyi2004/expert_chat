@@ -71,15 +71,29 @@ typedef ToolEngineFactory =
     });
 
 class ToolEnginePool {
+  /// Cap cached engines so rotating search API keys cannot grow without bound.
+  static const int maxEngines = 4;
+
   final engines = <_ToolEngineConfigKey, ToolEngine>{};
 
   ToolEngine create({required SearchBackend backend, required String apiKey}) {
     final key = _ToolEngineConfigKey(backend, apiKey.trim());
-    return engines.putIfAbsent(
-      key,
-      () =>
-          ToolEngine(HttpSearchProvider(backend: backend, apiKey: key.apiKey)),
+    final existing = engines[key];
+    if (existing != null) {
+      // Refresh LRU order: re-insert at end.
+      engines.remove(key);
+      engines[key] = existing;
+      return existing;
+    }
+    while (engines.length >= maxEngines) {
+      final oldest = engines.keys.first;
+      engines.remove(oldest)?.clearCache();
+    }
+    final created = ToolEngine(
+      HttpSearchProvider(backend: backend, apiKey: key.apiKey),
     );
+    engines[key] = created;
+    return created;
   }
 
   void clear() {

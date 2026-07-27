@@ -137,15 +137,21 @@ class _ChatPageState extends ConsumerState<ChatPage> {
               defaultTargetPlatform == TargetPlatform.iOS)) {
         final dir = await getTemporaryDirectory();
         final file = File(
-          '${dir.path}${Platform.pathSeparator}expert-chat-share.md',
+          '${dir.path}${Platform.pathSeparator}expert-chat-share-${DateTime.now().millisecondsSinceEpoch}.md',
         );
         await file.writeAsString(md, encoding: utf8);
-        await SharePlus.instance.share(
-          ShareParams(
-            files: [XFile(file.path, mimeType: 'text/markdown')],
-            subject: convo?.title ?? 'Expert Chat',
-          ),
-        );
+        try {
+          await SharePlus.instance.share(
+            ShareParams(
+              files: [XFile(file.path, mimeType: 'text/markdown')],
+              subject: convo?.title ?? 'Expert Chat',
+            ),
+          );
+        } finally {
+          try {
+            if (await file.exists()) await file.delete();
+          } catch (_) {}
+        }
       } else {
         await SharePlus.instance.share(
           ShareParams(text: md, subject: convo?.title ?? 'Expert Chat'),

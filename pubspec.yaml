@@ -67,6 +67,7 @@ dependencies:
   share_plus: ^12.0.2
   # App version + GitHub Releases update check
   package_info_plus: ^8.3.0
+  crypto: ^3.0.6
   # Shorebird code-push (Dart OTA patches; requires Shorebird-built release)
   shorebird_code_push: ^2.0.7
   webview_flutter: ^4.14.1

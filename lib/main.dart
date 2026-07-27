@@ -22,6 +22,10 @@ Future<void> main() async {
     // Keep the Windows semantics tree disabled until the engine fixes that
     // null-parent path. Other platforms retain their normal accessibility
     // behavior. Remove this binding once the engine fix is available.
+    //
+    // Track: https://github.com/flutter/flutter/issues (search
+    // CreateRemoveReparentedNodesUpdate / Windows UIA). Re-enable semantics
+    // after upgrading past a fixed Flutter engine and verifying with Narrator.
     _WindowsCrashWorkaroundBinding();
   } else {
     WidgetsFlutterBinding.ensureInitialized();

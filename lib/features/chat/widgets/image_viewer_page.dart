@@ -39,11 +39,21 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
   Uint8List? _bytes;
   Object? _loadError;
   bool _busy = false;
+  CancelToken? _remoteCancel;
+
+  /// Cap remote image downloads to avoid OOM on huge URLs.
+  static const int _maxRemoteBytes = 25 * 1024 * 1024;
 
   @override
   void initState() {
     super.initState();
     unawaited(_loadBytes());
+  }
+
+  @override
+  void dispose() {
+    _remoteCancel?.cancel('viewer closed');
+    super.dispose();
   }
 
   Future<void> _loadBytes() async {
@@ -72,9 +82,23 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
         setState(() => _loadError = '没有可显示的图片数据');
         return;
       }
+      final token = CancelToken();
+      _remoteCancel = token;
       final response = await Dio().get<List<int>>(
         url,
-        options: Options(responseType: ResponseType.bytes),
+        cancelToken: token,
+        options: Options(
+          responseType: ResponseType.bytes,
+          receiveTimeout: const Duration(seconds: 60),
+          // Reject absurd Content-Length early when the server sends it.
+          validateStatus: (s) => s != null && s >= 200 && s < 400,
+        ),
+        onReceiveProgress: (received, total) {
+          if (received > _maxRemoteBytes ||
+              (total > 0 && total > _maxRemoteBytes)) {
+            token.cancel('image too large');
+          }
+        },
       );
       final data = response.data;
       if (!mounted) return;
@@ -82,9 +106,20 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
         setState(() => _loadError = '下载图片失败');
         return;
       }
+      if (data.length > _maxRemoteBytes) {
+        setState(() => _loadError = '图片过大（>${_maxRemoteBytes ~/ (1024 * 1024)}MB）');
+        return;
+      }
       setState(() => _bytes = Uint8List.fromList(data));
     } catch (e) {
       if (!mounted) return;
+      if (e is DioException && CancelToken.isCancel(e)) {
+        // Disposed or size abort — stay quiet if unmounted.
+        if (_remoteCancel?.isCancelled == true && mounted) {
+          setState(() => _loadError = '图片下载已取消或过大');
+        }
+        return;
+      }
       setState(() => _loadError = e);
     }
   }
@@ -149,12 +184,18 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
       final mime = widget.attachment.mimeType.isNotEmpty
           ? widget.attachment.mimeType
           : 'image/png';
-      await SharePlus.instance.share(
-        ShareParams(
-          files: [XFile(file.path, mimeType: mime, name: _fileName)],
-          subject: _fileName,
-        ),
-      );
+      try {
+        await SharePlus.instance.share(
+          ShareParams(
+            files: [XFile(file.path, mimeType: mime, name: _fileName)],
+            subject: _fileName,
+          ),
+        );
+      } finally {
+        try {
+          if (await file.exists()) await file.delete();
+        } catch (_) {}
+      }
     } catch (e) {
       if (!mounted) return;
       _toast('分享失败：$e');

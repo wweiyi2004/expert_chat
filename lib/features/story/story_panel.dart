@@ -69,6 +69,10 @@ class _StoryPanelBodyState extends ConsumerState<StoryPanelBody> {
   Timer? _debounce;
   String _status = '自动保存';
 
+  /// Author note when the panel bound this conversation — used to protect hard
+  /// constraint blocks from accidental wipe.
+  String _baselineAuthorNote = '';
+
   @override
   void dispose() {
     _debounce?.cancel();
@@ -91,6 +95,7 @@ class _StoryPanelBodyState extends ConsumerState<StoryPanelBody> {
     _outline = TextEditingController(text: convo.outline);
     _authorNote = TextEditingController(text: convo.authorNote);
     _venue = TextEditingController(text: convo.venue);
+    _baselineAuthorNote = convo.authorNote;
     _selectedWi = convo.worldInfoIds.toSet();
     _outline.addListener(_scheduleSave);
     _authorNote.addListener(_scheduleSave);
@@ -116,17 +121,55 @@ class _StoryPanelBodyState extends ConsumerState<StoryPanelBody> {
 
   void _flushSave() {
     if (!_inited) return;
+    final edited = _authorNote.text;
+    final note = _protectHardAuthorNote(
+      previous: _baselineAuthorNote,
+      edited: edited,
+    );
+    final restored = note != edited;
+    if (restored) {
+      _authorNote.removeListener(_scheduleSave);
+      _authorNote.value = TextEditingValue(
+        text: note,
+        selection: TextSelection.collapsed(offset: note.length),
+      );
+      _authorNote.addListener(_scheduleSave);
+      _baselineAuthorNote = note;
+    } else if (note.trim().contains('【硬性')) {
+      _baselineAuthorNote = note;
+    }
     ref
         .read(chatControllerProvider.notifier)
         .updateStoryMeta(
           conversationId: widget.conversationId,
           outline: _outline.text,
-          authorNote: _authorNote.text,
+          authorNote: note,
           worldInfoIds: _selectedWi.toList(),
           venue: _venue.text,
         );
     // Meta is read when the next model turn starts — make that explicit.
-    if (mounted) setState(() => _status = '已保存 · 下轮生效');
+    if (mounted) {
+      setState(() {
+        _status = restored ? '已保存 · 已保留硬性约束 · 下轮生效' : '已保存 · 下轮生效';
+      });
+    }
+  }
+
+  /// If the session started with a hard-constraint block and the editor wiped
+  /// it, re-attach the original hard section so setup claims stay enforceable.
+  static String _protectHardAuthorNote({
+    required String previous,
+    required String edited,
+  }) {
+    final prev = previous.trim();
+    final next = edited.trim();
+    if (prev.isEmpty) return edited;
+    final hardHeader = RegExp(r'【硬性');
+    if (!hardHeader.hasMatch(prev)) return edited;
+    if (hardHeader.hasMatch(next)) return edited;
+    // User cleared or replaced hard constraints — keep original hard block on top.
+    if (next.isEmpty) return prev;
+    return '$prev\n\n【情节面板补充】\n$next';
   }
 
   void _toggleWi(String id, bool? selected) {

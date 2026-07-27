@@ -230,6 +230,9 @@ class DriftConversationRepository implements ConversationRepository {
 
   /// Returns conversations whose title or any message content matches [query]
   /// (case-insensitive LIKE). Empty query returns everything.
+  ///
+  /// Only matching conversation rows (+ their messages) are loaded — not the
+  /// full archive via [loadAll].
   Future<List<Conversation>> search(String query) async {
     final q = query.trim();
     if (q.isEmpty) return loadAll();
@@ -246,8 +249,48 @@ class DriftConversationRepository implements ConversationRepository {
     )..where((m) => m.content.lower().like(like))).get();
     matchingIds.addAll(msgRows.map((m) => m.convoId));
 
-    final all = await loadAll();
-    return all.where((c) => matchingIds.contains(c.id)).toList();
+    if (matchingIds.isEmpty) return const [];
+
+    final idList = matchingIds.toList();
+    final convoRows =
+        await (_db.select(_db.conversations)
+              ..where((c) => c.id.isIn(idList))
+              ..orderBy([(c) => OrderingTerm.desc(c.updatedAt)]))
+            .get();
+    final matchedMsgRows =
+        await (_db.select(_db.messages)
+              ..where((m) => m.convoId.isIn(idList))
+              ..orderBy([(m) => OrderingTerm.asc(m.seq)]))
+            .get();
+
+    final byConvo = <String, List<Message>>{};
+    for (final m in matchedMsgRows) {
+      (byConvo[m.convoId] ??= []).add(m);
+    }
+
+    return [
+      for (final c in convoRows)
+        Conversation(
+          id: c.id,
+          title: c.title,
+          updatedAt: c.updatedAt,
+          activeChildren: _decodeActiveChildren(c.activeChildrenJson),
+          messages: [
+            for (final m in byConvo[c.id] ?? const <Message>[]) _toMessage(m),
+          ],
+          mode: ConversationMode.fromWire(c.mode),
+          characterId: c.characterId,
+          participantIds: _decodeStringList(c.participantIdsJson),
+          localCast: _decodeList(c.localCastJson, CharacterCard.fromJson),
+          worldInfoIds: _decodeStringList(c.worldInfoIdsJson),
+          outline: c.outline,
+          authorNote: c.authorNote,
+          plotCursor: c.plotCursor,
+          venue: c.venue,
+          nextSpeakerIndex: c.nextSpeakerIndex,
+          targetTotalChars: c.targetTotalChars,
+        ),
+    ];
   }
 
   ChatMessage _toMessage(Message m) => ChatMessage(

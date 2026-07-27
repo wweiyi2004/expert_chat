@@ -1,5 +1,3 @@
-import 'dart:io';
-
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -10,6 +8,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'app_update.dart';
 import 'install_apk.dart';
 import 'update_downloader.dart';
+import 'update_platform.dart';
 import 'update_prefs.dart';
 
 Future<void> _open(String url) async {
@@ -272,6 +271,7 @@ Future<void> downloadAndApplyUpdate(
     final path = await UpdateDownloader().download(
       url: url,
       fileName: result.assetName,
+      expectedSha256: result.assetSha256,
       cancelToken: cancelToken,
       onProgress: (received, total) {
         if (total > 0) {
@@ -291,15 +291,12 @@ Future<void> downloadAndApplyUpdate(
     }
 
     // Desktop: open the containing folder / file location.
-    if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
+    if (!kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.windows ||
+            defaultTargetPlatform == TargetPlatform.linux ||
+            defaultTargetPlatform == TargetPlatform.macOS)) {
       try {
-        if (Platform.isWindows) {
-          await Process.run('explorer.exe', ['/select,', path]);
-        } else if (Platform.isMacOS) {
-          await Process.run('open', ['-R', path]);
-        } else {
-          await Process.run('xdg-open', [File(path).parent.path]);
-        }
+        await revealDownloadedFile(path);
       } catch (_) {
         // Fall through to snackbar with path.
       }

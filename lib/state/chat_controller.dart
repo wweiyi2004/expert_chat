@@ -1281,6 +1281,10 @@ class ChatController extends AsyncNotifier<ChatState> {
           );
         }
 
+        // Align pure 生图 with dialogue illustration: scrub NSFW phrasing and
+        // append an SFW suffix before hitting the media API.
+        imagePrompt = ImagePromptSafety.freeform(imagePrompt);
+
         List<int>? refBytes;
         var refMime = 'image/png';
         var refName = 'reference.png';

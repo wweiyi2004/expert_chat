@@ -122,12 +122,19 @@ class _DirectorStorySetupPageState
 
     try {
       final requirements = _mergedRequirements();
+      final lengthParts = <String>[
+        '$_beatCount 个连续、具体且可以依次演绎的故事节拍',
+        if (_targetTotalChars > 0)
+          '全书目标约 ${StoryLengthBudget.formatChars(_targetTotalChars)}字'
+          '（约每拍 ${StoryLengthBudget.formatChars((_targetTotalChars / _beatCount).round())}字，'
+          'outline 密度须与总篇幅匹配，避免前松后紧）',
+      ];
       final generated = await ready.assist.generateDirectorStory(
         config: ready.config,
         premise: _premise.text.trim(),
         // Hard creative constraints — styles + freeform, not mere flavor.
         requirements: requirements.isEmpty ? null : requirements,
-        length: '$_beatCount 个连续、具体且可以依次演绎的故事节拍',
+        length: lengthParts.join('；'),
         seed: _editorSeed(),
         cancelToken: token,
       );

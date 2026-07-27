@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -205,6 +206,7 @@ const _kContextPrefs = 'contextPrefs';
 const _kLegacyBaseUrl = 'baseUrl';
 const _kLegacyModel = 'model';
 const _kLegacyApiKeySecure = 'llm_api_key';
+const _kProfilesCorruptBackup = 'providerProfiles.corrupt';
 
 String _secureKeyForProfile(String profileId) => 'apikey_$profileId';
 
@@ -216,11 +218,14 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     final prefs = ref.read(sharedPrefsProvider);
     final secure = ref.read(secureStorageProvider);
 
-    List<ProviderProfile> profiles = _readProfiles(prefs);
+    final profileRead = _readProfiles(prefs);
+    List<ProviderProfile> profiles = profileRead.profiles;
     String? activeId = prefs.getString(_kActiveProfile);
 
     // First run / migration from the M1 single-config layout.
-    if (profiles.isEmpty) {
+    // Never treat a *corrupt* profiles blob as first-run empty — that would
+    // overwrite the user's JSON with a default preset.
+    if (profiles.isEmpty && !profileRead.corrupt) {
       final legacyKey = await secure.read(key: _kLegacyApiKeySecure);
       final legacyBaseUrl = prefs.getString(_kLegacyBaseUrl);
       if (legacyBaseUrl != null || legacyKey != null) {
@@ -251,6 +256,10 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       activeId = profiles.first.id;
       await _writeProfiles(prefs, profiles);
       await prefs.setString(_kActiveProfile, activeId);
+    } else if (profiles.isEmpty && profileRead.corrupt) {
+      // Keep UI usable without clobbering the corrupt store.
+      profiles = [ProviderPreset.presets.first.toProfile()];
+      activeId = profiles.first.id;
     }
 
     // One-time upgrade: bump unmodified DeepSeek profiles to the v4 models.
@@ -360,16 +369,23 @@ class SettingsController extends AsyncNotifier<SettingsState> {
 
   SettingsState get _current => state.value ?? const SettingsState();
 
-  List<ProviderProfile> _readProfiles(SharedPreferences prefs) {
+  ({List<ProviderProfile> profiles, bool corrupt}) _readProfiles(
+    SharedPreferences prefs,
+  ) {
     final raw = prefs.getString(_kProfiles);
-    if (raw == null || raw.isEmpty) return [];
+    if (raw == null || raw.isEmpty) {
+      return (profiles: const [], corrupt: false);
+    }
     try {
       final list = jsonDecode(raw) as List<dynamic>;
-      return list
+      final profiles = list
           .map((e) => ProviderProfile.fromJson(e as Map<String, dynamic>))
           .toList();
+      return (profiles: profiles, corrupt: false);
     } catch (_) {
-      return [];
+      // Preserve the broken payload for manual recovery; never silent-overwrite.
+      unawaited(prefs.setString(_kProfilesCorruptBackup, raw));
+      return (profiles: const [], corrupt: true);
     }
   }
 

@@ -1793,7 +1793,9 @@ void main() {
 
     final ok = await ctrl.generateImage('画一只猫');
     expect(ok, isTrue);
-    expect(media.lastPrompt, '画一只猫');
+    // Pure 生图 is scrubbed + SFW-suffixed like dialogue illustration.
+    expect(media.lastPrompt, contains('画一只猫'));
+    expect(media.lastPrompt, contains('safe for work'));
     expect(media.lastReferenceBytes, isNull);
     expect(llm.callCount, 0);
   });
@@ -1822,7 +1824,8 @@ void main() {
       referenceImages: [ref],
     );
     expect(ok, isTrue);
-    expect(media.lastPrompt, '改成赛博朋克风格');
+    expect(media.lastPrompt, contains('改成赛博朋克风格'));
+    expect(media.lastPrompt, contains('safe for work'));
     expect(media.lastReferenceBytes, refBytes);
 
     final path = c.read(chatControllerProvider).value!.current!.activePath;

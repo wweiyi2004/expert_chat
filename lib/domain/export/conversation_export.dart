@@ -78,8 +78,19 @@ class ConversationExport {
           ..writeln('</details>')
           ..writeln();
       }
+      for (final a in m.attachments) {
+        final kind = a.isImage ? '图片' : '附件';
+        b.writeln(
+          '> 📎 $kind：${a.name}'
+          '${a.parseError != null ? '（${a.parseError}）' : ''}'
+          '${a.remoteUrl != null && a.remoteUrl!.isNotEmpty ? ' · ${a.remoteUrl}' : ''}',
+        );
+      }
       if (m.content.trim().isNotEmpty) {
         b.writeln(m.content.trim());
+      } else if (m.kind == MessageKind.generatedImage &&
+          m.attachments.isEmpty) {
+        b.writeln('_（生成图，无导出二进制数据）_');
       }
       b.writeln();
     }
@@ -157,6 +168,13 @@ class ConversationExport {
               ..writeln()
               ..writeln('</details>')
               ..writeln();
+          }
+          for (final a in m.attachments) {
+            final kind = a.isImage ? '图片' : '附件';
+            b.writeln(
+              '> 📎 $kind：${a.name}'
+              '${a.remoteUrl != null && a.remoteUrl!.isNotEmpty ? ' · ${a.remoteUrl}' : ''}',
+            );
           }
           if (m.content.isNotEmpty) b.writeln(m.content);
           if (m.citations.isNotEmpty) {

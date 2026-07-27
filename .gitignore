@@ -51,3 +51,6 @@ app.*.map.json
 android/local.properties
 ios/Flutter/ephemeral/
 macos/Flutter/ephemeral/
+
+# Per-machine dev helpers (hard-coded local drive paths)
+scripts/use_e_drive.ps1

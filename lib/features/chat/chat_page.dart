@@ -693,6 +693,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     ref.listen<String?>(pendingJumpMessageIdProvider, (prev, next) {
       final id = next;
       if (id == null || id.isEmpty) return;
+      // Capture messenger before any async gap (use_build_context_synchronously).
+      final messenger = ScaffoldMessenger.maybeOf(context);
       void tryJump([int attempt = 0]) {
         WidgetsBinding.instance.addPostFrameCallback((_) async {
           if (!mounted) return;
@@ -736,11 +738,10 @@ class _ChatPageState extends ConsumerState<ChatPage> {
             tryJump(attempt + 1);
           } else {
             ref.read(pendingJumpMessageIdProvider.notifier).clear();
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('无法定位到该消息（可能不在当前分支）')),
-              );
-            }
+            if (!mounted) return;
+            messenger?.showSnackBar(
+              const SnackBar(content: Text('无法定位到该消息（可能不在当前分支）')),
+            );
           }
         });
       }

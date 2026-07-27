@@ -1,9 +1,14 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../../core/mode_style.dart';
 import '../../core/providers.dart';
@@ -22,6 +27,7 @@ import '../shell/shell_tab.dart';
 import '../story/director_story_setup_page.dart';
 import '../story/ensemble_setup_page.dart';
 import '../story/story_panel.dart';
+import 'jump_to_message.dart';
 import 'widgets/attachment_chip.dart';
 import 'widgets/message_bubble.dart';
 
@@ -73,10 +79,103 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   bool _scrollScheduled = false;
   bool _pendingAnimatedScroll = false;
 
+  /// Multi-select share mode (long-press / secondary-click on a bubble).
+  bool _selecting = false;
+  final Set<String> _selectedIds = {};
+
   @override
   void initState() {
     super.initState();
     _scroll.addListener(_onScroll);
+  }
+
+  void _enterSelect(String messageId) {
+    setState(() {
+      _selecting = true;
+      _selectedIds
+        ..clear()
+        ..add(messageId);
+    });
+  }
+
+  void _toggleSelect(String messageId) {
+    setState(() {
+      if (_selectedIds.contains(messageId)) {
+        _selectedIds.remove(messageId);
+        if (_selectedIds.isEmpty) _selecting = false;
+      } else {
+        _selectedIds.add(messageId);
+      }
+    });
+  }
+
+  void _exitSelect() {
+    setState(() {
+      _selecting = false;
+      _selectedIds.clear();
+    });
+  }
+
+  List<ChatMessage> _selectedOrdered(List<ChatMessage> path) => [
+    for (final m in path)
+      if (_selectedIds.contains(m.id)) m,
+  ];
+
+  Future<void> _shareSelected(List<ChatMessage> path, Conversation? convo) async {
+    final selected = _selectedOrdered(path);
+    if (selected.isEmpty) return;
+    final md = ConversationExport.messagesToMarkdown(
+      selected,
+      title: convo?.title ?? '所选消息',
+      directorMode: convo?.localCast.isNotEmpty ?? false,
+    );
+    try {
+      if (!kIsWeb &&
+          (defaultTargetPlatform == TargetPlatform.android ||
+              defaultTargetPlatform == TargetPlatform.iOS)) {
+        final dir = await getTemporaryDirectory();
+        final file = File(
+          '${dir.path}${Platform.pathSeparator}expert-chat-share.md',
+        );
+        await file.writeAsString(md, encoding: utf8);
+        await SharePlus.instance.share(
+          ShareParams(
+            files: [XFile(file.path, mimeType: 'text/markdown')],
+            subject: convo?.title ?? 'Expert Chat',
+          ),
+        );
+      } else {
+        await SharePlus.instance.share(
+          ShareParams(text: md, subject: convo?.title ?? 'Expert Chat'),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('分享失败：$e'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  Future<void> _copySelectedMarkdown(List<ChatMessage> path, Conversation? convo) async {
+    final selected = _selectedOrdered(path);
+    if (selected.isEmpty) return;
+    final md = ConversationExport.messagesToMarkdown(
+      selected,
+      title: convo?.title ?? '所选消息',
+      directorMode: convo?.localCast.isNotEmpty ?? false,
+    );
+    await Clipboard.setData(ClipboardData(text: md));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('已复制 ${selected.length} 条为 Markdown'),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
   }
 
   @override
@@ -101,6 +200,27 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     setState(() => _stick = true);
     _scrollToBottom(animated: true);
   }
+
+  /// Scroll so [messageId] is near the top of the viewport (search jump).
+  void _scrollToMessage(String messageId) {
+    final ctx = _messageKeys[messageId]?.currentContext;
+    if (ctx == null) return;
+    setState(() => _stick = false);
+    _programmaticScroll = true;
+    Scrollable.ensureVisible(
+      ctx,
+      alignment: 0.08,
+      duration: const Duration(milliseconds: 320),
+      curve: Curves.easeOutCubic,
+    ).whenComplete(() {
+      _programmaticScroll = false;
+    });
+  }
+
+  final Map<String, GlobalKey> _messageKeys = {};
+
+  GlobalKey _keyForMessage(String id) =>
+      _messageKeys.putIfAbsent(id, GlobalKey.new);
 
   Future<void> _send() async {
     final text = _input.text;
@@ -413,8 +533,36 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     // Auto-scroll as content streams in (only while stuck to the bottom).
     // Switching conversations resumes following and snaps to the latest turn.
     ref.listen(chatControllerProvider, (prev, next) {
-      if (prev?.value?.currentId != next.value?.currentId) _stick = true;
+      if (prev?.value?.currentId != next.value?.currentId) {
+        _stick = true;
+        if (_selecting) {
+          _selecting = false;
+          _selectedIds.clear();
+        }
+      }
       _scrollToBottom();
+    });
+
+    // History search “定位” → scroll to a specific message once the list
+    // has built GlobalKeys for the new conversation's bubbles.
+    ref.listen<String?>(pendingJumpMessageIdProvider, (prev, next) {
+      final id = next;
+      if (id == null || id.isEmpty) return;
+      void tryJump([int attempt = 0]) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          if (_messageKeys[id]?.currentContext != null) {
+            _scrollToMessage(id);
+            ref.read(pendingJumpMessageIdProvider.notifier).clear();
+          } else if (attempt < 10) {
+            tryJump(attempt + 1);
+          } else {
+            ref.read(pendingJumpMessageIdProvider.notifier).clear();
+          }
+        });
+      }
+
+      tryJump();
     });
 
     return CallbackShortcuts(
@@ -798,38 +946,48 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                             final isLastAssistant =
                                 isLast && m.role == MessageRole.assistant;
                             final (bIdx, bCount) = convo!.branchInfo(m.id);
-                            return MessageBubble(
-                              // Keyed by message id: bubbles hold local edit
-                              // state that must not leak across messages when
-                              // the list shifts (branch switch, new turns).
-                              key: ValueKey(m.id),
-                              message: m,
-                              isStreaming: streamingHere && isLastAssistant,
-                              speakerName: m.role == MessageRole.assistant
-                                  ? (m.speakerName ?? speakerName)
-                                  : null,
-                              userLabel: convo.localCast.isNotEmpty
-                                  ? '导演'
-                                  : null,
-                              onRegenerate:
-                                  (isLastAssistant &&
-                                      !state.isStreaming &&
-                                      m.kind != MessageKind.generatedImage)
-                                  ? controller.regenerate
-                                  : null,
-                              onEdit:
-                                  (m.role == MessageRole.user &&
-                                      !state.isStreaming)
-                                  ? (text) => controller.editMessage(m.id, text)
-                                  : null,
-                              branchIndex: bIdx,
-                              branchCount: bCount,
-                              onPrevBranch: () =>
-                                  controller.switchBranch(m.id, -1),
-                              onNextBranch: () =>
-                                  controller.switchBranch(m.id, 1),
-                              messageStyle: ui.messageStyle,
-                              liveMarkdown: ui.liveMarkdown,
+                            return KeyedSubtree(
+                              key: _keyForMessage(m.id),
+                              child: MessageBubble(
+                                // Keyed by message id: bubbles hold local edit
+                                // state that must not leak across messages when
+                                // the list shifts (branch switch, new turns).
+                                key: ValueKey(m.id),
+                                message: m,
+                                isStreaming: streamingHere && isLastAssistant,
+                                speakerName: m.role == MessageRole.assistant
+                                    ? (m.speakerName ?? speakerName)
+                                    : null,
+                                userLabel: convo.localCast.isNotEmpty
+                                    ? '导演'
+                                    : null,
+                                onRegenerate:
+                                    (isLastAssistant &&
+                                        !state.isStreaming &&
+                                        !_selecting &&
+                                        m.kind != MessageKind.generatedImage)
+                                    ? controller.regenerate
+                                    : null,
+                                onEdit:
+                                    (m.role == MessageRole.user &&
+                                        !state.isStreaming &&
+                                        !_selecting)
+                                    ? (text) =>
+                                          controller.editMessage(m.id, text)
+                                    : null,
+                                branchIndex: bIdx,
+                                branchCount: bCount,
+                                onPrevBranch: () =>
+                                    controller.switchBranch(m.id, -1),
+                                onNextBranch: () =>
+                                    controller.switchBranch(m.id, 1),
+                                messageStyle: ui.messageStyle,
+                                liveMarkdown: ui.liveMarkdown,
+                                selectionMode: _selecting,
+                                selected: _selectedIds.contains(m.id),
+                                onToggleSelect: () => _toggleSelect(m.id),
+                                onStartSelect: () => _enterSelect(m.id),
+                              ),
                             );
                           },
                         ),
@@ -837,7 +995,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                     ),
                     // Shown only when the user has scrolled away from the
                     // bottom; tapping resumes follow + snaps to the latest.
-                    if (!_stick)
+                    if (!_stick && !_selecting)
                       Positioned(
                         left: 0,
                         right: 0,
@@ -849,6 +1007,14 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                   ],
                 ),
         ),
+        if (_selecting)
+          _SelectionShareBar(
+            count: _selectedIds.length,
+            onCancel: _exitSelect,
+            onCopy: () => _copySelectedMarkdown(messages, convo),
+            onShare: () => _shareSelected(messages, convo),
+          ),
+        if (!_selecting)
         _Composer(
           controller: _input,
           isStreaming: state.isStreaming,
@@ -874,6 +1040,61 @@ class _ChatPageState extends ConsumerState<ChatPage> {
           onStop: controller.stop,
         ),
       ],
+    );
+  }
+}
+
+/// Compact bar shown only while multi-selecting messages — keeps the composer
+/// uncluttered the rest of the time.
+class _SelectionShareBar extends StatelessWidget {
+  const _SelectionShareBar({
+    required this.count,
+    required this.onCancel,
+    required this.onCopy,
+    required this.onShare,
+  });
+
+  final int count;
+  final VoidCallback onCancel;
+  final VoidCallback onCopy;
+  final VoidCallback onShare;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Material(
+      elevation: 6,
+      color: scheme.surfaceContainerHigh,
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+          child: Row(
+            children: [
+              Text(
+                '已选 $count',
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const Spacer(),
+              TextButton(onPressed: onCancel, child: const Text('取消')),
+              const SizedBox(width: 4),
+              OutlinedButton.icon(
+                onPressed: count == 0 ? null : onCopy,
+                icon: const Icon(Icons.copy_outlined, size: 18),
+                label: const Text('复制 MD'),
+              ),
+              const SizedBox(width: 8),
+              FilledButton.icon(
+                onPressed: count == 0 ? null : onShare,
+                icon: const Icon(Icons.ios_share_outlined, size: 18),
+                label: const Text('分享'),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -1693,6 +1914,36 @@ class _HistoryPanelState extends ConsumerState<_HistoryPanel> {
     return c.messages.any((m) => m.content.toLowerCase().contains(lower));
   }
 
+  /// Best content hit for search preview + jump target.
+  ({String? messageId, String snippet}) _searchHit(Conversation c, String q) {
+    if (q.isEmpty) return (messageId: null, snippet: '');
+    final lower = q.toLowerCase();
+    // Prefer active-path messages so jump lands on something visible.
+    for (final m in c.activePath) {
+      final idx = m.content.toLowerCase().indexOf(lower);
+      if (idx < 0) continue;
+      return (messageId: m.id, snippet: _snippetAround(m.content, idx, q.length));
+    }
+    for (final m in c.messages) {
+      final idx = m.content.toLowerCase().indexOf(lower);
+      if (idx < 0) continue;
+      return (messageId: m.id, snippet: _snippetAround(m.content, idx, q.length));
+    }
+    return (messageId: null, snippet: '');
+  }
+
+  String _snippetAround(String content, int index, int queryLen) {
+    final from = (index - 16).clamp(0, content.length);
+    final to = (index + queryLen + 36).clamp(0, content.length);
+    var snip = content
+        .substring(from, to)
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    if (from > 0) snip = '…$snip';
+    if (to < content.length) snip = '$snip…';
+    return snip;
+  }
+
   void _startRename(Conversation c) {
     _renameCtrl.text = c.title;
     setState(() => _renamingId = c.id);
@@ -1795,10 +2046,11 @@ class _HistoryPanelState extends ConsumerState<_HistoryPanel> {
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
             child: TextField(
+              key: const ValueKey('conversation-search-field'),
               decoration: InputDecoration(
                 isDense: true,
                 prefixIcon: const Icon(Icons.search, size: 20),
-                hintText: '搜索标题或正文…',
+                hintText: '搜索标题或正文，点结果可定位…',
                 filled: true,
                 fillColor: scheme.surfaceContainer,
               ),
@@ -1862,7 +2114,13 @@ class _HistoryPanelState extends ConsumerState<_HistoryPanel> {
                           );
                         }
                         final selected = c.id == state?.currentId;
-                        final preview = _conversationPreview(c);
+                        final ({String? messageId, String snippet}) hit =
+                            _query.isEmpty
+                            ? (messageId: null, snippet: '')
+                            : _searchHit(c, _query);
+                        final preview = hit.snippet.isNotEmpty
+                            ? hit.snippet
+                            : _conversationPreview(c);
                         final timeLabel = _relativeTime(c.updatedAt);
                         return Padding(
                           padding: const EdgeInsets.symmetric(vertical: 2),
@@ -1877,6 +2135,13 @@ class _HistoryPanelState extends ConsumerState<_HistoryPanel> {
                               borderRadius: BorderRadius.circular(14),
                               onTap: () {
                                 controller.selectConversation(c.id);
+                                if (hit.messageId != null) {
+                                  ref
+                                      .read(
+                                        pendingJumpMessageIdProvider.notifier,
+                                      )
+                                      .set(hit.messageId);
+                                }
                                 _closeDrawerIfAny();
                               },
                               child: Padding(
@@ -1924,23 +2189,36 @@ class _HistoryPanelState extends ConsumerState<_HistoryPanel> {
                                           if (preview.isNotEmpty) ...[
                                             const SizedBox(height: 3),
                                             Text(
-                                              preview,
-                                              maxLines: 1,
+                                              hit.snippet.isNotEmpty
+                                                  ? '匹配：$preview'
+                                                  : preview,
+                                              maxLines: hit.snippet.isNotEmpty
+                                                  ? 2
+                                                  : 1,
                                               overflow: TextOverflow.ellipsis,
                                               style: Theme.of(context)
                                                   .textTheme
                                                   .bodySmall
                                                   ?.copyWith(
-                                                    color:
-                                                        scheme.onSurfaceVariant,
+                                                    color: hit.snippet.isNotEmpty
+                                                        ? scheme.primary
+                                                        : scheme
+                                                              .onSurfaceVariant,
+                                                    fontWeight:
+                                                        hit.snippet.isNotEmpty
+                                                        ? FontWeight.w600
+                                                        : null,
                                                   ),
                                             ),
                                           ],
                                           const SizedBox(height: 4),
                                           Text(
-                                            c.localCast.isNotEmpty
-                                                ? '导演故事'
-                                                : ModeStyle.label(c.mode),
+                                            [
+                                              c.localCast.isNotEmpty
+                                                  ? '导演故事'
+                                                  : ModeStyle.label(c.mode),
+                                              if (hit.messageId != null) '可定位',
+                                            ].join(' · '),
                                             style: TextStyle(
                                               fontSize: 11,
                                               color: modeColor,

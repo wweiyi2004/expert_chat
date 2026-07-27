@@ -11,6 +11,7 @@ import '../data/models.dart';
 import '../data/story_models.dart';
 import '../domain/context/context_window_manager.dart';
 import '../domain/llm/llm_provider.dart';
+import '../domain/notify/generation_notify.dart';
 import '../domain/story/story_prompt_assembler.dart';
 import '../domain/tools/search_orchestrator.dart';
 import '../domain/tools/search_provider.dart';
@@ -706,6 +707,7 @@ class ChatController extends AsyncNotifier<ChatState> {
     // streamingConvoId (still awaiting settings / building the turn).
     _cancelStart = true;
     final streamingId = _s.streamingConvoId;
+    final title = _titleFor(streamingId);
     _flushActiveStream?.call();
     _sub?.cancel();
     _sub = null;
@@ -717,6 +719,34 @@ class ChatController extends AsyncNotifier<ChatState> {
     _streamCompleter = null;
     _set(_s.copyWith(streamingConvoId: null, isSearching: false));
     if (persist && streamingId != null) _persistSoon(_persistById(streamingId));
+    unawaited(
+      GenerationNotify.onGenerationEnd(
+        success: false,
+        conversationTitle: title,
+        cancelled: true,
+      ),
+    );
+  }
+
+  String _titleFor(String? convoId) {
+    if (convoId == null) return _s.current?.title ?? '对话';
+    for (final c in _s.conversations) {
+      if (c.id == convoId) return c.title;
+    }
+    return _s.current?.title ?? '对话';
+  }
+
+  String _previewFor(String convoId, String assistantId) {
+    for (final c in _s.conversations) {
+      if (c.id != convoId) continue;
+      for (final m in c.messages) {
+        if (m.id == assistantId) {
+          final t = m.content.trim();
+          return t.isEmpty ? m.reasoning.trim() : t;
+        }
+      }
+    }
+    return '';
   }
 
   /// Send a new user turn at the end of the active branch. Returns false when
@@ -1023,6 +1053,7 @@ class ChatController extends AsyncNotifier<ChatState> {
           error: null,
         ),
       );
+      unawaited(GenerationNotify.onGenerationStart());
       try {
         await _persistById(working.id);
       } catch (e) {
@@ -1066,12 +1097,27 @@ class ChatController extends AsyncNotifier<ChatState> {
         );
         _set(_s.copyWith(streamingConvoId: null, error: null));
         await _persistById(working.id);
+        unawaited(
+          GenerationNotify.onGenerationEnd(
+            success: true,
+            conversationTitle: working.title,
+            preview: '图片已生成',
+          ),
+        );
         return true;
       } catch (e) {
-        if (!(e is DioException && CancelToken.isCancel(e))) {
+        final cancelled = e is DioException && CancelToken.isCancel(e);
+        if (!cancelled) {
           _set(_s.copyWith(streamingConvoId: null, error: e.toString()));
         }
         await _persistById(working.id);
+        unawaited(
+          GenerationNotify.onGenerationEnd(
+            success: false,
+            conversationTitle: working.title,
+            cancelled: cancelled,
+          ),
+        );
         return true;
       } finally {
         if (identical(_cancelToken, cancelToken)) _cancelToken = null;
@@ -1169,6 +1215,9 @@ class ChatController extends AsyncNotifier<ChatState> {
         error: null,
       ),
     );
+    // Keep the device awake and allow a completion notification if the user
+    // backgrounds the app mid-generation.
+    unawaited(GenerationNotify.onGenerationStart());
 
     // Write the user turn and assistant placeholder before any network work.
     // If the app is backgrounded or killed during a long response, the turn is
@@ -1410,6 +1459,12 @@ class ChatController extends AsyncNotifier<ChatState> {
         ),
       );
       await _persistById(working.id);
+      unawaited(
+        GenerationNotify.onGenerationEnd(
+          success: false,
+          conversationTitle: working.title,
+        ),
+      );
       return;
     }
 
@@ -1426,6 +1481,15 @@ class ChatController extends AsyncNotifier<ChatState> {
       initialCitations: searchContext?.citations ?? const <Citation>[],
       allowedFetchUrls: Set<String>.unmodifiable(allowedFetchUrls),
       cancelToken: cancelToken,
+    );
+
+    unawaited(
+      GenerationNotify.onGenerationEnd(
+        success: succeeded,
+        conversationTitle: working.title,
+        preview: _previewFor(working.id, assistantId),
+        cancelled: !succeeded && _cancelStart,
+      ),
     );
 
     // Auto-advance plot cursor only after a successful, non-cancelled stream.

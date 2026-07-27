@@ -24,6 +24,68 @@ class ConversationExport {
       .replaceAll('`', r'\`')
       .trim();
 
+  /// Export a subset of messages (multi-select share) as Markdown.
+  ///
+  /// Order follows [messages] as given (caller should sort by active path).
+  static String messagesToMarkdown(
+    List<ChatMessage> messages, {
+    String title = '所选消息',
+    String? characterName,
+    bool directorMode = false,
+  }) {
+    final b = StringBuffer()
+      ..writeln('# $title')
+      ..writeln()
+      ..writeln('_导出时间：${DateTime.now().toIso8601String()}_')
+      ..writeln()
+      ..writeln('共 ${messages.length} 条消息')
+      ..writeln();
+
+    final assistantLabel = () {
+      if (directorMode) return '旁白与角色';
+      final name = characterName?.trim();
+      if (name != null && name.isNotEmpty) return _inlineLabel(name);
+      return '助手';
+    }();
+
+    for (final m in messages) {
+      switch (m.role) {
+        case MessageRole.user:
+          b.writeln(directorMode ? '## 🎬 导演' : '## 🧑 用户');
+          break;
+        case MessageRole.assistant:
+          final speaker = m.speakerName?.trim();
+          b.writeln(
+            speaker != null && speaker.isNotEmpty
+                ? '## 🤖 ${_inlineLabel(speaker)}'
+                : '## 🤖 $assistantLabel',
+          );
+          break;
+        case MessageRole.system:
+          b.writeln('## 系统');
+          break;
+        case MessageRole.tool:
+          b.writeln('## 工具');
+          break;
+      }
+      b.writeln();
+      if (m.reasoning.trim().isNotEmpty) {
+        b
+          ..writeln('<details><summary>思考过程</summary>')
+          ..writeln()
+          ..writeln(m.reasoning.trim())
+          ..writeln()
+          ..writeln('</details>')
+          ..writeln();
+      }
+      if (m.content.trim().isNotEmpty) {
+        b.writeln(m.content.trim());
+      }
+      b.writeln();
+    }
+    return b.toString();
+  }
+
   /// [characterName] labels assistant turns in story exports.
   static String toMarkdown(Conversation convo, {String? characterName}) {
     final b = StringBuffer()

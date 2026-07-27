@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/workspace_layout.dart';
+import '../../domain/notify/generation_notify.dart';
 import '../../domain/update/update_ui.dart';
 import '../chat/chat_page.dart';
 import '../settings/settings_page.dart';
@@ -19,7 +20,8 @@ class AppShell extends ConsumerStatefulWidget {
   ConsumerState<AppShell> createState() => _AppShellState();
 }
 
-class _AppShellState extends ConsumerState<AppShell> {
+class _AppShellState extends ConsumerState<AppShell>
+    with WidgetsBindingObserver {
   static const _destinations = [
     (icon: Icons.forum_outlined, selected: Icons.forum, label: '会话'),
     (icon: Icons.menu_book_outlined, selected: Icons.menu_book, label: '创作'),
@@ -29,11 +31,29 @@ class _AppShellState extends ConsumerState<AppShell> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     // Best-effort: prompt only when a newer GitHub Release exists.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       checkForUpdatesOnLaunch(context);
+      GenerationNotify.init();
     });
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Track background so completed generations can raise a local notification.
+    final background =
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.detached;
+    GenerationNotify.setAppBackground(background);
   }
 
   @override

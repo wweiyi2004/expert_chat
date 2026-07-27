@@ -45,6 +45,10 @@ class MessageBubble extends StatefulWidget {
     this.onSpeak,
     this.isSpeechLoading = false,
     this.isSpeaking = false,
+    this.selectionMode = false,
+    this.selected = false,
+    this.onToggleSelect,
+    this.onStartSelect,
   });
 
   final ChatMessage message;
@@ -75,6 +79,12 @@ class MessageBubble extends StatefulWidget {
   final Future<void> Function()? onSpeak;
   final bool isSpeechLoading;
   final bool isSpeaking;
+
+  /// Multi-select share: long-press / secondary-click enters mode.
+  final bool selectionMode;
+  final bool selected;
+  final VoidCallback? onToggleSelect;
+  final VoidCallback? onStartSelect;
 
   @override
   State<MessageBubble> createState() => _MessageBubbleState();
@@ -165,7 +175,78 @@ class _MessageBubbleState extends State<MessageBubble> {
     final isUser = m.role == MessageRole.user;
     final doc = _document;
 
-    if (isUser) {
+    final bubble = isUser
+        ? _buildUser(context, scheme, m, doc)
+        : _buildAssistant(context, scheme, m, doc);
+
+    return GestureDetector(
+      onLongPress: widget.onStartSelect == null
+          ? null
+          : () {
+              if (widget.selectionMode) {
+                widget.onToggleSelect?.call();
+              } else {
+                widget.onStartSelect?.call();
+              }
+            },
+      onSecondaryTap: widget.onStartSelect == null
+          ? null
+          : () {
+              if (widget.selectionMode) {
+                widget.onToggleSelect?.call();
+              } else {
+                widget.onStartSelect?.call();
+              }
+            },
+      onTap: widget.selectionMode ? widget.onToggleSelect : null,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 120),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(16),
+          color: widget.selected
+              ? scheme.primaryContainer.withValues(alpha: 0.35)
+              : null,
+          border: widget.selectionMode
+              ? Border.all(
+                  color: widget.selected
+                      ? scheme.primary.withValues(alpha: 0.55)
+                      : scheme.outlineVariant.withValues(alpha: 0.5),
+                )
+              : null,
+        ),
+        padding: widget.selectionMode
+            ? const EdgeInsets.fromLTRB(4, 4, 4, 4)
+            : EdgeInsets.zero,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (widget.selectionMode) ...[
+              Padding(
+                padding: const EdgeInsets.only(top: 10, left: 2, right: 4),
+                child: Icon(
+                  widget.selected
+                      ? Icons.check_circle
+                      : Icons.radio_button_unchecked,
+                  size: 22,
+                  color: widget.selected
+                      ? scheme.primary
+                      : scheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+            Expanded(child: bubble),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildUser(
+    BuildContext context,
+    ColorScheme scheme,
+    ChatMessage m,
+    bool doc,
+  ) {
       return Align(
         alignment: doc ? Alignment.centerLeft : Alignment.centerRight,
         child: Column(
@@ -287,8 +368,14 @@ class _MessageBubbleState extends State<MessageBubble> {
           ],
         ),
       );
-    }
+  }
 
+  Widget _buildAssistant(
+    BuildContext context,
+    ColorScheme scheme,
+    ChatMessage m,
+    bool doc,
+  ) {
     // Assistant message: optional thinking panel + markdown body + actions.
     final hasReasoning = m.reasoning.trim().isNotEmpty;
     final stillThinking = widget.isStreaming && m.content.isEmpty;

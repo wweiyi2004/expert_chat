@@ -9,6 +9,7 @@ import 'data/db/app_database.dart';
 import 'data/drift_conversation_repository.dart';
 import 'data/legacy_conversation_migration.dart';
 import 'data/ui_prefs.dart';
+import 'domain/notify/generation_notify.dart';
 import 'features/shell/app_shell.dart';
 import 'state/settings_controller.dart';
 
@@ -32,6 +33,8 @@ Future<void> main() async {
   final db = AppDatabase();
   final driftRepo = DriftConversationRepository(db);
   await migrateLegacyJsonToDrift(driftRepo);
+  // Local notifications (best-effort; failures must not block launch).
+  await GenerationNotify.init();
 
   runApp(
     ProviderScope(

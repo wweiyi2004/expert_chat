@@ -237,6 +237,13 @@ class SettingsController extends AsyncNotifier<SettingsState> {
             key: _secureKeyForProfile(migrated.id),
             value: legacyKey,
           );
+          // Drop the M1 key so we do not keep two copies of the secret.
+          final verify = await secure.read(
+            key: _secureKeyForProfile(migrated.id),
+          );
+          if (verify == legacyKey) {
+            await secure.delete(key: _kLegacyApiKeySecure);
+          }
         }
       } else {
         profiles = [ProviderPreset.presets.first.toProfile()];

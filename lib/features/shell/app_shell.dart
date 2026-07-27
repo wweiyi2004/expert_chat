@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -61,6 +63,10 @@ class _AppShellState extends ConsumerState<AppShell>
         state == AppLifecycleState.hidden ||
         state == AppLifecycleState.detached;
     GenerationNotify.setAppBackground(background);
+    if (state == AppLifecycleState.resumed) {
+      // Continue OTA install if the user just granted unknown-sources permission.
+      unawaited(resumePendingApkInstall());
+    }
   }
 
   @override

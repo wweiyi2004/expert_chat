@@ -207,5 +207,30 @@ void main() {
       expect(castIdx, greaterThanOrEqualTo(0));
       expect(constraintIdx, lessThan(castIdx));
     });
+
+    test('director mode places hard constraints before global system prompt', () {
+      final cast = [CharacterCard(name: '甲')];
+      final convo = Conversation(
+        mode: ConversationMode.story,
+        localCast: cast,
+        outline: '- a',
+        authorNote: '【硬性创作约束】\n禁止穿越',
+      );
+      final build = assembler.buildSystemPrefix(
+        globalSystemPrompt: '你是一个轻松吐槽役',
+        cast: cast,
+        worldInfoPool: const [],
+        conversation: convo,
+        historyPath: const [],
+        advancePlot: true,
+        directorMode: true,
+      );
+      final texts = build.messages.map((m) => m.content).toList();
+      final hardIdx = texts.indexWhere((t) => t.contains('硬性导演说明'));
+      final globalIdx = texts.indexWhere((t) => t.contains('全局人设'));
+      expect(hardIdx, greaterThanOrEqualTo(0));
+      expect(globalIdx, greaterThanOrEqualTo(0));
+      expect(hardIdx, lessThan(globalIdx));
+    });
   });
 }

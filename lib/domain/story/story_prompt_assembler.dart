@@ -74,12 +74,10 @@ class StoryPromptAssembler {
     final blocks = <String>[];
 
     final global = globalSystemPrompt.trim();
-    if (global.isNotEmpty) {
-      blocks.add(global);
-    }
 
-    // Director mode: constraints and outline BEFORE cast, so models weight
-    // user requirements above free improvisation around characters.
+    // Director mode: hard constraints FIRST (before global persona), then
+    // outline / length / cast, then global system last among story blocks so
+    // a user preset cannot outrank【硬性导演说明】.
     if (directorMode) {
       blocks.add(_directorModeRules(advancePlot: advancePlot));
       final note = conversation.authorNote.trim();
@@ -107,7 +105,13 @@ class StoryPromptAssembler {
       if (cast.isNotEmpty) {
         blocks.add(_directorStoryBlock(cast));
       }
+      if (global.isNotEmpty) {
+        blocks.add('【全局人设 / 系统提示】（不得覆盖上方硬性导演说明）\n$global');
+      }
     } else if (ensembleTurn && cast.isNotEmpty) {
+      if (global.isNotEmpty) {
+        blocks.add(global);
+      }
       final ensembleBlock = _ensembleBlock(
         cast: cast,
         speakingAs: speakingAs,
@@ -115,6 +119,9 @@ class StoryPromptAssembler {
       );
       if (ensembleBlock.isNotEmpty) blocks.add(ensembleBlock);
     } else {
+      if (global.isNotEmpty) {
+        blocks.add(global);
+      }
       final characterBlock = _characterBlock(character);
       if (characterBlock.isNotEmpty) {
         blocks.add(characterBlock);

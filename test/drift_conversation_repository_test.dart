@@ -278,6 +278,116 @@ void main() {
     },
   );
 
+  test('migrates v8 schema adding target_total_chars', () async {
+    final executor = NativeDatabase.memory(
+      setup: (rawDb) {
+        rawDb.execute('''
+          CREATE TABLE conversations (
+            id TEXT NOT NULL PRIMARY KEY,
+            title TEXT NOT NULL DEFAULT '新对话',
+            updated_at INTEGER NOT NULL,
+            active_children_json TEXT NULL,
+            mode TEXT NOT NULL DEFAULT 'chat',
+            character_id TEXT NULL,
+            world_info_ids_json TEXT NULL,
+            outline TEXT NOT NULL DEFAULT '',
+            author_note TEXT NOT NULL DEFAULT '',
+            plot_cursor INTEGER NOT NULL DEFAULT 0,
+            participant_ids_json TEXT NULL,
+            venue TEXT NOT NULL DEFAULT '',
+            next_speaker_index INTEGER NOT NULL DEFAULT 0,
+            local_cast_json TEXT NULL
+          )
+        ''');
+        rawDb.execute('''
+          CREATE TABLE messages (
+            id TEXT NOT NULL PRIMARY KEY,
+            convo_id TEXT NOT NULL REFERENCES conversations (id)
+              ON DELETE CASCADE,
+            parent_id TEXT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            reasoning TEXT NOT NULL DEFAULT '',
+            model TEXT NULL,
+            thinking_millis INTEGER NOT NULL DEFAULT 0,
+            attachments_json TEXT NULL,
+            citations_json TEXT NULL,
+            created_at INTEGER NOT NULL,
+            seq INTEGER NOT NULL DEFAULT 0,
+            speaker_id TEXT NULL,
+            speaker_name TEXT NULL,
+            kind TEXT NOT NULL DEFAULT 'text',
+            search_activities_json TEXT NULL,
+            applied_world_info_json TEXT NULL
+          )
+        ''');
+        rawDb.execute('''
+          CREATE TABLE character_cards (
+            id TEXT NOT NULL PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            personality TEXT NOT NULL DEFAULT '',
+            scenario TEXT NOT NULL DEFAULT '',
+            first_mes TEXT NOT NULL DEFAULT '',
+            example_dialogs TEXT NOT NULL DEFAULT '',
+            system_prompt TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+          )
+        ''');
+        rawDb.execute('''
+          CREATE TABLE world_info_entries (
+            id TEXT NOT NULL PRIMARY KEY,
+            title TEXT NOT NULL,
+            keys_json TEXT NOT NULL DEFAULT '[]',
+            content TEXT NOT NULL DEFAULT '',
+            always_on INTEGER NOT NULL DEFAULT 0,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            priority INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+          )
+        ''');
+        rawDb.execute(
+          "INSERT INTO conversations (id, title, updated_at, mode) "
+          "VALUES ('pre-v9', '待升级', 0, 'story')",
+        );
+        rawDb.execute('PRAGMA user_version = 8');
+      },
+    );
+    final db = AppDatabase(executor);
+    addTearDown(db.close);
+
+    final columns = await db
+        .customSelect('PRAGMA table_info(conversations)')
+        .get();
+    expect(
+      columns.map((row) => row.read<String>('name')),
+      contains('target_total_chars'),
+    );
+    final loaded = (await DriftConversationRepository(db).loadAll()).single;
+    expect(loaded.id, 'pre-v9');
+    expect(loaded.targetTotalChars, 0);
+  });
+
+  test('persists targetTotalChars across reload', () async {
+    final db = AppDatabase(NativeDatabase.memory());
+    addTearDown(db.close);
+    final repo = DriftConversationRepository(db);
+    final timestamp = DateTime.utc(2026, 7, 1);
+    await repo.saveConversation(
+      Conversation(
+        id: 'budget-story',
+        title: '八万字',
+        mode: ConversationMode.story,
+        targetTotalChars: 80000,
+        updatedAt: timestamp,
+      ),
+    );
+    final loaded = (await repo.loadAll()).single;
+    expect(loaded.targetTotalChars, 80000);
+  });
+
   test('persists message kind across reload', () async {
     final db = AppDatabase(NativeDatabase.memory());
     addTearDown(db.close);

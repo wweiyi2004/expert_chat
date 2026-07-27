@@ -611,10 +611,19 @@ class ChatController extends AsyncNotifier<ChatState> {
         searchQuery: '',
         thinking: _s.deepThink,
         advancePlot: true,
+        commitPlotAdvance: true,
       );
     } finally {
       _starting = false;
     }
+  }
+
+  /// User bubbles that mean "advance the outline", including director cues.
+  static bool isPlotAdvanceUserContent(String content) {
+    final c = content.trim();
+    return c == '（推进情节）' ||
+        c == '（导演：继续下一节）' ||
+        c == '（导演：开始第一节）';
   }
 
   /// One AI line from the next cast member (round-robin).
@@ -1028,6 +1037,26 @@ class ChatController extends AsyncNotifier<ChatState> {
     if (lastUser < 0) return;
     final userMsg = path[lastUser];
 
+    // Plot-advance turns must keep advancePlot prompt semantics. If the first
+    // attempt already succeeded, plotCursor was incremented — rewrite the
+    // previous beat and do not commit again.
+    final advanceCue = isPlotAdvanceUserContent(userMsg.content);
+    final priorAssistant = lastUser + 1 < path.length ? path[lastUser + 1] : null;
+    final priorSucceeded =
+        priorAssistant != null &&
+        priorAssistant.role == MessageRole.assistant &&
+        priorAssistant.content.trim().isNotEmpty;
+    var workingConvo = convo;
+    var commitAdvance = false;
+    if (advanceCue && convo.isStory) {
+      if (priorSucceeded && convo.plotCursor > 0) {
+        workingConvo = convo.copyWith(plotCursor: convo.plotCursor - 1);
+        commitAdvance = false;
+      } else {
+        commitAdvance = true;
+      }
+    }
+
     _starting = true;
     _cancelStart = false;
     try {
@@ -1049,9 +1078,12 @@ class ChatController extends AsyncNotifier<ChatState> {
         model: config.model,
         parentId: userMsg.id,
       );
-      final working = convo.copyWith(
-        messages: [...convo.messages, assistantMsg],
-        activeChildren: {...convo.activeChildren, userMsg.id: assistantMsg.id},
+      final working = workingConvo.copyWith(
+        messages: [...workingConvo.messages, assistantMsg],
+        activeChildren: {
+          ...workingConvo.activeChildren,
+          userMsg.id: assistantMsg.id,
+        },
       );
 
       if (_cancelStart) return;
@@ -1063,6 +1095,8 @@ class ChatController extends AsyncNotifier<ChatState> {
         settings: settings,
         searchQuery: userMsg.content,
         thinking: _s.deepThink,
+        advancePlot: advanceCue,
+        commitPlotAdvance: commitAdvance,
       );
     } finally {
       _starting = false;
@@ -1515,6 +1549,11 @@ class ChatController extends AsyncNotifier<ChatState> {
 
   /// Shared pipeline: show the pending turn, optionally expose `web_search` as
   /// a model-controlled tool, then stream the answer along the active branch.
+  ///
+  /// [advancePlot] shapes the director/story prompt ("推进情节").
+  /// [commitPlotAdvance] increments [Conversation.plotCursor] after success;
+  /// regenerate of an already-advanced turn must pass false to avoid double
+  /// cursor bumps and wrong-beat rewrites.
   Future<void> _generate({
     required Conversation working,
     required String assistantId,
@@ -1523,6 +1562,7 @@ class ChatController extends AsyncNotifier<ChatState> {
     required String searchQuery,
     required bool thinking,
     bool advancePlot = false,
+    bool commitPlotAdvance = false,
     CharacterCard? ensembleSpeaker,
   }) async {
     final searchMode = _s.searchMode;
@@ -1823,7 +1863,43 @@ class ChatController extends AsyncNotifier<ChatState> {
       if (prefix.worldInfoHits.isNotEmpty) {
         _setAppliedWorldInfo(working.id, assistantId, prefix.worldInfoHits);
       }
-      history.insertAll(0, prefix.messages);
+      // System order: story/director hard blocks first, then lower-priority
+      // notes (force-image, tools). Never insert tools at index 0 ahead of
+      // 【硬性导演说明】.
+      final systemPrefix = <LlmRequestMessage>[...prefix.messages];
+      if (forceImageNote.isNotEmpty) {
+        systemPrefix.add(
+          LlmRequestMessage(role: MessageRole.system, content: forceImageNote),
+        );
+      }
+      if (enableTools) {
+        final hint = StringBuffer(ToolEngine.dateLine())..write('。');
+        if (useWebSearchTool) {
+          hint.write(
+            '需要实时、最新或不确定的事实信息时，优先调用 web_search；'
+            '搜索关键词应自包含（把指代替换成具体名称，时效性问题带上年份）。',
+          );
+        }
+        if (useFetchUrlTool) {
+          hint.write('用户在本轮消息中给出的链接可用 fetch_url 读取。');
+        }
+        if (useImageGenTool) {
+          if (imageCharacter != null) {
+            hint.write(
+              '需要为角色「${imageCharacter.name}」配安全立绘时调用 generate_image（每轮最多一次）；'
+              '即使用户在写成人向内容，生图也只画干净角色形象，禁止色情提示词。',
+            );
+          } else {
+            hint.write(
+              '需要配图时调用 generate_image（每轮最多一次）；提示词必须 SFW，禁止色情内容。',
+            );
+          }
+        }
+        systemPrefix.add(
+          LlmRequestMessage(role: MessageRole.system, content: hint.toString()),
+        );
+      }
+      history.insertAll(0, systemPrefix);
     } else {
       final preset = settings.systemPrompt.trim();
       if (preset.isNotEmpty) {
@@ -1832,44 +1908,42 @@ class ChatController extends AsyncNotifier<ChatState> {
           LlmRequestMessage(role: MessageRole.system, content: preset),
         );
       }
-    }
-
-    if (forceImageNote.isNotEmpty) {
-      history.insert(
-        0,
-        LlmRequestMessage(role: MessageRole.system, content: forceImageNote),
-      );
-    }
-
-    if (enableTools) {
-      // Ground tool-capable models in "now" so time-sensitive queries carry a
-      // year, and spell out when each tool applies.
-      final hint = StringBuffer(ToolEngine.dateLine())..write('。');
-      if (useWebSearchTool) {
-        hint.write(
-          '需要实时、最新或不确定的事实信息时，优先调用 web_search；'
-          '搜索关键词应自包含（把指代替换成具体名称，时效性问题带上年份）。',
+      if (forceImageNote.isNotEmpty) {
+        history.insert(
+          0,
+          LlmRequestMessage(role: MessageRole.system, content: forceImageNote),
         );
       }
-      if (useFetchUrlTool) {
-        hint.write('用户在本轮消息中给出的链接可用 fetch_url 读取。');
-      }
-      if (useImageGenTool) {
-        if (imageCharacter != null) {
+      if (enableTools) {
+        // Ground tool-capable models in "now" so time-sensitive queries carry a
+        // year, and spell out when each tool applies.
+        final hint = StringBuffer(ToolEngine.dateLine())..write('。');
+        if (useWebSearchTool) {
           hint.write(
-            '需要为角色「${imageCharacter.name}」配安全立绘时调用 generate_image（每轮最多一次）；'
-            '即使用户在写成人向内容，生图也只画干净角色形象，禁止色情提示词。',
-          );
-        } else {
-          hint.write(
-            '需要配图时调用 generate_image（每轮最多一次）；提示词必须 SFW，禁止色情内容。',
+            '需要实时、最新或不确定的事实信息时，优先调用 web_search；'
+            '搜索关键词应自包含（把指代替换成具体名称，时效性问题带上年份）。',
           );
         }
+        if (useFetchUrlTool) {
+          hint.write('用户在本轮消息中给出的链接可用 fetch_url 读取。');
+        }
+        if (useImageGenTool) {
+          if (imageCharacter != null) {
+            hint.write(
+              '需要为角色「${imageCharacter.name}」配安全立绘时调用 generate_image（每轮最多一次）；'
+              '即使用户在写成人向内容，生图也只画干净角色形象，禁止色情提示词。',
+            );
+          } else {
+            hint.write(
+              '需要配图时调用 generate_image（每轮最多一次）；提示词必须 SFW，禁止色情内容。',
+            );
+          }
+        }
+        history.insert(
+          0,
+          LlmRequestMessage(role: MessageRole.system, content: hint.toString()),
+        );
       }
-      history.insert(
-        0,
-        LlmRequestMessage(role: MessageRole.system, content: hint.toString()),
-      );
     }
 
     if (!_s.isStreaming) {
@@ -1927,8 +2001,9 @@ class ChatController extends AsyncNotifier<ChatState> {
       ),
     );
 
-    // Auto-advance plot cursor only after a successful, non-cancelled stream.
-    if (succeeded && advancePlot && cur.isStory) {
+    // Auto-advance plot cursor only after a successful first advance (not
+    // regenerate of an already-committed beat).
+    if (succeeded && commitPlotAdvance && cur.isStory) {
       final latest = _s.conversations.firstWhere(
         (c) => c.id == working.id,
         orElse: () => cur,

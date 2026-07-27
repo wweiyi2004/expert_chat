@@ -668,6 +668,16 @@ class _ChatPageState extends ConsumerState<ChatPage> {
           _selecting = false;
           _selectedIds.clear();
         }
+        // Do not carry composer draft / reference images across conversations.
+        if (_attachments.isNotEmpty ||
+            _input.text.isNotEmpty ||
+            _imageMode) {
+          setState(() {
+            _attachments.clear();
+            _input.clear();
+            _imageMode = false;
+          });
+        }
       }
       _scrollToBottom();
     });
@@ -678,15 +688,53 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       final id = next;
       if (id == null || id.isEmpty) return;
       void tryJump([int attempt = 0]) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
+        WidgetsBinding.instance.addPostFrameCallback((_) async {
           if (!mounted) return;
+          final path =
+              ref.read(chatControllerProvider).value?.current?.activePath ??
+              const <ChatMessage>[];
+          final index = path.indexWhere((m) => m.id == id);
           if (_messageKeys[id]?.currentContext != null) {
             _scrollToMessage(id);
             ref.read(pendingJumpMessageIdProvider.notifier).clear();
-          } else if (attempt < 10) {
+            return;
+          }
+          // ListView.builder only builds visible rows — jump near the index
+          // first so the target key can materialize.
+          if (index >= 0 && _scroll.hasClients) {
+            final max = _scroll.position.maxScrollExtent;
+            final est = path.isEmpty
+                ? 0.0
+                : (index / path.length) * max;
+            _programmaticScroll = true;
+            _stick = false;
+            try {
+              await _scroll.animateTo(
+                est.clamp(0.0, max),
+                duration: const Duration(milliseconds: 180),
+                curve: Curves.easeOut,
+              );
+            } catch (_) {
+              // ignore scroll races during conversation switch
+            } finally {
+              _programmaticScroll = false;
+            }
+            if (!mounted) return;
+            if (_messageKeys[id]?.currentContext != null) {
+              _scrollToMessage(id);
+              ref.read(pendingJumpMessageIdProvider.notifier).clear();
+              return;
+            }
+          }
+          if (attempt < 20) {
             tryJump(attempt + 1);
           } else {
             ref.read(pendingJumpMessageIdProvider.notifier).clear();
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('无法定位到该消息（可能不在当前分支）')),
+              );
+            }
           }
         });
       }
@@ -2077,10 +2125,13 @@ class _HistoryPanelState extends ConsumerState<_HistoryPanel> {
   }
 
   /// Best content hit for search preview + jump target.
+  ///
+  /// Only active-path hits are jumpable ([messageId] non-null). Inactive branch
+  /// matches still return a snippet so the user can see why the title matched,
+  /// but must not claim「可定位」for rows that never appear in the list.
   ({String? messageId, String snippet}) _searchHit(Conversation c, String q) {
     if (q.isEmpty) return (messageId: null, snippet: '');
     final lower = q.toLowerCase();
-    // Prefer active-path messages so jump lands on something visible.
     for (final m in c.activePath) {
       final idx = m.content.toLowerCase().indexOf(lower);
       if (idx < 0) continue;
@@ -2089,7 +2140,10 @@ class _HistoryPanelState extends ConsumerState<_HistoryPanel> {
     for (final m in c.messages) {
       final idx = m.content.toLowerCase().indexOf(lower);
       if (idx < 0) continue;
-      return (messageId: m.id, snippet: _snippetAround(m.content, idx, q.length));
+      return (
+        messageId: null,
+        snippet: _snippetAround(m.content, idx, q.length),
+      );
     }
     return (messageId: null, snippet: '');
   }

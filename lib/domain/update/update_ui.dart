@@ -353,6 +353,25 @@ Future<void> downloadAndApplyUpdate(
   }
 }
 
+/// APK path waiting for the user to grant unknown-sources install permission.
+String? _pendingInstallApkPath;
+
+/// Call when the app returns to foreground (e.g. from AppShell) so a download
+/// completed before permission grant can still be installed without re-download.
+Future<void> resumePendingApkInstall() async {
+  final path = _pendingInstallApkPath;
+  if (path == null || path.isEmpty) return;
+  if (!InstallApk.isAndroid) return;
+  try {
+    final allowed = await InstallApk.canRequestPackageInstalls();
+    if (!allowed) return;
+    _pendingInstallApkPath = null;
+    await InstallApk.install(path);
+  } catch (_) {
+    // Keep path for another resume attempt if install still fails.
+  }
+}
+
 Future<void> _installAndroidApk(
   BuildContext context,
   String path,
@@ -367,7 +386,7 @@ Future<void> _installAndroidApk(
         builder: (ctx) => AlertDialog(
           title: const Text('需要安装权限'),
           content: const Text(
-            '系统禁止未知来源安装。请允许 Expert Chat 安装应用，然后再次点击安装。',
+            '系统禁止未知来源安装。请允许 Expert Chat 安装应用，返回后将自动继续安装已下载的安装包。',
           ),
           actions: [
             TextButton(
@@ -382,16 +401,18 @@ Future<void> _installAndroidApk(
         ),
       );
       if (go == true) {
+        _pendingInstallApkPath = path;
         await InstallApk.openUnknownAppSourcesSettings();
         messenger?.showSnackBar(
           const SnackBar(
-            content: Text('授权后请回到设置 → 检查整包更新，或重新下载安装'),
+            content: Text('授权后请回到本应用，将自动继续安装'),
             duration: Duration(seconds: 5),
           ),
         );
       }
       return;
     }
+    _pendingInstallApkPath = null;
     await InstallApk.install(path);
   } catch (e) {
     messenger?.showSnackBar(

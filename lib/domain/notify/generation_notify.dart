@@ -62,6 +62,12 @@ class GenerationNotify {
     try {
       await WakelockPlus.enable();
     } catch (_) {}
+    // Request notification permission while still foreground. Doing this only
+    // in onGenerationEnd (often backgrounded) is ignored on Android 13+.
+    await init();
+    if (!_inBackground) {
+      await _ensureAndroidPermission();
+    }
   }
 
   static Future<void> onGenerationEnd({

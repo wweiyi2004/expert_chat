@@ -119,13 +119,55 @@ class DirectorProseStyle {
     return null;
   }
 
+  /// Mutual-exclusion group. Styles that share a group cannot all be forced
+  /// at once (e.g. 第一人称 vs 日本轻小说第三人称; 文言 vs 白话网文).
+  /// Empty = combinable with anything.
+  String get exclusiveGroup {
+    switch (id) {
+      case 'first_person':
+      case 'jp_ln':
+        return 'perspective';
+      case 'wenyan':
+      case 'web_novel':
+      case 'classical_cn':
+        return 'register';
+      default:
+        return '';
+    }
+  }
+
+  /// Toggle [id] in [selected], dropping any other style in the same
+  /// [exclusiveGroup].
+  static Set<String> toggleSelection(Set<String> selected, String id) {
+    final next = Set<String>.from(selected);
+    if (next.contains(id)) {
+      next.remove(id);
+      return next;
+    }
+    final incoming = byId(id);
+    final group = incoming?.exclusiveGroup ?? '';
+    if (group.isNotEmpty) {
+      next.removeWhere((other) {
+        final g = byId(other)?.exclusiveGroup ?? '';
+        return g == group;
+      });
+    }
+    next.add(id);
+    return next;
+  }
+
   /// Merge selected style constraints with free-form requirements.
   static String mergeRequirements({
     required Iterable<String> styleIds,
     String freeform = '',
   }) {
-    final parts = <String>[];
+    // Resolve exclusivity even if callers pass a raw multi-select set.
+    var resolved = <String>{};
     for (final id in styleIds) {
+      resolved = toggleSelection(resolved, id);
+    }
+    final parts = <String>[];
+    for (final id in resolved) {
       final style = byId(id);
       if (style == null) continue;
       parts.add('【强制文风·${style.label}】\n${style.constraint}');

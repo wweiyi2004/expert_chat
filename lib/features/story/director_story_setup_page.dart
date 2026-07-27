@@ -61,11 +61,10 @@ class _DirectorStorySetupPageState
 
   void _toggleStyle(String id) {
     setState(() {
-      if (_styleIds.contains(id)) {
-        _styleIds.remove(id);
-      } else {
-        _styleIds.add(id);
-      }
+      final next = DirectorProseStyle.toggleSelection(_styleIds, id);
+      _styleIds
+        ..clear()
+        ..addAll(next);
     });
   }
 

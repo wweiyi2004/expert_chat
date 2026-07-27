@@ -33,10 +33,11 @@ class _AppShellState extends ConsumerState<AppShell>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    // Best-effort OTA: full-package GitHub Releases + Shorebird code patch.
+    // Best-effort OTA + notifications after the first frame (Activity ready).
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted) return;
-      GenerationNotify.init();
+      // Init only — no runtime permission dialogs before UI is alive.
+      await GenerationNotify.init();
       // Stagger so the first frame paints before network work.
       await Future<void>.delayed(const Duration(milliseconds: 800));
       if (!mounted) return;

@@ -15,10 +15,16 @@ class GenerationNotify {
 
   static bool get inBackground => _inBackground;
 
+  /// Safe to call after the first frame (Activity must exist on Android).
+  ///
+  /// Never request runtime permissions from [main] before [runApp] — that
+  /// crashes on several OEM Android builds.
   static Future<void> init() async {
     if (_ready || kIsWeb) return;
     try {
-      const android = AndroidInitializationSettings('@mipmap/ic_expert_chat');
+      // Status-bar icons must be monochrome drawables, not the full-color
+      // launcher mipmap (can throw / hard-crash on some devices).
+      const android = AndroidInitializationSettings('@drawable/ic_stat_notify');
       const darwin = DarwinInitializationSettings();
       await _plugin.initialize(
         settings: const InitializationSettings(
@@ -27,15 +33,23 @@ class GenerationNotify {
           macOS: darwin,
         ),
       );
+      _ready = true;
+    } catch (_) {
+      // Notifications are best-effort; chat must keep working.
+    }
+  }
+
+  /// Ask for POST_NOTIFICATIONS only when we are about to show something.
+  static Future<void> _ensureAndroidPermission() async {
+    if (kIsWeb) return;
+    if (defaultTargetPlatform != TargetPlatform.android) return;
+    try {
       final androidPlugin = _plugin
           .resolvePlatformSpecificImplementation<
             AndroidFlutterLocalNotificationsPlugin
           >();
       await androidPlugin?.requestNotificationsPermission();
-      _ready = true;
-    } catch (_) {
-      // Notifications are best-effort; chat must keep working.
-    }
+    } catch (_) {}
   }
 
   static void setAppBackground(bool value) {
@@ -66,6 +80,7 @@ class GenerationNotify {
     if (!wasGenerating || cancelled || !_inBackground) return;
     await init();
     if (!_ready) return;
+    await _ensureAndroidPermission();
 
     final title = success ? '回复已生成' : '生成未完成';
     final clippedTitle = _clip(conversationTitle, 40);
@@ -87,6 +102,7 @@ class GenerationNotify {
             channelDescription: '后台生成完成或失败时提醒',
             importance: Importance.high,
             priority: Priority.high,
+            icon: '@drawable/ic_stat_notify',
           ),
           iOS: DarwinNotificationDetails(),
           macOS: DarwinNotificationDetails(),

@@ -410,6 +410,7 @@ class Conversation {
     this.plotCursor = 0,
     this.venue = '',
     this.nextSpeakerIndex = 0,
+    this.targetTotalChars = 0,
   }) : id = id ?? _uuid.v4(),
        messages = messages ?? [],
        activeChildren = activeChildren ?? {},
@@ -459,6 +460,10 @@ class Conversation {
 
   /// Round-robin index into [participantIds] for the next AI line.
   final int nextSpeakerIndex;
+
+  /// Target novel length in Unicode grapheme clusters (Chinese-friendly
+  /// "字数"). `0` means no length budget is enforced.
+  final int targetTotalChars;
 
   bool get isStory => mode == ConversationMode.story;
   bool get isEnsemble => mode == ConversationMode.ensemble;
@@ -562,6 +567,7 @@ class Conversation {
     int? plotCursor,
     String? venue,
     int? nextSpeakerIndex,
+    int? targetTotalChars,
   }) => Conversation(
     id: id,
     title: title ?? this.title,
@@ -580,6 +586,7 @@ class Conversation {
     plotCursor: plotCursor ?? this.plotCursor,
     venue: venue ?? this.venue,
     nextSpeakerIndex: nextSpeakerIndex ?? this.nextSpeakerIndex,
+    targetTotalChars: targetTotalChars ?? this.targetTotalChars,
   );
 
   static const _storySentinel = Object();
@@ -601,6 +608,7 @@ class Conversation {
     if (plotCursor != 0) 'plotCursor': plotCursor,
     if (venue.isNotEmpty) 'venue': venue,
     if (nextSpeakerIndex != 0) 'nextSpeakerIndex': nextSpeakerIndex,
+    if (targetTotalChars != 0) 'targetTotalChars': targetTotalChars,
   };
 
   factory Conversation.fromJson(Map<String, dynamic> json) => Conversation(
@@ -633,5 +641,6 @@ class Conversation {
     plotCursor: (json['plotCursor'] as num?)?.toInt() ?? 0,
     venue: json['venue'] as String? ?? '',
     nextSpeakerIndex: (json['nextSpeakerIndex'] as num?)?.toInt() ?? 0,
+    targetTotalChars: (json['targetTotalChars'] as num?)?.toInt() ?? 0,
   );
 }

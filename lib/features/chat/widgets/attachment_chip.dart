@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../../data/models.dart';
+import 'image_viewer_page.dart';
 
 /// base64 payloads at or above this length decode on a background isolate;
 /// below it the isolate round-trip costs more than the decode itself.
@@ -14,7 +15,25 @@ const int _computeDecodeThreshold = 256 * 1024;
 /// so a malformed payload degrades to null instead of throwing during build.
 Uint8List? _tryDecodeBase64(String value) {
   try {
-    return base64Decode(value);
+    var payload = value.trim();
+    if (payload.startsWith('data:')) {
+      final comma = payload.indexOf(',');
+      if (comma > 0) payload = payload.substring(comma + 1);
+    }
+    if (payload.contains(RegExp(r'\s'))) {
+      payload = payload.replaceAll(RegExp(r'\s'), '');
+    }
+    // URL-safe base64 → standard (some image APIs return this).
+    if (payload.contains('-') || payload.contains('_')) {
+      payload = payload.replaceAll('-', '+').replaceAll('_', '/');
+    }
+    if (payload.isNotEmpty && payload.length % 4 != 0) {
+      payload = payload.padRight(
+        payload.length + (4 - payload.length % 4) % 4,
+        '=',
+      );
+    }
+    return base64Decode(payload);
   } on FormatException {
     return null;
   }
@@ -142,6 +161,9 @@ class _AttachmentChipState extends State<AttachmentChip> {
   /// type icon.
   Widget _leading(Color color) {
     final bytes = _imageBytes;
+    // Decode only thumbnail resolution — full photo decode here OOMs chat lists.
+    final dpr = MediaQuery.devicePixelRatioOf(context);
+    final cachePx = (28 * dpr).round().clamp(28, 96);
     if (bytes != null) {
       return ClipRRect(
         borderRadius: BorderRadius.circular(8),
@@ -149,8 +171,11 @@ class _AttachmentChipState extends State<AttachmentChip> {
           bytes,
           width: 28,
           height: 28,
+          cacheWidth: cachePx,
+          cacheHeight: cachePx,
           fit: BoxFit.cover,
           gaplessPlayback: true,
+          filterQuality: FilterQuality.low,
           errorBuilder: (_, _, _) =>
               Icon(_iconFor(widget.attachment), size: 20, color: color),
         ),
@@ -164,7 +189,10 @@ class _AttachmentChipState extends State<AttachmentChip> {
           remoteUrl,
           width: 28,
           height: 28,
+          cacheWidth: cachePx,
+          cacheHeight: cachePx,
           fit: BoxFit.cover,
+          filterQuality: FilterQuality.low,
           errorBuilder: (_, _, _) =>
               Icon(_iconFor(widget.attachment), size: 20, color: color),
         ),
@@ -208,6 +236,10 @@ class _AttachmentImageState extends State<AttachmentImage> {
   Uint8List? _bytes;
   bool _decoding = false;
 
+  /// When true, ask the codec to decode near bubble width (saves RAM).
+  /// Some Windows/codec combos fail with cacheWidth — we fall back once.
+  bool _preferCachedDecode = true;
+
   @override
   void initState() {
     super.initState();
@@ -217,7 +249,9 @@ class _AttachmentImageState extends State<AttachmentImage> {
   @override
   void didUpdateWidget(AttachmentImage oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.attachment.imageBase64 != widget.attachment.imageBase64) {
+    if (oldWidget.attachment.imageBase64 != widget.attachment.imageBase64 ||
+        oldWidget.attachment.remoteUrl != widget.attachment.remoteUrl) {
+      _preferCachedDecode = true;
       _decode();
     }
   }
@@ -250,18 +284,54 @@ class _AttachmentImageState extends State<AttachmentImage> {
     });
   }
 
+  bool get _canOpen {
+    final b64 = widget.attachment.imageBase64;
+    if (b64 != null && b64.isNotEmpty) return true;
+    final url = widget.attachment.remoteUrl;
+    return url != null && url.isNotEmpty;
+  }
+
+  void _openViewer(BuildContext context) {
+    if (!_canOpen) return;
+    unawaited(ImageViewerPage.open(context, widget.attachment));
+  }
+
+  void _disableCachedDecode() {
+    if (!_preferCachedDecode || !mounted) return;
+    // Defer setState so we are not rebuilding during errorBuilder paint.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _preferCachedDecode) {
+        setState(() => _preferCachedDecode = false);
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final bytes = _bytes;
     final remoteUrl = widget.attachment.remoteUrl;
+    final dpr = MediaQuery.devicePixelRatioOf(context);
+    // Only pass cacheWidth when preferred — never force a broken decode path.
+    final int? cachePx = _preferCachedDecode
+        ? (640 * dpr).round().clamp(320, 1920)
+        : null;
     Widget image;
     if (bytes != null) {
       image = Image.memory(
         bytes,
         fit: BoxFit.contain,
+        cacheWidth: cachePx,
         gaplessPlayback: true,
-        errorBuilder: (_, _, _) => _error(scheme),
+        filterQuality: FilterQuality.medium,
+        errorBuilder: (_, _, _) {
+          // cacheWidth can fail on some codecs/platforms — retry full decode.
+          if (_preferCachedDecode) {
+            _disableCachedDecode();
+            return const SizedBox(width: 240, height: 140);
+          }
+          return _error(scheme);
+        },
       );
     } else if (_decoding) {
       image = Container(
@@ -275,19 +345,68 @@ class _AttachmentImageState extends State<AttachmentImage> {
       image = Image.network(
         remoteUrl,
         fit: BoxFit.contain,
-        errorBuilder: (_, _, _) => _error(scheme),
+        cacheWidth: cachePx,
+        filterQuality: FilterQuality.medium,
+        errorBuilder: (_, _, _) {
+          if (_preferCachedDecode) {
+            _disableCachedDecode();
+            return const SizedBox(width: 240, height: 140);
+          }
+          return _error(scheme);
+        },
       );
     } else {
       image = _error(scheme);
     }
     return Semantics(
       image: true,
+      button: _canOpen,
       label: widget.attachment.name,
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(16),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 640, maxHeight: 640),
-          child: image,
+      hint: _canOpen ? '点击查看大图，可保存或分享' : null,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: _canOpen ? () => _openViewer(context) : null,
+          borderRadius: BorderRadius.circular(16),
+          // Ensure empty/decoding frames still receive taps.
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(16),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(
+                minWidth: 120,
+                minHeight: 80,
+                maxWidth: 640,
+                maxHeight: 640,
+              ),
+              child: Stack(
+                alignment: Alignment.bottomRight,
+                children: [
+                  image,
+                  if (_canOpen &&
+                      !_decoding &&
+                      (bytes != null ||
+                          (remoteUrl != null && remoteUrl.isNotEmpty)))
+                    const Padding(
+                      padding: EdgeInsets.all(8),
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: Color(0x73000000),
+                          borderRadius: BorderRadius.all(Radius.circular(999)),
+                        ),
+                        child: Padding(
+                          padding: EdgeInsets.all(6),
+                          child: Icon(
+                            Icons.open_in_full_rounded,
+                            size: 16,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
         ),
       ),
     );

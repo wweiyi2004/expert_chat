@@ -27,6 +27,9 @@ class Conversations extends Table {
   // Story-local, AI-generated character cards (v5).
   TextColumn get localCastJson => text().nullable()();
 
+  // Director novel target length in Chinese characters (v9). 0 = unset.
+  IntColumn get targetTotalChars => integer().withDefault(const Constant(0))();
+
   @override
   Set<Column> get primaryKey => {id};
 }
@@ -105,7 +108,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase([QueryExecutor? executor]) : super(executor ?? _open());
 
   @override
-  int get schemaVersion => 8;
+  int get schemaVersion => 9;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -154,6 +157,9 @@ class AppDatabase extends _$AppDatabase {
       }
       if (from < 8) {
         await m.addColumn(messages, messages.appliedWorldInfoJson);
+      }
+      if (from < 9) {
+        await m.addColumn(conversations, conversations.targetTotalChars);
       }
     },
     beforeOpen: (details) async {

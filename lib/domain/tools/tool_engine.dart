@@ -104,6 +104,37 @@ class ToolEngine {
   /// explicit URL reads (user may paste links mid-conversation).
   static const fetchOnlyTools = <ToolSpec>[fetchUrlTool];
 
+  /// Optional text-to-image tool for dialogue turns (not pure 生图 mode).
+  ///
+  /// At most one successful call is honored per user turn by the controller.
+  /// Character-book sessions rebuild a SFW portrait from the card; free chat
+  /// uses a scrubbed [prompt]. R18 story text must never be copied raw here.
+  static const generateImageTool = ToolSpec(
+    name: 'generate_image',
+    description:
+        '生成一张配图并显示在本轮回复中。每轮对话最多成功一次。'
+        '有角色卡时：只画该角色的安全立绘/半身像（外貌来自角色设定），不要画色情或露骨场景；'
+        '可用 brief_hint 补充表情或姿势（须 SFW）。'
+        '无角色卡时：用 prompt 写完整文生图提示词（须 SFW，禁止色情内容）。'
+        '用户可能在写成人向文字，但生图提示词必须干净、可公开。'
+        '不要为了装饰每句回复都画图；仅当配图能明显帮助理解或用户明确要图时调用。',
+    parameters: {
+      'type': 'object',
+      'properties': {
+        'prompt': {
+          'type': 'string',
+          'description':
+              '无角色卡时的文生图提示词（英文更佳，须 SFW）。有角色卡时可省略。',
+        },
+        'brief_hint': {
+          'type': 'string',
+          'description':
+              '可选。短词提示表情/姿势/服装变体，例如 soft smile, looking at viewer；禁止色情描写。',
+        },
+      },
+    },
+  );
+
   /// Runs a search for [query] and returns an injectable context + citations.
   /// Returns an empty [SearchContext] when there are no hits.
   ///

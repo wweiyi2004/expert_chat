@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Paths used when installing an OTA-downloaded APK via FileProvider. -->
+<paths>
+    <cache-path name="cache" path="." />
+    <external-cache-path name="external_cache" path="." />
+    <files-path name="files" path="." />
+</paths>

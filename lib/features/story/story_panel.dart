@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/models.dart';
 import '../../data/story_models.dart';
+import '../../domain/story/story_length_budget.dart';
 import '../../state/character_controller.dart';
 import '../../state/chat_controller.dart';
 import '../../state/world_info_controller.dart';
@@ -263,6 +264,48 @@ class _StoryPanelBodyState extends ConsumerState<StoryPanelBody> {
             ],
           ),
         ),
+        if (convo.isStory) ...[
+          const SizedBox(height: 14),
+          Text('小说总字数', style: Theme.of(context).textTheme.titleSmall),
+          const SizedBox(height: 4),
+          Text(
+            '0 表示不限。有目标时，下一轮生成会注入动态篇幅约束。',
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final preset in StoryLengthBudget.presets)
+                ChoiceChip(
+                  label: Text(preset.label),
+                  selected: convo.targetTotalChars == preset.chars,
+                  onSelected: (_) {
+                    ref
+                        .read(chatControllerProvider.notifier)
+                        .updateStoryMeta(
+                          conversationId: widget.conversationId,
+                          targetTotalChars: preset.chars,
+                        );
+                    setState(() => _status = '已保存 · 下轮生效');
+                  },
+                ),
+            ],
+          ),
+          if (StoryLengthBudget.forConversation(convo) case final budget?) ...[
+            const SizedBox(height: 8),
+            Text(
+              budget.sessionLabel(),
+              style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                color: scheme.primary,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ],
         const SizedBox(height: 18),
         if (convo.localCast.isNotEmpty) ...[
           Row(

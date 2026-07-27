@@ -53,6 +53,7 @@ class DriftConversationRepository implements ConversationRepository {
           plotCursor: c.plotCursor,
           venue: c.venue,
           nextSpeakerIndex: c.nextSpeakerIndex,
+          targetTotalChars: c.targetTotalChars,
         ),
     ];
   }
@@ -137,7 +138,8 @@ class DriftConversationRepository implements ConversationRepository {
         storedConvo.authorNote != convo.authorNote ||
         storedConvo.plotCursor != convo.plotCursor ||
         storedConvo.venue != convo.venue ||
-        storedConvo.nextSpeakerIndex != convo.nextSpeakerIndex) {
+        storedConvo.nextSpeakerIndex != convo.nextSpeakerIndex ||
+        storedConvo.targetTotalChars != convo.targetTotalChars) {
       await _db
           .into(_db.conversations)
           .insertOnConflictUpdate(
@@ -156,6 +158,7 @@ class DriftConversationRepository implements ConversationRepository {
               plotCursor: Value(convo.plotCursor),
               venue: Value(convo.venue),
               nextSpeakerIndex: Value(convo.nextSpeakerIndex),
+              targetTotalChars: Value(convo.targetTotalChars),
             ),
           );
     }

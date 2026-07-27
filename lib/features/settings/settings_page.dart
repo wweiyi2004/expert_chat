@@ -1385,7 +1385,7 @@ class _AboutUpdateTileState extends State<_AboutUpdateTile> {
           ListTile(
             leading: const Icon(Icons.bolt_outlined),
             title: const Text('检查代码补丁'),
-            subtitle: const Text('Shorebird OTA：免重装，下次冷启动生效'),
+            subtitle: const Text('Shorebird OTA：免重装下载 Dart 补丁，完全退出后再打开生效'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => checkShorebirdPatchInteractive(context),
           ),
@@ -1393,7 +1393,9 @@ class _AboutUpdateTileState extends State<_AboutUpdateTile> {
           ListTile(
             leading: const Icon(Icons.system_update_alt),
             title: const Text('检查整包更新'),
-            subtitle: const Text('从 GitHub Releases 下载 APK / zip 安装包'),
+            subtitle: const Text(
+              'GitHub Releases：应用内下载；Android 可直接安装，Windows 保存 zip',
+            ),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => checkForUpdatesInteractive(context),
           ),

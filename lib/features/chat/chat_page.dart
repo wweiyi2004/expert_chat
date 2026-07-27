@@ -18,6 +18,8 @@ import '../../data/story_models.dart';
 import '../../data/ui_prefs.dart';
 import '../../domain/context/context_window_manager.dart';
 import '../../domain/export/conversation_export.dart';
+import '../../domain/media/image_codec_util.dart';
+import '../../domain/story/story_length_budget.dart';
 import '../../domain/tools/file_parser.dart';
 import '../../domain/tools/local_file_reader.dart';
 import '../../state/character_controller.dart';
@@ -228,9 +230,20 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     final settings = ref.read(settingsControllerProvider).value;
     final useImageGeneration =
         _imageMode && (settings?.imageGenerationConfigured ?? false);
-    if (useImageGeneration && _attachments.isNotEmpty) {
-      _showAttachmentNotice('生图模式暂不支持附件，请先移除附件。');
-      return;
+    if (useImageGeneration) {
+      if (text.trim().isEmpty) {
+        _showAttachmentNotice(
+          _attachments.any((a) => a.isImage)
+              ? '图生图请写明如何修改参考图。'
+              : '请描述要生成的图片。',
+        );
+        return;
+      }
+      final nonImages = _attachments.where((a) => !a.isImage).toList();
+      if (nonImages.isNotEmpty) {
+        _showAttachmentNotice('生图模式仅支持图片参考，请移除非图片附件。');
+        return;
+      }
     }
     final attachments = List<Attachment>.of(_attachments);
     _input.clear();
@@ -238,7 +251,13 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     _jumpToBottom();
     final chat = ref.read(chatControllerProvider.notifier);
     final accepted = useImageGeneration
-        ? await chat.generateImage(text)
+        ? await chat.generateImage(
+            text,
+            referenceImages: [
+              for (final a in attachments)
+                if (a.isImage && a.hasImageData) a,
+            ],
+          )
         : await chat.sendMessage(text, attachments: attachments);
     // Rejected (e.g. API key 未配置 / 正在生成中) → restore the draft so the
     // user's input isn't lost. Only restore when the field is still empty, so
@@ -271,20 +290,37 @@ class _ChatPageState extends ConsumerState<ChatPage> {
 
   Future<void> _pickDocuments() => _pickFiles(imagesOnly: false);
 
-  Future<void> _pickImages() => _pickFiles(imagesOnly: true);
+  Future<void> _pickImages() => _pickFiles(
+        imagesOnly: true,
+        // 生图模式：参考图不依赖视觉 API；普通对话看图仍要视觉配置。
+        forImageGeneration: _imageMode,
+      );
 
-  Future<void> _pickFiles({required bool imagesOnly}) async {
+  Future<void> _pickFiles({
+    required bool imagesOnly,
+    bool forImageGeneration = false,
+  }) async {
     if (_picking) return;
     setState(() => _picking = true);
     try {
-      final visionOk =
-          ref.read(settingsControllerProvider).value?.visionConfigured ?? false;
-      if (imagesOnly && !visionOk) {
+      final settings = ref.read(settingsControllerProvider).value;
+      final visionOk = settings?.visionConfigured ?? false;
+      final imageGenOk = settings?.imageGenerationConfigured ?? false;
+      if (imagesOnly && forImageGeneration) {
+        if (!imageGenOk) {
+          _showAttachmentNotice('请先在设置中配置图片生成 API。');
+          return;
+        }
+      } else if (imagesOnly && !visionOk) {
         _showAttachmentNotice('请先在设置中配置视觉 API，再上传图片。');
         return;
       }
+      // 图生图：每次仅 1 张参考图（OpenAI-compatible edits 惯例）。
+      final maxSlots = forImageGeneration && imagesOnly
+          ? 1
+          : _maxAttachments;
       final result = await FilePicker.pickFiles(
-        allowMultiple: true,
+        allowMultiple: !(forImageGeneration && imagesOnly),
         withData: false,
         withReadStream: true,
         type: FileType.custom,
@@ -297,9 +333,16 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       );
       if (result == null) return;
 
-      final slots = _maxAttachments - _attachments.length;
+      final slots = forImageGeneration && imagesOnly
+          ? (maxSlots - _attachments.where((a) => a.isImage).length)
+              .clamp(0, maxSlots)
+          : _maxAttachments - _attachments.length;
       if (slots <= 0) {
-        _showAttachmentNotice('最多可添加 $_maxAttachments 个附件。');
+        _showAttachmentNotice(
+          forImageGeneration && imagesOnly
+              ? '图生图每次仅支持 1 张参考图，请先移除当前图片。'
+              : '最多可添加 $_maxAttachments 个附件。',
+        );
         return;
       }
 
@@ -365,22 +408,61 @@ class _ChatPageState extends ConsumerState<ChatPage> {
           overTotal++;
           continue;
         }
-        final attachment = await parser.parseAsync(
-          name: f.name,
-          mimeType: _mimeFor(f.extension),
-          sizeBytes: sizeBytes,
-          bytes: bytes,
-        );
+        final mimeType = _mimeFor(f.extension);
+        final Attachment attachment;
+        final int attachedSize;
+        if (mimeType.startsWith('image/')) {
+          // Pre-scale at pick time on the UI isolate (target-bound decode, no
+          // full-size buffer) so the stored base64 is already ≤1536px: the
+          // img2img send path then needs no decode, and DB rows stay small.
+          final built = await _buildImageAttachment(
+            name: f.name,
+            mimeType: mimeType,
+            sizeBytes: sizeBytes,
+            bytes: bytes,
+          );
+          attachment = built;
+          attachedSize = built.sizeBytes;
+        } else {
+          attachment = await parser.parseAsync(
+            name: f.name,
+            mimeType: mimeType,
+            sizeBytes: sizeBytes,
+            bytes: bytes,
+          );
+          attachedSize = sizeBytes;
+        }
         if (!mounted) return;
         additions.add(attachment);
-        runningTotal += sizeBytes;
+        runningTotal += attachedSize;
       }
       if (additions.isNotEmpty && mounted) {
-        setState(() => _attachments.addAll(additions));
+        setState(() {
+          if (forImageGeneration && imagesOnly) {
+            // Replace any prior reference so only one image remains.
+            _attachments
+              ..removeWhere((a) => a.isImage)
+              ..addAll(additions.take(1));
+          } else {
+            _attachments.addAll(additions);
+          }
+        });
       }
       final notices = <String>[];
-      if (additions.isNotEmpty) notices.add('已添加 ${additions.length} 个附件');
-      if (tooMany > 0) notices.add('跳过 $tooMany 个（最多 $_maxAttachments 个）');
+      if (additions.isNotEmpty) {
+        notices.add(
+          forImageGeneration && imagesOnly
+              ? '已添加参考图（图生图）'
+              : '已添加 ${additions.length} 个附件',
+        );
+      }
+      if (tooMany > 0) {
+        notices.add(
+          forImageGeneration && imagesOnly
+              ? '图生图仅使用 1 张参考图'
+              : '跳过 $tooMany 个（最多 $_maxAttachments 个）',
+        );
+      }
       if (tooLarge > 0) {
         notices.add('跳过 $tooLarge 个（单个最大 10 MB）');
       }
@@ -390,6 +472,36 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     } finally {
       if (mounted) setState(() => _picking = false);
     }
+  }
+
+  /// Build an image [Attachment] with the bytes pre-scaled to ≤1536px on the
+  /// long edge. Mirrors [FileParser.maxImageBytes] so an oversized image
+  /// surfaces a parse error instead of stalling the decode.
+  Future<Attachment> _buildImageAttachment({
+    required String name,
+    required String mimeType,
+    required int sizeBytes,
+    required Uint8List bytes,
+  }) async {
+    if (bytes.lengthInBytes > FileParser.maxImageBytes) {
+      return Attachment(
+        name: name,
+        mimeType: mimeType,
+        sizeBytes: sizeBytes,
+        parseError: '图片过大（超过 5MB），未附加。',
+      );
+    }
+    final prepared = await ImageCodecUtil.prepareReferenceImage(
+      bytes,
+      mimeType: mimeType,
+      name: name,
+    );
+    return Attachment(
+      name: prepared.name,
+      mimeType: prepared.mimeType,
+      sizeBytes: prepared.bytes.lengthInBytes,
+      imageBase64: base64Encode(prepared.bytes),
+    );
   }
 
   void _showAttachmentNotice(String message) {
@@ -423,11 +535,27 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   }
 
   void _toggleImageMode() {
-    if (!_imageMode && _attachments.isNotEmpty) {
-      _showAttachmentNotice('请先移除附件，再进入生图模式。');
+    if (_imageMode) {
+      setState(() => _imageMode = false);
       return;
     }
-    setState(() => _imageMode = !_imageMode);
+    // Entering 生图: keep at most one image as reference; drop non-images.
+    final images = [
+      for (final a in _attachments)
+        if (a.isImage && a.hasImageData) a,
+    ];
+    final droppedDocs = _attachments.any((a) => !a.isImage);
+    setState(() {
+      _attachments
+        ..clear()
+        ..addAll(images.take(1));
+      _imageMode = true;
+    });
+    if (droppedDocs) {
+      _showAttachmentNotice('生图模式仅保留图片作为参考，已移除非图片附件。');
+    } else if (images.length > 1) {
+      _showAttachmentNotice('图生图每次仅使用 1 张参考图。');
+    }
   }
 
   Future<void> _export(Conversation? convo) async {
@@ -1021,6 +1149,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
           isStreaming: state.isStreaming,
           deepThink: state.deepThink,
           searchMode: state.searchMode,
+          imageGenMode: state.imageGenMode,
           isSearching: state.isSearching,
           attachments: _attachments,
           picking: _picking,
@@ -1033,6 +1162,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
               _imageMode && (settings?.imageGenerationConfigured ?? false),
           onToggleDeepThink: controller.toggleDeepThink,
           onToggleSearch: controller.toggleSearch,
+          onToggleImageGenMode: controller.toggleImageGenMode,
           onToggleImageMode: _toggleImageMode,
           onPickDocuments: _pickDocuments,
           onPickImages: _pickImages,
@@ -1106,6 +1236,7 @@ class _Composer extends StatefulWidget {
     required this.isStreaming,
     required this.deepThink,
     required this.searchMode,
+    required this.imageGenMode,
     required this.isSearching,
     required this.attachments,
     required this.picking,
@@ -1116,6 +1247,7 @@ class _Composer extends StatefulWidget {
     required this.imageMode,
     required this.onToggleDeepThink,
     required this.onToggleSearch,
+    required this.onToggleImageGenMode,
     required this.onToggleImageMode,
     required this.onPickDocuments,
     required this.onPickImages,
@@ -1128,6 +1260,7 @@ class _Composer extends StatefulWidget {
   final bool isStreaming;
   final bool deepThink;
   final SearchMode searchMode;
+  final ImageGenMode imageGenMode;
   final bool isSearching;
   final List<Attachment> attachments;
   final bool picking;
@@ -1138,6 +1271,7 @@ class _Composer extends StatefulWidget {
   final bool imageMode;
   final VoidCallback onToggleDeepThink;
   final VoidCallback onToggleSearch;
+  final VoidCallback onToggleImageGenMode;
   final VoidCallback onToggleImageMode;
   final VoidCallback onPickDocuments;
   final VoidCallback onPickImages;
@@ -1182,13 +1316,20 @@ class _ComposerState extends State<_Composer> {
     final scheme = Theme.of(context).colorScheme;
     final compactHeight = MediaQuery.sizeOf(context).height < 720;
     final hint = widget.imageMode
-        ? '描述你想生成的图片…'
+        ? (widget.attachments.any((a) => a.isImage)
+              ? '描述如何修改参考图（图生图）…'
+              : '描述要生成的图片；可点 + 上传参考图…')
         : widget.directorMode
         ? '输入导演指令，或点击“继续下一节”…'
         : widget.storyLike
         ? '续写反应，或输入旁白…'
         : '写下你的想法…';
-    final canAttach = !widget.isStreaming && !widget.picking && !widget.imageMode;
+    final canAttachDocs =
+        !widget.isStreaming && !widget.picking && !widget.imageMode;
+    final canAttachImages = !widget.isStreaming &&
+        !widget.picking &&
+        ((widget.imageMode && widget.imageGenerationConfigured) ||
+            (!widget.imageMode && widget.visionConfigured));
     return Container(
       key: const ValueKey('chat-composer'),
       decoration: BoxDecoration(
@@ -1231,6 +1372,21 @@ class _ComposerState extends State<_Composer> {
                               '搜索服务可在「设置」配置',
                           onSelected: widget.onToggleSearch,
                         ),
+                        if (widget.imageGenerationConfigured &&
+                            !widget.imageMode) ...[
+                          const SizedBox(width: 6),
+                          _ComposerToggleChip(
+                            selected:
+                                widget.imageGenMode != ImageGenMode.off,
+                            icon: Icons.image_outlined,
+                            label: widget.imageGenMode.composerLabel,
+                            tooltip:
+                                '对话配图：关闭 → 自动（模型按需生图）→ 强制（本轮先配图再回答）；'
+                                '每轮最多一张；角色书画安全立绘（不含黄色内容）。'
+                                '与「+」里纯图片生成模式不同。',
+                            onSelected: widget.onToggleImageGenMode,
+                          ),
+                        ],
                         if (widget.imageMode) ...[
                           const SizedBox(width: 6),
                           _ComposerToggleChip(
@@ -1293,13 +1449,14 @@ class _ComposerState extends State<_Composer> {
                               imageGenerationConfigured:
                                   widget.imageGenerationConfigured,
                               imageMode: widget.imageMode,
-                              enabled: canAttach || widget.imageMode,
+                              enabled: canAttachDocs ||
+                                  canAttachImages ||
+                                  widget.imageMode,
                               picking: widget.picking,
-                              onPickDocuments: canAttach
+                              onPickDocuments: canAttachDocs
                                   ? () => _runAndClose(widget.onPickDocuments)
                                   : null,
-                              onPickImages:
-                                  canAttach && widget.visionConfigured
+                              onPickImages: canAttachImages
                                   ? () => _runAndClose(widget.onPickImages)
                                   : null,
                               onToggleImageMode: widget.isStreaming
@@ -1578,8 +1735,10 @@ class _ComposerPlusTray extends StatelessWidget {
           Expanded(
             child: _ComposerPlusAction(
               icon: Icons.image_outlined,
-              label: '上传图片',
-              tooltip: visionConfigured
+              label: imageMode ? '参考图' : '上传图片',
+              tooltip: imageMode
+                  ? '上传 1 张参考图做图生图（需生图 API 支持 images/edits）'
+                  : visionConfigured
                   ? '上传图片供视觉模型分析（最多 5 个，单个最大 10 MB）'
                   : '请先在设置中配置视觉 API',
               enabled: onPickImages != null && !picking,
@@ -1595,8 +1754,8 @@ class _ComposerPlusTray extends StatelessWidget {
                     : Icons.auto_awesome_outlined,
                 label: imageMode ? '退出生图' : '图片生成',
                 tooltip: imageMode
-                    ? '退出生图模式，回到普通对话'
-                    : '使用独立配置的图片生成 API',
+                    ? '退出生图模式；可先上传参考图再描述修改'
+                    : '文生图 / 图生图（上传参考图后走 images/edits）',
                 selected: imageMode,
                 enabled: onToggleImageMode != null,
                 onTap: onToggleImageMode,
@@ -2589,6 +2748,8 @@ class _StorySessionBar extends StatelessWidget {
         ? null
         : '导演指令已启用';
     final wiCount = conversation.worldInfoIds.length;
+    final lengthBudget = StoryLengthBudget.forConversation(conversation);
+    final lengthHint = lengthBudget?.sessionLabel();
 
     return Material(
       color: Color.lerp(scheme.surface, accent, 0.08),
@@ -2635,6 +2796,16 @@ class _StorySessionBar extends StatelessWidget {
                         fontWeight: FontWeight.w700,
                       ),
                     ),
+                    if (lengthHint != null)
+                      Text(
+                        lengthHint,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: scheme.primary,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
                   ],
                 ),
               ),

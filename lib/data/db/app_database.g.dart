@@ -162,6 +162,18 @@ class $ConversationsTable extends Conversations
     type: DriftSqlType.string,
     requiredDuringInsert: false,
   );
+  static const VerificationMeta _targetTotalCharsMeta = const VerificationMeta(
+    'targetTotalChars',
+  );
+  @override
+  late final GeneratedColumn<int> targetTotalChars = GeneratedColumn<int>(
+    'target_total_chars',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(0),
+  );
   @override
   List<GeneratedColumn> get $columns => [
     id,
@@ -178,6 +190,7 @@ class $ConversationsTable extends Conversations
     venue,
     nextSpeakerIndex,
     localCastJson,
+    targetTotalChars,
   ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -294,6 +307,15 @@ class $ConversationsTable extends Conversations
         ),
       );
     }
+    if (data.containsKey('target_total_chars')) {
+      context.handle(
+        _targetTotalCharsMeta,
+        targetTotalChars.isAcceptableOrUnknown(
+          data['target_total_chars']!,
+          _targetTotalCharsMeta,
+        ),
+      );
+    }
     return context;
   }
 
@@ -359,6 +381,10 @@ class $ConversationsTable extends Conversations
         DriftSqlType.string,
         data['${effectivePrefix}local_cast_json'],
       ),
+      targetTotalChars: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}target_total_chars'],
+      )!,
     );
   }
 
@@ -383,6 +409,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
   final String venue;
   final int nextSpeakerIndex;
   final String? localCastJson;
+  final int targetTotalChars;
   const Conversation({
     required this.id,
     required this.title,
@@ -398,6 +425,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
     required this.venue,
     required this.nextSpeakerIndex,
     this.localCastJson,
+    required this.targetTotalChars,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -426,6 +454,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
     if (!nullToAbsent || localCastJson != null) {
       map['local_cast_json'] = Variable<String>(localCastJson);
     }
+    map['target_total_chars'] = Variable<int>(targetTotalChars);
     return map;
   }
 
@@ -455,6 +484,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
       localCastJson: localCastJson == null && nullToAbsent
           ? const Value.absent()
           : Value(localCastJson),
+      targetTotalChars: Value(targetTotalChars),
     );
   }
 
@@ -482,6 +512,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
       venue: serializer.fromJson<String>(json['venue']),
       nextSpeakerIndex: serializer.fromJson<int>(json['nextSpeakerIndex']),
       localCastJson: serializer.fromJson<String?>(json['localCastJson']),
+      targetTotalChars: serializer.fromJson<int>(json['targetTotalChars']),
     );
   }
   @override
@@ -502,6 +533,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
       'venue': serializer.toJson<String>(venue),
       'nextSpeakerIndex': serializer.toJson<int>(nextSpeakerIndex),
       'localCastJson': serializer.toJson<String?>(localCastJson),
+      'targetTotalChars': serializer.toJson<int>(targetTotalChars),
     };
   }
 
@@ -520,6 +552,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
     String? venue,
     int? nextSpeakerIndex,
     Value<String?> localCastJson = const Value.absent(),
+    int? targetTotalChars,
   }) => Conversation(
     id: id ?? this.id,
     title: title ?? this.title,
@@ -543,6 +576,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
     localCastJson: localCastJson.present
         ? localCastJson.value
         : this.localCastJson,
+    targetTotalChars: targetTotalChars ?? this.targetTotalChars,
   );
   Conversation copyWithCompanion(ConversationsCompanion data) {
     return Conversation(
@@ -576,6 +610,9 @@ class Conversation extends DataClass implements Insertable<Conversation> {
       localCastJson: data.localCastJson.present
           ? data.localCastJson.value
           : this.localCastJson,
+      targetTotalChars: data.targetTotalChars.present
+          ? data.targetTotalChars.value
+          : this.targetTotalChars,
     );
   }
 
@@ -595,7 +632,8 @@ class Conversation extends DataClass implements Insertable<Conversation> {
           ..write('participantIdsJson: $participantIdsJson, ')
           ..write('venue: $venue, ')
           ..write('nextSpeakerIndex: $nextSpeakerIndex, ')
-          ..write('localCastJson: $localCastJson')
+          ..write('localCastJson: $localCastJson, ')
+          ..write('targetTotalChars: $targetTotalChars')
           ..write(')'))
         .toString();
   }
@@ -616,6 +654,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
     venue,
     nextSpeakerIndex,
     localCastJson,
+    targetTotalChars,
   );
   @override
   bool operator ==(Object other) =>
@@ -634,7 +673,8 @@ class Conversation extends DataClass implements Insertable<Conversation> {
           other.participantIdsJson == this.participantIdsJson &&
           other.venue == this.venue &&
           other.nextSpeakerIndex == this.nextSpeakerIndex &&
-          other.localCastJson == this.localCastJson);
+          other.localCastJson == this.localCastJson &&
+          other.targetTotalChars == this.targetTotalChars);
 }
 
 class ConversationsCompanion extends UpdateCompanion<Conversation> {
@@ -652,6 +692,7 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
   final Value<String> venue;
   final Value<int> nextSpeakerIndex;
   final Value<String?> localCastJson;
+  final Value<int> targetTotalChars;
   final Value<int> rowid;
   const ConversationsCompanion({
     this.id = const Value.absent(),
@@ -668,6 +709,7 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
     this.venue = const Value.absent(),
     this.nextSpeakerIndex = const Value.absent(),
     this.localCastJson = const Value.absent(),
+    this.targetTotalChars = const Value.absent(),
     this.rowid = const Value.absent(),
   });
   ConversationsCompanion.insert({
@@ -685,6 +727,7 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
     this.venue = const Value.absent(),
     this.nextSpeakerIndex = const Value.absent(),
     this.localCastJson = const Value.absent(),
+    this.targetTotalChars = const Value.absent(),
     this.rowid = const Value.absent(),
   }) : id = Value(id),
        updatedAt = Value(updatedAt);
@@ -703,6 +746,7 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
     Expression<String>? venue,
     Expression<int>? nextSpeakerIndex,
     Expression<String>? localCastJson,
+    Expression<int>? targetTotalChars,
     Expression<int>? rowid,
   }) {
     return RawValuesInsertable({
@@ -722,6 +766,7 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
       if (venue != null) 'venue': venue,
       if (nextSpeakerIndex != null) 'next_speaker_index': nextSpeakerIndex,
       if (localCastJson != null) 'local_cast_json': localCastJson,
+      if (targetTotalChars != null) 'target_total_chars': targetTotalChars,
       if (rowid != null) 'rowid': rowid,
     });
   }
@@ -741,6 +786,7 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
     Value<String>? venue,
     Value<int>? nextSpeakerIndex,
     Value<String?>? localCastJson,
+    Value<int>? targetTotalChars,
     Value<int>? rowid,
   }) {
     return ConversationsCompanion(
@@ -758,6 +804,7 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
       venue: venue ?? this.venue,
       nextSpeakerIndex: nextSpeakerIndex ?? this.nextSpeakerIndex,
       localCastJson: localCastJson ?? this.localCastJson,
+      targetTotalChars: targetTotalChars ?? this.targetTotalChars,
       rowid: rowid ?? this.rowid,
     );
   }
@@ -807,6 +854,9 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
     if (localCastJson.present) {
       map['local_cast_json'] = Variable<String>(localCastJson.value);
     }
+    if (targetTotalChars.present) {
+      map['target_total_chars'] = Variable<int>(targetTotalChars.value);
+    }
     if (rowid.present) {
       map['rowid'] = Variable<int>(rowid.value);
     }
@@ -830,6 +880,7 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
           ..write('venue: $venue, ')
           ..write('nextSpeakerIndex: $nextSpeakerIndex, ')
           ..write('localCastJson: $localCastJson, ')
+          ..write('targetTotalChars: $targetTotalChars, ')
           ..write('rowid: $rowid')
           ..write(')'))
         .toString();
@@ -3039,6 +3090,7 @@ typedef $$ConversationsTableCreateCompanionBuilder =
       Value<String> venue,
       Value<int> nextSpeakerIndex,
       Value<String?> localCastJson,
+      Value<int> targetTotalChars,
       Value<int> rowid,
     });
 typedef $$ConversationsTableUpdateCompanionBuilder =
@@ -3057,6 +3109,7 @@ typedef $$ConversationsTableUpdateCompanionBuilder =
       Value<String> venue,
       Value<int> nextSpeakerIndex,
       Value<String?> localCastJson,
+      Value<int> targetTotalChars,
       Value<int> rowid,
     });
 
@@ -3167,6 +3220,11 @@ class $$ConversationsTableFilterComposer
     builder: (column) => ColumnFilters(column),
   );
 
+  ColumnFilters<int> get targetTotalChars => $composableBuilder(
+    column: $table.targetTotalChars,
+    builder: (column) => ColumnFilters(column),
+  );
+
   Expression<bool> messagesRefs(
     Expression<bool> Function($$MessagesTableFilterComposer f) f,
   ) {
@@ -3271,6 +3329,11 @@ class $$ConversationsTableOrderingComposer
     column: $table.localCastJson,
     builder: (column) => ColumnOrderings(column),
   );
+
+  ColumnOrderings<int> get targetTotalChars => $composableBuilder(
+    column: $table.targetTotalChars,
+    builder: (column) => ColumnOrderings(column),
+  );
 }
 
 class $$ConversationsTableAnnotationComposer
@@ -3337,6 +3400,11 @@ class $$ConversationsTableAnnotationComposer
 
   GeneratedColumn<String> get localCastJson => $composableBuilder(
     column: $table.localCastJson,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get targetTotalChars => $composableBuilder(
+    column: $table.targetTotalChars,
     builder: (column) => column,
   );
 
@@ -3408,6 +3476,7 @@ class $$ConversationsTableTableManager
                 Value<String> venue = const Value.absent(),
                 Value<int> nextSpeakerIndex = const Value.absent(),
                 Value<String?> localCastJson = const Value.absent(),
+                Value<int> targetTotalChars = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => ConversationsCompanion(
                 id: id,
@@ -3424,6 +3493,7 @@ class $$ConversationsTableTableManager
                 venue: venue,
                 nextSpeakerIndex: nextSpeakerIndex,
                 localCastJson: localCastJson,
+                targetTotalChars: targetTotalChars,
                 rowid: rowid,
               ),
           createCompanionCallback:
@@ -3442,6 +3512,7 @@ class $$ConversationsTableTableManager
                 Value<String> venue = const Value.absent(),
                 Value<int> nextSpeakerIndex = const Value.absent(),
                 Value<String?> localCastJson = const Value.absent(),
+                Value<int> targetTotalChars = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => ConversationsCompanion.insert(
                 id: id,
@@ -3458,6 +3529,7 @@ class $$ConversationsTableTableManager
                 venue: venue,
                 nextSpeakerIndex: nextSpeakerIndex,
                 localCastJson: localCastJson,
+                targetTotalChars: targetTotalChars,
                 rowid: rowid,
               ),
           withReferenceMapper: (p0) => p0

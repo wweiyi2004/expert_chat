@@ -122,13 +122,25 @@ class FailingSaveRepo extends InMemoryRepo {
 
 /// Media provider that returns a canned image without any network I/O.
 class FakeMediaProvider extends OpenAiCompatibleMediaProvider {
+  String? lastPrompt;
+  final List<String> prompts = [];
+  List<int>? lastReferenceBytes;
+
   @override
   Future<GeneratedImage> generateImage({
     required MediaApiConfig config,
     required String apiKey,
     required String prompt,
     CancelToken? cancelToken,
-  }) async => const GeneratedImage(base64: 'QUFBQQ==');
+    List<int>? referenceImageBytes,
+    String referenceMimeType = 'image/png',
+    String referenceFileName = 'reference.png',
+  }) async {
+    lastPrompt = prompt;
+    prompts.add(prompt);
+    lastReferenceBytes = referenceImageBytes;
+    return const GeneratedImage(base64: 'QUFBQQ==');
+  }
 }
 
 /// Settings controller that returns a ready config without touching storage.
@@ -1726,6 +1738,192 @@ void main() {
     expect(path.last.attachments, isNotEmpty);
     // Later checkpoint writes still reach storage once it recovers.
     expect(repo.store, isNotEmpty);
+  });
+
+  test('generateImage with deepThink optimizes prompt before media call', () async {
+    final media = FakeMediaProvider();
+    final llm = FakeLlmProvider([
+      const ChatChunk(reasoningDelta: '先补光影…'),
+      const ChatChunk(
+        contentDelta:
+            'a fluffy orange cat sitting on a windowsill, soft morning light, '
+            'photorealistic, shallow depth of field',
+      ),
+    ]);
+    final c = _container(
+      llm,
+      InMemoryRepo(),
+      settingsBuilder: FakeImageGenSettings.new,
+      mediaProvider: media,
+    );
+    addTearDown(c.dispose);
+    final ctrl = c.read(chatControllerProvider.notifier);
+    await c.read(chatControllerProvider.future);
+
+    ctrl.toggleDeepThink();
+    expect(c.read(chatControllerProvider).value!.deepThink, isTrue);
+
+    final ok = await ctrl.generateImage('画一只猫');
+    expect(ok, isTrue);
+    expect(media.lastPrompt, contains('fluffy orange cat'));
+    expect(media.lastPrompt, isNot(equals('画一只猫')));
+    expect(llm.callCount, 1);
+    expect(llm.lastThinking, isTrue);
+    expect(llm.lastConfig?.model, KnownModels.reasoner);
+
+    final assistant = c.read(chatControllerProvider).value!.current!.activePath.last;
+    expect(assistant.kind, MessageKind.generatedImage);
+    expect(assistant.attachments, isNotEmpty);
+    expect(assistant.reasoning, contains('先补光影'));
+    expect(assistant.content, contains('深度思考优化后的提示词'));
+  });
+
+  test('generateImage without deepThink sends the raw prompt', () async {
+    final media = FakeMediaProvider();
+    final llm = FakeLlmProvider(const []);
+    final c = _container(
+      llm,
+      InMemoryRepo(),
+      settingsBuilder: FakeImageGenSettings.new,
+      mediaProvider: media,
+    );
+    addTearDown(c.dispose);
+    final ctrl = c.read(chatControllerProvider.notifier);
+    await c.read(chatControllerProvider.future);
+
+    final ok = await ctrl.generateImage('画一只猫');
+    expect(ok, isTrue);
+    expect(media.lastPrompt, '画一只猫');
+    expect(media.lastReferenceBytes, isNull);
+    expect(llm.callCount, 0);
+  });
+
+  test('generateImage with reference image uses img2img path', () async {
+    final media = FakeMediaProvider();
+    final c = _container(
+      FakeLlmProvider(const []),
+      InMemoryRepo(),
+      settingsBuilder: FakeImageGenSettings.new,
+      mediaProvider: media,
+    );
+    addTearDown(c.dispose);
+    final ctrl = c.read(chatControllerProvider.notifier);
+    await c.read(chatControllerProvider.future);
+
+    final refBytes = List<int>.generate(16, (i) => i + 1);
+    final ref = Attachment(
+      name: 'ref.png',
+      mimeType: 'image/png',
+      sizeBytes: refBytes.length,
+      imageBase64: base64Encode(refBytes),
+    );
+    final ok = await ctrl.generateImage(
+      '改成赛博朋克风格',
+      referenceImages: [ref],
+    );
+    expect(ok, isTrue);
+    expect(media.lastPrompt, '改成赛博朋克风格');
+    expect(media.lastReferenceBytes, refBytes);
+
+    final path = c.read(chatControllerProvider).value!.current!.activePath;
+    expect(path.first.attachments, hasLength(1)); // user kept reference
+    expect(path.last.content, contains('图生图'));
+    expect(path.last.attachments, isNotEmpty);
+  });
+
+  test('toggleImageGenMode cycles off → auto → always → off', () async {
+    final c = _container(FakeLlmProvider(const []), InMemoryRepo());
+    addTearDown(c.dispose);
+    final ctrl = c.read(chatControllerProvider.notifier);
+    await c.read(chatControllerProvider.future);
+
+    expect(c.read(chatControllerProvider).value!.imageGenMode, ImageGenMode.off);
+    ctrl.toggleImageGenMode();
+    expect(
+      c.read(chatControllerProvider).value!.imageGenMode,
+      ImageGenMode.auto,
+    );
+    ctrl.toggleImageGenMode();
+    expect(
+      c.read(chatControllerProvider).value!.imageGenMode,
+      ImageGenMode.always,
+    );
+    ctrl.toggleImageGenMode();
+    expect(c.read(chatControllerProvider).value!.imageGenMode, ImageGenMode.off);
+  });
+
+  test('配图·强制 pre-generates one SFW image on the assistant turn', () async {
+    final media = FakeMediaProvider();
+    final llm = FakeLlmProvider([
+      const ChatChunk(contentDelta: '这是文字回复'),
+    ]);
+    final c = _container(
+      llm,
+      InMemoryRepo(),
+      settingsBuilder: FakeImageGenSettings.new,
+      mediaProvider: media,
+    );
+    addTearDown(c.dispose);
+    final ctrl = c.read(chatControllerProvider.notifier);
+    await c.read(chatControllerProvider.future);
+
+    ctrl.toggleImageGenMode(); // auto
+    ctrl.toggleImageGenMode(); // always
+    expect(
+      c.read(chatControllerProvider).value!.imageGenMode,
+      ImageGenMode.always,
+    );
+
+    final ok = await ctrl.sendMessage('请介绍一下量子计算');
+    expect(ok, isTrue);
+    expect(media.prompts, hasLength(1));
+    expect(media.lastPrompt, contains('safe for work'));
+
+    final assistant =
+        c.read(chatControllerProvider).value!.current!.activePath.last;
+    expect(assistant.role, MessageRole.assistant);
+    expect(assistant.attachments, hasLength(1));
+    expect(assistant.content, contains('这是文字回复'));
+  });
+
+  test('配图·强制 on character chat builds portrait without R18 user text', () async {
+    final media = FakeMediaProvider();
+    final llm = FakeLlmProvider([
+      const ChatChunk(contentDelta: '……'),
+    ]);
+    final c = _container(
+      llm,
+      InMemoryRepo(),
+      settingsBuilder: FakeImageGenSettings.new,
+      mediaProvider: media,
+    );
+    addTearDown(c.dispose);
+    final ctrl = c.read(chatControllerProvider.notifier);
+    await c.read(chatControllerProvider.future);
+
+    final card = CharacterCard(
+      name: '苏晚',
+      description: '青衣长发，手持折扇',
+      firstMes: '你好',
+    );
+    // Portrait resolution loads the card from the character library.
+    await c.read(characterRepositoryProvider).save(card);
+    await ctrl.newStoryConversation(card, worldInfoIds: const []);
+    ctrl.toggleImageGenMode();
+    ctrl.toggleImageGenMode(); // always
+
+    await ctrl.sendMessage('他们激烈做爱，场面不堪入目，继续写');
+    expect(media.prompts, hasLength(1));
+    final prompt = media.lastPrompt!;
+    expect(prompt, contains('苏晚'));
+    expect(prompt, contains('青衣长发'));
+    expect(prompt, isNot(contains('做爱')));
+    expect(prompt, isNot(contains('不堪入目')));
+    expect(prompt, contains('safe for work'));
+
+    final assistant =
+        c.read(chatControllerProvider).value!.current!.activePath.last;
+    expect(assistant.attachments, hasLength(1));
   });
 
   test(

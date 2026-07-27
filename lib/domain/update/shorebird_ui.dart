@@ -2,6 +2,33 @@ import 'package:flutter/material.dart';
 
 import 'shorebird_patch.dart';
 
+/// Startup: if a patch is already downloaded and waiting for restart, remind
+/// the user once. Does not block the UI on network failures.
+Future<void> checkShorebirdPatchOnLaunch(BuildContext context) async {
+  try {
+    final result = await ShorebirdPatchService().check(download: true);
+    if (!context.mounted) return;
+    if (result.restartRequired) {
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          icon: const Icon(Icons.system_security_update_good),
+          title: const Text('代码补丁已就绪'),
+          content: Text(result.message),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('稍后重启'),
+            ),
+          ],
+        ),
+      );
+    }
+  } catch (_) {
+    // Best-effort.
+  }
+}
+
 /// Manual Shorebird patch check from Settings.
 Future<void> checkShorebirdPatchInteractive(BuildContext context) async {
   final messenger = ScaffoldMessenger.maybeOf(context);

@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:expert_chat/data/models.dart';
 import 'package:expert_chat/features/chat/widgets/attachment_chip.dart';
+import 'package:expert_chat/features/chat/widgets/image_viewer_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -23,6 +24,63 @@ void main() {
     );
 
     expect(find.byType(Image), findsOneWidget);
+  });
+
+  testWidgets('tapping a generated image opens the full-screen viewer', (
+    tester,
+  ) async {
+    // 1×1 PNG — valid decode path so Image.memory lays out with real size.
+    const b64 =
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+    final attachment = Attachment(
+      name: 'tap-me.png',
+      mimeType: 'image/png',
+      imageBase64: b64,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Center(child: AttachmentImage(attachment: attachment)),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byType(InkWell), findsOneWidget);
+    final onTap = tester.widget<InkWell>(find.byType(InkWell)).onTap;
+    expect(onTap, isNotNull);
+    onTap!();
+    // Do not pumpAndSettle: route + any progress indicator can spin forever.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(find.byType(ImageViewerPage), findsOneWidget);
+    expect(find.byTooltip('保存'), findsOneWidget);
+    expect(find.byTooltip('分享'), findsOneWidget);
+  });
+
+  testWidgets('ImageViewerPage shows save and share actions', (tester) async {
+    const b64 =
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ImageViewerPage(
+          attachment: Attachment(
+            name: 'viewer.png',
+            mimeType: 'image/png',
+            imageBase64: b64,
+          ),
+        ),
+      ),
+    );
+    // Small base64 decodes synchronously on the first post-frame load.
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.byType(ImageViewerPage), findsOneWidget);
+    expect(find.byTooltip('保存'), findsOneWidget);
+    expect(find.byTooltip('分享'), findsOneWidget);
   });
 
   testWidgets('large base64 images decode off-frame with a progress state', (

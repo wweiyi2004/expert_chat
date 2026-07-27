@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/workspace_layout.dart';
 import '../../domain/notify/generation_notify.dart';
+import '../../domain/update/shorebird_ui.dart';
 import '../../domain/update/update_ui.dart';
 import '../chat/chat_page.dart';
 import '../settings/settings_page.dart';
@@ -32,11 +33,16 @@ class _AppShellState extends ConsumerState<AppShell>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    // Best-effort: prompt only when a newer GitHub Release exists.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    // Best-effort OTA: full-package GitHub Releases + Shorebird code patch.
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted) return;
-      checkForUpdatesOnLaunch(context);
       GenerationNotify.init();
+      // Stagger so the first frame paints before network work.
+      await Future<void>.delayed(const Duration(milliseconds: 800));
+      if (!mounted) return;
+      await checkForUpdatesOnLaunch(context);
+      if (!mounted) return;
+      await checkShorebirdPatchOnLaunch(context);
     });
   }
 

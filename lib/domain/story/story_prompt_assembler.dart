@@ -3,6 +3,7 @@ import 'package:characters/characters.dart';
 import '../../data/models.dart';
 import '../../data/story_models.dart';
 import '../llm/llm_provider.dart';
+import 'story_length_budget.dart';
 
 /// One world-info entry that was injected into a story turn's system prompt.
 class WorldInfoHit {
@@ -96,6 +97,13 @@ class StoryPromptAssembler {
       if (outlineBlock.isNotEmpty) {
         blocks.add(outlineBlock);
       }
+      final lengthBlock = _lengthBudgetBlock(
+        conversation,
+        advancePlot: advancePlot,
+      );
+      if (lengthBlock != null) {
+        blocks.add(lengthBlock);
+      }
       if (cast.isNotEmpty) {
         blocks.add(_directorStoryBlock(cast));
       }
@@ -137,6 +145,13 @@ class StoryPromptAssembler {
         blocks.add(
           '【导演指令 / Author Note】\n${_clip(note, maxAuthorNoteChars)}',
         );
+      }
+      final lengthBlock = _lengthBudgetBlock(
+        conversation,
+        advancePlot: advancePlot,
+      );
+      if (lengthBlock != null) {
+        blocks.add(lengthBlock);
       }
     }
 
@@ -192,14 +207,24 @@ class StoryPromptAssembler {
       ..writeln('服从优先级（高→低）：')
       ..writeln('1. 硬性导演说明 / 创作约束与故事原始情节')
       ..writeln('2. 当前大纲节拍（及用户本轮导演指令）')
-      ..writeln('3. 角色卡与已发生正文的连贯性')
-      ..writeln('4. 世界书等补充设定')
+      ..writeln('3. 篇幅约束（总字数 / 本回合字数区间）')
+      ..writeln('4. 角色卡与已发生正文的连贯性')
+      ..writeln('5. 世界书等补充设定')
       ..writeln('冲突时取更高优先级；禁止用“更戏剧化/更有趣”为理由突破约束。')
       ..writeln('除非导演明确修改，不得擅自改结局、改基调、换主角核心目标。');
     if (advancePlot) {
       b.writeln('本回合为节拍推进：只演绎「当前节拍」，不要跳拍。');
     }
     return b.toString().trim();
+  }
+
+  String? _lengthBudgetBlock(
+    Conversation conversation, {
+    required bool advancePlot,
+  }) {
+    final budget = StoryLengthBudget.forConversation(conversation);
+    if (budget == null) return null;
+    return budget.promptBlock(advancePlot: advancePlot);
   }
 
   String _characterBlock(CharacterCard? character) {

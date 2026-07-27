@@ -444,7 +444,9 @@ class _MessageBubbleState extends State<MessageBubble> {
                     ),
                     const SizedBox(width: 10),
                     Text(
-                      '正在书写…',
+                      m.kind == MessageKind.generatedImage
+                          ? '正在生成图片…'
+                          : '正在书写…',
                       style: Theme.of(context).textTheme.labelMedium?.copyWith(
                         color: scheme.onSurfaceVariant,
                       ),

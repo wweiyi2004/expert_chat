@@ -1,8 +1,8 @@
-import 'dart:io' show Platform;
-
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+
+import 'install_apk.dart';
 
 /// GitHub repo used for release notes and binary downloads.
 const kGithubOwner = 'wweiyi2004';
@@ -21,6 +21,7 @@ class UpdateCheckResult {
     required this.releaseUrl,
     required this.releaseNotes,
     this.downloadUrl,
+    this.assetName,
     this.tagName,
   });
 
@@ -30,7 +31,20 @@ class UpdateCheckResult {
   final String releaseUrl;
   final String releaseNotes;
   final String? downloadUrl;
+
+  /// Matched release asset file name (for local save / install).
+  final String? assetName;
   final String? tagName;
+
+  bool get isAndroidApk {
+    final n = (assetName ?? downloadUrl ?? '').toLowerCase();
+    return n.endsWith('.apk');
+  }
+
+  bool get isWindowsZip {
+    final n = (assetName ?? downloadUrl ?? '').toLowerCase();
+    return n.endsWith('.zip') || n.endsWith('.msix') || n.endsWith('.exe');
+  }
 }
 
 /// Checks GitHub Releases for a newer version and resolves a platform asset.
@@ -39,7 +53,7 @@ class AppUpdateChecker {
 
   final Dio _dio;
 
-  Future<UpdateCheckResult> check() async {
+  Future<UpdateCheckResult> check({String? preferredAbi}) async {
     final info = await PackageInfo.fromPlatform();
     final current = normalizeVersion(info.version);
 
@@ -79,7 +93,9 @@ class AppUpdateChecker {
         .whereType<Map>()
         .map((e) => Map<String, dynamic>.from(e))
         .toList();
-    final download = _pickAssetUrl(assets);
+
+    final abi = preferredAbi ?? await InstallApk.primaryAbi();
+    final picked = pickAsset(assets, abiHint: abi);
 
     final hasUpdate = isNewer(latest, current);
     return UpdateCheckResult(
@@ -88,7 +104,8 @@ class AppUpdateChecker {
       hasUpdate: hasUpdate,
       releaseUrl: htmlUrl,
       releaseNotes: notes,
-      downloadUrl: download,
+      downloadUrl: picked?.url,
+      assetName: picked?.name,
       tagName: tag.isEmpty ? null : tag,
     );
   }
@@ -160,65 +177,90 @@ class AppUpdateChecker {
     return aParts.length.compareTo(bParts.length);
   }
 
-  String? _pickAssetUrl(List<Map<String, dynamic>> assets) {
+  /// Public for tests. Picks the best installable asset for this platform.
+  ///
+  /// [platform] overrides the host platform (useful in unit tests).
+  static ({String name, String url})? pickAsset(
+    List<Map<String, dynamic>> assets, {
+    String? abiHint,
+    TargetPlatform? platform,
+  }) {
     if (assets.isEmpty) return null;
-    final names = assets
-        .map((a) => (a['name'] as String? ?? '').toLowerCase())
-        .toList();
+
+    final plat = platform ??
+        (kIsWeb
+            ? TargetPlatform.android
+            : defaultTargetPlatform);
+
+    ({String name, String url})? at(int i) {
+      final name = (assets[i]['name'] as String? ?? '').trim();
+      final url = (assets[i]['browser_download_url'] as String? ?? '').trim();
+      if (name.isEmpty || url.isEmpty) return null;
+      return (name: name, url: url);
+    }
 
     bool match(int i, bool Function(String n) test) {
-      final name = names[i];
+      final name = (assets[i]['name'] as String? ?? '').toLowerCase();
       return name.isNotEmpty && test(name);
     }
 
-    String? urlAt(int i) => assets[i]['browser_download_url'] as String?;
+    ({String name, String url})? firstWhere(bool Function(String n) test) {
+      for (var i = 0; i < assets.length; i++) {
+        if (match(i, test)) return at(i);
+      }
+      return null;
+    }
 
     // Prefer platform-specific installers from our release naming scheme.
-    if (!kIsWeb && Platform.isAndroid) {
-      for (var i = 0; i < assets.length; i++) {
-        if (match(i, (n) => n.endsWith('.apk') && n.contains('android'))) {
-          return urlAt(i);
-        }
-      }
-      for (var i = 0; i < assets.length; i++) {
-        if (match(i, (n) => n.endsWith('.apk'))) return urlAt(i);
-      }
-    }
-    if (!kIsWeb && Platform.isWindows) {
-      for (var i = 0; i < assets.length; i++) {
-        if (match(
-          i,
+    if (!kIsWeb && plat == TargetPlatform.android) {
+      final abi = (abiHint ?? '').toLowerCase();
+      // Split APKs: arm64-v8a → arm64, armeabi-v7a → armeabi / v7a, x86_64.
+      if (abi.contains('arm64')) {
+        final hit = firstWhere(
+          (n) => n.endsWith('.apk') && n.contains('arm64'),
+        );
+        if (hit != null) return hit;
+      } else if (abi.contains('armeabi') || abi.contains('armv7')) {
+        final hit = firstWhere(
           (n) =>
-              (n.endsWith('.zip') ||
-                  n.endsWith('.msix') ||
-                  n.endsWith('.exe')) &&
-              n.contains('windows'),
-        )) {
-          return urlAt(i);
-        }
-      }
-      for (var i = 0; i < assets.length; i++) {
-        if (match(i, (n) => n.endsWith('.zip') && n.contains('win'))) {
-          return urlAt(i);
-        }
-      }
-    }
-    if (!kIsWeb && Platform.isMacOS) {
-      for (var i = 0; i < assets.length; i++) {
-        if (match(
-          i,
+              n.endsWith('.apk') &&
+              (n.contains('armeabi') || n.contains('v7a')) &&
+              !n.contains('arm64'),
+        );
+        if (hit != null) return hit;
+      } else if (abi.contains('x86_64') || abi == 'x64') {
+        final hit = firstWhere(
           (n) =>
-              n.contains('mac') && (n.endsWith('.dmg') || n.endsWith('.zip')),
-        )) {
-          return urlAt(i);
-        }
+              n.endsWith('.apk') &&
+              (n.contains('x86_64') || n.contains('x64')),
+        );
+        if (hit != null) return hit;
       }
+
+      return firstWhere((n) => n.endsWith('.apk') && n.contains('universal')) ??
+          firstWhere((n) => n.endsWith('.apk') && n.contains('android')) ??
+          firstWhere((n) => n.endsWith('.apk'));
+    }
+    if (!kIsWeb && plat == TargetPlatform.windows) {
+      return firstWhere(
+            (n) =>
+                (n.endsWith('.zip') ||
+                    n.endsWith('.msix') ||
+                    n.endsWith('.exe')) &&
+                n.contains('windows'),
+          ) ??
+          firstWhere((n) => n.endsWith('.zip') && n.contains('win'));
+    }
+    if (!kIsWeb && plat == TargetPlatform.macOS) {
+      return firstWhere(
+        (n) => n.contains('mac') && (n.endsWith('.dmg') || n.endsWith('.zip')),
+      );
     }
 
-    // Fallback: first asset with a browser download URL.
     for (final a in assets) {
-      final u = a['browser_download_url'] as String?;
-      if (u != null && u.isNotEmpty) return u;
+      final name = (a['name'] as String? ?? '').trim();
+      final u = (a['browser_download_url'] as String? ?? '').trim();
+      if (u.isNotEmpty) return (name: name.isEmpty ? 'download' : name, url: u);
     }
     return null;
   }

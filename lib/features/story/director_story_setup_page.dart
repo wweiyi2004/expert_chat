@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../data/story_models.dart';
 import '../../domain/story/director_prose_styles.dart';
 import '../../domain/story/story_ai_assist.dart';
+import '../../domain/story/story_length_budget.dart';
 import '../../state/chat_controller.dart';
 import '../../state/settings_controller.dart';
 import '../shell/shell_tab.dart';
@@ -41,6 +42,8 @@ class _DirectorStorySetupPageState
   DirectorStoryDraft? _draft;
   CancelToken? _cancelToken;
   var _beatCount = 8;
+  /// Novel target length in characters; 0 = unlimited.
+  var _targetTotalChars = 80000;
   var _generating = false;
   var _starting = false;
   String? _error;
@@ -201,6 +204,7 @@ class _DirectorStorySetupPageState
         authorNote: _authorNote.text.trim().isEmpty
             ? DirectorStoryDraft.defaultAuthorNote
             : _authorNote.text.trim(),
+        targetTotalChars: _targetTotalChars,
       );
       if (!mounted) return;
 
@@ -348,6 +352,45 @@ class _DirectorStorySetupPageState
                           }
                         },
                 ),
+                const SizedBox(height: 16),
+                Text('小说总字数', style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 4),
+                Text(
+                  '写入会话后，每一节会按「剩余字数 ÷ 剩余节拍」约束本回合篇幅；可在情节面板随时改。',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final preset in StoryLengthBudget.presets)
+                      ChoiceChip(
+                        key: ValueKey('director-len-${preset.chars}'),
+                        label: Text(preset.label),
+                        selected: _targetTotalChars == preset.chars,
+                        onSelected: _busy
+                            ? null
+                            : (_) => setState(
+                                () => _targetTotalChars = preset.chars,
+                              ),
+                      ),
+                  ],
+                ),
+                if (_targetTotalChars > 0) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    '目标约 ${StoryLengthBudget.formatChars(_targetTotalChars)}字'
+                    '（按 $_beatCount 拍均分，每拍约 '
+                    '${StoryLengthBudget.formatChars((_targetTotalChars / _beatCount).round())}）',
+                    style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                      color: scheme.primary,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
                 if (_generating) ...[
                   const SizedBox(height: 18),
                   const _GeneratingCard(),

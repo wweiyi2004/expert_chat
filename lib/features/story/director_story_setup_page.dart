@@ -104,7 +104,8 @@ class _DirectorStorySetupPageState
       final generated = await ready.assist.generateDirectorStory(
         config: ready.config,
         premise: _premise.text.trim(),
-        style: requirements.isEmpty ? null : requirements,
+        // Hard creative constraints — not mere "style flavor".
+        requirements: requirements.isEmpty ? null : requirements,
         length: '$_beatCount 个连续、具体且可以依次演绎的故事节拍',
         seed: _editorSeed(),
         cancelToken: token,
@@ -175,6 +176,7 @@ class _DirectorStorySetupPageState
             ? _premise.text.trim()
             : _title.text.trim(),
         premise: _premise.text.trim(),
+        requirements: _requirements.text.trim(),
         cast: [for (final character in draft.characters) character.toCard()],
         outline: outline,
         authorNote: _authorNote.text.trim().isEmpty
@@ -259,9 +261,11 @@ class _DirectorStorySetupPageState
                   minLines: 2,
                   maxLines: 5,
                   decoration: const InputDecoration(
-                    labelText: '创作要求（可选）',
+                    labelText: '创作要求 / 硬性约束（可选）',
                     alignLabelWithHint: true,
-                    hintText: '例如：悬疑克制、第三人称、慢热，不要快速揭晓真相',
+                    hintText: '例如：悬疑克制、第三人称、慢热；禁止提前揭晓真相；不要加入超自然元素',
+                    helperText: '会写入导演说明并在每一节演绎时强制遵守',
+                    helperMaxLines: 2,
                   ),
                 ),
                 const SizedBox(height: 12),

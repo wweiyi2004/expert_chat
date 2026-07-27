@@ -18,6 +18,7 @@ class StoryAiAssist {
     required LlmConfig config,
     required String premise,
     String? style,
+    String? requirements,
     String? length,
     DirectorStoryDraft? seed,
     CancelToken? cancelToken,
@@ -27,9 +28,10 @@ class StoryAiAssist {
       throw Exception('请先输入故事情节。');
     }
 
+    final hardRequirements = (requirements ?? style)?.trim() ?? '';
     final preferences = <String>[
-      if (style != null && style.trim().isNotEmpty) '文风：${style.trim()}',
-      if (length != null && length.trim().isNotEmpty) '篇幅：${length.trim()}',
+      if (hardRequirements.isNotEmpty) '硬性约束 / 创作要求：\n$hardRequirements',
+      if (length != null && length.trim().isNotEmpty) '篇幅结构：${length.trim()}',
     ];
     final seedBlock = seed == null || seed.isEmpty
         ? '（无已有草稿）'
@@ -45,7 +47,7 @@ class StoryAiAssist {
 {
   "title": "故事标题",
   "outline": "按发生顺序排列的大纲，每个情节点独占一行并以 - 开头",
-  "authorNote": "供后续演绎模型持续遵守的导演说明",
+  "authorNote": "供后续演绎模型持续遵守的硬性导演说明",
   "characters": [
     {
       "name": "角色名",
@@ -59,19 +61,24 @@ class StoryAiAssist {
   ]
 }
 
-要求：
-- 除非用户明确要求其它语言，否则使用中文。
-- 根据情节需要创建 1–6 个彼此有明确关系、目标和冲突的角色，不要求用户预先提供角色卡。
-- 角色是当前故事的临时演员，不要假设它们已存在于角色库。
-- outline 必须是可依次演绎的具体情节点，不写空泛的“发展剧情”。
-- authorNote 必须说明 AI 扮演全部角色、用户是导演，并要求优先服从用户后续的导演指令；不要替用户扮演或虚构用户台词。
-- 保持用户给出的核心情节；已有草稿仅作为可修改的参考。
-- 所有键和字符串必须使用双引号；不得使用尾随逗号。
+硬性要求（优先级从高到低）：
+1. 用户给出的「故事情节」与「硬性约束 / 创作要求」不可违背、不可淡化、不可用“艺术加工”绕过。
+2. outline 的每一个节拍都必须服务上述情节与约束；禁止加入与用户要求冲突的支线、人设改动或提前剧透。
+3. authorNote 必须：
+   - 写明 AI 扮演全部角色、用户是导演、不替用户发言；
+   - **逐条复述**用户的硬性约束（若有），并写明“演绎时必须遵守”；
+   - 写明后续指令优先服从导演。
+4. 角色设定不得与用户约束冲突（例如用户要求克制悬疑，则不要设计话痨剧透型角色作为默认主视角）。
+5. 除非用户明确要求其它语言，否则使用中文。
+6. 根据情节需要创建 1–6 个彼此有明确关系、目标和冲突的角色。
+7. outline 必须是可依次演绎的具体情节点，不写空泛的“发展剧情”。
+8. 已有草稿仅作参考；与用户约束冲突时以用户约束为准。
+9. 所有键和字符串必须使用双引号；不得使用尾随逗号。
 ''',
       user: [
-        '故事情节：\n$trimmedPremise',
-        if (preferences.isNotEmpty) '创作偏好：\n${preferences.join('\n')}',
-        '已有草稿（JSON）：\n$seedBlock',
+        '故事情节（必须保留核心，不可擅自改写结局/基调）：\n$trimmedPremise',
+        if (preferences.isNotEmpty) preferences.join('\n\n'),
+        '已有草稿（JSON，可改但不得违反上方约束）：\n$seedBlock',
       ].join('\n\n'),
     );
 
@@ -250,7 +257,10 @@ class DirectorStoryDraft {
     this.characters = const [],
   });
 
-  static const defaultAuthorNote = 'AI 扮演故事中的全部角色，用户是导演。优先服从用户后续的导演指令，不替用户发言。';
+  static const defaultAuthorNote =
+      'AI 扮演故事中的全部角色，用户是导演。'
+      '必须优先服从用户的情节设定、创作约束与后续导演指令；'
+      '不得擅自改结局、改基调或替用户发言。';
 
   final String title;
   final String outline;

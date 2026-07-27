@@ -164,8 +164,9 @@ void main() {
       expect(llm.calls.single.first.content, contains('"characters"'));
       final userPrompt = llm.calls.single.last.content;
       expect(userPrompt, contains('末班地铁驶入一个不存在的车站'));
-      expect(userPrompt, contains('文风：悬疑'));
-      expect(userPrompt, contains('篇幅：短篇'));
+      expect(userPrompt, contains('硬性约束'));
+      expect(userPrompt, contains('悬疑'));
+      expect(userPrompt, contains('篇幅结构：短篇'));
       expect(userPrompt, contains('"旧角色"'));
     });
 

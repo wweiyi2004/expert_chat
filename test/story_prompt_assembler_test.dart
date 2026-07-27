@@ -169,11 +169,43 @@ void main() {
 
       final joined = build.messages.map((m) => m.content).join('\n');
       expect(joined, contains('用户是导演'));
-      expect(joined, contains('旁白和全部角色'));
+      expect(joined, contains('服从优先级'));
+      expect(joined, contains('硬性导演说明'));
       expect(joined, contains('沈砚'));
       expect(joined, contains('零号'));
-      expect(joined, contains('不要让导演成为故事角色'));
-      expect(joined, contains('当前节拍'));
+      expect(joined, contains('不得让导演成为故事角色'));
+      expect(joined, contains('当前必须演绎的节拍'));
+    });
+
+    test('director mode puts hard constraints before cast and forbids freestyle', () {
+      final cast = [CharacterCard(name: '甲', description: '路人')];
+      final convo = Conversation(
+        mode: ConversationMode.story,
+        localCast: cast,
+        outline: '- 开端\n- 高潮',
+        authorNote: '【硬性创作约束】\n禁止超自然；慢热',
+        plotCursor: 0,
+      );
+      final build = assembler.buildSystemPrefix(
+        globalSystemPrompt: '',
+        cast: cast,
+        worldInfoPool: const [],
+        conversation: convo,
+        historyPath: const [],
+        advancePlot: true,
+        directorMode: true,
+      );
+      final texts = build.messages.map((m) => m.content).toList();
+      final joined = texts.join('\n---\n');
+      expect(joined, contains('禁止超自然'));
+      expect(joined, contains('不可违背'));
+      expect(joined, contains('以导演说明为准'));
+      // Constraint block should appear before character cards.
+      final constraintIdx = texts.indexWhere((t) => t.contains('硬性导演说明'));
+      final castIdx = texts.indexWhere((t) => t.contains('本故事角色卡'));
+      expect(constraintIdx, greaterThanOrEqualTo(0));
+      expect(castIdx, greaterThanOrEqualTo(0));
+      expect(constraintIdx, lessThan(castIdx));
     });
   });
 }

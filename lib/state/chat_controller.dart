@@ -315,6 +315,7 @@ class ChatController extends AsyncNotifier<ChatState> {
     required List<CharacterCard> cast,
     required String outline,
     String authorNote = '',
+    String requirements = '',
     List<String>? worldInfoIds,
   }) async {
     final usableCast = cast
@@ -332,9 +333,12 @@ class ChatController extends AsyncNotifier<ChatState> {
     final ids = worldInfoIds ?? await _defaultWorldInfoIds();
     final premiseText = premise.trim();
     final noteText = authorNote.trim();
+    final reqText = requirements.trim();
+    // Constraints first so later clipping keeps the hard rules.
     final combinedNote = [
+      if (reqText.isNotEmpty) '【硬性创作约束】（不可违背）\n$reqText',
       if (noteText.isNotEmpty) noteText,
-      if (premiseText.isNotEmpty) '【故事原始情节】\n$premiseText',
+      if (premiseText.isNotEmpty) '【故事原始情节】（核心基调与事件不可擅自改写）\n$premiseText',
     ].join('\n\n');
     final resolvedTitle = title.trim().isEmpty
         ? (premiseText.isEmpty ? '导演故事' : premiseText)

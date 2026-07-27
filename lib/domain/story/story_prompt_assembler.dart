@@ -51,7 +51,8 @@ class StoryPromptAssembler {
 
   static const int maxWorldInfoChars = 8000;
   static const int maxOutlineChars = 3000;
-  static const int maxAuthorNoteChars = 2000;
+  /// Director notes carry hard constraints; keep more room than freeform chat.
+  static const int maxAuthorNoteChars = 4000;
   static const int maxCharacterBlockChars = 6000;
   static const int scanMessageCount = 8;
 
@@ -76,8 +77,28 @@ class StoryPromptAssembler {
       blocks.add(global);
     }
 
-    if (directorMode && cast.isNotEmpty) {
-      blocks.add(_directorStoryBlock(cast));
+    // Director mode: constraints and outline BEFORE cast, so models weight
+    // user requirements above free improvisation around characters.
+    if (directorMode) {
+      blocks.add(_directorModeRules(advancePlot: advancePlot));
+      final note = conversation.authorNote.trim();
+      if (note.isNotEmpty) {
+        blocks.add(
+          '【硬性导演说明 / 创作约束】（优先级最高，不可违背、不可淡化）\n'
+          '${_clip(note, maxAuthorNoteChars)}',
+        );
+      }
+      final outlineBlock = _outlineBlock(
+        conversation,
+        advancePlot: advancePlot,
+        strict: true,
+      );
+      if (outlineBlock.isNotEmpty) {
+        blocks.add(outlineBlock);
+      }
+      if (cast.isNotEmpty) {
+        blocks.add(_directorStoryBlock(cast));
+      }
     } else if (ensembleTurn && cast.isNotEmpty) {
       final ensembleBlock = _ensembleBlock(
         cast: cast,
@@ -102,26 +123,46 @@ class StoryPromptAssembler {
       blocks.add(world.block);
     }
 
-    final outlineBlock = _outlineBlock(conversation, advancePlot: advancePlot);
-    if (outlineBlock.isNotEmpty) {
-      blocks.add(outlineBlock);
-    }
+    if (!directorMode) {
+      final outlineBlock = _outlineBlock(
+        conversation,
+        advancePlot: advancePlot,
+      );
+      if (outlineBlock.isNotEmpty) {
+        blocks.add(outlineBlock);
+      }
 
-    final note = conversation.authorNote.trim();
-    if (note.isNotEmpty) {
-      blocks.add('【导演指令 / Author Note】\n${_clip(note, maxAuthorNoteChars)}');
+      final note = conversation.authorNote.trim();
+      if (note.isNotEmpty) {
+        blocks.add(
+          '【导演指令 / Author Note】\n${_clip(note, maxAuthorNoteChars)}',
+        );
+      }
     }
 
     if (advancePlot) {
       blocks.add(
         directorMode
-            ? '【推进情节】请根据当前大纲节拍与导演指令，续写一节完整故事正文。'
-                  '你负责旁白和所有登场角色，按剧情需要安排人物行动与对白；'
-                  '保持角色设定和已有情节连贯，不要让导演成为故事角色；'
-                  '不要剧透后续未到达的大纲节拍；本回合直接输出正文，不要复述指令。'
+            ? '【本回合任务：推进情节】'
+                  '严格依据「硬性导演说明」与「当前大纲节拍」续写一节完整故事正文。'
+                  '你负责旁白和所有登场角色；'
+                  '不得偏离用户约束（文风、禁忌、节奏、视角、禁止事项等）；'
+                  '不得提前完成或剧透后续未到达的大纲节拍；'
+                  '不得让导演成为故事角色或替用户发言；'
+                  '若导演说明与自由发挥冲突，以导演说明为准；'
+                  '本回合直接输出正文，不要复述规则或大纲。'
             : '【推进情节】请根据当前大纲节拍与导演指令，续写下一节叙事。'
                   '保持角色口吻与已有情节连贯；不要剧透后续未到达的大纲节拍；'
                   '本回合直接输出正文，不要复述指令。',
+      );
+    } else if (directorMode) {
+      // Free-form director chat (user typed an instruction, not "下一节").
+      blocks.add(
+        '【本回合任务：执行导演指令】'
+        '用户最新一条消息是导演调度/修改意见，必须执行。'
+        '在遵守硬性导演说明与已有大纲的前提下改写或续写；'
+        '不得无视、弱化或只完成一部分导演要求；'
+        '直接输出故事正文（或导演明确要求的其它形式），不要复述规则。',
       );
     }
 
@@ -141,6 +182,24 @@ class StoryPromptAssembler {
       ],
       worldInfoHits: world.hits,
     );
+  }
+
+  String _directorModeRules({required bool advancePlot}) {
+    final b = StringBuffer()
+      ..writeln('【导演故事模式 · 服从规则】')
+      ..writeln('用户是导演：只提供情节、约束、调度与修改意见，不扮演故事中的任何角色。')
+      ..writeln('你是编剧+旁白+全部角色的演绎者：输出连贯故事正文，不是闲聊助手。')
+      ..writeln('服从优先级（高→低）：')
+      ..writeln('1. 硬性导演说明 / 创作约束与故事原始情节')
+      ..writeln('2. 当前大纲节拍（及用户本轮导演指令）')
+      ..writeln('3. 角色卡与已发生正文的连贯性')
+      ..writeln('4. 世界书等补充设定')
+      ..writeln('冲突时取更高优先级；禁止用“更戏剧化/更有趣”为理由突破约束。')
+      ..writeln('除非导演明确修改，不得擅自改结局、改基调、换主角核心目标。');
+    if (advancePlot) {
+      b.writeln('本回合为节拍推进：只演绎「当前节拍」，不要跳拍。');
+    }
+    return b.toString().trim();
   }
 
   String _characterBlock(CharacterCard? character) {
@@ -171,12 +230,9 @@ class StoryPromptAssembler {
 
   String _directorStoryBlock(List<CharacterCard> cast) {
     final b = StringBuffer()
-      ..writeln('【导演故事模式】')
-      ..writeln('用户是导演，只提供情节要求、调度和修改意见，不扮演故事中的任何角色。')
-      ..writeln('你同时承担编剧、旁白和全部角色的演绎；输出连贯的故事正文，而不是与用户闲聊。')
+      ..writeln('【本故事角色卡】（服从硬性约束的前提下保持一致）')
       ..writeln('角色的身份、动机、性格、关系和说话方式必须前后一致。')
-      ..writeln('除非导演明确修改设定，不得擅自替换角色核心目标或让导演进入故事。')
-      ..writeln('【本故事角色卡】');
+      ..writeln('角色演绎不得突破硬性导演说明；冲突时以导演说明为准。');
     for (final c in cast) {
       b.writeln('— ${c.name}');
       if (c.description.trim().isNotEmpty) {
@@ -295,12 +351,21 @@ class StoryPromptAssembler {
     return (block: b.toString().trim(), hits: List.unmodifiable(hits));
   }
 
-  String _outlineBlock(Conversation conversation, {required bool advancePlot}) {
+  String _outlineBlock(
+    Conversation conversation, {
+    required bool advancePlot,
+    bool strict = false,
+  }) {
     final outline = conversation.outline.trim();
     if (outline.isEmpty && !advancePlot) return '';
 
     final beats = conversation.outlineBeats;
-    final b = StringBuffer()..writeln('【情节大纲】');
+    final b = StringBuffer()
+      ..writeln(
+        strict
+            ? '【情节大纲】（节拍顺序须遵守；本回合只演绎当前节拍）'
+            : '【情节大纲】',
+      );
     if (outline.isNotEmpty) {
       b.writeln(_clip(outline, maxOutlineChars));
     }
@@ -308,9 +373,16 @@ class StoryPromptAssembler {
       final cursor = conversation.plotCursor.clamp(0, beats.length);
       b.writeln();
       if (cursor < beats.length) {
-        b.writeln('当前节拍（#${cursor + 1}/${beats.length}）：${beats[cursor]}');
+        b.writeln(
+          strict
+              ? '★ 当前必须演绎的节拍（#${cursor + 1}/${beats.length}）：${beats[cursor]}'
+              : '当前节拍（#${cursor + 1}/${beats.length}）：${beats[cursor]}',
+        );
+        if (strict && cursor + 1 < beats.length) {
+          b.writeln('（下一拍尚未解锁，禁止提前写出：${beats[cursor + 1]}）');
+        }
       } else {
-        b.writeln('大纲节拍已全部推进完毕（共 ${beats.length} 拍）；请在已有设定下自然收束或自由续写。');
+        b.writeln('大纲节拍已全部推进完毕（共 ${beats.length} 拍）；请在已有设定与硬性约束下自然收束或自由续写。');
       }
       if (cursor > 0) {
         final done = beats.take(cursor).toList();

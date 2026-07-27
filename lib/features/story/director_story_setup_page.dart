@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/story_models.dart';
+import '../../domain/story/director_prose_styles.dart';
 import '../../domain/story/story_ai_assist.dart';
 import '../../state/chat_controller.dart';
 import '../../state/settings_controller.dart';
@@ -45,7 +46,25 @@ class _DirectorStorySetupPageState
   String? _error;
   String? _notice;
 
+  /// Multi-select hard prose styles (日本轻小说 / 文言文 …).
+  final Set<String> _styleIds = {};
+
   bool get _busy => _generating || _starting;
+
+  String _mergedRequirements() => DirectorProseStyle.mergeRequirements(
+    styleIds: _styleIds,
+    freeform: _requirements.text,
+  );
+
+  void _toggleStyle(String id) {
+    setState(() {
+      if (_styleIds.contains(id)) {
+        _styleIds.remove(id);
+      } else {
+        _styleIds.add(id);
+      }
+    });
+  }
 
   @override
   void dispose() {
@@ -100,11 +119,11 @@ class _DirectorStorySetupPageState
     });
 
     try {
-      final requirements = _requirements.text.trim();
+      final requirements = _mergedRequirements();
       final generated = await ready.assist.generateDirectorStory(
         config: ready.config,
         premise: _premise.text.trim(),
-        // Hard creative constraints — not mere "style flavor".
+        // Hard creative constraints — styles + freeform, not mere flavor.
         requirements: requirements.isEmpty ? null : requirements,
         length: '$_beatCount 个连续、具体且可以依次演绎的故事节拍',
         seed: _editorSeed(),
@@ -176,7 +195,7 @@ class _DirectorStorySetupPageState
             ? _premise.text.trim()
             : _title.text.trim(),
         premise: _premise.text.trim(),
-        requirements: _requirements.text.trim(),
+        requirements: _mergedRequirements(),
         cast: [for (final character in draft.characters) character.toCard()],
         outline: outline,
         authorNote: _authorNote.text.trim().isEmpty
@@ -254,6 +273,46 @@ class _DirectorStorySetupPageState
                   validator: (value) =>
                       value == null || value.trim().isEmpty ? '请先输入故事情节' : null,
                 ),
+                const SizedBox(height: 16),
+                Text('强制文风', style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 4),
+                Text(
+                  '可多选；作为硬性约束写入大纲生成与每一节演绎（可与下方自定义要求叠加）。',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Wrap(
+                  key: const ValueKey('director-prose-style-chips'),
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final style in DirectorProseStyle.presets)
+                      FilterChip(
+                        key: ValueKey('director-style-${style.id}'),
+                        selected: _styleIds.contains(style.id),
+                        label: Text(style.label),
+                        tooltip: style.constraint,
+                        onSelected: _busy
+                            ? null
+                            : (_) => _toggleStyle(style.id),
+                      ),
+                  ],
+                ),
+                if (_styleIds.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    '已选：${[
+                      for (final p in DirectorProseStyle.presets)
+                        if (_styleIds.contains(p.id)) p.label,
+                    ].join('、')}',
+                    style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                      color: scheme.primary,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 12),
                 TextFormField(
                   controller: _requirements,
@@ -261,10 +320,10 @@ class _DirectorStorySetupPageState
                   minLines: 2,
                   maxLines: 5,
                   decoration: const InputDecoration(
-                    labelText: '创作要求 / 硬性约束（可选）',
+                    labelText: '其它创作要求 / 硬性约束（可选）',
                     alignLabelWithHint: true,
-                    hintText: '例如：悬疑克制、第三人称、慢热；禁止提前揭晓真相；不要加入超自然元素',
-                    helperText: '会写入导演说明并在每一节演绎时强制遵守',
+                    hintText: '例如：慢热；禁止提前揭晓真相；不要加入超自然元素',
+                    helperText: '与上方文风一并写入导演说明，每一节演绎强制遵守',
                     helperMaxLines: 2,
                   ),
                 ),

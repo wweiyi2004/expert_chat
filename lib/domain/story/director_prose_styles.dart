@@ -1,0 +1,139 @@
+/// Selectable hard prose-style constraints for director mode.
+///
+/// Each preset expands into enforceable instruction text that is merged into
+/// generation prompts and the session author-note.
+class DirectorProseStyle {
+  const DirectorProseStyle({
+    required this.id,
+    required this.label,
+    required this.constraint,
+    this.subtitle = '',
+  });
+
+  final String id;
+  final String label;
+
+  /// Short hint under the chip.
+  final String subtitle;
+
+  /// Full hard-constraint paragraph injected into the story.
+  final String constraint;
+
+  static const noneId = 'none';
+
+  static const presets = <DirectorProseStyle>[
+    DirectorProseStyle(
+      id: 'jp_ln',
+      label: '日本轻小说',
+      subtitle: '轻快对白·角色口癖',
+      constraint:
+          '文风必须接近日本轻小说：句子偏短、节奏明快；大量自然对白与少量动作描写；'
+          '可用轻微吐槽/内心独白，但不要过度网梗堆砌；'
+          '人称以贴近角色视角的第三人称为主（除非导演另有要求）；'
+          '禁止写成论文腔或过度华丽的文言。',
+    ),
+    DirectorProseStyle(
+      id: 'classical_cn',
+      label: '古典章回',
+      subtitle: '说书感·起承转合',
+      constraint:
+          '文风必须接近中国古典章回体白话小说：可用简短场景起笔与收束；'
+          '叙述带说书人的稳重节奏，善用白描与对仗感，但不要强行每段都对偶；'
+          '对话可略文雅，仍需可懂；禁止日轻口癖与现代网络用语。',
+    ),
+    DirectorProseStyle(
+      id: 'wenyan',
+      label: '文言文',
+      subtitle: '文言叙事',
+      constraint:
+          '全文（含对白，除非导演另示）必须以浅近文言文书写：用词典雅凝练，句式偏短；'
+          '可适当用「曰」「遂」「乃」等，但避免生造难懂僻字堆砌；'
+          '禁止白话口语、网络用语与日轻吐槽腔。',
+    ),
+    DirectorProseStyle(
+      id: 'web_novel',
+      label: '现代网文',
+      subtitle: '强钩子·爽点节奏',
+      constraint:
+          '文风接近当代网络小说：段落短、信息密度高、章末可留钩子；'
+          '冲突推进明确，少空泛风景描写；对白生活化；'
+          '可有适度爽感，但不得违背导演的硬性禁忌与慢热/克制要求。',
+    ),
+    DirectorProseStyle(
+      id: 'wuxia',
+      label: '武侠',
+      subtitle: '江湖气·招式意象',
+      constraint:
+          '文风偏武侠：动作带招式意象与空间感，人物有江湖气与规矩感；'
+          '可用适度古典词汇，但主体仍为通顺现代白话（非纯文言）；'
+          '避免日轻萌系口癖与科幻术语，除非导演明确要求混搭。',
+    ),
+    DirectorProseStyle(
+      id: 'epic_fantasy',
+      label: '史诗奇幻',
+      subtitle: '宏大场景·庄重',
+      constraint:
+          '文风偏西方史诗奇幻中译调性：场景与世界观可略宏大，语气庄重；'
+          '专名保持一致；少用现代口语与网络梗；'
+          '描写可稍丰，但每节仍须推进当前大纲节拍，禁止无目的的风光巡礼。',
+    ),
+    DirectorProseStyle(
+      id: 'hard_sf',
+      label: '硬核科幻',
+      subtitle: '技术细节·克制',
+      constraint:
+          '文风偏硬科幻：技术与设定表述力求自洽，少玄学比喻；'
+          '情绪克制，逻辑优先；对白可冷静专业；'
+          '禁止无依据的魔法化解决与日轻喜剧节奏，除非导演允许。',
+    ),
+    DirectorProseStyle(
+      id: 'realism',
+      label: '现实主义',
+      subtitle: '生活质感·克制',
+      constraint:
+          '文风现实主义：细节生活化、因果可信，避免夸张戏剧与超自然；'
+          '心理与对话贴近真实人物；少用华丽辞藻与类型文套路开挂。',
+    ),
+    DirectorProseStyle(
+      id: 'mystery_cool',
+      label: '克制悬疑',
+      subtitle: '信息控制·不剧透',
+      constraint:
+          '文风克制悬疑：信息投放有控制，多暗示少直说；'
+          '禁止提前揭晓核心真相与凶手；氛围冷感，避免无意义的血腥堆砌与尬萌。',
+    ),
+    DirectorProseStyle(
+      id: 'first_person',
+      label: '第一人称',
+      subtitle: '限知视角',
+      constraint:
+          '必须使用第一人称叙事（「我」）；仅能写叙述者所知所见所感；'
+          '禁止全知视角跳转与上帝旁白；其他角色内心只能通过观察与对白暗示。',
+    ),
+  ];
+
+  static DirectorProseStyle? byId(String id) {
+    for (final p in presets) {
+      if (p.id == id) return p;
+    }
+    return null;
+  }
+
+  /// Merge selected style constraints with free-form requirements.
+  static String mergeRequirements({
+    required Iterable<String> styleIds,
+    String freeform = '',
+  }) {
+    final parts = <String>[];
+    for (final id in styleIds) {
+      final style = byId(id);
+      if (style == null) continue;
+      parts.add('【强制文风·${style.label}】\n${style.constraint}');
+    }
+    final extra = freeform.trim();
+    if (extra.isNotEmpty) {
+      parts.add('【其它硬性要求】\n$extra');
+    }
+    return parts.join('\n\n');
+  }
+}

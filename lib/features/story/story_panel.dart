@@ -11,6 +11,24 @@ import '../../state/chat_controller.dart';
 import '../../state/world_info_controller.dart';
 import 'studio_page.dart';
 
+/// Preserve structured setup constraints when the free-form editor is cleared.
+///
+/// Kept as a pure function so the accidental-wipe behavior can be regression
+/// tested without pumping the full story panel.
+String protectStoryAuthorNote({
+  required String previous,
+  required String edited,
+}) {
+  final prev = previous.trim();
+  final next = edited.trim();
+  if (prev.isEmpty) return edited;
+  final protectedHeader = RegExp(r'【(?:硬性[^】]*|故事原始情节)】');
+  if (!protectedHeader.hasMatch(prev)) return edited;
+  if (protectedHeader.hasMatch(next)) return edited;
+  if (next.isEmpty) return prev;
+  return '$prev\n\n【情节面板补充】\n$next';
+}
+
 /// Bottom sheet host for story outline / author note / world-info picks.
 Future<void> showStoryPanel(BuildContext context, Conversation convo) {
   return showModalBottomSheet<void>(
@@ -122,7 +140,7 @@ class _StoryPanelBodyState extends ConsumerState<StoryPanelBody> {
   void _flushSave() {
     if (!_inited) return;
     final edited = _authorNote.text;
-    final note = _protectHardAuthorNote(
+    final note = protectStoryAuthorNote(
       previous: _baselineAuthorNote,
       edited: edited,
     );
@@ -155,23 +173,6 @@ class _StoryPanelBodyState extends ConsumerState<StoryPanelBody> {
     }
   }
 
-  /// If the session started with a hard-constraint block and the editor wiped
-  /// it, re-attach the original hard section so setup claims stay enforceable.
-  static String _protectHardAuthorNote({
-    required String previous,
-    required String edited,
-  }) {
-    final prev = previous.trim();
-    final next = edited.trim();
-    if (prev.isEmpty) return edited;
-    final hardHeader = RegExp(r'【硬性');
-    if (!hardHeader.hasMatch(prev)) return edited;
-    if (hardHeader.hasMatch(next)) return edited;
-    // User cleared or replaced hard constraints — keep original hard block on top.
-    if (next.isEmpty) return prev;
-    return '$prev\n\n【情节面板补充】\n$next';
-  }
-
   void _toggleWi(String id, bool? selected) {
     setState(() {
       if (selected == true) {
@@ -189,7 +190,7 @@ class _StoryPanelBodyState extends ConsumerState<StoryPanelBody> {
     }
     Navigator.of(
       context,
-    // Tab 2 = 世界书（0 开始 · 1 角色 · 2 世界书）
+      // Tab 2 = 世界书（0 开始 · 1 角色 · 2 世界书）
     ).push(MaterialPageRoute(builder: (_) => const StudioPage(initialTab: 2)));
   }
 

@@ -73,6 +73,24 @@ class FakeLlmProvider implements LlmProvider {
   }
 }
 
+class DelayedFailingLlmProvider implements LlmProvider {
+  final entered = Completer<void>();
+  final gate = Completer<void>();
+
+  @override
+  Stream<ChatChunk> streamChat({
+    required LlmConfig config,
+    required List<LlmRequestMessage> messages,
+    List<ToolSpec>? tools,
+    bool? thinking,
+    CancelToken? cancelToken,
+  }) async* {
+    if (!entered.isCompleted) entered.complete();
+    await gate.future;
+    throw Exception('simulated stream failure');
+  }
+}
+
 class InMemoryRepo implements ConversationRepository {
   List<Conversation> store = [];
   @override
@@ -122,9 +140,12 @@ class FailingSaveRepo extends InMemoryRepo {
 
 /// Media provider that returns a canned image without any network I/O.
 class FakeMediaProvider extends OpenAiCompatibleMediaProvider {
+  FakeMediaProvider({this.failuresRemaining = 0});
+
   String? lastPrompt;
   final List<String> prompts = [];
   List<int>? lastReferenceBytes;
+  int failuresRemaining;
 
   @override
   Future<GeneratedImage> generateImage({
@@ -139,6 +160,10 @@ class FakeMediaProvider extends OpenAiCompatibleMediaProvider {
     lastPrompt = prompt;
     prompts.add(prompt);
     lastReferenceBytes = referenceImageBytes;
+    if (failuresRemaining > 0) {
+      failuresRemaining--;
+      throw Exception('simulated image failure');
+    }
     return const GeneratedImage(base64: 'QUFBQQ==');
   }
 }
@@ -290,7 +315,7 @@ class DelayedReadySettings extends SettingsController {
 
 /// In-memory Drift DB for story repos in unit tests (no path_provider).
 ProviderContainer _container(
-  FakeLlmProvider llm,
+  LlmProvider llm,
   InMemoryRepo repo, {
   ToolEngineFactory? toolEngineFactory,
   SettingsController Function() settingsBuilder = FakeSettings.new,
@@ -1069,6 +1094,39 @@ void main() {
     expect(convo.activePath.any((m) => m.content == '（推进情节）'), isTrue);
   });
 
+  test('regenerating an advanced beat keeps committed plot progress', () async {
+    final llm = FakeLlmProvider(
+      const [],
+      scriptedChunks: const [
+        [ChatChunk(contentDelta: '第一拍正文')],
+        [ChatChunk(contentDelta: '第一拍改写')],
+        [ChatChunk(contentDelta: '第二拍正文')],
+      ],
+    );
+    final c = _container(llm, InMemoryRepo());
+    addTearDown(c.dispose);
+    final ctrl = c.read(chatControllerProvider.notifier);
+    await c.read(chatControllerProvider.future);
+    await ctrl.newStoryConversation(
+      CharacterCard(name: '作者', firstMes: '开场'),
+      worldInfoIds: const [],
+    );
+    ctrl.updateStoryMeta(outline: '- 相遇\n- 冲突\n- 和解', plotCursor: 0);
+
+    await ctrl.advancePlot();
+    expect(c.read(chatControllerProvider).value!.current!.plotCursor, 1);
+
+    await ctrl.regenerate();
+    var convo = c.read(chatControllerProvider).value!.current!;
+    expect(convo.plotCursor, 1);
+    expect(convo.activePath.last.content, '第一拍改写');
+
+    await ctrl.advancePlot();
+    convo = c.read(chatControllerProvider).value!.current!;
+    expect(convo.plotCursor, 2);
+    expect(convo.activePath.last.content, '第二拍正文');
+  });
+
   test(
     'newEnsembleConversation requires two characters and sets cast',
     () async {
@@ -1161,6 +1219,38 @@ void main() {
       isEmpty,
     );
   });
+
+  test(
+    'a background conversation keeps its scoped error when revisited',
+    () async {
+      final llm = DelayedFailingLlmProvider();
+      final c = _container(llm, InMemoryRepo());
+      addTearDown(c.dispose);
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
+      final failedId = c.read(chatControllerProvider).value!.currentId!;
+
+      final send = ctrl.sendMessage('this turn will fail');
+      await llm.entered.future;
+      ctrl.newConversation();
+      final otherId = c.read(chatControllerProvider).value!.currentId!;
+      expect(otherId, isNot(failedId));
+
+      llm.gate.complete();
+      await send;
+      var state = c.read(chatControllerProvider).value!;
+      expect(state.currentId, otherId);
+      expect(state.errorConvoId, failedId);
+      expect(state.errorVisibleFor(otherId), isFalse);
+
+      ctrl.selectConversation(failedId);
+      state = c.read(chatControllerProvider).value!;
+      expect(state.currentId, failedId);
+      expect(state.error, contains('simulated stream failure'));
+      expect(state.errorVisibleFor(failedId), isTrue);
+      expect(state.retryOperation?.conversationId, failedId);
+    },
+  );
 
   test(
     'deleteProfile keeps search and system prompt when last profile is removed',
@@ -1436,24 +1526,20 @@ void main() {
     );
     final json = msg.toJson();
     final restored = ChatMessage.fromJson(json);
-    expect(restored.searchActivities.single.status,
-        SearchActivityStatus.failed);
+    expect(
+      restored.searchActivities.single.status,
+      SearchActivityStatus.failed,
+    );
   });
 
   test('ChatMessage copyWith merges searchActivities', () {
-    final a1 = SearchActivity(
-      kind: SearchActivityKind.search,
-      query: 'q1',
-    );
+    final a1 = SearchActivity(kind: SearchActivityKind.search, query: 'q1');
     final msg = ChatMessage(
       role: MessageRole.assistant,
       content: '',
       searchActivities: [a1],
     );
-    final a2 = a1.copyWith(
-      status: SearchActivityStatus.done,
-      resultCount: 2,
-    );
+    final a2 = a1.copyWith(status: SearchActivityStatus.done, resultCount: 2);
     final updated = msg.copyWith(searchActivities: [a2]);
     expect(updated.searchActivities, hasLength(1));
     expect(updated.searchActivities[0].status, SearchActivityStatus.done);
@@ -1665,36 +1751,43 @@ void main() {
     },
   );
 
-  test('editMessage of a plain turn does not route to the vision model', () async {
-    final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'ok')]);
-    final c = _container(
-      llm,
-      InMemoryRepo(),
-      settingsBuilder: FakeVisionSettings.new,
-    );
-    addTearDown(c.dispose);
-    final ctrl = c.read(chatControllerProvider.notifier);
-    await c.read(chatControllerProvider.future);
+  test(
+    'editMessage of a plain turn does not route to the vision model',
+    () async {
+      final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'ok')]);
+      final c = _container(
+        llm,
+        InMemoryRepo(),
+        settingsBuilder: FakeVisionSettings.new,
+      );
+      addTearDown(c.dispose);
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
 
-    await ctrl.sendMessage('第一句纯文本');
-    await ctrl.sendMessage(
-      '看看这张图',
-      attachments: [
-        Attachment(name: 'pic.png', mimeType: 'image/png', imageBase64: 'AAAA'),
-      ],
-    );
-    expect(llm.lastConfig!.apiKey, 'sk-vision-test');
+      await ctrl.sendMessage('第一句纯文本');
+      await ctrl.sendMessage(
+        '看看这张图',
+        attachments: [
+          Attachment(
+            name: 'pic.png',
+            mimeType: 'image/png',
+            imageBase64: 'AAAA',
+          ),
+        ],
+      );
+      expect(llm.lastConfig!.apiKey, 'sk-vision-test');
 
-    // Editing the first (plain) turn discards the image turn; the regenerated
-    // branch contains no images, so it must use the plain chat credentials.
-    final convo = c.read(chatControllerProvider).value!.current!;
-    final firstUser = convo.activePath.firstWhere(
-      (m) => m.role == MessageRole.user,
-    );
-    await ctrl.editMessage(firstUser.id, '改写第一句');
+      // Editing the first (plain) turn discards the image turn; the regenerated
+      // branch contains no images, so it must use the plain chat credentials.
+      final convo = c.read(chatControllerProvider).value!.current!;
+      final firstUser = convo.activePath.firstWhere(
+        (m) => m.role == MessageRole.user,
+      );
+      await ctrl.editMessage(firstUser.id, '改写第一句');
 
-    expect(llm.lastConfig!.apiKey, 'sk-test');
-  });
+      expect(llm.lastConfig!.apiKey, 'sk-test');
+    },
+  );
 
   test('deleteConversation drops its context report', () async {
     final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'ok')]);
@@ -1740,18 +1833,10 @@ void main() {
     expect(repo.store, isNotEmpty);
   });
 
-  test('generateImage with deepThink optimizes prompt before media call', () async {
-    final media = FakeMediaProvider();
-    final llm = FakeLlmProvider([
-      const ChatChunk(reasoningDelta: '先补光影…'),
-      const ChatChunk(
-        contentDelta:
-            'a fluffy orange cat sitting on a windowsill, soft morning light, '
-            'photorealistic, shallow depth of field',
-      ),
-    ]);
+  test('failed pure image generation retries the image operation', () async {
+    final media = FakeMediaProvider(failuresRemaining: 1);
     final c = _container(
-      llm,
+      FakeLlmProvider(const []),
       InMemoryRepo(),
       settingsBuilder: FakeImageGenSettings.new,
       mediaProvider: media,
@@ -1760,23 +1845,72 @@ void main() {
     final ctrl = c.read(chatControllerProvider.notifier);
     await c.read(chatControllerProvider.future);
 
-    ctrl.toggleDeepThink();
-    expect(c.read(chatControllerProvider).value!.deepThink, isTrue);
+    await ctrl.generateImage('画一只猫');
+    var state = c.read(chatControllerProvider).value!;
+    expect(state.error, contains('simulated image failure'));
+    expect(state.retryOperation?.kind, ChatRetryKind.image);
+    expect(state.current!.activePath.last.attachments, isEmpty);
 
-    final ok = await ctrl.generateImage('画一只猫');
-    expect(ok, isTrue);
-    expect(media.lastPrompt, contains('fluffy orange cat'));
-    expect(media.lastPrompt, isNot(equals('画一只猫')));
-    expect(llm.callCount, 1);
-    expect(llm.lastThinking, isTrue);
-    expect(llm.lastConfig?.model, KnownModels.reasoner);
-
-    final assistant = c.read(chatControllerProvider).value!.current!.activePath.last;
-    expect(assistant.kind, MessageKind.generatedImage);
-    expect(assistant.attachments, isNotEmpty);
-    expect(assistant.reasoning, contains('先补光影'));
-    expect(assistant.content, contains('深度思考优化后的提示词'));
+    await ctrl.retryLast();
+    state = c.read(chatControllerProvider).value!;
+    expect(media.prompts, hasLength(2));
+    expect(state.error, isNull);
+    expect(state.retryOperation, isNull);
+    expect(state.current!.activePath.last.kind, MessageKind.generatedImage);
+    expect(state.current!.activePath.last.attachments, isNotEmpty);
+    expect(
+      state.current!.messages.where(
+        (message) => message.kind == MessageKind.generatedImage,
+      ),
+      hasLength(2),
+    );
   });
+
+  test(
+    'generateImage with deepThink optimizes prompt before media call',
+    () async {
+      final media = FakeMediaProvider();
+      final llm = FakeLlmProvider([
+        const ChatChunk(reasoningDelta: '先补光影…'),
+        const ChatChunk(
+          contentDelta:
+              'a fluffy orange cat sitting on a windowsill, soft morning light, '
+              'photorealistic, shallow depth of field',
+        ),
+      ]);
+      final c = _container(
+        llm,
+        InMemoryRepo(),
+        settingsBuilder: FakeImageGenSettings.new,
+        mediaProvider: media,
+      );
+      addTearDown(c.dispose);
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
+
+      ctrl.toggleDeepThink();
+      expect(c.read(chatControllerProvider).value!.deepThink, isTrue);
+
+      final ok = await ctrl.generateImage('画一只猫');
+      expect(ok, isTrue);
+      expect(media.lastPrompt, contains('fluffy orange cat'));
+      expect(media.lastPrompt, isNot(equals('画一只猫')));
+      expect(llm.callCount, 1);
+      expect(llm.lastThinking, isTrue);
+      expect(llm.lastConfig?.model, KnownModels.reasoner);
+
+      final assistant = c
+          .read(chatControllerProvider)
+          .value!
+          .current!
+          .activePath
+          .last;
+      expect(assistant.kind, MessageKind.generatedImage);
+      expect(assistant.attachments, isNotEmpty);
+      expect(assistant.reasoning, contains('先补光影'));
+      expect(assistant.content, contains('深度思考优化后的提示词'));
+    },
+  );
 
   test('generateImage without deepThink sends the raw prompt', () async {
     final media = FakeMediaProvider();
@@ -1819,10 +1953,7 @@ void main() {
       sizeBytes: refBytes.length,
       imageBase64: base64Encode(refBytes),
     );
-    final ok = await ctrl.generateImage(
-      '改成赛博朋克风格',
-      referenceImages: [ref],
-    );
+    final ok = await ctrl.generateImage('改成赛博朋克风格', referenceImages: [ref]);
     expect(ok, isTrue);
     expect(media.lastPrompt, contains('改成赛博朋克风格'));
     expect(media.lastPrompt, contains('safe for work'));
@@ -1840,7 +1971,10 @@ void main() {
     final ctrl = c.read(chatControllerProvider.notifier);
     await c.read(chatControllerProvider.future);
 
-    expect(c.read(chatControllerProvider).value!.imageGenMode, ImageGenMode.off);
+    expect(
+      c.read(chatControllerProvider).value!.imageGenMode,
+      ImageGenMode.off,
+    );
     ctrl.toggleImageGenMode();
     expect(
       c.read(chatControllerProvider).value!.imageGenMode,
@@ -1852,14 +1986,15 @@ void main() {
       ImageGenMode.always,
     );
     ctrl.toggleImageGenMode();
-    expect(c.read(chatControllerProvider).value!.imageGenMode, ImageGenMode.off);
+    expect(
+      c.read(chatControllerProvider).value!.imageGenMode,
+      ImageGenMode.off,
+    );
   });
 
   test('配图·强制 pre-generates one SFW image on the assistant turn', () async {
     final media = FakeMediaProvider();
-    final llm = FakeLlmProvider([
-      const ChatChunk(contentDelta: '这是文字回复'),
-    ]);
+    final llm = FakeLlmProvider([const ChatChunk(contentDelta: '这是文字回复')]);
     final c = _container(
       llm,
       InMemoryRepo(),
@@ -1882,52 +2017,61 @@ void main() {
     expect(media.prompts, hasLength(1));
     expect(media.lastPrompt, contains('safe for work'));
 
-    final assistant =
-        c.read(chatControllerProvider).value!.current!.activePath.last;
+    final assistant = c
+        .read(chatControllerProvider)
+        .value!
+        .current!
+        .activePath
+        .last;
     expect(assistant.role, MessageRole.assistant);
     expect(assistant.attachments, hasLength(1));
     expect(assistant.content, contains('这是文字回复'));
   });
 
-  test('配图·强制 on character chat builds portrait without R18 user text', () async {
-    final media = FakeMediaProvider();
-    final llm = FakeLlmProvider([
-      const ChatChunk(contentDelta: '……'),
-    ]);
-    final c = _container(
-      llm,
-      InMemoryRepo(),
-      settingsBuilder: FakeImageGenSettings.new,
-      mediaProvider: media,
-    );
-    addTearDown(c.dispose);
-    final ctrl = c.read(chatControllerProvider.notifier);
-    await c.read(chatControllerProvider.future);
+  test(
+    '配图·强制 on character chat builds portrait without R18 user text',
+    () async {
+      final media = FakeMediaProvider();
+      final llm = FakeLlmProvider([const ChatChunk(contentDelta: '……')]);
+      final c = _container(
+        llm,
+        InMemoryRepo(),
+        settingsBuilder: FakeImageGenSettings.new,
+        mediaProvider: media,
+      );
+      addTearDown(c.dispose);
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
 
-    final card = CharacterCard(
-      name: '苏晚',
-      description: '青衣长发，手持折扇',
-      firstMes: '你好',
-    );
-    // Portrait resolution loads the card from the character library.
-    await c.read(characterRepositoryProvider).save(card);
-    await ctrl.newStoryConversation(card, worldInfoIds: const []);
-    ctrl.toggleImageGenMode();
-    ctrl.toggleImageGenMode(); // always
+      final card = CharacterCard(
+        name: '苏晚',
+        description: '青衣长发，手持折扇',
+        firstMes: '你好',
+      );
+      // Portrait resolution loads the card from the character library.
+      await c.read(characterRepositoryProvider).save(card);
+      await ctrl.newStoryConversation(card, worldInfoIds: const []);
+      ctrl.toggleImageGenMode();
+      ctrl.toggleImageGenMode(); // always
 
-    await ctrl.sendMessage('他们激烈做爱，场面不堪入目，继续写');
-    expect(media.prompts, hasLength(1));
-    final prompt = media.lastPrompt!;
-    expect(prompt, contains('苏晚'));
-    expect(prompt, contains('青衣长发'));
-    expect(prompt, isNot(contains('做爱')));
-    expect(prompt, isNot(contains('不堪入目')));
-    expect(prompt, contains('safe for work'));
+      await ctrl.sendMessage('他们激烈做爱，场面不堪入目，继续写');
+      expect(media.prompts, hasLength(1));
+      final prompt = media.lastPrompt!;
+      expect(prompt, contains('苏晚'));
+      expect(prompt, contains('青衣长发'));
+      expect(prompt, isNot(contains('做爱')));
+      expect(prompt, isNot(contains('不堪入目')));
+      expect(prompt, contains('safe for work'));
 
-    final assistant =
-        c.read(chatControllerProvider).value!.current!.activePath.last;
-    expect(assistant.attachments, hasLength(1));
-  });
+      final assistant = c
+          .read(chatControllerProvider)
+          .value!
+          .current!
+          .activePath
+          .last;
+      expect(assistant.attachments, hasLength(1));
+    },
+  );
 
   test(
     'regenerate creates a new assistant branch and switches between them',
@@ -2066,7 +2210,7 @@ void main() {
       expect(c.read(chatControllerProvider).value!.deepThink, isTrue);
     });
 
-    testWidgets('error banner with 重试 appears when the API key is missing', (
+    testWidgets('preflight API-key error does not offer an invalid retry', (
       tester,
     ) async {
       final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'x')]);
@@ -2084,7 +2228,7 @@ void main() {
 
       expect(llm.callCount, 0); // never reached the LLM
       expect(find.text('请先在设置中填写 API Key。'), findsOneWidget);
-      expect(find.text('重试'), findsOneWidget);
+      expect(find.text('重试'), findsNothing);
     });
   });
 }

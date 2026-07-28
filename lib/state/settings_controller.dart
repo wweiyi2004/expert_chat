@@ -221,12 +221,12 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     final profileRead = _readProfiles(prefs);
     List<ProviderProfile> profiles = profileRead.profiles;
     String? activeId = prefs.getString(_kActiveProfile);
+    final legacyKey = await secure.read(key: _kLegacyApiKeySecure);
 
     // First run / migration from the M1 single-config layout.
     // Never treat a *corrupt* profiles blob as first-run empty — that would
     // overwrite the user's JSON with a default preset.
     if (profiles.isEmpty && !profileRead.corrupt) {
-      final legacyKey = await secure.read(key: _kLegacyApiKeySecure);
       final legacyBaseUrl = prefs.getString(_kLegacyBaseUrl);
       if (legacyBaseUrl != null || legacyKey != null) {
         final migrated = ProviderProfile(
@@ -242,13 +242,6 @@ class SettingsController extends AsyncNotifier<SettingsState> {
             key: _secureKeyForProfile(migrated.id),
             value: legacyKey,
           );
-          // Drop the M1 key so we do not keep two copies of the secret.
-          final verify = await secure.read(
-            key: _secureKeyForProfile(migrated.id),
-          );
-          if (verify == legacyKey) {
-            await secure.delete(key: _kLegacyApiKeySecure);
-          }
         }
       } else {
         profiles = [ProviderPreset.presets.first.toProfile()];
@@ -276,6 +269,26 @@ class SettingsController extends AsyncNotifier<SettingsState> {
             p,
       ];
       await _writeProfiles(prefs, profiles);
+    }
+
+    // Old releases copied the M1 secret into a profile but left `llm_api_key`
+    // behind. Run cleanup for already-migrated installations too, not only
+    // inside the first-run branch above. Delete only after finding a verified
+    // profile copy, and preserve it when profile JSON itself is corrupt.
+    if (!profileRead.corrupt && legacyKey != null && legacyKey.isNotEmpty) {
+      var copied = false;
+      for (final profile in profiles) {
+        final profileKey = await secure.read(
+          key: _secureKeyForProfile(profile.id),
+        );
+        if (profileKey == legacyKey) {
+          copied = true;
+          break;
+        }
+      }
+      if (copied) {
+        await secure.delete(key: _kLegacyApiKeySecure);
+      }
     }
 
     activeId ??= profiles.first.id;
@@ -312,12 +325,16 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       ),
       searchApiKey: searchApiKey,
       searchBrainModel: prefs.getString(_kSearchBrainModel),
-      searchMaxRounds: (prefs.getInt(_kSearchMaxRounds) ??
-              kDefaultSearchMaxRounds)
-          .clamp(kMinSearchMaxRounds, kMaxSearchMaxRounds),
-      searchMaxResults: (prefs.getInt(_kSearchMaxResults) ??
-              kDefaultSearchMaxResults)
-          .clamp(kMinSearchMaxResults, kMaxSearchMaxResults),
+      searchMaxRounds:
+          (prefs.getInt(_kSearchMaxRounds) ?? kDefaultSearchMaxRounds).clamp(
+            kMinSearchMaxRounds,
+            kMaxSearchMaxRounds,
+          ),
+      searchMaxResults:
+          (prefs.getInt(_kSearchMaxResults) ?? kDefaultSearchMaxResults).clamp(
+            kMinSearchMaxResults,
+            kMaxSearchMaxResults,
+          ),
       systemPrompt: prefs.getString(_kSystemPrompt) ?? '',
       ui: _readUiPrefs(prefs),
       visionApi: _readMediaApi(prefs, _kVisionApi),

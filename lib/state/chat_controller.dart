@@ -63,6 +63,36 @@ extension ImageGenModeInfo on ImageGenMode {
   };
 }
 
+/// Exact operation represented by an error banner's retry action.
+///
+/// A transcript alone is not enough to infer this safely: pure image turns,
+/// ensemble turns and plot rewrites all need different replay semantics.
+enum ChatRetryKind { regenerate, image, ensemble }
+
+class ChatRetryOperation {
+  const ChatRetryOperation({
+    required this.kind,
+    required this.conversationId,
+    required this.assistantMessageId,
+    this.promptPlotCursor,
+    this.commitPlotAdvance = false,
+    this.ensembleSpeakerId,
+  });
+
+  final ChatRetryKind kind;
+  final String conversationId;
+  final String assistantMessageId;
+
+  /// Story cursor used only while assembling the retry prompt.
+  final int? promptPlotCursor;
+
+  /// Whether a successful retry should commit one plot beat.
+  final bool commitPlotAdvance;
+
+  /// Speaker to preserve when retrying an ensemble turn.
+  final String? ensembleSpeakerId;
+}
+
 /// Per-user-turn budget: dialogue may produce at most one image.
 class _TurnImageBudget {
   int used = 0;
@@ -83,6 +113,7 @@ class ChatState {
     this.contextReports = const {},
     this.error,
     this.errorConvoId,
+    this.retryOperation,
   });
 
   final List<Conversation> conversations;
@@ -116,6 +147,9 @@ class ChatState {
   /// settings-style errors that apply regardless of selection.
   final String? errorConvoId;
 
+  /// Exact failed operation, if the current error can be safely retried.
+  final ChatRetryOperation? retryOperation;
+
   /// Whether [error] should be shown for the currently selected conversation.
   bool errorVisibleFor(String? convoId) {
     if (error == null) return false;
@@ -142,22 +176,36 @@ class ChatState {
     Map<String, ContextWindowReport>? contextReports,
     Object? error = _sentinel,
     Object? errorConvoId = _sentinel,
+    Object? retryOperation = _sentinel,
   }) {
-    final nextError = identical(error, _sentinel) ? this.error : error as String?;
+    final nextError = identical(error, _sentinel)
+        ? this.error
+        : error as String?;
     final String? nextErrorConvoId;
+    final ChatRetryOperation? nextRetryOperation;
     if (identical(error, _sentinel)) {
       nextErrorConvoId = identical(errorConvoId, _sentinel)
           ? this.errorConvoId
           : errorConvoId as String?;
+      nextRetryOperation = identical(retryOperation, _sentinel)
+          ? this.retryOperation
+          : retryOperation as ChatRetryOperation?;
     } else if (nextError == null) {
       // Clearing the message always clears the scope.
       nextErrorConvoId = null;
+      nextRetryOperation = null;
     } else if (identical(errorConvoId, _sentinel)) {
       // New error without an explicit scope → global (settings / setup).
       // Generation failures must pass [errorConvoId] via [_setScopedError].
       nextErrorConvoId = null;
+      nextRetryOperation = identical(retryOperation, _sentinel)
+          ? null
+          : retryOperation as ChatRetryOperation?;
     } else {
       nextErrorConvoId = errorConvoId as String?;
+      nextRetryOperation = identical(retryOperation, _sentinel)
+          ? null
+          : retryOperation as ChatRetryOperation?;
     }
     return ChatState(
       conversations: conversations ?? this.conversations,
@@ -172,6 +220,7 @@ class ChatState {
       contextReports: contextReports ?? this.contextReports,
       error: nextError,
       errorConvoId: nextErrorConvoId,
+      retryOperation: nextRetryOperation,
     );
   }
 
@@ -314,11 +363,16 @@ class ChatController extends AsyncNotifier<ChatState> {
   void _set(ChatState next) => state = AsyncData(next);
 
   /// Error banner scoped to a conversation (in-flight stream or current).
-  void _setScopedError(String message, {String? convoId}) {
+  void _setScopedError(
+    String message, {
+    String? convoId,
+    ChatRetryOperation? retryOperation,
+  }) {
     _set(
       _s.copyWith(
         error: message,
         errorConvoId: convoId ?? _s.streamingConvoId ?? _s.currentId,
+        retryOperation: retryOperation,
       ),
     );
   }
@@ -327,6 +381,32 @@ class ChatController extends AsyncNotifier<ChatState> {
   List<Conversation> _replace(Conversation updated) => [
     for (final c in _s.conversations) c.id == updated.id ? updated : c,
   ];
+
+  /// Root-to-node path across any branch, used to retry the exact failed turn
+  /// even if the user briefly switched branches before pressing retry.
+  List<ChatMessage> _pathToMessage(Conversation convo, String messageId) {
+    final byId = {for (final m in convo.messages) m.id: m};
+    final reversed = <ChatMessage>[];
+    final seen = <String>{};
+    ChatMessage? current = byId[messageId];
+    while (current != null && seen.add(current.id)) {
+      reversed.add(current);
+      final parentId = current.parentId;
+      current = parentId == null ? null : byId[parentId];
+    }
+    return reversed.reversed.toList();
+  }
+
+  Map<String, String> _activatePath(
+    Map<String, String> current,
+    List<ChatMessage> path,
+  ) {
+    final next = Map<String, String>.of(current);
+    for (final message in path) {
+      next[message.parentId ?? kRootKey] = message.id;
+    }
+    return next;
+  }
 
   void newConversation() {
     final fresh = Conversation();
@@ -621,9 +701,7 @@ class ChatController extends AsyncNotifier<ChatState> {
   /// User bubbles that mean "advance the outline", including director cues.
   static bool isPlotAdvanceUserContent(String content) {
     final c = content.trim();
-    return c == '（推进情节）' ||
-        c == '（导演：继续下一节）' ||
-        c == '（导演：开始第一节）';
+    return c == '（推进情节）' || c == '（导演：继续下一节）' || c == '（导演：开始第一节）';
   }
 
   /// One AI line from the next cast member (round-robin).
@@ -710,7 +788,14 @@ class ChatController extends AsyncNotifier<ChatState> {
   }
 
   void selectConversation(String id) {
-    _set(_s.copyWith(currentId: id, error: null));
+    // A failure that belongs to another conversation stays parked until the
+    // user returns to it. Clearing it here made background failures impossible
+    // to discover: hidden on B, then erased while selecting A.
+    if (_s.error != null && _s.errorConvoId != null) {
+      _set(_s.copyWith(currentId: id));
+    } else {
+      _set(_s.copyWith(currentId: id, error: null));
+    }
   }
 
   /// Toggle the "深度思考" switch shown next to the composer.
@@ -1028,29 +1113,59 @@ class ChatController extends AsyncNotifier<ChatState> {
 
   /// Regenerate the last assistant reply as a NEW branch (the previous reply is
   /// kept and can be switched back to).
-  Future<void> regenerate() async {
+  Future<void> regenerate({ChatRetryOperation? retryOperation}) async {
     if (_s.isStreaming || _starting) return;
     final convo = _s.current;
     if (convo == null) return;
-    final path = convo.activePath;
-    final lastUser = path.lastIndexWhere((m) => m.role == MessageRole.user);
-    if (lastUser < 0) return;
-    final userMsg = path[lastUser];
+
+    ChatMessage? failedAssistant;
+    List<ChatMessage> pathToUser;
+    ChatMessage userMsg;
+    if (retryOperation != null) {
+      if (retryOperation.kind != ChatRetryKind.regenerate ||
+          retryOperation.conversationId != convo.id) {
+        return;
+      }
+      for (final message in convo.messages) {
+        if (message.id == retryOperation.assistantMessageId &&
+            message.role == MessageRole.assistant) {
+          failedAssistant = message;
+          break;
+        }
+      }
+      final parentId = failedAssistant?.parentId;
+      if (parentId == null) return;
+      final path = _pathToMessage(convo, parentId);
+      if (path.isEmpty || path.last.role != MessageRole.user) return;
+      pathToUser = path;
+      userMsg = path.last;
+    } else {
+      final path = convo.activePath;
+      final lastUser = path.lastIndexWhere((m) => m.role == MessageRole.user);
+      if (lastUser < 0) return;
+      userMsg = path[lastUser];
+      pathToUser = path.take(lastUser + 1).toList();
+      failedAssistant =
+          lastUser + 1 < path.length &&
+              path[lastUser + 1].role == MessageRole.assistant
+          ? path[lastUser + 1]
+          : null;
+    }
 
     // Plot-advance turns must keep advancePlot prompt semantics. If the first
-    // attempt already succeeded, plotCursor was incremented — rewrite the
-    // previous beat and do not commit again.
+    // attempt already succeeded, keep the persisted cursor and only override
+    // the cursor used to assemble this prompt. Mutating the conversation itself
+    // here made a successful rewrite permanently roll progress back one beat.
     final advanceCue = isPlotAdvanceUserContent(userMsg.content);
-    final priorAssistant = lastUser + 1 < path.length ? path[lastUser + 1] : null;
+    int? promptPlotCursor = retryOperation?.promptPlotCursor;
+    var commitAdvance = retryOperation?.commitPlotAdvance ?? false;
     final priorSucceeded =
-        priorAssistant != null &&
-        priorAssistant.role == MessageRole.assistant &&
-        priorAssistant.content.trim().isNotEmpty;
-    var workingConvo = convo;
-    var commitAdvance = false;
-    if (advanceCue && convo.isStory) {
+        failedAssistant != null && failedAssistant.content.trim().isNotEmpty;
+    if (retryOperation != null) {
+      commitAdvance = retryOperation.commitPlotAdvance;
+    } else if (advanceCue && convo.isStory) {
       if (priorSucceeded && convo.plotCursor > 0) {
-        workingConvo = convo.copyWith(plotCursor: convo.plotCursor - 1);
+        promptPlotCursor = convo.plotCursor - 1;
         commitAdvance = false;
       } else {
         commitAdvance = true;
@@ -1060,7 +1175,7 @@ class ChatController extends AsyncNotifier<ChatState> {
     _starting = true;
     _cancelStart = false;
     try {
-      final hasImages = path.any(
+      final hasImages = pathToUser.any(
         (m) =>
             m.role == MessageRole.user &&
             m.attachments.any((a) => a.isImage && a.hasImageData),
@@ -1078,10 +1193,10 @@ class ChatController extends AsyncNotifier<ChatState> {
         model: config.model,
         parentId: userMsg.id,
       );
-      final working = workingConvo.copyWith(
-        messages: [...workingConvo.messages, assistantMsg],
+      final working = convo.copyWith(
+        messages: [...convo.messages, assistantMsg],
         activeChildren: {
-          ...workingConvo.activeChildren,
+          ..._activatePath(convo.activeChildren, pathToUser),
           userMsg.id: assistantMsg.id,
         },
       );
@@ -1096,6 +1211,7 @@ class ChatController extends AsyncNotifier<ChatState> {
         searchQuery: userMsg.content,
         thinking: _s.deepThink,
         advancePlot: advanceCue,
+        promptPlotCursor: promptPlotCursor,
         commitPlotAdvance: commitAdvance,
       );
     } finally {
@@ -1130,18 +1246,122 @@ class ChatController extends AsyncNotifier<ChatState> {
     _persistSoon(_persist());
   }
 
-  /// Resend the last user turn after a failure (the error banner's "重试").
-  ///
-  /// If the error belongs to another conversation (user switched mid-stream),
-  /// jump back to that conversation before regenerating.
+  /// Replay the exact failed operation represented by the error banner.
   Future<void> retryLast() async {
-    final failedId = _s.errorConvoId;
-    if (failedId != null &&
-        failedId != _s.currentId &&
-        _s.conversations.any((c) => c.id == failedId)) {
-      selectConversation(failedId);
+    final operation = _s.retryOperation;
+    if (operation == null) return;
+    if (operation.conversationId != _s.currentId) {
+      if (!_s.conversations.any((c) => c.id == operation.conversationId)) {
+        return;
+      }
+      selectConversation(operation.conversationId);
     }
-    await regenerate();
+    switch (operation.kind) {
+      case ChatRetryKind.regenerate:
+        await regenerate(retryOperation: operation);
+      case ChatRetryKind.image:
+        await _retryGeneratedImage(operation);
+      case ChatRetryKind.ensemble:
+        await _retryEnsemble(operation);
+    }
+  }
+
+  Future<void> _retryGeneratedImage(ChatRetryOperation operation) async {
+    if (_s.isStreaming || _starting) return;
+    final convo = _s.current;
+    if (convo == null || convo.id != operation.conversationId) return;
+    ChatMessage? failedAssistant;
+    for (final message in convo.messages) {
+      if (message.id == operation.assistantMessageId &&
+          message.role == MessageRole.assistant &&
+          message.kind == MessageKind.generatedImage) {
+        failedAssistant = message;
+        break;
+      }
+    }
+    final userId = failedAssistant?.parentId;
+    if (userId == null) return;
+    ChatMessage? userMessage;
+    for (final message in convo.messages) {
+      if (message.id == userId && message.role == MessageRole.user) {
+        userMessage = message;
+        break;
+      }
+    }
+    if (userMessage == null) return;
+    await _generateImageTurn(
+      userMessage.content,
+      referenceImages: userMessage.attachments,
+      existingUserMessageId: userMessage.id,
+    );
+  }
+
+  Future<void> _retryEnsemble(ChatRetryOperation operation) async {
+    if (_s.isStreaming || _starting) return;
+    final convo = _s.current;
+    if (convo == null ||
+        convo.id != operation.conversationId ||
+        !convo.isEnsemble) {
+      return;
+    }
+    ChatMessage? failedAssistant;
+    for (final message in convo.messages) {
+      if (message.id == operation.assistantMessageId &&
+          message.role == MessageRole.assistant) {
+        failedAssistant = message;
+        break;
+      }
+    }
+    final speakerId = operation.ensembleSpeakerId ?? failedAssistant?.speakerId;
+    if (failedAssistant == null || speakerId == null) return;
+
+    _starting = true;
+    _cancelStart = false;
+    try {
+      final card = await ref
+          .read(characterRepositoryProvider)
+          .getById(speakerId);
+      if (card == null || _cancelStart) {
+        if (card == null) {
+          _set(_s.copyWith(error: '找不到角色卡，请检查参与名单。'));
+        }
+        return;
+      }
+      final settings = await _readySettings();
+      if (settings == null || _cancelStart) return;
+      final config = _configFor(settings);
+      final parentId = failedAssistant.parentId;
+      final pathToParent = parentId == null
+          ? const <ChatMessage>[]
+          : _pathToMessage(convo, parentId);
+      final assistantMsg = ChatMessage(
+        role: MessageRole.assistant,
+        content: '',
+        model: config.model,
+        parentId: parentId,
+        speakerId: card.id,
+        speakerName: card.name,
+      );
+      final working = convo.copyWith(
+        messages: [...convo.messages, assistantMsg],
+        activeChildren: {
+          ..._activatePath(convo.activeChildren, pathToParent),
+          parentId ?? kRootKey: assistantMsg.id,
+        },
+      );
+      if (_cancelStart) return;
+      await _generate(
+        working: working,
+        assistantId: assistantMsg.id,
+        config: config,
+        settings: settings,
+        searchQuery: '',
+        thinking: _s.deepThink,
+        ensembleSpeaker: card,
+      );
+    } finally {
+      _starting = false;
+    }
   }
 
   /// Generate an image as a normal conversation turn. This endpoint is wholly
@@ -1154,6 +1374,12 @@ class ChatController extends AsyncNotifier<ChatState> {
   Future<bool> generateImage(
     String prompt, {
     List<Attachment> referenceImages = const [],
+  }) => _generateImageTurn(prompt, referenceImages: referenceImages);
+
+  Future<bool> _generateImageTurn(
+    String prompt, {
+    List<Attachment> referenceImages = const [],
+    String? existingUserMessageId,
   }) async {
     final trimmed = prompt.trim();
     final refs = [
@@ -1171,11 +1397,7 @@ class ChatController extends AsyncNotifier<ChatState> {
       }
       final useDeepThink = _s.deepThink;
       if (useDeepThink && !settings.config.isReady) {
-        _set(
-          _s.copyWith(
-            error: '深度思考生图需要先配置对话 API（用于优化提示词）。',
-          ),
-        );
+        _set(_s.copyWith(error: '深度思考生图需要先配置对话 API（用于优化提示词）。'));
         return false;
       }
       if (_cancelStart) return false;
@@ -1184,15 +1406,28 @@ class ChatController extends AsyncNotifier<ChatState> {
       final reference = refs.isEmpty ? null : refs.first;
 
       final convo = _s.current ?? Conversation();
-      final parentId = convo.activePath.isEmpty
-          ? null
-          : convo.activePath.last.id;
-      final userMsg = ChatMessage(
-        role: MessageRole.user,
-        content: trimmed,
-        parentId: parentId,
-        attachments: reference == null ? const [] : [reference],
-      );
+      ChatMessage? existingUser;
+      if (existingUserMessageId != null) {
+        for (final message in convo.messages) {
+          if (message.id == existingUserMessageId &&
+              message.role == MessageRole.user) {
+            existingUser = message;
+            break;
+          }
+        }
+        if (existingUser == null) return false;
+      }
+      final parentId =
+          existingUser?.parentId ??
+          (convo.activePath.isEmpty ? null : convo.activePath.last.id);
+      final userMsg =
+          existingUser ??
+          ChatMessage(
+            role: MessageRole.user,
+            content: trimmed,
+            parentId: parentId,
+            attachments: reference == null ? const [] : [reference],
+          );
       final assistantMsg = ChatMessage(
         role: MessageRole.assistant,
         content: '',
@@ -1202,15 +1437,27 @@ class ChatController extends AsyncNotifier<ChatState> {
         kind: MessageKind.generatedImage,
         parentId: userMsg.id,
       );
-      final isFirst = convo.messages.isEmpty;
+      final isFirst = existingUser == null && convo.messages.isEmpty;
+      final pathToUser = existingUser == null
+          ? const <ChatMessage>[]
+          : _pathToMessage(convo, existingUser.id);
       final working = convo.copyWith(
         title: isFirst ? _truncateTitle(trimmed) : convo.title,
-        messages: [...convo.messages, userMsg, assistantMsg],
+        messages: [
+          ...convo.messages,
+          if (existingUser == null) userMsg,
+          assistantMsg,
+        ],
         activeChildren: {
-          ...convo.activeChildren,
-          parentId ?? kRootKey: userMsg.id,
+          ..._activatePath(convo.activeChildren, pathToUser),
+          if (existingUser == null) parentId ?? kRootKey: userMsg.id,
           userMsg.id: assistantMsg.id,
         },
+      );
+      final failureOperation = ChatRetryOperation(
+        kind: ChatRetryKind.image,
+        conversationId: working.id,
+        assistantMessageId: assistantMsg.id,
       );
       final cancelToken = CancelToken();
       _cancelToken = cancelToken;
@@ -1309,7 +1556,11 @@ class ChatController extends AsyncNotifier<ChatState> {
               refMime = prepared.mimeType;
               refName = prepared.name;
             } on FormatException {
-              _setScopedError('参考图数据无效，请重新选择图片。', convoId: working.id);
+              _setScopedError(
+                '参考图数据无效，请重新选择图片。',
+                convoId: working.id,
+                retryOperation: failureOperation,
+              );
               _set(_s.copyWith(streamingConvoId: null));
               await _persistById(working.id);
               unawaited(
@@ -1325,6 +1576,7 @@ class ChatController extends AsyncNotifier<ChatState> {
               _s.copyWith(
                 error: '参考图缺少本地数据，请重新从相册/文件选择图片。',
                 errorConvoId: working.id,
+                retryOperation: failureOperation,
                 streamingConvoId: null,
               ),
             );
@@ -1404,6 +1656,7 @@ class ChatController extends AsyncNotifier<ChatState> {
               streamingConvoId: null,
               error: _describeError(e),
               errorConvoId: working.id,
+              retryOperation: failureOperation,
             ),
           );
         }
@@ -1479,10 +1732,7 @@ class ChatController extends AsyncNotifier<ChatState> {
     var text = raw.trim();
     if (text.isEmpty) return '';
     // ```lang ... ``` or ``` ... ```
-    final fence = RegExp(
-      r'^```(?:\w+)?\s*([\s\S]*?)\s*```$',
-      multiLine: true,
-    );
+    final fence = RegExp(r'^```(?:\w+)?\s*([\s\S]*?)\s*```$', multiLine: true);
     final m = fence.firstMatch(text);
     if (m != null) text = (m.group(1) ?? '').trim();
     // Surrounding quotes.
@@ -1500,15 +1750,15 @@ class ChatController extends AsyncNotifier<ChatState> {
     String? revisedByApi,
     bool usedReferenceImage = false,
   }) {
-    final parts = <String>[
-      usedReferenceImage ? '图片已生成（图生图）' : '图片已生成',
-    ];
+    final parts = <String>[usedReferenceImage ? '图片已生成（图生图）' : '图片已生成'];
     final opt = optimizedByModel.trim();
     final revised = revisedByApi?.trim() ?? '';
     if (opt.isNotEmpty && opt != originalPrompt.trim()) {
       parts.add('深度思考优化后的提示词：$opt');
     }
-    if (revised.isNotEmpty && revised != opt && revised != originalPrompt.trim()) {
+    if (revised.isNotEmpty &&
+        revised != opt &&
+        revised != originalPrompt.trim()) {
       parts.add('生图接口改写：$revised');
     }
     if (parts.length == 1 && revised.isNotEmpty) {
@@ -1555,6 +1805,8 @@ class ChatController extends AsyncNotifier<ChatState> {
   /// a model-controlled tool, then stream the answer along the active branch.
   ///
   /// [advancePlot] shapes the director/story prompt ("推进情节").
+  /// [promptPlotCursor] can rewrite an already-committed beat without mutating
+  /// the conversation's persisted progress.
   /// [commitPlotAdvance] increments [Conversation.plotCursor] after success;
   /// regenerate of an already-advanced turn must pass false to avoid double
   /// cursor bumps and wrong-beat rewrites.
@@ -1566,6 +1818,7 @@ class ChatController extends AsyncNotifier<ChatState> {
     required String searchQuery,
     required bool thinking,
     bool advancePlot = false,
+    int? promptPlotCursor,
     bool commitPlotAdvance = false,
     CharacterCard? ensembleSpeaker,
   }) async {
@@ -1596,6 +1849,16 @@ class ChatController extends AsyncNotifier<ChatState> {
     ];
     final allowedFetchUrls = {for (final url in pastedUrls) _fetchUrlKey(url)};
     final imageBudget = _TurnImageBudget();
+    final failureOperation = ChatRetryOperation(
+      kind: ensembleSpeaker == null
+          ? ChatRetryKind.regenerate
+          : ChatRetryKind.ensemble,
+      conversationId: working.id,
+      assistantMessageId: assistantId,
+      promptPlotCursor: promptPlotCursor,
+      commitPlotAdvance: commitPlotAdvance,
+      ensembleSpeakerId: ensembleSpeaker?.id,
+    );
 
     // One token covers the whole generation (search pre-step + all tool
     // rounds); stop() fires it.
@@ -1688,8 +1951,7 @@ class ChatController extends AsyncNotifier<ChatState> {
     final needPreFetch =
         directPageFetchAllowed && pastedUrls.isNotEmpty && !useFetchUrlTool;
     final needPreSearch =
-        searchAllowed &&
-        (!useWebSearchTool || searchMode == SearchMode.always);
+        searchAllowed && (!useWebSearchTool || searchMode == SearchMode.always);
     if (needPreFetch || needPreSearch) {
       _set(_s.copyWith(isSearching: true));
       // Live progress steps land on the assistant placeholder as they happen.
@@ -1852,13 +2114,16 @@ class ChatController extends AsyncNotifier<ChatState> {
         }
       }
 
+      final promptConversation = promptPlotCursor == null
+          ? cur
+          : cur.copyWith(plotCursor: promptPlotCursor);
       final prefix = const StoryPromptAssembler().buildSystemPrefix(
         globalSystemPrompt: settings.systemPrompt,
         character: card,
         cast: cast,
         speakingAs: ensembleSpeaker,
         worldInfoPool: worldPool,
-        conversation: cur,
+        conversation: promptConversation,
         historyPath: pathForScan,
         advancePlot: advancePlot,
         ensembleTurn: ensemble,
@@ -1894,9 +2159,7 @@ class ChatController extends AsyncNotifier<ChatState> {
               '即使用户在写成人向内容，生图也只画干净角色形象，禁止色情提示词。',
             );
           } else {
-            hint.write(
-              '需要配图时调用 generate_image（每轮最多一次）；提示词必须 SFW，禁止色情内容。',
-            );
+            hint.write('需要配图时调用 generate_image（每轮最多一次）；提示词必须 SFW，禁止色情内容。');
           }
         }
         systemPrefix.add(
@@ -1938,9 +2201,7 @@ class ChatController extends AsyncNotifier<ChatState> {
               '即使用户在写成人向内容，生图也只画干净角色形象，禁止色情提示词。',
             );
           } else {
-            hint.write(
-              '需要配图时调用 generate_image（每轮最多一次）；提示词必须 SFW，禁止色情内容。',
-            );
+            hint.write('需要配图时调用 generate_image（每轮最多一次）；提示词必须 SFW，禁止色情内容。');
           }
         }
         history.insert(
@@ -1967,6 +2228,7 @@ class ChatController extends AsyncNotifier<ChatState> {
           streamingConvoId: null,
           error: '当前消息和图片超过上下文预算，请减少附件或在设置中增大上下文窗口。',
           errorConvoId: working.id,
+          retryOperation: failureOperation,
         ),
       );
       await _persistById(working.id);
@@ -1994,6 +2256,7 @@ class ChatController extends AsyncNotifier<ChatState> {
       cancelToken: cancelToken,
       imageBudget: imageBudget,
       imageCharacter: imageCharacter,
+      failureOperation: failureOperation,
     );
 
     unawaited(
@@ -2057,6 +2320,7 @@ class ChatController extends AsyncNotifier<ChatState> {
     required Set<String> allowedFetchUrls,
     required CancelToken cancelToken,
     required _TurnImageBudget imageBudget,
+    required ChatRetryOperation failureOperation,
     CharacterCard? imageCharacter,
   }) async {
     final llm = ref.read(llmProvider);
@@ -2157,9 +2421,9 @@ class ChatController extends AsyncNotifier<ChatState> {
               content.write(chunk.contentDelta!);
             }
             for (final call in chunk.toolCalls ?? const <ToolCall>[]) {
-              (toolDrafts[call.index] ??= ToolCallDraft(call.index)).merge(
-                call,
-              );
+              (toolDrafts[call.index] ??= ToolCallDraft(
+                call.index,
+              )).merge(call);
             }
             scheduleUiFlush();
           },
@@ -2268,6 +2532,7 @@ class ChatController extends AsyncNotifier<ChatState> {
           // A cancellation raised by stop() is not an error to surface.
           error: _isCancel(e) ? null : _describeError(e),
           errorConvoId: _isCancel(e) ? null : convoId,
+          retryOperation: _isCancel(e) ? null : failureOperation,
         ),
       );
       await _persistById(convoId);
@@ -2547,7 +2812,9 @@ class ChatController extends AsyncNotifier<ChatState> {
     }
 
     try {
-      final generated = await ref.read(mediaApiProvider).generateImage(
+      final generated = await ref
+          .read(mediaApiProvider)
+          .generateImage(
             config: settings.imageGenerationApi,
             apiKey: settings.imageGenerationApiKey,
             prompt: prompt,
@@ -2916,4 +3183,3 @@ class ChatController extends AsyncNotifier<ChatState> {
 final chatControllerProvider = AsyncNotifierProvider<ChatController, ChatState>(
   ChatController.new,
 );
-

@@ -34,6 +34,17 @@ expert-chat-windows-x64-vX.Y.Z.zip
 
 当前侧载列车可只发 **arm64 + Windows**；非 arm64 用户需 universal 或对应 ABI 包。Shorebird 基座须用 `shorebird release` 构建，与普通 `flutter build` 不通用。
 
+## Android 正式签名
+
+Android release 构建采用 fail-closed：缺少正式签名配置时，
+`assembleRelease` / `bundleRelease` / `packageRelease` 会直接失败，不会回退到 debug 证书。
+
+1. 复制 `android/key.properties.example` 为 `android/key.properties`
+2. 填写 keystore 密码、别名和文件路径
+3. 将 `.jks` 安全备份；`key.properties` 与 keystore 均不可提交到 Git
+
+首次对外发布后必须持续使用同一签名证书，否则在野安装无法覆盖升级。
+
 ## Shorebird 前置条件
 
 1. 安装 CLI：

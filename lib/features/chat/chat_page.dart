@@ -123,7 +123,10 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       if (_selectedIds.contains(m.id)) m,
   ];
 
-  Future<void> _shareSelected(List<ChatMessage> path, Conversation? convo) async {
+  Future<void> _shareSelected(
+    List<ChatMessage> path,
+    Conversation? convo,
+  ) async {
     final selected = _selectedOrdered(path);
     if (selected.isEmpty) return;
     final md = ConversationExport.messagesToMarkdown(
@@ -160,15 +163,15 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('分享失败：$e'),
-          behavior: SnackBarBehavior.floating,
-        ),
+        SnackBar(content: Text('分享失败：$e'), behavior: SnackBarBehavior.floating),
       );
     }
   }
 
-  Future<void> _copySelectedMarkdown(List<ChatMessage> path, Conversation? convo) async {
+  Future<void> _copySelectedMarkdown(
+    List<ChatMessage> path,
+    Conversation? convo,
+  ) async {
     final selected = _selectedOrdered(path);
     if (selected.isEmpty) return;
     final md = ConversationExport.messagesToMarkdown(
@@ -239,9 +242,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     if (useImageGeneration) {
       if (text.trim().isEmpty) {
         _showAttachmentNotice(
-          _attachments.any((a) => a.isImage)
-              ? '图生图请写明如何修改参考图。'
-              : '请描述要生成的图片。',
+          _attachments.any((a) => a.isImage) ? '图生图请写明如何修改参考图。' : '请描述要生成的图片。',
         );
         return;
       }
@@ -285,22 +286,15 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     'csv',
     'json',
   ];
-  static const _imageExtensions = [
-    'png',
-    'jpg',
-    'jpeg',
-    'gif',
-    'webp',
-    'bmp',
-  ];
+  static const _imageExtensions = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'];
 
   Future<void> _pickDocuments() => _pickFiles(imagesOnly: false);
 
   Future<void> _pickImages() => _pickFiles(
-        imagesOnly: true,
-        // 生图模式：参考图不依赖视觉 API；普通对话看图仍要视觉配置。
-        forImageGeneration: _imageMode,
-      );
+    imagesOnly: true,
+    // 生图模式：参考图不依赖视觉 API；普通对话看图仍要视觉配置。
+    forImageGeneration: _imageMode,
+  );
 
   Future<void> _pickFiles({
     required bool imagesOnly,
@@ -322,9 +316,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         return;
       }
       // 图生图：每次仅 1 张参考图（OpenAI-compatible edits 惯例）。
-      final maxSlots = forImageGeneration && imagesOnly
-          ? 1
-          : _maxAttachments;
+      final maxSlots = forImageGeneration && imagesOnly ? 1 : _maxAttachments;
       final result = await FilePicker.pickFiles(
         allowMultiple: !(forImageGeneration && imagesOnly),
         withData: false,
@@ -332,16 +324,15 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         type: FileType.custom,
         allowedExtensions: imagesOnly
             ? _imageExtensions
-            : [
-                ..._documentExtensions,
-                if (visionOk) ..._imageExtensions,
-              ],
+            : [..._documentExtensions, if (visionOk) ..._imageExtensions],
       );
       if (result == null) return;
 
       final slots = forImageGeneration && imagesOnly
-          ? (maxSlots - _attachments.where((a) => a.isImage).length)
-              .clamp(0, maxSlots)
+          ? (maxSlots - _attachments.where((a) => a.isImage).length).clamp(
+              0,
+              maxSlots,
+            )
           : _maxAttachments - _attachments.length;
       if (slots <= 0) {
         _showAttachmentNotice(
@@ -675,9 +666,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
           _selectedIds.clear();
         }
         // Do not carry composer draft / reference images across conversations.
-        if (_attachments.isNotEmpty ||
-            _input.text.isNotEmpty ||
-            _imageMode) {
+        if (_attachments.isNotEmpty || _input.text.isNotEmpty || _imageMode) {
           setState(() {
             _attachments.clear();
             _input.clear();
@@ -711,9 +700,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
           // first so the target key can materialize.
           if (index >= 0 && _scroll.hasClients) {
             final max = _scroll.position.maxScrollExtent;
-            final est = path.isEmpty
-                ? 0.0
-                : (index / path.length) * max;
+            final est = path.isEmpty ? 0.0 : (index / path.length) * max;
             _programmaticScroll = true;
             _stick = false;
             try {
@@ -790,8 +777,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
             final contextReport = current == null
                 ? null
                 : asyncState.value?.contextReports[current.id];
-            final contextInputBudget =
-                settings?.context.inputBudgetTokens ?? 0;
+            final contextInputBudget = settings?.context.inputBudgetTokens ?? 0;
             return Scaffold(
               appBar: AppBar(
                 titleSpacing: dualPane ? 20 : 8,
@@ -1085,10 +1071,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
             message: state.error!,
             onRetry:
                 state.isStreaming ||
-                    (convo != null &&
-                        convo.activePath.isNotEmpty &&
-                        convo.activePath.last.kind ==
-                            MessageKind.generatedImage)
+                    state.retryOperation == null ||
+                    state.retryOperation!.conversationId != convo?.id
                 ? null
                 : () => controller.retryLast(),
             onOpenSettings: needsSetup ? () => openShellTab(ref, 2) : null,
@@ -1201,32 +1185,32 @@ class _ChatPageState extends ConsumerState<ChatPage> {
             onShare: () => _shareSelected(messages, convo),
           ),
         if (!_selecting)
-        _Composer(
-          controller: _input,
-          isStreaming: state.isStreaming,
-          deepThink: state.deepThink,
-          searchMode: state.searchMode,
-          imageGenMode: state.imageGenMode,
-          isSearching: state.isSearching,
-          attachments: _attachments,
-          picking: _picking,
-          storyLike: convo != null && (convo.isStory || convo.isEnsemble),
-          directorMode: convo?.localCast.isNotEmpty ?? false,
-          visionConfigured: settings?.visionConfigured ?? false,
-          imageGenerationConfigured:
-              settings?.imageGenerationConfigured ?? false,
-          imageMode:
-              _imageMode && (settings?.imageGenerationConfigured ?? false),
-          onToggleDeepThink: controller.toggleDeepThink,
-          onToggleSearch: controller.toggleSearch,
-          onToggleImageGenMode: controller.toggleImageGenMode,
-          onToggleImageMode: _toggleImageMode,
-          onPickDocuments: _pickDocuments,
-          onPickImages: _pickImages,
-          onRemoveAttachment: _removeAttachment,
-          onSend: _send,
-          onStop: controller.stop,
-        ),
+          _Composer(
+            controller: _input,
+            isStreaming: state.isStreaming,
+            deepThink: state.deepThink,
+            searchMode: state.searchMode,
+            imageGenMode: state.imageGenMode,
+            isSearching: state.isSearching,
+            attachments: _attachments,
+            picking: _picking,
+            storyLike: convo != null && (convo.isStory || convo.isEnsemble),
+            directorMode: convo?.localCast.isNotEmpty ?? false,
+            visionConfigured: settings?.visionConfigured ?? false,
+            imageGenerationConfigured:
+                settings?.imageGenerationConfigured ?? false,
+            imageMode:
+                _imageMode && (settings?.imageGenerationConfigured ?? false),
+            onToggleDeepThink: controller.toggleDeepThink,
+            onToggleSearch: controller.toggleSearch,
+            onToggleImageGenMode: controller.toggleImageGenMode,
+            onToggleImageMode: _toggleImageMode,
+            onPickDocuments: _pickDocuments,
+            onPickImages: _pickImages,
+            onRemoveAttachment: _removeAttachment,
+            onSend: _send,
+            onStop: controller.stop,
+          ),
       ],
     );
   }
@@ -1261,9 +1245,9 @@ class _SelectionShareBar extends StatelessWidget {
             children: [
               Text(
                 '已选 $count',
-                style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                  fontWeight: FontWeight.w700,
-                ),
+                style: Theme.of(
+                  context,
+                ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
               ),
               const Spacer(),
               TextButton(onPressed: onCancel, child: const Text('取消')),
@@ -1383,7 +1367,8 @@ class _ComposerState extends State<_Composer> {
         : '写下你的想法…';
     final canAttachDocs =
         !widget.isStreaming && !widget.picking && !widget.imageMode;
-    final canAttachImages = !widget.isStreaming &&
+    final canAttachImages =
+        !widget.isStreaming &&
         !widget.picking &&
         ((widget.imageMode && widget.imageGenerationConfigured) ||
             (!widget.imageMode && widget.visionConfigured));
@@ -1433,8 +1418,7 @@ class _ComposerState extends State<_Composer> {
                             !widget.imageMode) ...[
                           const SizedBox(width: 6),
                           _ComposerToggleChip(
-                            selected:
-                                widget.imageGenMode != ImageGenMode.off,
+                            selected: widget.imageGenMode != ImageGenMode.off,
                             icon: Icons.image_outlined,
                             label: widget.imageGenMode.composerLabel,
                             tooltip:
@@ -1506,7 +1490,8 @@ class _ComposerState extends State<_Composer> {
                               imageGenerationConfigured:
                                   widget.imageGenerationConfigured,
                               imageMode: widget.imageMode,
-                              enabled: canAttachDocs ||
+                              enabled:
+                                  canAttachDocs ||
                                   canAttachImages ||
                                   widget.imageMode,
                               picking: widget.picking,
@@ -1518,9 +1503,8 @@ class _ComposerState extends State<_Composer> {
                                   : null,
                               onToggleImageMode: widget.isStreaming
                                   ? null
-                                  : () => _runAndClose(
-                                      widget.onToggleImageMode,
-                                    ),
+                                  : () =>
+                                        _runAndClose(widget.onToggleImageMode),
                             ),
                           )
                         : const SizedBox.shrink(),
@@ -2142,7 +2126,10 @@ class _HistoryPanelState extends ConsumerState<_HistoryPanel> {
     for (final m in c.activePath) {
       final idx = m.content.toLowerCase().indexOf(lower);
       if (idx < 0) continue;
-      return (messageId: m.id, snippet: _snippetAround(m.content, idx, q.length));
+      return (
+        messageId: m.id,
+        snippet: _snippetAround(m.content, idx, q.length),
+      );
     }
     for (final m in c.messages) {
       final idx = m.content.toLowerCase().indexOf(lower);
@@ -2423,7 +2410,8 @@ class _HistoryPanelState extends ConsumerState<_HistoryPanel> {
                                                   .textTheme
                                                   .bodySmall
                                                   ?.copyWith(
-                                                    color: hit.snippet.isNotEmpty
+                                                    color:
+                                                        hit.snippet.isNotEmpty
                                                         ? scheme.primary
                                                         : scheme
                                                               .onSurfaceVariant,
@@ -2807,9 +2795,7 @@ class _StorySessionBar extends StatelessWidget {
         : cursor < beats.length
         ? '当前：${beats[cursor.clamp(0, beats.length - 1)]}'
         : '大纲已走完 · 可自由续写';
-    final noteHint = conversation.authorNote.trim().isEmpty
-        ? null
-        : '导演指令已启用';
+    final noteHint = conversation.authorNote.trim().isEmpty ? null : '导演指令已启用';
     final wiCount = conversation.worldInfoIds.length;
     final lengthBudget = StoryLengthBudget.forConversation(conversation);
     final lengthHint = lengthBudget?.sessionLabel();

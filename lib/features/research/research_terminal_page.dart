@@ -27,20 +27,34 @@ class ResearchTerminalPage extends ConsumerStatefulWidget {
       _ResearchTerminalPageState();
 }
 
-class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage> {
+class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
+    with WidgetsBindingObserver {
   final _termFocus = FocusNode();
   var _ctrlLatch = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) => _wireHostKeyHandlers());
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _termFocus.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeMetrics() {
+    super.didChangeMetrics();
+    // After soft-keyboard open/close, force a layout pass so the terminal
+    // Expanded does not stay at a stale zero height (mobile white screen).
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      setState(() {});
+    });
   }
 
   void _wireHostKeyHandlers() {
@@ -396,6 +410,8 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage> {
       }
     });
 
+    final keyboardOpen = MediaQuery.viewInsetsOf(context).bottom > 0;
+
     final body = Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -428,22 +444,35 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage> {
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(14),
                 child: state.isConnected
-                    ? TerminalView(
-                        ctrl.terminal,
-                        focusNode: _termFocus,
-                        autofocus: true,
-                        backgroundOpacity: 1,
-                        theme: TerminalThemes.defaultTheme,
-                        textStyle: const TerminalStyle(
-                          fontSize: 13,
-                          fontFamily: 'Cascadia Mono',
-                          fontFamilyFallback: [
-                            'Consolas',
-                            'Courier New',
-                            'monospace',
-                          ],
-                        ),
-                        padding: const EdgeInsets.all(8),
+                    ? LayoutBuilder(
+                        builder: (context, constraints) {
+                          // Keep a paint surface even if parent briefly reports
+                          // a tiny height during IME animation.
+                          final h = constraints.maxHeight.isFinite
+                              ? constraints.maxHeight
+                              : 120.0;
+                          return SizedBox(
+                            width: constraints.maxWidth,
+                            height: h < 48 ? 48 : h,
+                            child: TerminalView(
+                              ctrl.terminal,
+                              focusNode: _termFocus,
+                              autofocus: false,
+                              backgroundOpacity: 1,
+                              theme: TerminalThemes.defaultTheme,
+                              textStyle: const TerminalStyle(
+                                fontSize: 13,
+                                fontFamily: 'Cascadia Mono',
+                                fontFamilyFallback: [
+                                  'Consolas',
+                                  'Courier New',
+                                  'monospace',
+                                ],
+                              ),
+                              padding: const EdgeInsets.all(8),
+                            ),
+                          );
+                        },
                       )
                     : _DisconnectedPane(
                         web: kIsWeb,
@@ -457,7 +486,8 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage> {
             ),
           ),
         ),
-        if (state.isConnected)
+        // Hide shortcut strip while IME is up to free vertical space.
+        if (state.isConnected && !keyboardOpen)
           _ShortcutBar(
             ctrlLatched: _ctrlLatch,
             onToggleCtrl: () => setState(() => _ctrlLatch = !_ctrlLatch),
@@ -467,6 +497,10 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage> {
     );
 
     return Scaffold(
+      // Critical on phones: do not shrink this page when the soft keyboard
+      // opens — otherwise Expanded terminal height → 0 and the shell shows
+      // empty surface (white/cream) after the keyboard dismisses.
+      resizeToAvoidBottomInset: false,
       backgroundColor: scheme.surface,
       appBar: AppBar(
         titleSpacing: 12,
@@ -525,7 +559,7 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage> {
           ),
         ],
       ),
-      floatingActionButton: state.isConnected && !wide
+      floatingActionButton: state.isConnected && !wide && !keyboardOpen
           ? FloatingActionButton.extended(
               onPressed: () => unawaited(_openAiSheet()),
               icon: const Icon(Icons.auto_awesome),

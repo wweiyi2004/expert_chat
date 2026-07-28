@@ -378,6 +378,9 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
       terminal.onResize = (w, h, pw, ph) {
         if (_disposed || !ref.mounted) return;
         if (!identical(_client, client)) return;
+        // Ignore degenerate sizes during IME open/close animation — resizing
+        // PTY to 0×N can blank the canvas and leave a white shell body.
+        if (w < 2 || h < 2) return;
         state = state.copyWith(cols: w, rows: h);
         client.resize(cols: w, rows: h);
       };

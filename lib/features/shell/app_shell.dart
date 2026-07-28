@@ -168,7 +168,11 @@ class _AppShellState extends ConsumerState<AppShell>
                   ],
                 ),
               )
+            // On the research terminal tab, do not shrink the body for the
+            // soft keyboard — nested Scaffold + IME otherwise collapses the
+            // terminal Expanded to 0 height (blank/white screen on dismiss).
             : Scaffold(
+                resizeToAvoidBottomInset: selected != ShellTab.terminal,
                 body: stack,
                 bottomNavigationBar: NavigationBar(
                   selectedIndex: navIndex,

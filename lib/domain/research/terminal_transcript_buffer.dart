@@ -35,9 +35,18 @@ class TerminalTranscriptBuffer {
         // Keep a trailing CR pending until the next chunk so a split CRLF is
         // treated as one logical newline.
         if (i == raw.length - 1) break;
-        completed.add(raw.substring(start, i));
-        if (raw.codeUnitAt(i + 1) == 0x0a) i++;
-        start = i + 1;
+        if (raw.codeUnitAt(i + 1) == 0x0a) {
+          // CRLF is one logical newline.
+          completed.add(raw.substring(start, i));
+          i++;
+          start = i + 1;
+        } else {
+          // A lone CR is a carriage return, not a newline: the remote redraws
+          // the same line. Emitting a line per redraw would let one tqdm bar
+          // flood the whole AI context, so drop what was drawn and restart the
+          // line instead.
+          start = i + 1;
+        }
       }
       i++;
     }
@@ -94,8 +103,9 @@ class TerminalTranscriptBuffer {
     var s = input.replaceAll(RegExp(r'\x1B\[[0-9;?]*[ -/]*[@-~]'), '');
     s = s.replaceAll(RegExp(r'\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)?'), '');
     s = s.replaceAll(RegExp(r'\x1B[@-Z\\-_]'), '');
-    // Other C0 controls except \n \t
-    s = s.replaceAll(RegExp(r'[\x00-\x08\x0b\x0c\x0e-\x1f]'), '');
+    // Other C0 controls except \n \t. CR is included: append() has already
+    // applied carriage-return semantics, so any left over is display noise.
+    s = s.replaceAll(RegExp(r'[\x00-\x08\x0b-\x1f]'), '');
     return s;
   }
 

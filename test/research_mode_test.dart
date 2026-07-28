@@ -44,6 +44,7 @@ class _FakeSshClient implements ResearchSshClient {
   final _out = StreamController<List<int>>.broadcast();
   final _err = StreamController<List<int>>.broadcast();
   final writes = <String>[];
+  final execCommands = <String>[];
   var connected = false;
   var cols = 80;
   var rows = 24;
@@ -113,6 +114,7 @@ class _FakeSshClient implements ResearchSshClient {
     String command, {
     Duration timeout = const Duration(seconds: 15),
   }) async {
+    execCommands.add(command);
     final error = execError;
     if (error != null) throw error;
     final pending = execCompleter;
@@ -169,9 +171,9 @@ void main() {
     test('strips Ctrl+C when blocking is on', () {
       final blocked = TerminalInputGuard.filter(
         'ab${TerminalInputGuard.ctrlC}c',
-        blockCtrlC: true,
+        blockInterrupt: true,
       );
-      expect(blocked.blockedCtrlC, isTrue);
+      expect(blocked.blockedInterrupt, isTrue);
       expect(blocked.data, 'abc');
       expect(blocked.data.contains(TerminalInputGuard.ctrlC), isFalse);
     });
@@ -179,10 +181,39 @@ void main() {
     test('passes Ctrl+C when blocking is off', () {
       final open = TerminalInputGuard.filter(
         TerminalInputGuard.ctrlC,
-        blockCtrlC: false,
+        blockInterrupt: false,
       );
-      expect(open.blockedCtrlC, isFalse);
+      expect(open.blockedInterrupt, isFalse);
       expect(open.data, TerminalInputGuard.ctrlC);
+    });
+
+    test('also strips Ctrl+backslash, which kills via SIGQUIT', () {
+      final blocked = TerminalInputGuard.filter(
+        'a${TerminalInputGuard.ctrlBackslash}b',
+        blockInterrupt: true,
+      );
+      expect(blocked.blockedInterrupt, isTrue);
+      expect(blocked.data, 'ab');
+
+      final both = TerminalInputGuard.filter(
+        '${TerminalInputGuard.ctrlC}x${TerminalInputGuard.ctrlBackslash}',
+        blockInterrupt: true,
+      );
+      expect(both.data, 'x');
+    });
+
+    test('ctrl latch maps a plain key to its control code', () {
+      // Soft keyboards send letters; the latch is what turns them into Ctrl+X.
+      expect(TerminalInputGuard.applyCtrlLatch('c'), '\x03');
+      expect(TerminalInputGuard.applyCtrlLatch('C'), '\x03');
+      expect(TerminalInputGuard.applyCtrlLatch('d'), '\x04');
+      expect(TerminalInputGuard.applyCtrlLatch('z'), '\x1a');
+      expect(TerminalInputGuard.applyCtrlLatch('['), '\x1b');
+      expect(TerminalInputGuard.applyCtrlLatch('?'), '\x7f');
+      // Nothing sensible to map → leave the input alone.
+      expect(TerminalInputGuard.applyCtrlLatch('1'), isNull);
+      expect(TerminalInputGuard.applyCtrlLatch('ab'), isNull);
+      expect(TerminalInputGuard.applyCtrlLatch(''), isNull);
     });
   });
 
@@ -214,6 +245,31 @@ void main() {
         CommandRisk.high,
       );
     });
+
+    test('flags file writes however they are spelled', () {
+      // Spacing around the redirect is optional to the shell, so it must be
+      // optional to the classifier too.
+      for (final cmd in [
+        'echo hi > out.txt',
+        'echo hi >out.txt',
+        'echo hi>out.txt',
+        'echo hi >> out.log',
+        'echo hi>>out.log',
+        'cat a | tee /etc/hosts',
+      ]) {
+        expect(c.classify(cmd).risk, CommandRisk.medium, reason: cmd);
+      }
+    });
+
+    test('does not mistake fd dup or operators for a write', () {
+      for (final cmd in [
+        'make 2>&1 | less',
+        'python -c "print(1 if a >= b else 2)"',
+        'awk "{print}" | grep -- "->"',
+      ]) {
+        expect(c.classify(cmd).risk, CommandRisk.low, reason: cmd);
+      }
+    });
   });
 
   group('transcript buffer', () {
@@ -240,6 +296,32 @@ void main() {
       expect(tail.contains('line-0'), isFalse);
     });
 
+    test('a progress bar redrawing itself stays one line', () {
+      // tqdm & friends redraw with a bare \r. Treating each redraw as a new
+      // line evicted everything else from the AI context window.
+      final buf = TerminalTranscriptBuffer(maxLines: 10, maxBytes: 64 * 1024);
+      buf.append('IMPORTANT: checkpoint saved to /data/ckpt\n');
+      for (var i = 0; i <= 100; i++) {
+        buf.append('\rEpoch 1: $i%');
+      }
+      buf.append('\n');
+
+      expect(buf.lineCount, 2);
+      final recent = buf.recentForAi(10);
+      expect(recent, contains('IMPORTANT: checkpoint saved'));
+      // Only the last redraw survives, and no stray CR reaches the model.
+      expect(recent, contains('Epoch 1: 100%'));
+      expect(recent, isNot(contains('Epoch 1: 99%')));
+      expect(recent, isNot(contains('\r')));
+    });
+
+    test('CRLF is one newline even when split across chunks', () {
+      final buf = TerminalTranscriptBuffer();
+      buf.append('a\r');
+      buf.append('\nb\r\nc');
+      expect(buf.recentForAi(10), 'a\nb\nc');
+    });
+
     test('keeps stream chunks on one line before redacting secrets', () {
       final buf = TerminalTranscriptBuffer();
       buf.append('pass');
@@ -263,16 +345,29 @@ void main() {
       expect(list.first.windows, 3);
     });
 
-    test(
-      'detach sends Ctrl-B then d without killing session command',
-      () async {
-        final fake = _FakeSshClient()..connected = true;
-        await tmux.detachInShell(fake);
-        expect(fake.writes.length, 2);
-        expect(fake.writes[0], String.fromCharCode(0x02));
-        expect(fake.writes[1], 'd');
-      },
-    );
+    test('detach goes through exec, not blind prefix keys', () async {
+      final fake = _FakeSshClient()..connected = true;
+      await tmux.detachSession(fake, 'train');
+      // Writing `C-b d` into the PTY is only meaningful inside tmux; outside it
+      // the bytes land in the user's command line.
+      expect(fake.writes, isEmpty);
+      expect(fake.execCommands.single, "tmux detach-client -s 'train'");
+      // The session itself must survive — jobs keep running.
+      expect(fake.execCommands.single, isNot(contains('kill')));
+    });
+
+    test('detach quotes hostile session names', () {
+      expect(tmux.detachClientCommand("a'b"), contains("'\"'\"'"));
+    });
+
+    test('a session named like an error is not mistaken for one', () async {
+      final fake = _FakeSshClient()
+        ..connected = true
+        ..execResult = 'command not found\t1\t2\n';
+      final list = await tmux.listSessions(fake);
+      expect(list.single.name, 'command not found');
+      expect(list.single.attached, 1);
+    });
 
     test('switch-client when already in tmux; attach when not', () async {
       final fake = _FakeSshClient()..connected = true;
@@ -788,6 +883,160 @@ void main() {
       expect(container.read(researchTerminalProvider).currentTmuxName, isNull);
     });
 
+    test('ctrl latch reaches the soft-keyboard input path', () async {
+      final ctrl = container.read(researchTerminalProvider.notifier);
+      ctrl.setHostKeyHandlers(
+        onTrust: (_) async => true,
+        onMismatch: (_, _) async => false,
+      );
+      await ctrl.connect(profile);
+      fake.writes.clear();
+
+      // Soft keyboards deliver plain text through terminal.onOutput; the
+      // shortcut bar's Ctrl chip never sees it, so the latch must live here.
+      ctrl.setCtrlLatched(true);
+      ctrl.terminal.onOutput!('d');
+      expect(fake.writes, ['\x04']);
+      expect(container.read(researchTerminalProvider).ctrlLatched, isFalse);
+
+      // Latch is one-shot, exactly like a real Ctrl key release.
+      fake.writes.clear();
+      ctrl.terminal.onOutput!('d');
+      expect(fake.writes, ['d']);
+
+      // Nothing sensible to map: send the key through untouched.
+      fake.writes.clear();
+      ctrl.setCtrlLatched(true);
+      ctrl.terminal.onOutput!('1');
+      expect(fake.writes, ['1']);
+    });
+
+    test('latched Ctrl+C is still blocked, and flags the UI', () async {
+      final ctrl = container.read(researchTerminalProvider.notifier);
+      ctrl.setHostKeyHandlers(
+        onTrust: (_) async => true,
+        onMismatch: (_, _) async => false,
+      );
+      await ctrl.connect(profile);
+      fake.writes.clear();
+
+      expect(container.read(researchTerminalProvider).blockCtrlC, isTrue);
+      ctrl.setCtrlLatched(true);
+      ctrl.terminal.onOutput!('c');
+      expect(fake.writes, isEmpty);
+      expect(
+        container.read(researchTerminalProvider).interruptBlockedFlash,
+        isTrue,
+      );
+
+      ctrl.clearInterruptBlockedFlash();
+      expect(
+        container.read(researchTerminalProvider).interruptBlockedFlash,
+        isFalse,
+      );
+    });
+
+    test('refresh drops a tmux session we are no longer attached to', () async {
+      final ctrl = container.read(researchTerminalProvider.notifier);
+      ctrl.setHostKeyHandlers(
+        onTrust: (_) async => true,
+        onMismatch: (_, _) async => false,
+      );
+      await ctrl.connect(profile);
+      // Let connect's own tmux refresh land before staging our own.
+      await Future<void>.delayed(Duration.zero);
+      ctrl.attachTmuxSession('train');
+      expect(container.read(researchTerminalProvider).currentTmuxName, 'train');
+
+      fake.execResult = 'train\t1\t1\n';
+      await ctrl.refreshTmux();
+      expect(container.read(researchTerminalProvider).currentTmuxName, 'train');
+
+      // User left tmux behind our back (`exit`, or C-b d on a real keyboard).
+      fake.execResult = 'train\t0\t1\n';
+      await ctrl.refreshTmux();
+      expect(container.read(researchTerminalProvider).currentTmuxName, isNull);
+
+      // Session killed outright.
+      ctrl.attachTmuxSession('train');
+      fake.execResult = 'other\t1\t1\n';
+      await ctrl.refreshTmux();
+      expect(container.read(researchTerminalProvider).currentTmuxName, isNull);
+    });
+
+    test('detach is a no-op when nothing is attached', () async {
+      final ctrl = container.read(researchTerminalProvider.notifier);
+      ctrl.setHostKeyHandlers(
+        onTrust: (_) async => true,
+        onMismatch: (_, _) async => false,
+      );
+      await ctrl.connect(profile);
+      await Future<void>.delayed(Duration.zero);
+      fake.writes.clear();
+      fake.execCommands.clear();
+
+      await ctrl.detachTmuxSession();
+      // The old prefix-key write would have dropped `C-b d` into the shell.
+      expect(fake.writes, isEmpty);
+      expect(fake.execCommands, isEmpty);
+
+      ctrl.attachTmuxSession('train');
+      fake.writes.clear();
+      fake.execCommands.clear();
+      await ctrl.detachTmuxSession();
+      expect(fake.execCommands.single, contains('detach-client -s'));
+      expect(container.read(researchTerminalProvider).currentTmuxName, isNull);
+    });
+
+    test('an illegal tmux name surfaces as tmuxError, not a crash', () async {
+      final ctrl = container.read(researchTerminalProvider.notifier);
+      ctrl.setHostKeyHandlers(
+        onTrust: (_) async => true,
+        onMismatch: (_, _) async => false,
+      );
+      await ctrl.connect(profile);
+      await Future<void>.delayed(Duration.zero);
+
+      await ctrl.createTmuxSession('bad name!');
+      final st = container.read(researchTerminalProvider);
+      expect(st.tmuxError, contains('非法'));
+      expect(st.currentTmuxName, isNull);
+      expect(fake.writes.any((w) => w.contains('attach-session')), isFalse);
+    });
+
+    test('clearing host key handlers only unbinds its own', () async {
+      final ctrl = container.read(researchTerminalProvider.notifier);
+      Future<bool> mineTrust(ResearchHostKeyInfo i) async => true;
+      Future<bool> mineMismatch(ResearchHostKeyInfo i, String p) async => true;
+      Future<bool> theirsTrust(ResearchHostKeyInfo i) async => true;
+      Future<bool> theirsMismatch(ResearchHostKeyInfo i, String p) async => true;
+
+      ctrl.setHostKeyHandlers(onTrust: mineTrust, onMismatch: mineMismatch);
+      // A page disposing after a newer one bound its own must not clear it.
+      ctrl.clearHostKeyHandlers(
+        onTrust: theirsTrust,
+        onMismatch: theirsMismatch,
+      );
+      await ctrl.connect(profile);
+      expect(container.read(researchTerminalProvider).isConnected, isTrue);
+      await ctrl.disconnect();
+
+      // Its own handlers do get dropped — no dialogs on a dead context.
+      ctrl.clearHostKeyHandlers(onTrust: mineTrust, onMismatch: mineMismatch);
+      const untrusted = SshProfile(
+        id: 'host3',
+        name: 'fresh',
+        host: '10.0.0.3',
+        username: 'u3',
+      );
+      await ctrl.saveProfile(untrusted);
+      await ctrl.connect(untrusted);
+      expect(
+        container.read(researchTerminalProvider).status,
+        ResearchConnectionStatus.error,
+      );
+    });
+
     test('approval binds to host+generation; reconnect invalidates', () async {
       final ctrl = container.read(researchTerminalProvider.notifier);
       ctrl.setHostKeyHandlers(
@@ -920,6 +1169,42 @@ void main() {
       final client = createResearchSshClient();
       expect(client.isConnected, isFalse);
       // On IO platforms connect may attempt real TCP; we only assert disconnect is safe.
+      await client.disconnect();
+    });
+
+    test('a reconnect does not reuse the streams disconnect closed', () async {
+      final client = createResearchSshClient();
+      await client.disconnect();
+
+      // Port 1 refuses immediately; all we need is for connect() to get far
+      // enough to reopen its output streams before failing on the socket.
+      const dead = SshProfile(
+        id: 'x',
+        name: 'x',
+        host: '127.0.0.1',
+        port: 1,
+        username: 'u',
+      );
+      await expectLater(
+        client.connect(
+          profile: dead,
+          password: null,
+          privateKeyPem: null,
+          passphrase: null,
+          onHostKeyTrust: (_) async => true,
+          onHostKeyMismatch: (_, _) async => false,
+          connectTimeout: const Duration(seconds: 2),
+        ),
+        throwsA(anything),
+      );
+
+      var closed = false;
+      final sub = client.stdout.listen((_) {}, onDone: () => closed = true);
+      await Future<void>.delayed(Duration.zero);
+      // A closed controller hands every later listener an immediate done, so
+      // the reconnected session's output would silently never arrive.
+      expect(closed, isFalse);
+      await sub.cancel();
       await client.disconnect();
     });
   });

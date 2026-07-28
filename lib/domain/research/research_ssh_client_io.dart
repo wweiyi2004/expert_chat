@@ -75,10 +75,8 @@ class ResearchSshClientIo implements ResearchSshClient {
   final List<List<int>> _earlyStderr = [];
   var _earlyStdoutBytes = 0;
   var _earlyStderrBytes = 0;
-  late final StreamController<List<int>> _stdoutController =
-      StreamController<List<int>>.broadcast(onListen: _flushEarlyStdout);
-  late final StreamController<List<int>> _stderrController =
-      StreamController<List<int>>.broadcast(onListen: _flushEarlyStderr);
+  late StreamController<List<int>> _stdoutController = _newStdoutController();
+  late StreamController<List<int>> _stderrController = _newStderrController();
   final List<StreamSubscription<dynamic>> _subs = [];
   var _connected = false;
   Completer<void>? _done;
@@ -109,7 +107,11 @@ class ResearchSshClientIo implements ResearchSshClient {
     int rows = 24,
     Duration connectTimeout = const Duration(seconds: 15),
   }) async {
-    await disconnect();
+    await _teardown(closeStreams: false);
+    // disconnect() closes the output streams; a reconnect on the same instance
+    // needs live ones again.
+    if (_stdoutController.isClosed) _stdoutController = _newStdoutController();
+    if (_stderrController.isClosed) _stderrController = _newStderrController();
     _done = Completer<void>();
     _lastFp = null;
 
@@ -272,7 +274,9 @@ class ResearchSshClientIo implements ResearchSshClient {
   }
 
   @override
-  Future<void> disconnect() async {
+  Future<void> disconnect() => _teardown(closeStreams: true);
+
+  Future<void> _teardown({required bool closeStreams}) async {
     _connected = false;
     for (final s in _subs) {
       await s.cancel();
@@ -290,7 +294,17 @@ class ResearchSshClientIo implements ResearchSshClient {
     if (!(_done?.isCompleted ?? true)) {
       _done?.complete();
     }
+    if (closeStreams) {
+      if (!_stdoutController.isClosed) await _stdoutController.close();
+      if (!_stderrController.isClosed) await _stderrController.close();
+    }
   }
+
+  StreamController<List<int>> _newStdoutController() =>
+      StreamController<List<int>>.broadcast(onListen: _flushEarlyStdout);
+
+  StreamController<List<int>> _newStderrController() =>
+      StreamController<List<int>>.broadcast(onListen: _flushEarlyStderr);
 
   void _emitStdout(List<int> data) {
     if (_stdoutController.isClosed) return;

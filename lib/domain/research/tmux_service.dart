@@ -46,18 +46,15 @@ class TmuxService {
   String attachSessionCommand(String name) =>
       'tmux attach-session -t ${shellSingleQuote(name)}\n';
 
-  /// Default tmux prefix is Ctrl-B (0x02), then `d` detaches (job keeps running).
+  /// Default tmux prefix is Ctrl-B (0x02).
   static const int defaultPrefixCodeUnit = 0x02; // Ctrl-B
-  static const String detachSuffix = 'd';
 
   Future<List<TmuxSessionInfo>> listSessions(ResearchSshClient client) async {
     try {
-      final out = await client.runExec(listCommand);
-      if (out.toLowerCase().contains('command not found') ||
-          out.toLowerCase().contains('not found')) {
-        throw TmuxNotInstalledException();
-      }
-      return parseListSessions(out);
+      // Do not sniff stdout for "not found": a session name may legitimately
+      // contain that text. A missing binary shows up on stderr / exit 127,
+      // which the ResearchSshExecException branch below handles.
+      return parseListSessions(await client.runExec(listCommand));
     } on ResearchSshExecException catch (e) {
       final stderr = e.stderrText.toLowerCase();
       if (e.exitCode == 127 ||
@@ -92,14 +89,29 @@ class TmuxService {
     client.write(utf8.encode(attachSessionCommand(safe)));
   }
 
-  /// Detach the interactive client. Does **not** kill the session or jobs.
+  /// Server-side detach of every client attached to [name].
   ///
-  /// Sends prefix then `d` with a short gap so tmux registers the prefix first.
-  Future<void> detachInShell(ResearchSshClient client) async {
-    client.write([defaultPrefixCodeUnit]);
-    await Future<void>.delayed(const Duration(milliseconds: 40));
-    client.write(utf8.encode(detachSuffix));
+  /// Prefer this over writing `prefix d` into the PTY: the key sequence is only
+  /// meaningful when the shell really is inside tmux, and when it is not, the
+  /// bytes land in the user's command line (Ctrl-B moves the cursor, `d`
+  /// inserts a character). Going through exec is inert if the session is gone.
+  String detachClientCommand(String name) =>
+      'tmux detach-client -s ${shellSingleQuote(name)}';
+
+  /// Detach the interactive client. Does **not** kill the session or jobs.
+  Future<void> detachSession(ResearchSshClient client, String name) async {
+    final safe = name.trim();
+    if (safe.isEmpty) return;
+    await client.runExec(detachClientCommand(safe));
   }
+
+  /// Gap between the prefix key and the command that follows it.
+  ///
+  /// tmux must process `C-b` before the next byte arrives, otherwise the `:`
+  /// reaches the pane as literal input. This is timing-dependent by nature —
+  /// there is no ack to wait on — so the window is sized for a slow link
+  /// rather than a fast one.
+  static const prefixSettleDelay = Duration(milliseconds: 150);
 
   /// Switch to another session while already attached (no full detach UX).
   ///
@@ -114,7 +126,7 @@ class TmuxService {
       throw ArgumentError('非法的 tmux 会话名');
     }
     client.write([defaultPrefixCodeUnit]);
-    await Future<void>.delayed(const Duration(milliseconds: 40));
+    await Future<void>.delayed(prefixSettleDelay);
     // Enter command prompt, switch client, confirm.
     client.write(utf8.encode(':switch-client -t $safe\n'));
   }

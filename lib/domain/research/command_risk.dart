@@ -46,6 +46,13 @@ class LocalRiskResult {
 class CommandRiskClassifier {
   const CommandRiskClassifier();
 
+  /// A `>`/`>>` that actually writes a file.
+  ///
+  /// Whitespace around it is optional (`x >f`, `x>f` write just as well as
+  /// `x > f`), so matching on `' > '` misses the dangerous spellings. Excluded:
+  /// fd duplication (`2>&1`) and the `>=` / `=>` / `->` operators.
+  static final RegExp _writeRedirect = RegExp(r'(?<![=<>-])>>?(?![&=])');
+
   LocalRiskResult classify(String command) {
     final raw = command;
     final cmd = command.trim();
@@ -127,11 +134,14 @@ class CommandRiskClassifier {
       bump(CommandRisk.medium, '集群作业提交/取消');
     }
     if (RegExp(r'(^|[;&|])\s*(mv|cp)\s+.*\s+/').hasMatch(lower) &&
-        lower.contains('>')) {
+        _writeRedirect.hasMatch(raw)) {
       bump(CommandRisk.medium, '可能覆盖文件');
     }
-    if (raw.contains(' > ') || raw.contains('>>')) {
+    if (_writeRedirect.hasMatch(raw)) {
       bump(CommandRisk.medium, '重定向写入文件');
+    }
+    if (RegExp(r'\btee\b').hasMatch(lower)) {
+      bump(CommandRisk.medium, '通过 tee 写入文件');
     }
 
     if (reasons.isEmpty) {

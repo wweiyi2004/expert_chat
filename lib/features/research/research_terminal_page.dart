@@ -30,7 +30,6 @@ class ResearchTerminalPage extends ConsumerStatefulWidget {
 class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
     with WidgetsBindingObserver {
   final _termFocus = FocusNode();
-  var _ctrlLatch = false;
 
   @override
   void initState() {
@@ -41,6 +40,14 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
 
   @override
   void dispose() {
+    // The controller outlives this page; a handler left bound would try to
+    // show a dialog on a dead context the next time a host key needs approval.
+    ref
+        .read(researchTerminalProvider.notifier)
+        .clearHostKeyHandlers(
+          onTrust: _confirmHostKeyTrust,
+          onMismatch: _confirmHostKeyMismatch,
+        );
     WidgetsBinding.instance.removeObserver(this);
     _termFocus.dispose();
     super.dispose();
@@ -313,31 +320,26 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
   }
 
   void _sendShortcut(String raw) {
-    final ctrl = ref.read(researchTerminalProvider.notifier);
-    if (_ctrlLatch && raw.length == 1) {
-      final code = raw.toLowerCase().codeUnitAt(0) - 96;
-      if (code >= 1 && code <= 26) {
-        final blocked = ctrl.writeUserInput(String.fromCharCode(code));
-        setState(() => _ctrlLatch = false);
-        if (blocked && mounted) _showCtrlCBlockedSnack();
-        return;
-      }
-    }
-    final blocked = ctrl.writeUserInput(raw);
-    if (blocked && mounted) _showCtrlCBlockedSnack();
+    // The Ctrl latch lives in the controller so the soft keyboard — whose text
+    // reaches the PTY through terminal.onOutput, never through this method —
+    // gets the modifier applied too.
+    final blocked = ref
+        .read(researchTerminalProvider.notifier)
+        .writeUserInput(raw);
+    if (blocked && mounted) _showInterruptBlockedSnack();
   }
 
-  void _showCtrlCBlockedSnack() {
+  void _showInterruptBlockedSnack() {
     final messenger = ScaffoldMessenger.of(context);
     messenger.hideCurrentSnackBar();
     messenger.showSnackBar(
       const SnackBar(
-        content: Text('已拦截 Ctrl+C，避免误杀远端进程（可在终端栏关闭「拦截 Ctrl+C」）'),
+        content: Text('已拦截中断键，避免误杀远端进程（可在终端栏关闭「拦截 Ctrl+C」）'),
         duration: Duration(seconds: 2),
         behavior: SnackBarBehavior.floating,
       ),
     );
-    ref.read(researchTerminalProvider.notifier).clearCtrlCBlockedFlash();
+    ref.read(researchTerminalProvider.notifier).clearInterruptBlockedFlash();
   }
 
   Future<void> _confirmSendCtrlC() async {
@@ -401,16 +403,25 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
     final wide =
         MediaQuery.sizeOf(context).width >= WorkspaceBreakpoints.shellRail;
 
-    // Keyboard Ctrl+C blocked via terminal.onOutput — surface a snack once.
+    // Keyboard interrupt blocked via terminal.onOutput — surface a snack once.
     ref.listen(researchTerminalProvider, (prev, next) {
-      if (next.ctrlCBlockedFlash && prev?.ctrlCBlockedFlash != true) {
+      if (next.interruptBlockedFlash && prev?.interruptBlockedFlash != true) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) _showCtrlCBlockedSnack();
+          if (mounted) _showInterruptBlockedSnack();
         });
       }
     });
 
-    final keyboardOpen = MediaQuery.viewInsetsOf(context).bottom > 0;
+    final keyboardInset = MediaQuery.viewInsetsOf(context).bottom;
+    final keyboardOpen = keyboardInset > 0;
+
+    final shortcutBar = state.isConnected
+        ? _ShortcutBar(
+            ctrlLatched: state.ctrlLatched,
+            onToggleCtrl: () => ctrl.setCtrlLatched(!state.ctrlLatched),
+            onSend: _sendShortcut,
+          )
+        : null;
 
     final body = Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -486,15 +497,30 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
             ),
           ),
         ),
-        // Hide shortcut strip while IME is up to free vertical space.
-        if (state.isConnected && !keyboardOpen)
-          _ShortcutBar(
-            ctrlLatched: _ctrlLatch,
-            onToggleCtrl: () => setState(() => _ctrlLatch = !_ctrlLatch),
-            onSend: _sendShortcut,
-          ),
+        // While the IME is up the strip is re-hosted above the keyboard (see
+        // below): resizeToAvoidBottomInset is off, so in flow it would sit
+        // behind the keyboard rather than free vertical space.
+        if (shortcutBar != null && !keyboardOpen) shortcutBar,
       ],
     );
+
+    // Ctrl only means anything paired with a letter, and on a phone the letters
+    // come from the soft keyboard — so the strip has to stay reachable while
+    // the keyboard is open. Overlaying keeps the terminal at full height, which
+    // is what stops the canvas from blanking when the keyboard dismisses.
+    final bodyWithBar = shortcutBar != null && keyboardOpen
+        ? Stack(
+            children: [
+              Positioned.fill(child: body),
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: keyboardInset,
+                child: shortcutBar,
+              ),
+            ],
+          )
+        : body;
 
     return Scaffold(
       // Critical on phones: do not shrink this page when the soft keyboard
@@ -570,7 +596,7 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
           ? Row(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Expanded(child: body),
+                Expanded(child: bodyWithBar),
                 VerticalDivider(
                   width: 1,
                   color: scheme.outlineVariant.withValues(alpha: 0.7),
@@ -584,7 +610,7 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
                 ),
               ],
             )
-          : body,
+          : bodyWithBar,
     );
   }
 }
@@ -834,28 +860,35 @@ class _ShortcutBar extends StatelessWidget {
     ];
     return Material(
       color: scheme.surfaceContainer,
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-        child: Row(
-          children: [
-            for (final (label, seq, custom) in keys) ...[
-              Padding(
-                padding: const EdgeInsets.only(right: 6),
-                child: FilterChip(
-                  selected: label == 'Ctrl' && ctrlLatched,
-                  label: Text(label),
-                  onSelected: (_) {
-                    if (custom != null) {
-                      custom();
-                    } else {
-                      onSend(seq);
-                    }
-                  },
+      // Chips must not take focus: stealing it from the terminal closes the
+      // soft keyboard, and Ctrl is latched precisely to combine with a key
+      // typed on that keyboard.
+      child: ExcludeFocus(
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+          child: Row(
+            children: [
+              for (final (label, seq, custom) in keys) ...[
+                Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child: FilterChip(
+                    selected: label == 'Ctrl' && ctrlLatched,
+                    label: Text(
+                      label == 'Ctrl' && ctrlLatched ? 'Ctrl（下一键）' : label,
+                    ),
+                    onSelected: (_) {
+                      if (custom != null) {
+                        custom();
+                      } else {
+                        onSend(seq);
+                      }
+                    },
+                  ),
                 ),
-              ),
+              ],
             ],
-          ],
+          ),
         ),
       ),
     );

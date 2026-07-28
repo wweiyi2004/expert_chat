@@ -36,7 +36,8 @@ class ResearchTerminalState {
     this.latencyMs,
     this.cols = 80,
     this.rows = 24,
-    this.ctrlCBlockedFlash = false,
+    this.interruptBlockedFlash = false,
+    this.ctrlLatched = false,
   });
 
   final List<SshProfile> profiles;
@@ -51,7 +52,7 @@ class ResearchTerminalState {
   final String? currentTmuxName;
   final int aiContextLines;
 
-  /// When true, Ctrl+C (ETX) from keyboard/shortcuts is not sent to the PTY.
+  /// When true, interrupt chars (Ctrl+C / Ctrl+\) never reach the PTY.
   final bool blockCtrlC;
   final CommandProposal? proposal;
   final bool analyzing;
@@ -59,8 +60,13 @@ class ResearchTerminalState {
   final int cols;
   final int rows;
 
-  /// Brief UI hint after an intercepted Ctrl+C.
-  final bool ctrlCBlockedFlash;
+  /// Brief UI hint after an intercepted interrupt char.
+  final bool interruptBlockedFlash;
+
+  /// Ctrl held for the next keystroke — a soft keyboard has no Ctrl key, so the
+  /// modifier is latched here and applied in [ResearchTerminalController
+  /// .writeUserInput], which every input path goes through.
+  final bool ctrlLatched;
 
   SshProfile? get activeProfile {
     if (profiles.isEmpty) return null;
@@ -89,7 +95,8 @@ class ResearchTerminalState {
     Object? latencyMs = _s,
     int? cols,
     int? rows,
-    bool? ctrlCBlockedFlash,
+    bool? interruptBlockedFlash,
+    bool? ctrlLatched,
   }) => ResearchTerminalState(
     profiles: profiles ?? this.profiles,
     activeProfileId: identical(activeProfileId, _s)
@@ -112,7 +119,8 @@ class ResearchTerminalState {
     latencyMs: identical(latencyMs, _s) ? this.latencyMs : latencyMs as int?,
     cols: cols ?? this.cols,
     rows: rows ?? this.rows,
-    ctrlCBlockedFlash: ctrlCBlockedFlash ?? this.ctrlCBlockedFlash,
+    interruptBlockedFlash: interruptBlockedFlash ?? this.interruptBlockedFlash,
+    ctrlLatched: ctrlLatched ?? this.ctrlLatched,
   );
 
   static const _s = Object();
@@ -260,32 +268,46 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
 
   Future<void> setBlockCtrlC(bool value) async {
     await _prefs.saveBlockCtrlC(value);
-    state = state.copyWith(blockCtrlC: value, ctrlCBlockedFlash: false);
+    state = state.copyWith(blockCtrlC: value, interruptBlockedFlash: false);
   }
 
   String previewForAi() => transcript.recentForAi(state.aiContextLines);
 
-  /// Writes user keystrokes / shortcuts to the PTY, optionally stripping Ctrl+C.
-  /// Returns true if a Ctrl+C was blocked.
+  /// Latches Ctrl for the next keystroke (soft keyboards have no Ctrl key).
+  void setCtrlLatched(bool value) {
+    if (state.ctrlLatched != value) {
+      state = state.copyWith(ctrlLatched: value);
+    }
+  }
+
+  /// Writes user keystrokes / shortcuts to the PTY, applying a pending Ctrl
+  /// latch and optionally stripping interrupt chars. Returns true if an
+  /// interrupt char was blocked.
   bool writeUserInput(String data, {bool force = false}) {
     final client = _client;
     if (client == null || !client.isConnected) return false;
+    var payload = data;
+    if (!force && state.ctrlLatched && data.isNotEmpty) {
+      payload = TerminalInputGuard.applyCtrlLatch(data) ?? data;
+      // A real Ctrl key releases after one keystroke; so does this.
+      state = state.copyWith(ctrlLatched: false);
+    }
     final result = TerminalInputGuard.filter(
-      data,
-      blockCtrlC: force ? false : state.blockCtrlC,
+      payload,
+      blockInterrupt: force ? false : state.blockCtrlC,
     );
-    if (result.blockedCtrlC) {
-      state = state.copyWith(ctrlCBlockedFlash: true);
+    if (result.blockedInterrupt) {
+      state = state.copyWith(interruptBlockedFlash: true);
     }
     if (result.data.isNotEmpty) {
       client.write(utf8.encode(result.data));
     }
-    return result.blockedCtrlC;
+    return result.blockedInterrupt;
   }
 
-  void clearCtrlCBlockedFlash() {
-    if (state.ctrlCBlockedFlash) {
-      state = state.copyWith(ctrlCBlockedFlash: false);
+  void clearInterruptBlockedFlash() {
+    if (state.interruptBlockedFlash) {
+      state = state.copyWith(interruptBlockedFlash: false);
     }
   }
 
@@ -462,6 +484,25 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
     _hostKeyMismatchHandler = onMismatch;
   }
 
+  /// Unbinds handlers a now-disposed page had registered.
+  ///
+  /// The controller outlives the page, so a stale handler would keep pushing
+  /// dialogs onto a dead [BuildContext]. Clearing only when the stored handler
+  /// is still the caller's own matters because a new page may already have
+  /// bound its own while the old one was tearing down — dropping *that* would
+  /// silently deny every later host-key prompt.
+  void clearHostKeyHandlers({
+    HostKeyTrustHandler? onTrust,
+    HostKeyMismatchHandler? onMismatch,
+  }) {
+    if (onTrust != null && _hostKeyTrustHandler == onTrust) {
+      _hostKeyTrustHandler = null;
+    }
+    if (onMismatch != null && _hostKeyMismatchHandler == onMismatch) {
+      _hostKeyMismatchHandler = null;
+    }
+  }
+
   Future<void> disconnect({
     bool bumpGeneration = true,
     bool invalidateConnectAttempts = true,
@@ -521,26 +562,67 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
     try {
       final sessions = await _tmux.listSessions(client);
       if (!_ownsConnection(client, generation)) return;
-      state = state.copyWith(tmuxSessions: sessions, tmuxError: null);
+      state = state.copyWith(
+        tmuxSessions: sessions,
+        tmuxError: null,
+        currentTmuxName: _reconcileCurrentTmux(sessions),
+      );
     } on TmuxNotInstalledException {
       if (!_ownsConnection(client, generation)) return;
-      state = state.copyWith(tmuxSessions: const [], tmuxError: '远端未安装 tmux');
+      state = state.copyWith(
+        tmuxSessions: const [],
+        tmuxError: '远端未安装 tmux',
+        currentTmuxName: null,
+      );
     } catch (e) {
       if (!_ownsConnection(client, generation)) return;
       state = state.copyWith(tmuxError: _safeError(e));
     }
   }
 
+  /// The session we still believe we are attached to, per the server's view.
+  ///
+  /// The user can leave tmux behind our back (typing `exit`, or `C-b d` on a
+  /// hardware keyboard), after which the banner would keep claiming an
+  /// attachment that no longer exists and `switchTmuxSession` would send
+  /// `switch-client` into a bare shell. Anything the server no longer reports
+  /// as attached is dropped.
+  ///
+  /// `session_attached` counts *all* clients, so a session another terminal
+  /// holds open still reads as attached. That direction is the safe one: we
+  /// keep a possibly-stale name rather than dropping a live one.
+  String? _reconcileCurrentTmux(List<TmuxSessionInfo> sessions) {
+    final current = state.currentTmuxName;
+    if (current == null) return null;
+    for (final s in sessions) {
+      if (s.name == current) return s.attached > 0 ? current : null;
+    }
+    return null;
+  }
+
   Future<void> createTmuxSession(String name) async {
     final client = _client;
     if (client == null || !client.isConnected) return;
     final generation = state.connectionGeneration;
-    await _tmux.createSession(client, name);
-    if (!_ownsConnection(client, generation)) return;
-    await refreshTmux();
-    if (!_ownsConnection(client, generation)) return;
-    _tmux.attachInShell(client, name);
-    state = state.copyWith(currentTmuxName: name);
+    try {
+      await _tmux.createSession(client, name);
+      if (!_ownsConnection(client, generation)) return;
+      // List before attaching: afterwards the attach may not have landed yet,
+      // and reconciliation would read attached=0 and drop the name we just set.
+      await refreshTmux();
+      if (!_ownsConnection(client, generation)) return;
+      // Creating from inside tmux must switch, not nest an attach.
+      await _tmux.switchOrAttachInShell(
+        client,
+        name,
+        currentlyInTmux: state.currentTmuxName != null,
+      );
+      if (!_ownsConnection(client, generation)) return;
+      state = state.copyWith(currentTmuxName: name, tmuxError: null);
+    } catch (e) {
+      if (!_ownsConnection(client, generation)) return;
+      state = state.copyWith(tmuxError: _safeError(e));
+    }
   }
 
   void attachTmuxSession(String name) {
@@ -573,14 +655,23 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
     }
   }
 
-  /// Leave the attached tmux client without stopping remote jobs (Ctrl-B d).
+  /// Leave the attached tmux client without stopping remote jobs.
   Future<void> detachTmuxSession() async {
     final client = _client;
     if (client == null || !client.isConnected) return;
+    final name = state.currentTmuxName;
+    // Not attached to anything: the old prefix-key write would have dropped
+    // `C-b d` straight into the user's command line.
+    if (name == null) return;
     final generation = state.connectionGeneration;
-    await _tmux.detachInShell(client);
-    if (!_ownsConnection(client, generation)) return;
-    state = state.copyWith(currentTmuxName: null);
+    try {
+      await _tmux.detachSession(client, name);
+      if (!_ownsConnection(client, generation)) return;
+      state = state.copyWith(currentTmuxName: null, tmuxError: null);
+    } catch (e) {
+      if (!_ownsConnection(client, generation)) return;
+      state = state.copyWith(tmuxError: _safeError(e));
+    }
   }
 
   void sendShortcut(String sequence, {bool force = false}) {

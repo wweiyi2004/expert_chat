@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
@@ -40,16 +41,23 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
 
   @override
   void dispose() {
-    // The controller outlives this page; a handler left bound would try to
-    // show a dialog on a dead context the next time a host key needs approval.
-    ref
-        .read(researchTerminalProvider.notifier)
-        .clearHostKeyHandlers(
-          onTrust: _confirmHostKeyTrust,
-          onMismatch: _confirmHostKeyMismatch,
-        );
+    // Detach from the binding first. If the ref work below throws — the
+    // container can already be torn down when a host disposes bottom-up — a
+    // stranded observer would keep calling setState on a defunct element.
     WidgetsBinding.instance.removeObserver(this);
     _termFocus.dispose();
+    // The controller outlives this page; a handler left bound would try to
+    // show a dialog on a dead context the next time a host key needs approval.
+    try {
+      ref
+          .read(researchTerminalProvider.notifier)
+          .clearHostKeyHandlers(
+            onTrust: _confirmHostKeyTrust,
+            onMismatch: _confirmHostKeyMismatch,
+          );
+    } on Object {
+      // Container already gone; the handlers died with it.
+    }
     super.dispose();
   }
 
@@ -396,12 +404,10 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
 
   @override
   Widget build(BuildContext context) {
+    // ref.watch/ref.listen must run in this build, not in the LayoutBuilder
+    // callback below — Riverpod asserts on the enclosing element being mid-build.
     final state = ref.watch(researchTerminalProvider);
     final ctrl = ref.read(researchTerminalProvider.notifier);
-    final scheme = Theme.of(context).colorScheme;
-    final profile = state.activeProfile;
-    final wide =
-        MediaQuery.sizeOf(context).width >= WorkspaceBreakpoints.shellRail;
 
     // Keyboard interrupt blocked via terminal.onOutput — surface a snack once.
     ref.listen(researchTerminalProvider, (prev, next) {
@@ -412,14 +418,56 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
       }
     });
 
-    final keyboardInset = MediaQuery.viewInsetsOf(context).bottom;
-    final keyboardOpen = keyboardInset > 0;
+    // This page is hosted inside the shell Scaffold's body, which on phones
+    // sits above a NavigationBar. viewInsets are measured from the screen edge,
+    // so anything positioned against the IME first needs to know how far this
+    // page's bottom edge already is from the screen's.
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final bottomGap = constraints.maxHeight.isFinite
+            ? math.max(
+                0.0,
+                MediaQuery.sizeOf(context).height - constraints.maxHeight,
+              )
+            : 0.0;
+        return _buildPage(
+          context,
+          state: state,
+          ctrl: ctrl,
+          bottomGap: bottomGap,
+        );
+      },
+    );
+  }
+
+  Widget _buildPage(
+    BuildContext context, {
+    required ResearchTerminalState state,
+    required ResearchTerminalController ctrl,
+    required double bottomGap,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
+    final profile = state.activeProfile;
+    final wide =
+        MediaQuery.sizeOf(context).width >= WorkspaceBreakpoints.shellRail;
+
+    // The slice of keyboard that actually covers this page — the rest of it is
+    // behind the shell's NavigationBar, which the IME hides anyway.
+    final keyboardOverlap = math.max(
+      0.0,
+      MediaQuery.viewInsetsOf(context).bottom - bottomGap,
+    );
+    final keyboardOpen = keyboardOverlap > 0;
 
     final shortcutBar = state.isConnected
         ? _ShortcutBar(
             ctrlLatched: state.ctrlLatched,
             onToggleCtrl: () => ctrl.setCtrlLatched(!state.ctrlLatched),
             onSend: _sendShortcut,
+            // Floating above the IME already clears the system gesture bar.
+            bottomSafeArea: !keyboardOpen,
+            // The wide layout docks the assistant on the right instead.
+            onOpenAi: wide ? null : () => unawaited(_openAiSheet()),
           )
         : null;
 
@@ -515,7 +563,7 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
               Positioned(
                 left: 0,
                 right: 0,
-                bottom: keyboardInset,
+                bottom: keyboardOverlap,
                 child: shortcutBar,
               ),
             ],
@@ -585,13 +633,9 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
           ),
         ],
       ),
-      floatingActionButton: state.isConnected && !wide && !keyboardOpen
-          ? FloatingActionButton.extended(
-              onPressed: () => unawaited(_openAiSheet()),
-              icon: const Icon(Icons.auto_awesome),
-              label: const Text('AI 助手'),
-            )
-          : null,
+      // No FAB: an extended one floated over the right half of the shortcut
+      // strip and swallowed the arrow keys. The assistant now lives at the
+      // right end of that strip, where it also survives the IME being up.
       body: wide
           ? Row(
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -838,11 +882,15 @@ class _ShortcutBar extends StatelessWidget {
     required this.ctrlLatched,
     required this.onToggleCtrl,
     required this.onSend,
+    required this.bottomSafeArea,
+    this.onOpenAi,
   });
 
   final bool ctrlLatched;
   final VoidCallback onToggleCtrl;
   final ValueChanged<String> onSend;
+  final bool bottomSafeArea;
+  final VoidCallback? onOpenAi;
 
   @override
   Widget build(BuildContext context) {
@@ -864,26 +912,69 @@ class _ShortcutBar extends StatelessWidget {
       // soft keyboard, and Ctrl is latched precisely to combine with a key
       // typed on that keyboard.
       child: ExcludeFocus(
-        child: SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        child: SafeArea(
+          top: false,
+          bottom: bottomSafeArea,
           child: Row(
             children: [
-              for (final (label, seq, custom) in keys) ...[
+              // Flexible, not intrinsic: the chips scroll within whatever the
+              // assistant button leaves, instead of running underneath it.
+              Expanded(
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 6,
+                  ),
+                  child: Row(
+                    children: [
+                      for (final (label, seq, custom) in keys) ...[
+                        Padding(
+                          padding: const EdgeInsets.only(right: 6),
+                          child: FilterChip(
+                            selected: label == 'Ctrl' && ctrlLatched,
+                            label: Text(
+                              label == 'Ctrl' && ctrlLatched
+                                  ? 'Ctrl（下一键）'
+                                  : label,
+                            ),
+                            onSelected: (_) {
+                              if (custom != null) {
+                                custom();
+                              } else {
+                                onSend(seq);
+                              }
+                            },
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+              if (onOpenAi != null) ...[
+                SizedBox(
+                  height: 24,
+                  child: VerticalDivider(
+                    width: 1,
+                    color: scheme.outlineVariant.withValues(alpha: 0.8),
+                  ),
+                ),
                 Padding(
-                  padding: const EdgeInsets.only(right: 6),
-                  child: FilterChip(
-                    selected: label == 'Ctrl' && ctrlLatched,
-                    label: Text(
-                      label == 'Ctrl' && ctrlLatched ? 'Ctrl（下一键）' : label,
+                  padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
+                  child: Tooltip(
+                    message: 'AI 助手',
+                    child: FilledButton.tonalIcon(
+                      onPressed: onOpenAi,
+                      icon: const Icon(Icons.auto_awesome, size: 18),
+                      label: const Text('AI'),
+                      style: FilledButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        minimumSize: const Size(0, 34),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
                     ),
-                    onSelected: (_) {
-                      if (custom != null) {
-                        custom();
-                      } else {
-                        onSend(seq);
-                      }
-                    },
                   ),
                 ),
               ],

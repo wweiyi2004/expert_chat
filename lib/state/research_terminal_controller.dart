@@ -440,8 +440,19 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
         // Ignore degenerate sizes during IME open/close animation — resizing
         // PTY to 0×N can blank the canvas and leave a white shell body.
         if (w < 2 || h < 2) return;
-        state = state.copyWith(cols: w, rows: h);
         client.resize(cols: w, rows: h);
+        if (state.cols == w && state.rows == h) return;
+        // xterm fires this from RenderTerminal.performLayout, i.e. mid-frame.
+        // Assigning state there rebuilds listeners during layout, which
+        // Riverpod asserts on. The size is only read when opening a shell, so
+        // publishing it after the frame drains costs nothing.
+        unawaited(
+          Future.microtask(() {
+            if (_disposed || !ref.mounted) return;
+            if (!identical(_client, client)) return;
+            state = state.copyWith(cols: w, rows: h);
+          }),
+        );
       };
 
       state = state.copyWith(

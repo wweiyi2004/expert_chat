@@ -14,9 +14,11 @@ import 'package:expert_chat/domain/research/shell_quoting.dart';
 import 'package:expert_chat/domain/research/terminal_input_guard.dart';
 import 'package:expert_chat/domain/research/terminal_transcript_buffer.dart';
 import 'package:expert_chat/domain/research/tmux_service.dart';
+import 'package:expert_chat/features/research/research_terminal_page.dart';
 import 'package:expert_chat/features/shell/shell_tab.dart';
 import 'package:expert_chat/state/research_terminal_controller.dart';
 import 'package:expert_chat/state/settings_controller.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_secure_storage/test/test_flutter_secure_storage_platform.dart';
@@ -1234,6 +1236,165 @@ void main() {
 
       expect(shell.contains('ShellTab.terminal'), isTrue);
       expect(shell.contains('researchModeEnabled'), isTrue);
+    });
+  });
+
+  group('research terminal phone layout', () {
+    late ProviderContainer container;
+    late _FakeSshClient fake;
+
+    const profile = SshProfile(
+      id: 'host1',
+      name: 'lab',
+      host: '127.0.0.1',
+      username: 'u',
+    );
+
+    // 390x844 logical: a phone, well under WorkspaceBreakpoints.shellRail.
+    const screen = Size(390, 844);
+    const navBarHeight = 80.0;
+
+    setUp(() async {
+      SharedPreferences.setMockInitialValues({});
+      FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
+        {},
+      );
+      final prefs = await SharedPreferences.getInstance();
+      fake = _FakeSshClient();
+      container = _baseContainer(prefs: prefs);
+      container.read(researchTerminalProvider);
+      container
+          .read(researchTerminalProvider.notifier)
+          .debugSetClientFactory(() => fake);
+      await container
+          .read(researchTerminalProvider.notifier)
+          .saveProfile(profile, password: 'secret-never-log');
+    });
+
+    tearDown(() async {
+      try {
+        await container.read(researchTerminalProvider.notifier).disconnect();
+      } catch (_) {}
+      container.dispose();
+    });
+
+    /// Mirrors AppShell on phones: the page is nested in the shell Scaffold's
+    /// body, above a NavigationBar, and the shell does not resize for the IME.
+    Future<void> pumpPage(WidgetTester tester) async {
+      final ctrl = container.read(researchTerminalProvider.notifier);
+      ctrl.setHostKeyHandlers(
+        onTrust: (_) async => true,
+        onMismatch: (_, _) async => true,
+      );
+      await ctrl.connect(profile);
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: const MaterialApp(
+            home: Scaffold(
+              resizeToAvoidBottomInset: false,
+              body: ResearchTerminalPage(),
+              bottomNavigationBar: SizedBox(
+                height: navBarHeight,
+                width: double.infinity,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+    }
+
+    /// Unmount while the container is still alive, so the page's dispose runs
+    /// against a live ref instead of racing the group tearDown.
+    Future<void> unpumpPage(WidgetTester tester) async {
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+    }
+
+    testWidgets('assistant entry cannot cover the shortcut chips', (
+      tester,
+    ) async {
+      tester.view.devicePixelRatio = 1.0;
+      tester.view.physicalSize = screen;
+      addTearDown(tester.view.reset);
+
+      await pumpPage(tester);
+
+      // An extended FAB used to float over the right half of the strip.
+      expect(find.byType(FloatingActionButton), findsNothing);
+
+      final aiButton = find.widgetWithText(FilledButton, 'AI');
+      expect(aiButton, findsOneWidget);
+
+      final chipScroller = find.ancestor(
+        of: find.text('Esc'),
+        matching: find.byType(SingleChildScrollView),
+      );
+      expect(chipScroller, findsOneWidget);
+
+      // The chips scroll inside what the assistant leaves, never underneath it.
+      expect(
+        tester.getRect(chipScroller).right,
+        lessThanOrEqualTo(tester.getRect(aiButton).left),
+      );
+
+      await unpumpPage(tester);
+    });
+
+    testWidgets('the last chip stays tappable after scrolling the strip', (
+      tester,
+    ) async {
+      tester.view.devicePixelRatio = 1.0;
+      tester.view.physicalSize = screen;
+      addTearDown(tester.view.reset);
+
+      await pumpPage(tester);
+
+      final chipScroller = find.ancestor(
+        of: find.text('Esc'),
+        matching: find.byType(SingleChildScrollView),
+      );
+      await tester.drag(chipScroller, const Offset(-400, 0));
+      await tester.pump();
+
+      fake.writes.clear();
+      await tester.tap(find.text('→'));
+      await tester.pump();
+
+      // Right arrow reached the PTY, i.e. nothing swallowed the hit.
+      expect(fake.writes, contains('\x1b[C'));
+
+      await unpumpPage(tester);
+    });
+
+    testWidgets('strip rides the IME instead of the shell NavigationBar', (
+      tester,
+    ) async {
+      tester.view.devicePixelRatio = 1.0;
+      tester.view.physicalSize = screen;
+      addTearDown(tester.view.reset);
+
+      await pumpPage(tester);
+
+      const keyboard = 300.0;
+      tester.view.viewInsets = const FakeViewPadding(bottom: keyboard);
+      await tester.pump();
+      await tester.pump();
+
+      final strip = find
+          .ancestor(of: find.text('Esc'), matching: find.byType(SafeArea))
+          .first;
+      // viewInsets are screen-relative but the page bottom sits a NavigationBar
+      // higher; without that correction the strip floats navBarHeight too high.
+      expect(
+        tester.getRect(strip).bottom,
+        moreOrLessEquals(screen.height - keyboard, epsilon: 1),
+      );
+
+      tester.view.viewInsets = FakeViewPadding.zero;
+      await unpumpPage(tester);
     });
   });
 }

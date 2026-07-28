@@ -1075,7 +1075,9 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                     state.retryOperation!.conversationId != convo?.id
                 ? null
                 : () => controller.retryLast(),
-            onOpenSettings: needsSetup ? () => openShellTab(ref, 2) : null,
+            onOpenSettings: needsSetup
+                ? () => openShellTab(ref, ShellTab.settings)
+                : null,
           ),
         if (convo != null && convo.isStory)
           _StorySessionBar(

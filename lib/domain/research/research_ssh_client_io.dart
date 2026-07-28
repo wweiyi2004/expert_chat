@@ -1,0 +1,259 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:dartssh2/dartssh2.dart';
+
+import '../../data/research/ssh_profile.dart';
+
+class ResearchSshException implements Exception {
+  ResearchSshException(this.message);
+  final String message;
+  @override
+  String toString() => message;
+}
+
+class ResearchHostKeyInfo {
+  const ResearchHostKeyInfo({
+    required this.fingerprintSha256,
+    required this.keyType,
+  });
+  final String fingerprintSha256;
+  final String keyType;
+}
+
+typedef HostKeyTrustHandler = Future<bool> Function(ResearchHostKeyInfo info);
+
+typedef HostKeyMismatchHandler =
+    Future<bool> Function(ResearchHostKeyInfo info, String previousFingerprint);
+
+abstract class ResearchSshClient {
+  Stream<List<int>> get stdout;
+  Stream<List<int>> get stderr;
+  Future<void> get done;
+  bool get isConnected;
+  String? get lastHostKeyFingerprint;
+
+  Future<void> connect({
+    required SshProfile profile,
+    required String? password,
+    required String? privateKeyPem,
+    required String? passphrase,
+    required HostKeyTrustHandler onHostKeyTrust,
+    required HostKeyMismatchHandler onHostKeyMismatch,
+    int cols = 80,
+    int rows = 24,
+    Duration connectTimeout = const Duration(seconds: 15),
+  });
+
+  void write(List<int> data);
+  void resize({required int cols, required int rows});
+  Future<String> runExec(String command, {Duration timeout});
+  Future<void> disconnect();
+}
+
+ResearchSshClient createResearchSshClient() => ResearchSshClientIo();
+
+typedef ResearchSshClientFactory = ResearchSshClient Function();
+
+class ResearchSshClientIo implements ResearchSshClient {
+  SSHClient? _client;
+  SSHSession? _shell;
+  final _stdoutController = StreamController<List<int>>.broadcast();
+  final _stderrController = StreamController<List<int>>.broadcast();
+  final List<StreamSubscription<dynamic>> _subs = [];
+  var _connected = false;
+  Completer<void>? _done;
+  String? _lastFp;
+
+  @override
+  Stream<List<int>> get stdout => _stdoutController.stream;
+  @override
+  Stream<List<int>> get stderr => _stderrController.stream;
+  @override
+  Future<void> get done => _done?.future ?? Future.value();
+  @override
+  bool get isConnected => _connected;
+  @override
+  String? get lastHostKeyFingerprint => _lastFp;
+
+  @override
+  Future<void> connect({
+    required SshProfile profile,
+    required String? password,
+    required String? privateKeyPem,
+    required String? passphrase,
+    required HostKeyTrustHandler onHostKeyTrust,
+    required HostKeyMismatchHandler onHostKeyMismatch,
+    int cols = 80,
+    int rows = 24,
+    Duration connectTimeout = const Duration(seconds: 15),
+  }) async {
+    await disconnect();
+    _done = Completer<void>();
+    _lastFp = null;
+
+    late final SSHSocket socket;
+    try {
+      socket = await SSHSocket.connect(
+        profile.host,
+        profile.port,
+        timeout: connectTimeout,
+      );
+    } catch (_) {
+      throw ResearchSshException('无法连接 ${profile.host}:${profile.port}');
+    }
+
+    List<SSHKeyPair> identities = const [];
+    if (profile.authType == SshAuthType.privateKey) {
+      final pem = privateKeyPem?.trim() ?? '';
+      if (pem.isEmpty) {
+        await socket.close();
+        throw ResearchSshException('未配置私钥');
+      }
+      try {
+        identities = SSHKeyPair.fromPem(pem, passphrase);
+      } catch (_) {
+        await socket.close();
+        throw ResearchSshException('私钥无效或口令错误');
+      }
+    }
+
+    final trusted = profile.trustedHostKeyFingerprint?.trim();
+
+    final client = SSHClient(
+      socket,
+      username: profile.username,
+      identities: identities,
+      onPasswordRequest: profile.authType == SshAuthType.password
+          ? () => password
+          : null,
+      onVerifyHostKey: (type, fingerprintBytes) async {
+        final fp = utf8.decode(fingerprintBytes);
+        _lastFp = fp;
+        final info = ResearchHostKeyInfo(fingerprintSha256: fp, keyType: type);
+        if (trusted == null || trusted.isEmpty) {
+          return onHostKeyTrust(info);
+        }
+        if (trusted == fp) return true;
+        return onHostKeyMismatch(info, trusted);
+      },
+    );
+
+    try {
+      await client.authenticated.timeout(connectTimeout);
+    } on TimeoutException {
+      client.close();
+      throw ResearchSshException('认证超时');
+    } catch (e) {
+      client.close();
+      final msg = e.toString().toLowerCase();
+      if (msg.contains('hostkey') || msg.contains('host key')) {
+        throw ResearchSshException('主机密钥验证失败或已取消');
+      }
+      if (msg.contains('auth')) {
+        throw ResearchSshException('认证失败，请检查用户名/密码或私钥');
+      }
+      throw ResearchSshException('SSH 连接失败');
+    }
+
+    late final SSHSession shell;
+    try {
+      shell = await client.shell(
+        pty: SSHPtyConfig(type: 'xterm-256color', width: cols, height: rows),
+      );
+    } catch (_) {
+      client.close();
+      throw ResearchSshException('无法启动远程 shell');
+    }
+
+    _client = client;
+    _shell = shell;
+    _connected = true;
+
+    _subs.add(
+      shell.stdout.listen((data) {
+        if (!_stdoutController.isClosed) {
+          _stdoutController.add(data);
+        }
+      }, onError: (_) {}),
+    );
+    _subs.add(
+      shell.stderr.listen((data) {
+        if (!_stderrController.isClosed) {
+          _stderrController.add(data);
+        }
+      }, onError: (_) {}),
+    );
+    unawaited(
+      shell.done
+          .then((_) {
+            _connected = false;
+            if (!(_done?.isCompleted ?? true)) _done?.complete();
+          })
+          .catchError((_) {
+            _connected = false;
+            if (!(_done?.isCompleted ?? true)) _done?.complete();
+          }),
+    );
+  }
+
+  @override
+  void write(List<int> data) {
+    final shell = _shell;
+    if (shell == null || !_connected) return;
+    shell.write(Uint8List.fromList(data));
+  }
+
+  @override
+  void resize({required int cols, required int rows}) {
+    final shell = _shell;
+    if (shell == null || !_connected) return;
+    shell.resizeTerminal(cols, rows);
+  }
+
+  @override
+  Future<String> runExec(
+    String command, {
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
+    final client = _client;
+    if (client == null || !_connected) {
+      throw ResearchSshException('未连接');
+    }
+    try {
+      final session = await client.execute(command);
+      final out = BytesBuilder(copy: false);
+      await for (final chunk in session.stdout.timeout(timeout)) {
+        out.add(chunk);
+      }
+      try {
+        await session.done.timeout(timeout);
+      } catch (_) {}
+      return utf8.decode(out.takeBytes(), allowMalformed: true);
+    } catch (e) {
+      if (e is ResearchSshException) rethrow;
+      throw ResearchSshException('远程命令执行失败');
+    }
+  }
+
+  @override
+  Future<void> disconnect() async {
+    _connected = false;
+    for (final s in _subs) {
+      await s.cancel();
+    }
+    _subs.clear();
+    try {
+      _shell?.close();
+    } catch (_) {}
+    _shell = null;
+    try {
+      _client?.close();
+    } catch (_) {}
+    _client = null;
+    if (!(_done?.isCompleted ?? true)) {
+      _done?.complete();
+    }
+  }
+}

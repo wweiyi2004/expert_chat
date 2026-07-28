@@ -289,7 +289,7 @@ Future<void> startStoryChat(
   await ref.read(chatControllerProvider.notifier).newStoryConversation(card);
   if (!context.mounted) return;
   // Shell tabs use IndexedStack — also switch to 会话 so the new chat is visible.
-  openShellTab(ref, 0);
+  openShellTab(ref, ShellTab.chat);
   Navigator.of(context).popUntil((route) => route.isFirst);
 }
 

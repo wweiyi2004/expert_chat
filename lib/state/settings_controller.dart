@@ -45,6 +45,7 @@ class SettingsState {
     this.ttsApi = const MediaApiConfig(),
     this.ttsApiKey = '',
     this.context = const ContextPrefs(),
+    this.researchModeEnabled = false,
   });
 
   final List<ProviderProfile> profiles;
@@ -86,6 +87,9 @@ class SettingsState {
   final MediaApiConfig ttsApi;
   final String ttsApiKey;
   final ContextPrefs context;
+
+  /// M7: hidden research mode (SSH / tmux / AI command approval). Default off.
+  final bool researchModeEnabled;
 
   bool get searchConfigured => searchApiKey.trim().isNotEmpty;
   bool get visionConfigured => visionApi.isConfiguredWith(visionApiKey);
@@ -154,6 +158,7 @@ class SettingsState {
     MediaApiConfig? ttsApi,
     String? ttsApiKey,
     ContextPrefs? context,
+    bool? researchModeEnabled,
   }) => SettingsState(
     profiles: profiles ?? this.profiles,
     activeProfileId: activeProfileId ?? this.activeProfileId,
@@ -178,6 +183,7 @@ class SettingsState {
     ttsApi: ttsApi ?? this.ttsApi,
     ttsApiKey: ttsApiKey ?? this.ttsApiKey,
     context: context ?? this.context,
+    researchModeEnabled: researchModeEnabled ?? this.researchModeEnabled,
   );
 
   static const _sentinel = Object();
@@ -201,6 +207,7 @@ const _kImageGenerationApiKeySecure = 'image_generation_api_key';
 const _kTtsApi = 'ttsApi';
 const _kTtsApiKeySecure = 'tts_api_key';
 const _kContextPrefs = 'contextPrefs';
+const _kResearchModeEnabled = 'researchModeEnabled';
 
 // Legacy M1 keys (single-config) — read once for migration.
 const _kLegacyBaseUrl = 'baseUrl';
@@ -344,7 +351,17 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       ttsApi: _readMediaApi(prefs, _kTtsApi),
       ttsApiKey: ttsApiKey,
       context: _readContextPrefs(prefs),
+      researchModeEnabled: prefs.getBool(_kResearchModeEnabled) ?? false,
     );
+  }
+
+  /// M7: toggle hidden research mode (SSH terminal). Does not connect.
+  Future<void> setResearchModeEnabled(bool enabled) async {
+    final next = _current.copyWith(researchModeEnabled: enabled);
+    state = AsyncData(next);
+    await ref
+        .read(sharedPrefsProvider)
+        .setBool(_kResearchModeEnabled, enabled);
   }
 
   static UiPrefs _readUiPrefs(SharedPreferences prefs) {

@@ -57,6 +57,12 @@ android/key.properties
 android/*.jks
 android/*.keystore
 
+# Prototype HTML UI (reference only; huge node_modules)
+remote_lab_ui/node_modules/
+remote_lab_ui/dist/
+remote_lab_ui/dev.stderr.log
+remote_lab_ui/dev.stdout.log
+
 
 # Per-machine dev helpers (hard-coded local drive paths)
 scripts/use_e_drive.ps1

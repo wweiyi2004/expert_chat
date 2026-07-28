@@ -51,7 +51,7 @@ class _EnsembleSetupPageState extends ConsumerState<EnsembleSetupPage> {
             authorNote: _note.text,
           );
       if (mounted) {
-        openShellTab(ref, 0);
+        openShellTab(ref, ShellTab.chat);
         Navigator.of(context).popUntil((r) => r.isFirst);
       }
     } finally {

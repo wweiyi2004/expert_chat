@@ -216,7 +216,7 @@ class _DirectorStorySetupPageState
 
       // Return to the chat workspace first so the opening section streams
       // visibly instead of making the user wait on this setup form.
-      openShellTab(ref, 0);
+      openShellTab(ref, ShellTab.chat);
       Navigator.of(context).popUntil((route) => route.isFirst);
       unawaited(controller.advancePlot());
     } catch (e) {

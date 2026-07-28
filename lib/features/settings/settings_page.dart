@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:package_info_plus/package_info_plus.dart';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
+
 import '../../core/providers.dart';
 import '../../data/context_prefs.dart';
 import '../../data/provider_profile.dart';
@@ -13,7 +15,10 @@ import '../../domain/tools/search_provider.dart';
 import '../../domain/update/shorebird_patch.dart';
 import '../../domain/update/shorebird_ui.dart';
 import '../../domain/update/update_ui.dart';
+import '../../state/research_mode_fx.dart';
+import '../../state/research_terminal_controller.dart';
 import '../../state/settings_controller.dart';
+import '../shell/shell_tab.dart';
 
 enum _SettingsCategory {
   model('模型', Icons.memory_outlined),
@@ -539,9 +544,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                     ?.copyWith(
                                       color:
                                           _searchTestResult!.startsWith('测试失败')
-                                          ? Theme.of(
-                                              context,
-                                            ).colorScheme.error
+                                          ? Theme.of(context).colorScheme.error
                                           : null,
                                     ),
                               ),
@@ -608,6 +611,16 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                     controller.setSearchMaxResults(v.round()),
                               ),
                               trailing: Text('${s.searchMaxResults} 条'),
+                            ),
+                            const SizedBox(height: 32),
+                            const _SectionTitle('实验功能'),
+                            _ResearchModeCard(
+                              enabled: s.researchModeEnabled,
+                              onChanged: (v, origin) =>
+                                  _setResearchModeEnabled(v, originGlobal: origin),
+                              onOpenTerminal: s.researchModeEnabled
+                                  ? () => openShellTab(ref, ShellTab.terminal)
+                                  : null,
                             ),
                             const SizedBox(height: 32),
                           ],
@@ -707,6 +720,54 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         context,
       ).showSnackBar(const SnackBar(content: Text('删除服务商失败，请重试。')));
     }
+  }
+
+  Future<void> _setResearchModeEnabled(
+    bool enabled, {
+    Offset? originGlobal,
+  }) async {
+    final controller = ref.read(settingsControllerProvider.notifier);
+    if (enabled) {
+      await controller.setResearchModeEnabled(true);
+      // Rainbow ripple expands from the research switch itself.
+      ref.read(researchModeFxProvider.notifier).play(originGlobal: originGlobal);
+      return;
+    }
+
+    final research = ref.read(researchTerminalProvider);
+    final hasSession =
+        research.isConnected ||
+        research.status == ResearchConnectionStatus.connecting;
+    if (hasSession) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          icon: const Icon(Icons.link_off_outlined),
+          title: const Text('关闭科研模式？'),
+          content: const Text(
+            '将断开当前 SSH 连接；远端 tmux 中的任务仍会继续运行。'
+            '终端入口会从导航中隐藏。',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('断开并关闭'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true || !mounted) return;
+    }
+
+    if (ref.read(shellTabProvider) == ShellTab.terminal) {
+      ref.read(shellTabProvider.notifier).set(ShellTab.settings);
+    }
+    await ref.read(researchTerminalProvider.notifier).releaseAll();
+    await controller.setResearchModeEnabled(false);
   }
 
   Future<void> _clearCache() async {
@@ -1419,4 +1480,134 @@ class _SectionTitle extends StatelessWidget {
       ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
     ),
   );
+}
+
+/// M7 experimental research-mode card under 能力 → 实验功能.
+class _ResearchModeCard extends StatefulWidget {
+  const _ResearchModeCard({
+    required this.enabled,
+    required this.onChanged,
+    this.onOpenTerminal,
+  });
+
+  final bool enabled;
+
+  /// [originGlobal] is the switch center in global coordinates (ripple source).
+  final void Function(bool enabled, Offset? originGlobal) onChanged;
+  final VoidCallback? onOpenTerminal;
+
+  @override
+  State<_ResearchModeCard> createState() => _ResearchModeCardState();
+}
+
+class _ResearchModeCardState extends State<_ResearchModeCard> {
+  final _switchKey = GlobalKey();
+
+  Offset? _switchCenterGlobal() {
+    final box = _switchKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return null;
+    return box.localToGlobal(box.size.center(Offset.zero));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final webBlocked = kIsWeb;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: scheme.primaryContainer,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Icon(
+                    Icons.terminal_rounded,
+                    color: scheme.onPrimaryContainer,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Text(
+                            '科研模式',
+                            style: Theme.of(context).textTheme.titleMedium
+                                ?.copyWith(fontWeight: FontWeight.w600),
+                          ),
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: scheme.secondaryContainer,
+                              borderRadius: BorderRadius.circular(999),
+                            ),
+                            child: Text(
+                              '实验性',
+                              style: Theme.of(context).textTheme.labelSmall
+                                  ?.copyWith(
+                                    color: scheme.onSecondaryContainer,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        webBlocked
+                            ? '浏览器无法直接建立原生 SSH 连接。'
+                            : '启用 SSH 终端、tmux 会话和 AI 命令审批。',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+                KeyedSubtree(
+                  key: _switchKey,
+                  child: Switch.adaptive(
+                    value: widget.enabled && !webBlocked,
+                    onChanged: webBlocked
+                        ? null
+                        : (v) => widget.onChanged(v, _switchCenterGlobal()),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          '关闭时，终端入口不会显示，服务器配置也不会进入普通 AI 会话。',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        if (widget.enabled && !webBlocked && widget.onOpenTerminal != null) ...[
+          const SizedBox(height: 12),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: OutlinedButton.icon(
+              onPressed: widget.onOpenTerminal,
+              icon: const Icon(Icons.terminal_rounded, size: 18),
+              label: const Text('进入科研终端'),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
 }

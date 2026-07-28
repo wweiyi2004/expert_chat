@@ -64,10 +64,11 @@ class ResearchTerminalState {
 
   SshProfile? get activeProfile {
     if (profiles.isEmpty) return null;
-    return profiles.firstWhere(
-      (p) => p.id == activeProfileId,
-      orElse: () => profiles.first,
-    );
+    if (activeProfileId == null) return profiles.first;
+    for (final profile in profiles) {
+      if (profile.id == activeProfileId) return profile;
+    }
+    return null;
   }
 
   bool get isConnected => status == ResearchConnectionStatus.connected;
@@ -131,6 +132,7 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
   final List<StreamSubscription<dynamic>> _subs = [];
   ResearchSshClientFactory _clientFactory = createResearchSshClient;
   var _disposed = false;
+  var _connectionRequest = 0;
 
   /// For tests.
   @visibleForTesting
@@ -167,6 +169,25 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
     final secure = ref.read(secureStorageProvider);
     final list = [...state.profiles];
     final idx = list.indexWhere((p) => p.id == profile.id);
+    final existing = idx >= 0 ? list[idx] : null;
+    final activeBeforeSave = state.activeProfileId;
+    final keepConnectedProfileActive =
+        activeBeforeSave != null &&
+        profile.id != activeBeforeSave &&
+        (state.status == ResearchConnectionStatus.connecting ||
+            state.isConnected);
+    final editsActiveConnection =
+        existing != null &&
+        profile.id == state.activeProfileId &&
+        (state.status == ResearchConnectionStatus.connecting ||
+            state.isConnected) &&
+        _connectionTargetChanged(existing, profile);
+    if (editsActiveConnection) {
+      // Never let the displayed/approved profile drift away from the actual
+      // SSH transport. A changed endpoint must reconnect and mint a new
+      // approval generation before it can receive commands.
+      await disconnect();
+    }
     if (idx >= 0) {
       list[idx] = profile;
     } else {
@@ -203,10 +224,21 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
         );
       }
     }
-    state = state.copyWith(profiles: list, activeProfileId: profile.id);
+    state = state.copyWith(
+      profiles: list,
+      activeProfileId: keepConnectedProfileActive
+          ? activeBeforeSave
+          : profile.id,
+    );
   }
 
   Future<void> deleteProfile(String id) async {
+    if (state.activeProfileId == id &&
+        (state.status == ResearchConnectionStatus.connecting ||
+            state.isConnected ||
+            _client != null)) {
+      await disconnect();
+    }
     final secure = ref.read(secureStorageProvider);
     final list = state.profiles.where((p) => p.id != id).toList();
     await _prefs.saveProfiles(list);
@@ -265,7 +297,9 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
       );
       return;
     }
-    await disconnect(bumpGeneration: true);
+    final request = ++_connectionRequest;
+    await disconnect(bumpGeneration: true, invalidateConnectAttempts: false);
+    if (!_isCurrentConnectRequest(request)) return;
     state = state.copyWith(
       status: ResearchConnectionStatus.connecting,
       statusMessage: '正在连接 ${profile.host}…',
@@ -284,13 +318,14 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
     final passphrase = await secure.read(
       key: ResearchSecureKeys.passphrase(profile.id),
     );
+    if (!_isCurrentConnectRequest(request)) return;
 
     final client = _clientFactory();
     _client = client;
     final sw = Stopwatch()..start();
 
     bool stillThisClient() =>
-        !_disposed && ref.mounted && identical(_client, client);
+        _isCurrentConnectRequest(request) && identical(_client, client);
 
     try {
       await client.connect(
@@ -342,20 +377,22 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
       transcript.clear();
 
       _subs.add(
-        client.stdout.listen((data) {
-          if (!identical(_client, client)) return;
-          final text = utf8.decode(data, allowMalformed: true);
-          terminal.write(text);
-          transcript.append(text);
-        }),
+        client.stdout.transform(const Utf8Decoder(allowMalformed: true)).listen(
+          (text) {
+            if (!identical(_client, client)) return;
+            terminal.write(text);
+            transcript.append(text);
+          },
+        ),
       );
       _subs.add(
-        client.stderr.listen((data) {
-          if (!identical(_client, client)) return;
-          final text = utf8.decode(data, allowMalformed: true);
-          terminal.write(text);
-          transcript.append(text);
-        }),
+        client.stderr.transform(const Utf8Decoder(allowMalformed: true)).listen(
+          (text) {
+            if (!identical(_client, client)) return;
+            terminal.write(text);
+            transcript.append(text);
+          },
+        ),
       );
       // Remote shell closed — update UI (do not use asStream on a completed
       // Future; that would fire synchronously and re-enter disconnect).
@@ -401,7 +438,7 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
       } else {
         await client.disconnect();
       }
-      if (_disposed || !ref.mounted) return;
+      if (!_isCurrentConnectRequest(request)) return;
       // Another connect owns _client now — do not clobber its state.
       if (_client != null && !identical(_client, client)) return;
       state = state.copyWith(
@@ -425,7 +462,13 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
     _hostKeyMismatchHandler = onMismatch;
   }
 
-  Future<void> disconnect({bool bumpGeneration = true}) async {
+  Future<void> disconnect({
+    bool bumpGeneration = true,
+    bool invalidateConnectAttempts = true,
+  }) async {
+    if (invalidateConnectAttempts) {
+      _connectionRequest++;
+    }
     // Copy first — done/stdout handlers must not mutate while we cancel.
     final pending = List<StreamSubscription<dynamic>>.of(_subs);
     _subs.clear();
@@ -474,12 +517,16 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
       state = state.copyWith(tmuxSessions: const [], tmuxError: 'SSH 未连接');
       return;
     }
+    final generation = state.connectionGeneration;
     try {
       final sessions = await _tmux.listSessions(client);
+      if (!_ownsConnection(client, generation)) return;
       state = state.copyWith(tmuxSessions: sessions, tmuxError: null);
     } on TmuxNotInstalledException {
+      if (!_ownsConnection(client, generation)) return;
       state = state.copyWith(tmuxSessions: const [], tmuxError: '远端未安装 tmux');
     } catch (e) {
+      if (!_ownsConnection(client, generation)) return;
       state = state.copyWith(tmuxError: _safeError(e));
     }
   }
@@ -487,9 +534,13 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
   Future<void> createTmuxSession(String name) async {
     final client = _client;
     if (client == null || !client.isConnected) return;
+    final generation = state.connectionGeneration;
     await _tmux.createSession(client, name);
+    if (!_ownsConnection(client, generation)) return;
     await refreshTmux();
-    attachTmuxSession(name);
+    if (!_ownsConnection(client, generation)) return;
+    _tmux.attachInShell(client, name);
+    state = state.copyWith(currentTmuxName: name);
   }
 
   void attachTmuxSession(String name) {
@@ -506,6 +557,7 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
     final target = name.trim();
     if (target.isEmpty) return;
     if (state.currentTmuxName == target) return;
+    final generation = state.connectionGeneration;
     final inTmux = state.currentTmuxName != null;
     try {
       await _tmux.switchOrAttachInShell(
@@ -513,10 +565,10 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
         target,
         currentlyInTmux: inTmux,
       );
-      if (_disposed || !ref.mounted) return;
+      if (!_ownsConnection(client, generation)) return;
       state = state.copyWith(currentTmuxName: target);
     } catch (e) {
-      if (_disposed || !ref.mounted) return;
+      if (!_ownsConnection(client, generation)) return;
       state = state.copyWith(tmuxError: _safeError(e));
     }
   }
@@ -525,8 +577,9 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
   Future<void> detachTmuxSession() async {
     final client = _client;
     if (client == null || !client.isConnected) return;
+    final generation = state.connectionGeneration;
     await _tmux.detachInShell(client);
-    if (_disposed || !ref.mounted) return;
+    if (!_ownsConnection(client, generation)) return;
     state = state.copyWith(currentTmuxName: null);
   }
 
@@ -679,4 +732,20 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
       s.length > 200 ? '${s.substring(0, 200)}…' : s,
     );
   }
+
+  bool _isCurrentConnectRequest(int request) =>
+      !_disposed && ref.mounted && request == _connectionRequest;
+
+  bool _ownsConnection(ResearchSshClient client, int generation) =>
+      !_disposed &&
+      ref.mounted &&
+      identical(_client, client) &&
+      client.isConnected &&
+      state.connectionGeneration == generation;
+
+  static bool _connectionTargetChanged(SshProfile a, SshProfile b) =>
+      a.host != b.host ||
+      a.port != b.port ||
+      a.username != b.username ||
+      a.authType != b.authType;
 }

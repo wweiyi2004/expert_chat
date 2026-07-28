@@ -10,6 +10,18 @@ class ResearchSshException implements Exception {
   String toString() => message;
 }
 
+class ResearchSshExecException extends ResearchSshException {
+  ResearchSshExecException({
+    required this.exitCode,
+    required this.stdoutText,
+    required this.stderrText,
+  }) : super('远程命令执行失败（退出码 ${exitCode ?? '未知'}）');
+
+  final int? exitCode;
+  final String stdoutText;
+  final String stderrText;
+}
+
 class ResearchHostKeyInfo {
   const ResearchHostKeyInfo({
     required this.fingerprintSha256,

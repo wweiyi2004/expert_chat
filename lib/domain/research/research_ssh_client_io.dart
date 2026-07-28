@@ -13,6 +13,18 @@ class ResearchSshException implements Exception {
   String toString() => message;
 }
 
+class ResearchSshExecException extends ResearchSshException {
+  ResearchSshExecException({
+    required this.exitCode,
+    required this.stdoutText,
+    required this.stderrText,
+  }) : super('远程命令执行失败（退出码 ${exitCode ?? '未知'}）');
+
+  final int? exitCode;
+  final String stdoutText;
+  final String stderrText;
+}
+
 class ResearchHostKeyInfo {
   const ResearchHostKeyInfo({
     required this.fingerprintSha256,
@@ -59,12 +71,20 @@ typedef ResearchSshClientFactory = ResearchSshClient Function();
 class ResearchSshClientIo implements ResearchSshClient {
   SSHClient? _client;
   SSHSession? _shell;
-  final _stdoutController = StreamController<List<int>>.broadcast();
-  final _stderrController = StreamController<List<int>>.broadcast();
+  final List<List<int>> _earlyStdout = [];
+  final List<List<int>> _earlyStderr = [];
+  var _earlyStdoutBytes = 0;
+  var _earlyStderrBytes = 0;
+  late final StreamController<List<int>> _stdoutController =
+      StreamController<List<int>>.broadcast(onListen: _flushEarlyStdout);
+  late final StreamController<List<int>> _stderrController =
+      StreamController<List<int>>.broadcast(onListen: _flushEarlyStderr);
   final List<StreamSubscription<dynamic>> _subs = [];
   var _connected = false;
   Completer<void>? _done;
   String? _lastFp;
+
+  static const _maxEarlyStreamBytes = 256 * 1024;
 
   @override
   Stream<List<int>> get stdout => _stdoutController.stream;
@@ -173,16 +193,12 @@ class ResearchSshClientIo implements ResearchSshClient {
 
     _subs.add(
       shell.stdout.listen((data) {
-        if (!_stdoutController.isClosed) {
-          _stdoutController.add(data);
-        }
+        _emitStdout(data);
       }, onError: (_) {}),
     );
     _subs.add(
       shell.stderr.listen((data) {
-        if (!_stderrController.isClosed) {
-          _stderrController.add(data);
-        }
+        _emitStderr(data);
       }, onError: (_) {}),
     );
     unawaited(
@@ -224,13 +240,31 @@ class ResearchSshClientIo implements ResearchSshClient {
     try {
       final session = await client.execute(command);
       final out = BytesBuilder(copy: false);
-      await for (final chunk in session.stdout.timeout(timeout)) {
-        out.add(chunk);
-      }
+      final err = BytesBuilder(copy: false);
+      final stdoutSub = session.stdout.listen(out.add);
+      final stderrSub = session.stderr.listen(err.add);
       try {
-        await session.done.timeout(timeout);
-      } catch (_) {}
-      return utf8.decode(out.takeBytes(), allowMalformed: true);
+        await Future.wait<void>([
+          stdoutSub.asFuture<void>(),
+          stderrSub.asFuture<void>(),
+          session.done,
+        ]).timeout(timeout);
+      } on TimeoutException {
+        await stdoutSub.cancel();
+        await stderrSub.cancel();
+        session.close();
+        throw ResearchSshException('远程命令执行超时');
+      }
+      final stdoutText = utf8.decode(out.takeBytes(), allowMalformed: true);
+      final stderrText = utf8.decode(err.takeBytes(), allowMalformed: true);
+      if (session.exitCode != null && session.exitCode != 0) {
+        throw ResearchSshExecException(
+          exitCode: session.exitCode,
+          stdoutText: stdoutText,
+          stderrText: stderrText,
+        );
+      }
+      return stdoutText;
     } catch (e) {
       if (e is ResearchSshException) rethrow;
       throw ResearchSshException('远程命令执行失败');
@@ -244,6 +278,7 @@ class ResearchSshClientIo implements ResearchSshClient {
       await s.cancel();
     }
     _subs.clear();
+    _clearEarlyOutput();
     try {
       _shell?.close();
     } catch (_) {}
@@ -255,5 +290,66 @@ class ResearchSshClientIo implements ResearchSshClient {
     if (!(_done?.isCompleted ?? true)) {
       _done?.complete();
     }
+  }
+
+  void _emitStdout(List<int> data) {
+    if (_stdoutController.isClosed) return;
+    if (_stdoutController.hasListener) {
+      _stdoutController.add(data);
+      return;
+    }
+    final copy = Uint8List.fromList(data);
+    _earlyStdout.add(copy);
+    _earlyStdoutBytes += copy.length;
+    _trimEarly(_earlyStdout, stdout: true);
+  }
+
+  void _emitStderr(List<int> data) {
+    if (_stderrController.isClosed) return;
+    if (_stderrController.hasListener) {
+      _stderrController.add(data);
+      return;
+    }
+    final copy = Uint8List.fromList(data);
+    _earlyStderr.add(copy);
+    _earlyStderrBytes += copy.length;
+    _trimEarly(_earlyStderr, stdout: false);
+  }
+
+  void _flushEarlyStdout() {
+    if (_stdoutController.isClosed || !_stdoutController.hasListener) return;
+    for (final data in _earlyStdout) {
+      _stdoutController.add(data);
+    }
+    _earlyStdout.clear();
+    _earlyStdoutBytes = 0;
+  }
+
+  void _flushEarlyStderr() {
+    if (_stderrController.isClosed || !_stderrController.hasListener) return;
+    for (final data in _earlyStderr) {
+      _stderrController.add(data);
+    }
+    _earlyStderr.clear();
+    _earlyStderrBytes = 0;
+  }
+
+  void _trimEarly(List<List<int>> queue, {required bool stdout}) {
+    var bytes = stdout ? _earlyStdoutBytes : _earlyStderrBytes;
+    while (bytes > _maxEarlyStreamBytes && queue.isNotEmpty) {
+      bytes -= queue.removeAt(0).length;
+    }
+    if (stdout) {
+      _earlyStdoutBytes = bytes;
+    } else {
+      _earlyStderrBytes = bytes;
+    }
+  }
+
+  void _clearEarlyOutput() {
+    _earlyStdout.clear();
+    _earlyStderr.clear();
+    _earlyStdoutBytes = 0;
+    _earlyStderrBytes = 0;
   }
 }

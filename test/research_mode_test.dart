@@ -48,6 +48,9 @@ class _FakeSshClient implements ResearchSshClient {
   var cols = 80;
   var rows = 24;
   String execResult = '';
+  Object? execError;
+  Completer<String>? execCompleter;
+  Completer<void>? connectCompleter;
   var disconnectCount = 0;
   Completer<void>? _done;
 
@@ -86,6 +89,8 @@ class _FakeSshClient implements ResearchSshClient {
       final ok = await onHostKeyMismatch(info, trusted);
       if (!ok) throw ResearchSshException('主机密钥验证失败或已取消');
     }
+    final pendingConnect = connectCompleter;
+    if (pendingConnect != null) await pendingConnect.future;
     connected = true;
     this.cols = cols;
     this.rows = rows;
@@ -108,6 +113,10 @@ class _FakeSshClient implements ResearchSshClient {
     String command, {
     Duration timeout = const Duration(seconds: 15),
   }) async {
+    final error = execError;
+    if (error != null) throw error;
+    final pending = execCompleter;
+    if (pending != null) return pending.future;
     return execResult;
   }
 
@@ -121,6 +130,10 @@ class _FakeSshClient implements ResearchSshClient {
 
   void pushStdout(String text) {
     _out.add(utf8.encode(text));
+  }
+
+  void pushStdoutBytes(List<int> bytes) {
+    _out.add(bytes);
   }
 }
 
@@ -226,6 +239,17 @@ void main() {
       expect(tail.contains('line-19'), isTrue);
       expect(tail.contains('line-0'), isFalse);
     });
+
+    test('keeps stream chunks on one line before redacting secrets', () {
+      final buf = TerminalTranscriptBuffer();
+      buf.append('pass');
+      buf.append('word=hunter2');
+
+      final recent = buf.recentForAi(20);
+      expect(recent, contains('password=***REDACTED***'));
+      expect(recent, isNot(contains('hunter2')));
+      expect(buf.lineCount, 1);
+    });
   });
 
   group('tmux parse', () {
@@ -239,31 +263,65 @@ void main() {
       expect(list.first.windows, 3);
     });
 
-    test('detach sends Ctrl-B then d without killing session command', () async {
-      final fake = _FakeSshClient()..connected = true;
-      await tmux.detachInShell(fake);
-      expect(fake.writes.length, 2);
-      expect(fake.writes[0], String.fromCharCode(0x02));
-      expect(fake.writes[1], 'd');
-    });
+    test(
+      'detach sends Ctrl-B then d without killing session command',
+      () async {
+        final fake = _FakeSshClient()..connected = true;
+        await tmux.detachInShell(fake);
+        expect(fake.writes.length, 2);
+        expect(fake.writes[0], String.fromCharCode(0x02));
+        expect(fake.writes[1], 'd');
+      },
+    );
 
     test('switch-client when already in tmux; attach when not', () async {
       final fake = _FakeSshClient()..connected = true;
-      await tmux.switchOrAttachInShell(
-        fake,
-        'other',
-        currentlyInTmux: true,
+      await tmux.switchOrAttachInShell(fake, 'other', currentlyInTmux: true);
+      expect(
+        fake.writes.any((w) => w.contains('switch-client -t other')),
+        isTrue,
       );
-      expect(fake.writes.any((w) => w.contains('switch-client -t other')), isTrue);
 
       fake.writes.clear();
-      await tmux.switchOrAttachInShell(
-        fake,
-        'fresh',
-        currentlyInTmux: false,
-      );
+      await tmux.switchOrAttachInShell(fake, 'fresh', currentlyInTmux: false);
       expect(fake.writes.single, contains('attach-session'));
       expect(fake.writes.single, contains('fresh'));
+    });
+
+    test('distinguishes missing tmux from an empty server', () async {
+      final fake = _FakeSshClient()..connected = true;
+
+      fake.execError = ResearchSshExecException(
+        exitCode: 127,
+        stdoutText: '',
+        stderrText: 'bash: tmux: command not found',
+      );
+      expect(
+        () => tmux.listSessions(fake),
+        throwsA(isA<TmuxNotInstalledException>()),
+      );
+
+      fake.execError = ResearchSshExecException(
+        exitCode: 1,
+        stdoutText: '',
+        stderrText: 'no server running on /tmp/tmux-1000/default',
+      );
+      expect(await tmux.listSessions(fake), isEmpty);
+    });
+
+    test('create surfaces a non-zero remote exit', () {
+      final fake = _FakeSshClient()
+        ..connected = true
+        ..execError = ResearchSshExecException(
+          exitCode: 1,
+          stdoutText: '',
+          stderrText: 'permission denied',
+        );
+
+      expect(
+        () => tmux.createSession(fake, 'train'),
+        throwsA(isA<ResearchSshExecException>()),
+      );
     });
   });
 
@@ -574,6 +632,161 @@ void main() {
         expect(fake.disconnectCount, greaterThan(0));
       },
     );
+
+    test('stream decoder preserves UTF-8 split across SSH chunks', () async {
+      final ctrl = container.read(researchTerminalProvider.notifier);
+      ctrl.setHostKeyHandlers(
+        onTrust: (_) async => true,
+        onMismatch: (_, _) async => false,
+      );
+      await ctrl.connect(profile);
+
+      final bytes = utf8.encode('中文输出\n');
+      fake.pushStdoutBytes(bytes.sublist(0, 2));
+      fake.pushStdoutBytes(bytes.sublist(2));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(ctrl.previewForAi(), contains('中文输出'));
+      expect(ctrl.previewForAi(), isNot(contains('�')));
+    });
+
+    test('cancelled connect cannot restore a stale connected state', () async {
+      final ctrl = container.read(researchTerminalProvider.notifier);
+      ctrl.setHostKeyHandlers(
+        onTrust: (_) async => true,
+        onMismatch: (_, _) async => false,
+      );
+      fake.connectCompleter = Completer<void>();
+
+      final pendingConnect = ctrl.connect(profile);
+      await Future<void>.delayed(Duration.zero);
+      await ctrl.disconnect();
+      fake.connectCompleter!.complete();
+      await pendingConnect;
+
+      final current = container.read(researchTerminalProvider);
+      expect(current.status, ResearchConnectionStatus.disconnected);
+      expect(current.isConnected, isFalse);
+      expect(fake.connected, isFalse);
+    });
+
+    test('editing or deleting the active endpoint disconnects first', () async {
+      final ctrl = container.read(researchTerminalProvider.notifier);
+      ctrl.setHostKeyHandlers(
+        onTrust: (_) async => true,
+        onMismatch: (_, _) async => false,
+      );
+      await ctrl.connect(profile);
+      final connectedGeneration = container
+          .read(researchTerminalProvider)
+          .connectionGeneration;
+
+      await ctrl.saveProfile(profile.copyWith(host: '10.0.0.2'));
+      final afterEdit = container.read(researchTerminalProvider);
+      expect(afterEdit.isConnected, isFalse);
+      expect(afterEdit.activeProfile?.host, '10.0.0.2');
+      expect(afterEdit.connectionGeneration, greaterThan(connectedGeneration));
+
+      await ctrl.connect(afterEdit.activeProfile!);
+      expect(container.read(researchTerminalProvider).isConnected, isTrue);
+      await ctrl.deleteProfile(profile.id);
+      final afterDelete = container.read(researchTerminalProvider);
+      expect(afterDelete.isConnected, isFalse);
+      expect(afterDelete.activeProfileId, isNull);
+      expect(afterDelete.profiles, isEmpty);
+    });
+
+    test('saving another profile does not relabel a live connection', () async {
+      final ctrl = container.read(researchTerminalProvider.notifier);
+      ctrl.setHostKeyHandlers(
+        onTrust: (_) async => true,
+        onMismatch: (_, _) async => false,
+      );
+      await ctrl.connect(profile);
+      await ctrl.saveProfile(
+        const SshProfile(
+          id: 'host2',
+          name: 'other',
+          host: '10.0.0.2',
+          username: 'u2',
+        ),
+        password: 'other-secret',
+      );
+
+      final live = container.read(researchTerminalProvider);
+      expect(live.isConnected, isTrue);
+      expect(live.activeProfileId, profile.id);
+      expect(live.activeProfile?.host, profile.host);
+    });
+
+    test('stale tmux refresh cannot overwrite a newer connection', () async {
+      final ctrl = container.read(researchTerminalProvider.notifier);
+      final fakeA = _FakeSshClient();
+      final fakeB = _FakeSshClient();
+      var factoryCalls = 0;
+      ctrl.debugSetClientFactory(() => factoryCalls++ == 0 ? fakeA : fakeB);
+      ctrl.setHostKeyHandlers(
+        onTrust: (_) async => true,
+        onMismatch: (_, _) async => false,
+      );
+      await ctrl.connect(profile);
+      await Future<void>.delayed(Duration.zero);
+
+      fakeA.execCompleter = Completer<String>();
+      final staleRefresh = ctrl.refreshTmux();
+      await Future<void>.delayed(Duration.zero);
+
+      const other = SshProfile(
+        id: 'host2',
+        name: 'other',
+        host: '10.0.0.2',
+        username: 'u2',
+      );
+      await ctrl.saveProfile(other, password: 'other-secret');
+      await ctrl.connect(other);
+      fakeA.execCompleter!.complete('old-session\t1\t2\n');
+      await staleRefresh;
+      await Future<void>.delayed(Duration.zero);
+
+      final live = container.read(researchTerminalProvider);
+      expect(live.activeProfileId, other.id);
+      expect(
+        live.tmuxSessions.map((s) => s.name),
+        isNot(contains('old-session')),
+      );
+    });
+
+    test('stale tmux create never attaches on a newer host', () async {
+      final ctrl = container.read(researchTerminalProvider.notifier);
+      final fakeA = _FakeSshClient();
+      final fakeB = _FakeSshClient();
+      var factoryCalls = 0;
+      ctrl.debugSetClientFactory(() => factoryCalls++ == 0 ? fakeA : fakeB);
+      ctrl.setHostKeyHandlers(
+        onTrust: (_) async => true,
+        onMismatch: (_, _) async => false,
+      );
+      await ctrl.connect(profile);
+      await Future<void>.delayed(Duration.zero);
+
+      fakeA.execCompleter = Completer<String>();
+      final staleCreate = ctrl.createTmuxSession('train');
+      await Future<void>.delayed(Duration.zero);
+
+      const other = SshProfile(
+        id: 'host2',
+        name: 'other',
+        host: '10.0.0.2',
+        username: 'u2',
+      );
+      await ctrl.saveProfile(other, password: 'other-secret');
+      await ctrl.connect(other);
+      fakeA.execCompleter!.complete('');
+      await staleCreate;
+
+      expect(fakeB.writes.any((w) => w.contains('attach-session')), isFalse);
+      expect(container.read(researchTerminalProvider).currentTmuxName, isNull);
+    });
 
     test('approval binds to host+generation; reconnect invalidates', () async {
       final ctrl = container.read(researchTerminalProvider.notifier);

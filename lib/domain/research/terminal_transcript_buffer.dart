@@ -9,48 +9,82 @@ class TerminalTranscriptBuffer {
 
   final List<String> _lines = [];
   int _byteCount = 0;
+  String _pendingLine = '';
 
-  int get lineCount => _lines.length;
-  int get byteCount => _byteCount;
+  int get lineCount => _lines.length + (_pendingLine.isEmpty ? 0 : 1);
+  int get byteCount => _byteCount + utf8.encode(_pendingLine).length;
 
   void clear() {
     _lines.clear();
     _byteCount = 0;
+    _pendingLine = '';
   }
 
   void append(String chunk) {
     if (chunk.isEmpty) return;
-    final cleaned = stripAnsiAndControls(chunk);
-    if (cleaned.isEmpty) return;
-    for (final piece in cleaned.split('\n')) {
-      // Keep empty lines as blank so line counts match user expectation.
-      _pushLine(piece);
+    final raw = '$_pendingLine$chunk';
+    final completed = <String>[];
+    var start = 0;
+    var i = 0;
+    while (i < raw.length) {
+      final code = raw.codeUnitAt(i);
+      if (code == 0x0a) {
+        completed.add(raw.substring(start, i));
+        start = i + 1;
+      } else if (code == 0x0d) {
+        // Keep a trailing CR pending until the next chunk so a split CRLF is
+        // treated as one logical newline.
+        if (i == raw.length - 1) break;
+        completed.add(raw.substring(start, i));
+        if (raw.codeUnitAt(i + 1) == 0x0a) i++;
+        start = i + 1;
+      }
+      i++;
     }
+    _pendingLine = raw.substring(start);
+    for (final line in completed) {
+      _pushLine(stripAnsiAndControls(line));
+    }
+    _trim();
   }
 
   void _pushLine(String line) {
-    // Drop CR leftovers from CRLF.
-    var s = line.replaceAll('\r', '');
-    final bytes = utf8.encode(s).length;
-    _lines.add(s);
+    final bytes = utf8.encode(line).length;
+    _lines.add(line);
     _byteCount += bytes + 1;
     _trim();
   }
 
   void _trim() {
-    while (_lines.length > maxLines ||
-        (_byteCount > maxBytes && _lines.isNotEmpty)) {
+    int totalBytes() => _byteCount + utf8.encode(_pendingLine).length;
+
+    while ((_lines.length + (_pendingLine.isEmpty ? 0 : 1) > maxLines ||
+            totalBytes() > maxBytes) &&
+        _lines.isNotEmpty) {
       final removed = _lines.removeAt(0);
       _byteCount -= utf8.encode(removed).length + 1;
       if (_byteCount < 0) _byteCount = 0;
+    }
+    // A remote program can emit an arbitrarily long line. Keep the newest
+    // portion bounded instead of allowing the pending line to grow forever.
+    while (_pendingLine.isNotEmpty && totalBytes() > maxBytes) {
+      final drop = (_pendingLine.length / 8).ceil().clamp(
+        1,
+        _pendingLine.length,
+      );
+      _pendingLine = _pendingLine.substring(drop);
     }
   }
 
   /// Last [n] lines, joined, with secrets redacted.
   String recentForAi(int n) {
-    if (n <= 0 || _lines.isEmpty) return '';
-    final start = (_lines.length - n).clamp(0, _lines.length);
-    final slice = _lines.sublist(start);
+    if (n <= 0 || (_lines.isEmpty && _pendingLine.isEmpty)) return '';
+    final all = <String>[
+      ..._lines,
+      if (_pendingLine.isNotEmpty) stripAnsiAndControls(_pendingLine),
+    ];
+    final start = (all.length - n).clamp(0, all.length);
+    final slice = all.sublist(start);
     return redactSecrets(slice.join('\n'));
   }
 

@@ -4,30 +4,27 @@ import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart'
-    show TargetPlatform, defaultTargetPlatform;
+    show TargetPlatform, defaultTargetPlatform, kIsWeb;
 
 import '../../data/story_models.dart';
 import 'studio_asset_codec.dart';
 
-/// File-picker wrappers around [StudioAssetCodec] for mobile + desktop.
+/// File-picker wrappers around [StudioAssetCodec] for Web and native targets.
 class StudioAssetIo {
   StudioAssetIo({StudioAssetCodec? codec})
     : _codec = codec ?? const StudioAssetCodec();
 
   final StudioAssetCodec _codec;
 
-  static bool get _isMobile =>
-      defaultTargetPlatform == TargetPlatform.android ||
-      defaultTargetPlatform == TargetPlatform.iOS;
+  static bool get _isNativeMobile =>
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.android ||
+          defaultTargetPlatform == TargetPlatform.iOS);
 
   Future<String?> exportCharacter(CharacterCard card) async {
     final text = _codec.encodeCharacter(card);
     final safe = _safeFileName(card.name, fallback: 'character');
-    return _saveText(
-      dialogTitle: '导出角色卡',
-      fileName: '$safe.json',
-      text: text,
-    );
+    return _saveText(dialogTitle: '导出角色卡', fileName: '$safe.json', text: text);
   }
 
   Future<String?> exportCharacters(List<CharacterCard> cards) async {
@@ -89,10 +86,15 @@ class StudioAssetIo {
       fileName: fileName,
       type: FileType.custom,
       allowedExtensions: const ['json'],
-      bytes: _isMobile ? bytes : null,
+      // Browser downloads and native mobile both require the picker to write
+      // the bytes. Desktop returns a path that we write below.
+      bytes: kIsWeb || _isNativeMobile ? bytes : null,
     );
+    // file_picker starts the browser download but intentionally returns null
+    // on Web because there is no local filesystem path to expose.
+    if (kIsWeb) return fileName;
     if (path == null) return null;
-    if (!_isMobile) {
+    if (!_isNativeMobile) {
       await File(path).writeAsBytes(bytes);
     }
     return path;
@@ -118,9 +120,7 @@ class StudioAssetIo {
   }
 
   String _safeFileName(String name, {required String fallback}) {
-    final cleaned = name
-        .replaceAll(RegExp(r'[\\/:*?"<>|]'), '_')
-        .trim();
+    final cleaned = name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim();
     if (cleaned.isEmpty) return fallback;
     return cleaned.length > 40 ? cleaned.substring(0, 40) : cleaned;
   }

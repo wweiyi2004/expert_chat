@@ -1,9 +1,12 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:dio/dio.dart' show CancelToken, DioException;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/providers.dart';
+import '../../data/director_story_setup_draft.dart';
 import '../../data/story_models.dart';
 import '../../domain/story/director_prose_styles.dart';
 import '../../domain/story/story_ai_assist.dart';
@@ -39,13 +42,21 @@ class _DirectorStorySetupPageState
     text: DirectorStoryDraft.defaultAuthorNote,
   );
 
+  late final DirectorStorySetupDraftStore _localDraftStore;
+  Timer? _draftSaveDebounce;
   DirectorStoryDraft? _draft;
+  String? _draftInputFingerprint;
   CancelToken? _cancelToken;
   var _beatCount = 8;
+
   /// Novel target length in characters; 0 = unlimited.
   var _targetTotalChars = 80000;
+  var _strictReview = true;
   var _generating = false;
   var _starting = false;
+  var _suppressDraftSave = false;
+  var _discardDraftOnDispose = false;
+  var _restoredDraftNotice = false;
   String? _error;
   String? _notice;
 
@@ -54,10 +65,50 @@ class _DirectorStorySetupPageState
 
   bool get _busy => _generating || _starting;
 
+  @override
+  void initState() {
+    super.initState();
+    _localDraftStore = DirectorStorySetupDraftStore(
+      ref.read(sharedPrefsProvider),
+    );
+    _restoreLocalDraft();
+    for (final controller in [
+      _premise,
+      _requirements,
+      _title,
+      _outline,
+      _authorNote,
+    ]) {
+      controller.addListener(_scheduleDraftSave);
+    }
+  }
+
+  Iterable<String> get _orderedStyleIds sync* {
+    for (final style in DirectorProseStyle.presets) {
+      if (_styleIds.contains(style.id)) yield style.id;
+    }
+  }
+
   String _mergedRequirements() => DirectorProseStyle.mergeRequirements(
-    styleIds: _styleIds,
+    styleIds: _orderedStyleIds,
     freeform: _requirements.text,
   );
+
+  String _generationFingerprint({
+    String? premise,
+    String? requirements,
+    int? beatCount,
+    int? targetTotalChars,
+    bool? strictReview,
+  }) {
+    return jsonEncode({
+      'premise': premise ?? _premise.text.trim(),
+      'requirements': requirements ?? _mergedRequirements(),
+      'beatCount': beatCount ?? _beatCount,
+      'targetTotalChars': targetTotalChars ?? _targetTotalChars,
+      'strictReview': strictReview ?? _strictReview,
+    });
+  }
 
   void _toggleStyle(String id) {
     setState(() {
@@ -66,11 +117,157 @@ class _DirectorStorySetupPageState
         ..clear()
         ..addAll(next);
     });
+    _scheduleDraftSave();
+  }
+
+  void _restoreLocalDraft() {
+    final saved = _localDraftStore.read();
+    if (saved == null || !saved.hasMeaningfulContent) return;
+
+    _suppressDraftSave = true;
+    _premise.text = saved.premise;
+    _requirements.text = saved.requirements;
+    _styleIds
+      ..clear()
+      ..addAll(
+        saved.styleIds.where((id) => DirectorProseStyle.byId(id) != null),
+      );
+    if (_beatOptions.contains(saved.beatCount)) {
+      _beatCount = saved.beatCount;
+    }
+    if (StoryLengthBudget.presets.any(
+      (preset) => preset.chars == saved.targetTotalChars,
+    )) {
+      _targetTotalChars = saved.targetTotalChars;
+    }
+    _strictReview = saved.strictReview;
+
+    final generated = saved.generatedDraft;
+    if (generated != null && !generated.isEmpty) {
+      _draft = generated;
+      _draftInputFingerprint = saved.generationFingerprint.trim().isEmpty
+          ? _generationFingerprint()
+          : saved.generationFingerprint;
+      _title.text = generated.title;
+      _outline.text = generated.outline;
+      _authorNote.text = generated.authorNote.trim().isEmpty
+          ? DirectorStoryDraft.defaultAuthorNote
+          : generated.authorNote;
+    }
+    _restoredDraftNotice = true;
+    _suppressDraftSave = false;
+  }
+
+  DirectorStorySetupDraft _snapshotLocalDraft() {
+    final currentDraft = _draft;
+    return DirectorStorySetupDraft(
+      premise: _premise.text,
+      requirements: _requirements.text,
+      styleIds: [
+        for (final style in DirectorProseStyle.presets)
+          if (_styleIds.contains(style.id)) style.id,
+      ],
+      beatCount: _beatCount,
+      targetTotalChars: _targetTotalChars,
+      strictReview: _strictReview,
+      generationFingerprint: _draftInputFingerprint ?? '',
+      generatedDraft: currentDraft == null
+          ? null
+          : DirectorStoryDraft(
+              title: _title.text,
+              outline: _outline.text,
+              authorNote: _authorNote.text,
+              characters: currentDraft.characters,
+            ),
+      savedAt: DateTime.now(),
+    );
+  }
+
+  void _scheduleDraftSave() {
+    if (_suppressDraftSave || _discardDraftOnDispose) return;
+    _draftSaveDebounce?.cancel();
+    _draftSaveDebounce = Timer(
+      const Duration(milliseconds: 550),
+      () => unawaited(_saveDraftNow()),
+    );
+  }
+
+  Future<void> _saveDraftNow() async {
+    if (_suppressDraftSave || _discardDraftOnDispose) return;
+    try {
+      await _localDraftStore.save(_snapshotLocalDraft());
+    } catch (error) {
+      debugPrint('Director story draft save failed: $error');
+    }
+  }
+
+  Future<void> _confirmClearDraft() async {
+    if (_busy) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('清空当前草稿？'),
+        content: const Text('故事种子、文风、字数设置和已生成的角色大纲都会被清空。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('清空'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    _draftSaveDebounce?.cancel();
+    _suppressDraftSave = true;
+    _premise.clear();
+    _requirements.clear();
+    _title.clear();
+    _outline.clear();
+    _authorNote.text = DirectorStoryDraft.defaultAuthorNote;
+    setState(() {
+      _styleIds.clear();
+      _beatCount = 8;
+      _targetTotalChars = 80000;
+      _strictReview = true;
+      _draft = null;
+      _draftInputFingerprint = null;
+      _error = null;
+      _notice = null;
+      _restoredDraftNotice = false;
+    });
+    await _localDraftStore.clear();
+    _suppressDraftSave = false;
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('草稿已清空，可以重新开始。'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
   }
 
   @override
   void dispose() {
     _cancelToken?.cancel('页面已关闭');
+    _draftSaveDebounce?.cancel();
+    for (final controller in [
+      _premise,
+      _requirements,
+      _title,
+      _outline,
+      _authorNote,
+    ]) {
+      controller.removeListener(_scheduleDraftSave);
+    }
+    if (!_discardDraftOnDispose) {
+      unawaited(_saveDraftNow());
+    }
     _premise.dispose();
     _requirements.dispose();
     _title.dispose();
@@ -90,13 +287,17 @@ class _DirectorStorySetupPageState
     );
   }
 
-  void _applyDraft(DirectorStoryDraft draft) {
+  void _applyDraft(DirectorStoryDraft draft, {required String generatedFrom}) {
     _title.text = draft.title;
     _outline.text = draft.outline;
     _authorNote.text = draft.authorNote.trim().isEmpty
         ? DirectorStoryDraft.defaultAuthorNote
         : draft.authorNote;
-    setState(() => _draft = draft);
+    setState(() {
+      _draft = draft;
+      _draftInputFingerprint = generatedFrom;
+    });
+    _scheduleDraftSave();
   }
 
   Future<void> _generateDraft() async {
@@ -121,21 +322,35 @@ class _DirectorStorySetupPageState
     });
 
     try {
+      final premise = _premise.text.trim();
       final requirements = _mergedRequirements();
+      final beatCount = _beatCount;
+      final targetTotalChars = _targetTotalChars;
+      final strictReview = _strictReview;
+      final generatedFrom = _generationFingerprint(
+        premise: premise,
+        requirements: requirements,
+        beatCount: beatCount,
+        targetTotalChars: targetTotalChars,
+        strictReview: strictReview,
+      );
+      final seed = _editorSeed();
       final lengthParts = <String>[
-        '$_beatCount 个连续、具体且可以依次演绎的故事节拍',
-        if (_targetTotalChars > 0)
-          '全书目标约 ${StoryLengthBudget.formatChars(_targetTotalChars)}字'
-          '（约每拍 ${StoryLengthBudget.formatChars((_targetTotalChars / _beatCount).round())}字，'
-          'outline 密度须与总篇幅匹配，避免前松后紧）',
+        '$beatCount 个连续、具体且可以依次演绎的故事节拍',
+        if (targetTotalChars > 0)
+          '全书目标约 ${StoryLengthBudget.formatChars(targetTotalChars)}字'
+              '（约每拍 ${StoryLengthBudget.formatChars((targetTotalChars / beatCount).round())}字，'
+              'outline 密度须与总篇幅匹配，避免前松后紧）',
       ];
       final generated = await ready.assist.generateDirectorStory(
         config: ready.config,
-        premise: _premise.text.trim(),
+        premise: premise,
         // Hard creative constraints — styles + freeform, not mere flavor.
         requirements: requirements.isEmpty ? null : requirements,
         length: lengthParts.join('；'),
-        seed: _editorSeed(),
+        expectedBeatCount: beatCount,
+        strictReview: strictReview,
+        seed: seed,
         cancelToken: token,
       );
       if (!mounted) return;
@@ -143,8 +358,12 @@ class _DirectorStorySetupPageState
         setState(() => _notice = '已取消生成，现有内容不会丢失。');
         return;
       }
-      _applyDraft(generated);
-      setState(() => _notice = '故事方案已生成。你可以修改标题、大纲和导演指令后再开演。');
+      _applyDraft(generated, generatedFrom: generatedFrom);
+      setState(
+        () => _notice = strictReview
+            ? '故事方案已生成，并完成严格审稿。你可以修改后再开演。'
+            : '故事方案已生成。你可以修改标题、大纲和导演指令后再开演。',
+      );
     } catch (e) {
       if (!mounted) return;
       if (e is DioException && CancelToken.isCancel(e)) {
@@ -173,6 +392,14 @@ class _DirectorStorySetupPageState
       return;
     }
     if (!(_formKey.currentState?.validate() ?? false)) return;
+    if (_draftInputFingerprint != _generationFingerprint()) {
+      setState(
+        () => _error =
+            '故事情节、文风、创作要求、节拍、篇幅或审稿设置已变化，请先重新生成方案。'
+            '标题、大纲和导演指令仍可直接修改。',
+      );
+      return;
+    }
 
     final outline = _outline.text.trim();
     if (parseOutlineBeats(outline).isEmpty) {
@@ -192,13 +419,13 @@ class _DirectorStorySetupPageState
     });
 
     final controller = ref.read(chatControllerProvider.notifier);
-    // A stream still running in another conversation would turn the opening
-    // advancePlot below into a silent no-op (global isStreaming guard). The
-    // user explicitly chose to start the new story, so stop the old one.
-    if (ref.read(chatControllerProvider).value?.isStreaming ?? false) {
-      controller.stop();
-    }
     try {
+      // AsyncNotifier methods can be invoked while build() is still loading;
+      // wait for the repository snapshot so it cannot overwrite the new story.
+      await ref.read(chatControllerProvider.future);
+      // Includes the pre-stream settings/prompt window, where isStreaming is
+      // still false but a replacement advancePlot would otherwise be dropped.
+      await controller.stopAndWait();
       await controller.newDirectorStoryConversation(
         title: _title.text.trim().isEmpty
             ? _premise.text.trim()
@@ -212,6 +439,11 @@ class _DirectorStorySetupPageState
             : _authorNote.text.trim(),
         targetTotalChars: _targetTotalChars,
       );
+      if (!mounted) return;
+
+      _draftSaveDebounce?.cancel();
+      _discardDraftOnDispose = true;
+      await _localDraftStore.clear();
       if (!mounted) return;
 
       // Return to the chat workspace first so the opening section streams
@@ -243,6 +475,11 @@ class _DirectorStorySetupPageState
         actions: [
           if (_generating)
             TextButton(onPressed: _cancelGeneration, child: const Text('取消生成')),
+          IconButton(
+            tooltip: '清空草稿',
+            onPressed: _busy ? null : _confirmClearDraft,
+            icon: const Icon(Icons.delete_sweep_outlined),
+          ),
         ],
       ),
       body: Center(
@@ -255,6 +492,16 @@ class _DirectorStorySetupPageState
               keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
               children: [
                 _IntroCard(scheme: scheme),
+                if (_restoredDraftNotice) ...[
+                  const SizedBox(height: 12),
+                  _InlineStatus(
+                    icon: Icons.restore_rounded,
+                    message: '已恢复上次未完成的故事草稿。',
+                    color: scheme.primary,
+                    onDismiss: () =>
+                        setState(() => _restoredDraftNotice = false),
+                  ),
+                ],
                 if (modelConfigured == false) ...[
                   const SizedBox(height: 12),
                   const _ApiSetupWarning(),
@@ -271,7 +518,7 @@ class _DirectorStorySetupPageState
                 const SizedBox(height: 12),
                 TextFormField(
                   controller: _premise,
-                  enabled: !_starting,
+                  enabled: !_busy,
                   minLines: 4,
                   maxLines: 9,
                   textInputAction: TextInputAction.newline,
@@ -313,10 +560,8 @@ class _DirectorStorySetupPageState
                 if (_styleIds.isNotEmpty) ...[
                   const SizedBox(height: 8),
                   Text(
-                    '已选：${[
-                      for (final p in DirectorProseStyle.presets)
-                        if (_styleIds.contains(p.id)) p.label,
-                    ].join('、')}',
+                    '已选：${[for (final p in DirectorProseStyle.presets)
+                      if (_styleIds.contains(p.id)) p.label].join('、')}',
                     style: Theme.of(context).textTheme.labelMedium?.copyWith(
                       color: scheme.primary,
                       fontWeight: FontWeight.w600,
@@ -326,7 +571,7 @@ class _DirectorStorySetupPageState
                 const SizedBox(height: 12),
                 TextFormField(
                   controller: _requirements,
-                  enabled: !_starting,
+                  enabled: !_busy,
                   minLines: 2,
                   maxLines: 5,
                   decoration: const InputDecoration(
@@ -355,6 +600,7 @@ class _DirectorStorySetupPageState
                       : (value) {
                           if (value != null) {
                             setState(() => _beatCount = value);
+                            _scheduleDraftSave();
                           }
                         },
                 ),
@@ -379,9 +625,12 @@ class _DirectorStorySetupPageState
                         selected: _targetTotalChars == preset.chars,
                         onSelected: _busy
                             ? null
-                            : (_) => setState(
-                                () => _targetTotalChars = preset.chars,
-                              ),
+                            : (_) {
+                                setState(
+                                  () => _targetTotalChars = preset.chars,
+                                );
+                                _scheduleDraftSave();
+                              },
                       ),
                   ],
                 ),
@@ -397,6 +646,20 @@ class _DirectorStorySetupPageState
                     ),
                   ),
                 ],
+                const SizedBox(height: 12),
+                SwitchListTile(
+                  key: const ValueKey('director-strict-review'),
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+                  title: const Text('严格审稿'),
+                  subtitle: const Text('生成方案后再检查一次原始情节、禁忌、揭示时机和结局；会额外调用一次模型。'),
+                  value: _strictReview,
+                  onChanged: _busy
+                      ? null
+                      : (value) {
+                          setState(() => _strictReview = value);
+                          _scheduleDraftSave();
+                        },
+                ),
                 if (_generating) ...[
                   const SizedBox(height: 18),
                   const _GeneratingCard(),
@@ -463,7 +726,7 @@ class _DirectorStorySetupPageState
         const SizedBox(height: 14),
         TextField(
           controller: _title,
-          enabled: !_starting,
+          enabled: !_busy,
           decoration: const InputDecoration(labelText: '故事标题'),
         ),
         const SizedBox(height: 18),
@@ -514,7 +777,7 @@ class _DirectorStorySetupPageState
         const SizedBox(height: 8),
         TextField(
           controller: _outline,
-          enabled: !_starting,
+          enabled: !_busy,
           minLines: 8,
           maxLines: 18,
           decoration: const InputDecoration(
@@ -529,7 +792,7 @@ class _DirectorStorySetupPageState
         const SizedBox(height: 8),
         TextField(
           controller: _authorNote,
-          enabled: !_starting,
+          enabled: !_busy,
           minLines: 3,
           maxLines: 8,
           decoration: const InputDecoration(
@@ -661,6 +924,14 @@ class _IntroCard extends StatelessWidget {
                     '从一段情节出发，自动创建临时角色卡与故事大纲。确认方案后，AI 会直接写出第一节并按大纲继续。',
                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                       color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    '未完成的内容会自动保存在本机，下次打开可继续编辑。',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: scheme.primary,
+                      fontWeight: FontWeight.w600,
                     ),
                   ),
                 ],

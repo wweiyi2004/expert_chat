@@ -20,6 +20,8 @@ class StoryAiAssist {
     String? style,
     String? requirements,
     String? length,
+    int? expectedBeatCount,
+    bool strictReview = false,
     DirectorStoryDraft? seed,
     CancelToken? cancelToken,
   }) async {
@@ -32,15 +34,14 @@ class StoryAiAssist {
     final preferences = <String>[
       if (hardRequirements.isNotEmpty) '硬性约束 / 创作要求：\n$hardRequirements',
       if (length != null && length.trim().isNotEmpty) '篇幅结构：${length.trim()}',
+      if (expectedBeatCount != null && expectedBeatCount > 0)
+        '大纲必须恰好包含 $expectedBeatCount 个非空节拍，每拍独占一行。',
     ];
-    final seedBlock = seed == null || seed.isEmpty
+    var seedBlock = seed == null || seed.isEmpty
         ? '（无已有草稿）'
         : jsonEncode(seed.toJson());
 
-    final raw = await _complete(
-      config: config,
-      cancelToken: cancelToken,
-      system: '''
+    const systemPrompt = '''
 你是“导演故事模式”的首席编剧与选角导演。用户只负责提出情节和后续导演指令；你要创建剧情所需的全部角色，并让 AI 在故事中扮演全部角色。
 
 只输出一个严格合法的 JSON 对象。不要输出 Markdown 代码围栏、注释、前后说明或 JSON 之外的文字。必须使用以下根结构和字段名：
@@ -63,39 +64,149 @@ class StoryAiAssist {
 
 硬性要求（优先级从高到低）：
 1. 用户给出的「故事情节」与「硬性约束 / 创作要求」不可违背、不可淡化、不可用“艺术加工”绕过。
-2. outline 的每一个节拍都必须服务上述情节与约束；禁止加入与用户要求冲突的支线、人设改动或提前剧透。
-3. authorNote 必须：
+2. 先在内部把「故事情节」拆成逐条事实、因果和结局清单，再构思 outline；清单无需输出，但每一项都必须在某个节拍中明确落实，尤其不得把用户指定的结局改成模糊暗示、相近事件或开放结局。
+3. outline 的每一个节拍都必须服务上述情节与约束；禁止加入与用户要求冲突的支线、人设改动或提前剧透。
+4. authorNote 必须：
    - 写明 AI 扮演全部角色、用户是导演、不替用户发言；
-   - **逐条复述**用户的硬性约束（若有），并写明“演绎时必须遵守”；
-   - 写明后续指令优先服从导演。
-4. 角色设定不得与用户约束冲突（例如用户要求克制悬疑，则不要设计话痨剧透型角色作为默认主视角）。
-5. 除非用户明确要求其它语言，否则使用中文。
-6. 根据情节需要创建 1–6 个彼此有明确关系、目标和冲突的角色。
-7. outline 必须是可依次演绎的具体情节点，不写空泛的“发展剧情”。
-8. 若「篇幅结构」含全书总字数目标，outline 的节拍数量与每拍叙事密度必须服务该目标（长篇不可写成短篇节奏）。
-9. 已有草稿仅作参考；与用户约束冲突时以用户约束为准。
-10. 所有键和字符串必须使用双引号；不得使用尾随逗号。
+   - 写明后续指令优先服从导演；
+   - 不要逐条复述用户硬性约束，原始约束会由系统另行原样注入，避免重复和改写。
+5. 角色设定不得与用户约束冲突（例如用户要求克制悬疑，则不要设计话痨剧透型角色作为默认主视角）。
+6. 除非用户明确要求其它语言，否则使用中文。
+7. 根据情节需要创建 1–6 个彼此有明确关系、目标和冲突的角色。
+8. outline 必须是可依次演绎的具体情节点，不写空泛的“发展剧情”。
+9. 若「篇幅结构」含全书总字数目标，outline 的节拍数量与每拍叙事密度必须服务该目标（长篇不可写成短篇节奏）。
+10. 若用户指定节拍数，outline 必须严格等于该数量；不得多写标题行、章节行或补充说明冒充节拍。
+11. 输出 JSON 前在内部逐项复核故事事实、结局、全部禁止事项和节拍数量；发现缺项必须先修正，不能把检查过程写进 JSON。
+12. 已有草稿仅作参考；与用户约束冲突时以用户约束为准。
+13. 所有键和字符串必须使用双引号；不得使用尾随逗号。
+''';
+
+    String? beatCorrection;
+    final attempts = expectedBeatCount != null && expectedBeatCount > 0 ? 2 : 1;
+    DirectorStoryDraft? candidate;
+    for (var attempt = 0; attempt < attempts; attempt++) {
+      final raw = await _complete(
+        config: config,
+        cancelToken: cancelToken,
+        system: systemPrompt,
+        user: [
+          '故事情节（必须保留核心，不可擅自改写结局/基调）：\n$trimmedPremise',
+          if (preferences.isNotEmpty) preferences.join('\n\n'),
+          '已有草稿（JSON，可改但不得违反上方约束）：\n$seedBlock',
+          ?beatCorrection,
+        ].join('\n\n'),
+      );
+
+      final parsed = DirectorStoryDraft.fromJsonMap(_extractJsonObject(raw));
+      if (parsed == null ||
+          parsed.outline.trim().isEmpty ||
+          parsed.characters.isEmpty) {
+        throw Exception('模型返回的故事草稿格式不完整，请重试。');
+      }
+      final expected = expectedBeatCount;
+      if (expected != null && expected > 0) {
+        final actual = _outlineBeatCount(parsed.outline);
+        if (actual != expected) {
+          if (attempt + 1 < attempts) {
+            seedBlock = jsonEncode(parsed.toJson());
+            beatCorrection =
+                '上次草稿有 $actual 个节拍，不符合要求。'
+                '本次必须修正为恰好 $expected 个非空节拍；'
+                '合并或拆分情节时仍须保留原始结局、基调和全部硬性约束。';
+            continue;
+          }
+          throw Exception(
+            '模型连续两次未按要求生成 $expected 个节拍'
+            '（最后一次为 $actual 个），请重试。',
+          );
+        }
+      }
+      candidate = DirectorStoryDraft(
+        title: parsed.title.trim().isEmpty ? trimmedPremise : parsed.title,
+        outline: parsed.outline,
+        authorNote: parsed.authorNote.trim().isEmpty
+            ? DirectorStoryDraft.defaultAuthorNote
+            : parsed.authorNote,
+        characters: parsed.characters,
+      );
+      break;
+    }
+    if (candidate == null) {
+      throw Exception('模型未返回有效故事方案，请重试。');
+    }
+    if (!strictReview) return candidate;
+    return _strictReviewDirectorStory(
+      config: config,
+      premise: trimmedPremise,
+      requirements: hardRequirements,
+      length: length?.trim() ?? '',
+      expectedBeatCount: expectedBeatCount,
+      candidate: candidate,
+      cancelToken: cancelToken,
+    );
+  }
+
+  Future<DirectorStoryDraft> _strictReviewDirectorStory({
+    required LlmConfig config,
+    required String premise,
+    required String requirements,
+    required String length,
+    required int? expectedBeatCount,
+    required DirectorStoryDraft candidate,
+    CancelToken? cancelToken,
+  }) async {
+    final raw = await _complete(
+      config: config,
+      cancelToken: cancelToken,
+      system: '''
+你是“导演故事模式”的严格审稿人。你的任务不是评价文字好不好看，而是把候选方案修订成逐条满足用户契约的可演绎方案。
+
+只输出一个严格合法的 JSON 对象，不要 Markdown、审稿报告、解释或 JSON 外文字。根字段必须仍为：
+title, outline, authorNote, characters。
+characters 中保持字段：
+name, description, personality, scenario, firstMes, exampleDialogs, systemPrompt。
+
+必须依次审查并修正：
+1. 把故事原始情节拆成事实、因果、人物状态和指定结局；每一项都必须在 outline 某一拍明确发生，不能只给相似线索或模糊暗示。
+2. 把每条硬性要求视为不可违背的验收条件，特别检查叙事人称、固定地点、禁止事项、真相揭示时机、必须出现/不得出现的事件和指定末句。
+3. 若要求“第 N 拍才揭晓”，前 N-1 拍只能铺线索，不能确认核心结论、责任人或人物真实状态。
+4. outline 每拍只承担当拍事件，顺序清楚、可直接演绎；不要把后拍结果偷写进前拍。
+5. 用户指定的节拍数必须精确满足。不要增加标题行、章节行或说明行。
+6. 角色卡不得制造与硬性要求相冲突的默认行为。
+7. authorNote 只保留导演模式和演绎职责，不重复粘贴全部硬性要求。
+
+即使候选方案看似合理，也必须逐项对照后再输出；发现问题直接修订 JSON，不能只在 authorNote 里声称会遵守。
 ''',
       user: [
-        '故事情节（必须保留核心，不可擅自改写结局/基调）：\n$trimmedPremise',
-        if (preferences.isNotEmpty) preferences.join('\n\n'),
-        '已有草稿（JSON，可改但不得违反上方约束）：\n$seedBlock',
+        '【故事原始情节】\n$premise',
+        if (requirements.isNotEmpty) '【硬性约束】\n$requirements',
+        if (length.isNotEmpty) '【篇幅结构】\n$length',
+        if (expectedBeatCount != null && expectedBeatCount > 0)
+          '【节拍数量】\n必须恰好 $expectedBeatCount 拍。',
+        '【待审候选方案】\n${jsonEncode(candidate.toJson())}',
       ].join('\n\n'),
     );
 
-    final parsed = DirectorStoryDraft.fromJsonMap(_extractJsonObject(raw));
-    if (parsed == null ||
-        parsed.outline.trim().isEmpty ||
-        parsed.characters.isEmpty) {
-      throw Exception('模型返回的故事草稿格式不完整，请重试。');
+    final reviewed = DirectorStoryDraft.fromJsonMap(_extractJsonObject(raw));
+    if (reviewed == null ||
+        reviewed.outline.trim().isEmpty ||
+        reviewed.characters.isEmpty) {
+      throw Exception('严格审稿返回的故事方案格式不完整，请重试。');
+    }
+    final expected = expectedBeatCount;
+    if (expected != null && expected > 0) {
+      final actual = _outlineBeatCount(reviewed.outline);
+      if (actual != expected) {
+        throw Exception('严格审稿未保持 $expected 个节拍（实际 $actual 个），请重试。');
+      }
     }
     return DirectorStoryDraft(
-      title: parsed.title.trim().isEmpty ? trimmedPremise : parsed.title,
-      outline: parsed.outline,
-      authorNote: parsed.authorNote.trim().isEmpty
+      title: reviewed.title.trim().isEmpty ? candidate.title : reviewed.title,
+      outline: reviewed.outline,
+      authorNote: reviewed.authorNote.trim().isEmpty
           ? DirectorStoryDraft.defaultAuthorNote
-          : parsed.authorNote,
-      characters: parsed.characters,
+          : reviewed.authorNote,
+      characters: reviewed.characters,
     );
   }
 
@@ -523,4 +634,11 @@ String _outlineValue(dynamic value) {
     if (beat.isNotEmpty) beats.add('- $beat');
   }
   return beats.join('\n');
+}
+
+int _outlineBeatCount(String outline) {
+  return outline
+      .split(RegExp(r'\r?\n'))
+      .where((line) => line.trim().isNotEmpty)
+      .length;
 }

@@ -20,6 +20,8 @@ import 'package:expert_chat/data/world_info_repository.dart';
 import 'package:expert_chat/domain/export/conversation_export.dart';
 import 'package:expert_chat/domain/llm/llm_provider.dart';
 import 'package:expert_chat/domain/media/openai_compatible_media_provider.dart';
+import 'package:expert_chat/domain/speech/speech_input_service.dart';
+import 'package:expert_chat/domain/story/story_length_budget.dart';
 import 'package:expert_chat/domain/story/story_prompt_assembler.dart';
 import 'package:expert_chat/domain/tools/file_parser.dart';
 import 'package:expert_chat/domain/tools/search_provider.dart';
@@ -313,6 +315,64 @@ class DelayedReadySettings extends SettingsController {
   }
 }
 
+class FakeSpeechInputService implements SpeechInputService {
+  FakeSpeechInputService({
+    this.availability = SpeechInputAvailability.ready,
+    this.initializeGate,
+  });
+
+  final SpeechInputAvailability availability;
+  final Future<SpeechInputAvailability>? initializeGate;
+  SpeechInputStatusCallback? _statusCallback;
+  SpeechInputErrorCallback? _errorCallback;
+  SpeechInputResultCallback? _resultCallback;
+  int initializeCount = 0;
+  int startCount = 0;
+  int cancelCount = 0;
+
+  @override
+  Future<SpeechInputAvailability> initialize({
+    required SpeechInputStatusCallback onStatus,
+    required SpeechInputErrorCallback onError,
+  }) async {
+    initializeCount++;
+    _statusCallback = onStatus;
+    _errorCallback = onError;
+    return initializeGate ?? availability;
+  }
+
+  @override
+  Future<bool> start({
+    required SpeechInputResultCallback onResult,
+    String preferredLanguageCode = 'zh',
+  }) async {
+    startCount++;
+    _resultCallback = onResult;
+    _statusCallback?.call(SpeechInputStatus.listening);
+    return true;
+  }
+
+  void emit(String text, {bool isFinal = false}) {
+    _resultCallback?.call(SpeechInputResult(text: text, isFinal: isFinal));
+  }
+
+  void fail(String code) {
+    _errorCallback?.call(SpeechInputFailure(code: code, permanent: false));
+  }
+
+  @override
+  Future<void> cancel() async {
+    cancelCount++;
+  }
+
+  @override
+  void detach() {
+    _statusCallback = null;
+    _errorCallback = null;
+    _resultCallback = null;
+  }
+}
+
 /// In-memory Drift DB for story repos in unit tests (no path_provider).
 ProviderContainer _container(
   LlmProvider llm,
@@ -320,6 +380,7 @@ ProviderContainer _container(
   ToolEngineFactory? toolEngineFactory,
   SettingsController Function() settingsBuilder = FakeSettings.new,
   OpenAiCompatibleMediaProvider? mediaProvider,
+  SpeechInputService? speechInputService,
 }) {
   final db = AppDatabase(NativeDatabase.memory());
   final characters = CharacterRepository(db);
@@ -336,6 +397,8 @@ ProviderContainer _container(
         toolEngineFactoryProvider.overrideWithValue(toolEngineFactory),
       if (mediaProvider != null)
         mediaApiProvider.overrideWithValue(mediaProvider),
+      if (speechInputService != null)
+        speechInputServiceProvider.overrideWithValue(speechInputService),
     ],
   );
   // Memory DB is not opened via path_provider; close it when the test ends.
@@ -1074,6 +1137,34 @@ void main() {
     },
   );
 
+  test(
+    'director story is not published before its first save succeeds',
+    () async {
+      final repo = FailingSaveRepo()..failNextSave = true;
+      final c = _container(FakeLlmProvider(const []), repo);
+      addTearDown(c.dispose);
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
+      final originalId = c.read(chatControllerProvider).value!.currentId;
+
+      await expectLater(
+        ctrl.newDirectorStoryConversation(
+          title: '不能丢的故事',
+          premise: '测试持久化失败。',
+          cast: [CharacterCard(name: '角色甲')],
+          outline: '- 第一节',
+          worldInfoIds: const [],
+        ),
+        throwsA(isA<Exception>()),
+      );
+
+      final state = c.read(chatControllerProvider).value!;
+      expect(state.currentId, originalId);
+      expect(state.current?.isStory, isFalse);
+      expect(repo.store, isEmpty);
+    },
+  );
+
   test('advancePlot increments plotCursor after a successful reply', () async {
     final llm = FakeLlmProvider([const ChatChunk(contentDelta: '第二节正文')]);
     final card = CharacterCard(name: '作者', firstMes: '开场');
@@ -1094,6 +1185,41 @@ void main() {
     expect(convo.activePath.any((m) => m.content == '（推进情节）'), isTrue);
   });
 
+  test(
+    'length-targeted story keeps a beat until its quota is reached',
+    () async {
+      final llm = FakeLlmProvider(
+        const [],
+        scriptedChunks: [
+          [ChatChunk(contentDelta: '甲' * 20)],
+          [ChatChunk(contentDelta: '乙' * 30)],
+        ],
+      );
+      final c = _container(llm, InMemoryRepo());
+      addTearDown(c.dispose);
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
+
+      await ctrl.newStoryConversation(
+        CharacterCard(name: '作者'),
+        worldInfoIds: const [],
+      );
+      ctrl.updateStoryMeta(
+        outline: '- 第一拍\n- 第二拍',
+        plotCursor: 0,
+        targetTotalChars: 100,
+      );
+
+      await ctrl.advancePlot();
+      expect(c.read(chatControllerProvider).value!.current!.plotCursor, 0);
+
+      await ctrl.advancePlot();
+      final convo = c.read(chatControllerProvider).value!.current!;
+      expect(StoryLengthBudget.countWrittenChars(convo), 50);
+      expect(convo.plotCursor, 1);
+    },
+  );
+
   test('regenerating an advanced beat keeps committed plot progress', () async {
     final llm = FakeLlmProvider(
       const [],
@@ -1108,7 +1234,7 @@ void main() {
     final ctrl = c.read(chatControllerProvider.notifier);
     await c.read(chatControllerProvider.future);
     await ctrl.newStoryConversation(
-      CharacterCard(name: '作者', firstMes: '开场'),
+      CharacterCard(name: '作者'),
       worldInfoIds: const [],
     );
     ctrl.updateStoryMeta(outline: '- 相遇\n- 冲突\n- 和解', plotCursor: 0);
@@ -1217,6 +1343,34 @@ void main() {
     expect(
       c.read(chatControllerProvider).value!.current?.messages ?? const [],
       isEmpty,
+    );
+  });
+
+  test('stopAndWait releases preflight before accepting replacement', () async {
+    final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'replacement')]);
+    final delayed = DelayedReadySettings();
+    final c = _container(llm, InMemoryRepo(), settingsBuilder: () => delayed);
+    addTearDown(c.dispose);
+
+    final ctrl = c.read(chatControllerProvider.notifier);
+    await c.read(chatControllerProvider.future);
+
+    final firstSend = ctrl.sendMessage('should be cancelled');
+    await delayed.entered.future;
+    var stopped = false;
+    final stopping = ctrl.stopAndWait().then((_) => stopped = true);
+    await Future<void>.delayed(Duration.zero);
+    expect(stopped, isFalse, reason: '等待中的设置预检尚未退出');
+
+    delayed.gate.complete();
+    await stopping;
+    expect(await firstSend, isFalse);
+
+    expect(await ctrl.sendMessage('replacement turn'), isTrue);
+    expect(llm.callCount, 1);
+    expect(
+      c.read(chatControllerProvider).value!.current!.activePath.last.content,
+      'replacement',
     );
   });
 
@@ -2169,6 +2323,118 @@ void main() {
   );
 
   group('ChatPage widget interactions', () {
+    testWidgets('permission sheet inactivity does not cancel first voice use', (
+      tester,
+    ) async {
+      final gate = Completer<SpeechInputAvailability>();
+      final speech = FakeSpeechInputService(initializeGate: gate.future);
+      final c = _container(
+        FakeLlmProvider(const []),
+        InMemoryRepo(),
+        speechInputService: speech,
+      );
+      addTearDown(c.dispose);
+      await _pumpChat(tester, c);
+
+      await tester.tap(find.byTooltip('语音输入'));
+      await tester.pump();
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      gate.complete(SpeechInputAvailability.ready);
+      await tester.pump();
+      await tester.pump();
+
+      expect(speech.startCount, 1);
+      expect(speech.cancelCount, 0);
+      expect(find.byTooltip('停止语音输入'), findsOneWidget);
+    });
+
+    testWidgets('voice input is cancelled when the app goes to background', (
+      tester,
+    ) async {
+      final speech = FakeSpeechInputService();
+      final c = _container(
+        FakeLlmProvider(const []),
+        InMemoryRepo(),
+        speechInputService: speech,
+      );
+      addTearDown(c.dispose);
+      await _pumpChat(tester, c);
+
+      await tester.tap(find.byTooltip('语音输入'));
+      await tester.pump();
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      await tester.pump();
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+
+      expect(speech.cancelCount, 1);
+      expect(find.byTooltip('语音输入'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('speech-listening-indicator')),
+        findsNothing,
+      );
+    });
+
+    testWidgets('voice input fills the composer without auto-sending', (
+      tester,
+    ) async {
+      final llm = FakeLlmProvider([const ChatChunk(contentDelta: '收到')]);
+      final speech = FakeSpeechInputService();
+      final c = _container(llm, InMemoryRepo(), speechInputService: speech);
+      addTearDown(c.dispose);
+      await _pumpChat(tester, c);
+
+      await tester.tap(find.byTooltip('语音输入'));
+      await tester.pump();
+      speech.emit('帮我写一封邮件');
+      await tester.pump();
+
+      final field = tester.widget<TextField>(
+        find.byKey(const ValueKey('composer-text-field')),
+      );
+      expect(field.controller?.text, '帮我写一封邮件');
+      expect(find.text('正在听… 识别文字不会自动发送'), findsOneWidget);
+      expect(llm.callCount, 0);
+
+      await tester.tap(find.byTooltip('发送'));
+      await _drain(tester);
+
+      expect(speech.initializeCount, 1);
+      expect(speech.startCount, 1);
+      expect(speech.cancelCount, 1);
+      expect(llm.callCount, 1);
+      final path = c
+          .read(chatControllerProvider)
+          .requireValue
+          .current!
+          .activePath;
+      expect(path.first.content, '帮我写一封邮件');
+    });
+
+    testWidgets('denied voice permission is explained without starting', (
+      tester,
+    ) async {
+      final speech = FakeSpeechInputService(
+        availability: SpeechInputAvailability.permissionDenied,
+      );
+      final c = _container(
+        FakeLlmProvider(const []),
+        InMemoryRepo(),
+        speechInputService: speech,
+      );
+      addTearDown(c.dispose);
+      await _pumpChat(tester, c);
+
+      await tester.tap(find.byTooltip('语音输入'));
+      await tester.pump();
+
+      expect(find.text('未获得麦克风或语音识别权限，请在系统设置中允许后重试。'), findsOneWidget);
+      expect(speech.initializeCount, 1);
+      expect(speech.startCount, 0);
+    });
+
     testWidgets('tapping send dispatches the message and renders the reply', (
       tester,
     ) async {

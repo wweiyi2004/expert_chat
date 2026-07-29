@@ -2,9 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/mode_style.dart';
+import '../../data/models.dart';
 import '../../data/story_models.dart';
+import '../../state/chat_controller.dart';
 import '../../state/character_controller.dart';
 import '../../state/world_info_controller.dart';
+import '../shell/shell_tab.dart';
 import 'character_library_page.dart';
 import 'director_story_setup_page.dart';
 import 'ensemble_setup_page.dart';
@@ -63,16 +66,27 @@ class _StudioPageState extends ConsumerState<StudioPage>
     _tabs?.animateTo(2);
   }
 
+  void _continueWork(Conversation conversation) {
+    ref
+        .read(chatControllerProvider.notifier)
+        .selectConversation(conversation.id);
+    openShellTab(ref, ShellTab.chat);
+  }
+
+  Future<void> _newCharacter() => editCharacterCard(context, ref, null);
+
+  Future<void> _newWorldEntry() => editWorldInfoEntry(context, ref, null);
+
   Future<void> _openDirector() async {
-    await Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const DirectorStorySetupPage()),
-    );
+    await Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const DirectorStorySetupPage()));
   }
 
   Future<void> _openEnsemble() async {
-    await Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const EnsembleSetupPage()),
-    );
+    await Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const EnsembleSetupPage()));
   }
 
   @override
@@ -163,6 +177,9 @@ class _StudioPageState extends ConsumerState<StudioPage>
             onEnsemble: _openEnsemble,
             onPickCharacter: _goCharactersTab,
             onOpenWorld: _goWorldTab,
+            onContinueWork: _continueWork,
+            onNewCharacter: _newCharacter,
+            onNewWorldEntry: _newWorldEntry,
           ),
           const CharacterLibraryBody(pickForChat: false),
           const WorldInfoBody(),
@@ -179,30 +196,81 @@ class _StudioStartBody extends ConsumerWidget {
     required this.onEnsemble,
     required this.onPickCharacter,
     required this.onOpenWorld,
+    required this.onContinueWork,
+    required this.onNewCharacter,
+    required this.onNewWorldEntry,
   });
 
   final VoidCallback onDirector;
   final VoidCallback onEnsemble;
   final VoidCallback onPickCharacter;
   final VoidCallback onOpenWorld;
+  final ValueChanged<Conversation> onContinueWork;
+  final VoidCallback onNewCharacter;
+  final VoidCallback onNewWorldEntry;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final scheme = Theme.of(context).colorScheme;
     final cardCount = ref.watch(characterCardsProvider).value?.length ?? 0;
     final worldCount = ref.watch(worldInfoProvider).value?.length ?? 0;
+    final conversations =
+        ref.watch(chatControllerProvider).value?.conversations ??
+        const <Conversation>[];
+    final recentWorks =
+        conversations.where((conversation) => conversation.isStoryLike).toList()
+          ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    final visibleRecentWorks = recentWorks.take(3).toList(growable: false);
 
     return ListView(
       key: const ValueKey('studio-start-body'),
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
       children: [
-        Text('开始创作', style: Theme.of(context).textTheme.titleLarge),
+        if (visibleRecentWorks.isNotEmpty) ...[
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '继续创作',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+              ),
+              Text(
+                '最近更新',
+                style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            '故事不用去会话列表里找，从这里直接回到上次写作位置。',
+            style: Theme.of(
+              context,
+            ).textTheme.bodyMedium?.copyWith(color: scheme.onSurfaceVariant),
+          ),
+          const SizedBox(height: 12),
+          for (final conversation in visibleRecentWorks) ...[
+            _RecentWorkCard(
+              key: ValueKey('studio-recent-${conversation.id}'),
+              conversation: conversation,
+              onTap: () => onContinueWork(conversation),
+            ),
+            const SizedBox(height: 8),
+          ],
+          const SizedBox(height: 20),
+        ],
+        Text(
+          visibleRecentWorks.isEmpty ? '开始创作' : '开始新创作',
+          style: Theme.of(context).textTheme.titleLarge,
+        ),
         const SizedBox(height: 6),
         Text(
-          '从一条路径开聊或开写；素材在「角色」「世界书」里管理。',
-          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-            color: scheme.onSurfaceVariant,
-          ),
+          '选一种方式开写；角色和世界设定可随时补充，不必一次准备完。',
+          style: Theme.of(
+            context,
+          ).textTheme.bodyMedium?.copyWith(color: scheme.onSurfaceVariant),
         ),
         const SizedBox(height: 16),
         _StartPathCard(
@@ -246,6 +314,8 @@ class _StudioStartBody extends ConsumerWidget {
                 label: '角色',
                 count: cardCount,
                 onTap: onPickCharacter,
+                onAdd: onNewCharacter,
+                addTooltip: '新建角色',
               ),
             ),
             const SizedBox(width: 10),
@@ -256,11 +326,155 @@ class _StudioStartBody extends ConsumerWidget {
                 label: '世界书',
                 count: worldCount,
                 onTap: onOpenWorld,
+                onAdd: onNewWorldEntry,
+                addTooltip: '新建世界书条目',
               ),
             ),
           ],
         ),
       ],
+    );
+  }
+}
+
+class _RecentWorkCard extends StatelessWidget {
+  const _RecentWorkCard({
+    super.key,
+    required this.conversation,
+    required this.onTap,
+  });
+
+  final Conversation conversation;
+  final VoidCallback onTap;
+
+  String get _kindLabel {
+    if (conversation.isEnsemble) return '角色大乱斗';
+    if (conversation.characterId == null && conversation.localCast.isNotEmpty) {
+      return '导演故事';
+    }
+    return '角色故事';
+  }
+
+  String get _progressLabel {
+    if (conversation.isEnsemble) {
+      final castCount = conversation.castIds.length;
+      final turns = conversation.activePath
+          .where((message) => message.role == MessageRole.assistant)
+          .length;
+      return '$castCount 位角色 · $turns 次发言';
+    }
+
+    final beats = conversation.outlineBeats;
+    if (beats.isNotEmpty) {
+      final completed = conversation.plotCursor.clamp(0, beats.length);
+      final target = conversation.targetTotalChars;
+      return target > 0
+          ? '$completed/${beats.length} 个情节 · 目标 ${_compactNumber(target)} 字'
+          : '$completed/${beats.length} 个情节';
+    }
+
+    final turns = conversation.activePath
+        .where((message) => message.role == MessageRole.assistant)
+        .length;
+    return turns == 0 ? '还没有开始演绎' : '已完成 $turns 次演绎';
+  }
+
+  static String _compactNumber(int value) {
+    if (value >= 10000) {
+      final compact = value / 10000;
+      return '${compact == compact.roundToDouble() ? compact.toStringAsFixed(0) : compact.toStringAsFixed(1)}万';
+    }
+    return '$value';
+  }
+
+  static String _relativeTime(DateTime time) {
+    final now = DateTime.now();
+    final local = time.toLocal();
+    final today = DateTime(now.year, now.month, now.day);
+    final date = DateTime(local.year, local.month, local.day);
+    final dayDelta = today.difference(date).inDays;
+    final minute = local.minute.toString().padLeft(2, '0');
+    if (dayDelta == 0) return '今天 ${local.hour}:$minute';
+    if (dayDelta == 1) return '昨天 ${local.hour}:$minute';
+    if (local.year == now.year) return '${local.month}/${local.day}';
+    return '${local.year}/${local.month}/${local.day}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final modeColor = ModeStyle.color(conversation.mode);
+
+    return Card(
+      margin: EdgeInsets.zero,
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
+          child: Row(
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: modeColor.withValues(alpha: 0.13),
+                  borderRadius: BorderRadius.circular(13),
+                ),
+                child: Icon(
+                  ModeStyle.icon(conversation.mode, outlined: false),
+                  color: modeColor,
+                  size: 22,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            conversation.title.trim().isEmpty
+                                ? _kindLabel
+                                : conversation.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.titleSmall
+                                ?.copyWith(fontWeight: FontWeight.w700),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          _relativeTime(conversation.updatedAt),
+                          style: Theme.of(context).textTheme.labelSmall
+                              ?.copyWith(color: scheme.onSurfaceVariant),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '$_kindLabel · $_progressLabel',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 4),
+              Icon(
+                Icons.arrow_forward_rounded,
+                size: 20,
+                color: scheme.primary,
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -368,12 +582,16 @@ class _AssetSummaryTile extends StatelessWidget {
     required this.label,
     required this.count,
     required this.onTap,
+    required this.onAdd,
+    required this.addTooltip,
   });
 
   final IconData icon;
   final String label;
   final int count;
   final VoidCallback onTap;
+  final VoidCallback onAdd;
+  final String addTooltip;
 
   @override
   Widget build(BuildContext context) {
@@ -409,10 +627,18 @@ class _AssetSummaryTile extends StatelessWidget {
                   ],
                 ),
               ),
-              Icon(
-                Icons.chevron_right,
-                size: 20,
-                color: scheme.onSurfaceVariant,
+              IconButton(
+                key: ValueKey(
+                  label == '角色' ? 'studio-new-character' : 'studio-new-world',
+                ),
+                tooltip: addTooltip,
+                visualDensity: VisualDensity.compact,
+                onPressed: onAdd,
+                icon: Icon(
+                  Icons.add_circle_outline,
+                  size: 21,
+                  color: scheme.primary,
+                ),
               ),
             ],
           ),

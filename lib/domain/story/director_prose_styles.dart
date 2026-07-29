@@ -176,6 +176,14 @@ class DirectorProseStyle {
     if (extra.isNotEmpty) {
       parts.add('【其它硬性要求】\n$extra');
     }
+    if (parts.length > 1) {
+      parts.insert(
+        0,
+        '【约束冲突规则】\n'
+        '用户填写的「其它硬性要求」高于文风预设；多个文风预设之间只融合可兼容部分，'
+        '冲突时以更具体的叙事人称、禁止事项和导演最新明确要求为准，不得自行折中到违背任一禁忌。',
+      );
+    }
     return parts.join('\n\n');
   }
 }

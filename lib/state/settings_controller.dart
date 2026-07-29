@@ -45,6 +45,7 @@ class SettingsState {
     this.ttsApi = const MediaApiConfig(),
     this.ttsApiKey = '',
     this.context = const ContextPrefs(),
+    this.memoryEnabled = false,
     this.researchModeEnabled = false,
   });
 
@@ -87,6 +88,9 @@ class SettingsState {
   final MediaApiConfig ttsApi;
   final String ttsApiKey;
   final ContextPrefs context;
+
+  /// Local Markdown long-term memory. Off by default until the user opts in.
+  final bool memoryEnabled;
 
   /// M7: hidden research mode (SSH / tmux / AI command approval). Default off.
   final bool researchModeEnabled;
@@ -158,6 +162,7 @@ class SettingsState {
     MediaApiConfig? ttsApi,
     String? ttsApiKey,
     ContextPrefs? context,
+    bool? memoryEnabled,
     bool? researchModeEnabled,
   }) => SettingsState(
     profiles: profiles ?? this.profiles,
@@ -183,6 +188,7 @@ class SettingsState {
     ttsApi: ttsApi ?? this.ttsApi,
     ttsApiKey: ttsApiKey ?? this.ttsApiKey,
     context: context ?? this.context,
+    memoryEnabled: memoryEnabled ?? this.memoryEnabled,
     researchModeEnabled: researchModeEnabled ?? this.researchModeEnabled,
   );
 
@@ -207,6 +213,7 @@ const _kImageGenerationApiKeySecure = 'image_generation_api_key';
 const _kTtsApi = 'ttsApi';
 const _kTtsApiKeySecure = 'tts_api_key';
 const _kContextPrefs = 'contextPrefs';
+const _kMemoryEnabled = 'memoryEnabled';
 const _kResearchModeEnabled = 'researchModeEnabled';
 
 // Legacy M1 keys (single-config) — read once for migration.
@@ -351,17 +358,22 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       ttsApi: _readMediaApi(prefs, _kTtsApi),
       ttsApiKey: ttsApiKey,
       context: _readContextPrefs(prefs),
+      memoryEnabled: prefs.getBool(_kMemoryEnabled) ?? false,
       researchModeEnabled: prefs.getBool(_kResearchModeEnabled) ?? false,
     );
+  }
+
+  Future<void> setMemoryEnabled(bool enabled) async {
+    final next = _current.copyWith(memoryEnabled: enabled);
+    state = AsyncData(next);
+    await ref.read(sharedPrefsProvider).setBool(_kMemoryEnabled, enabled);
   }
 
   /// M7: toggle hidden research mode (SSH terminal). Does not connect.
   Future<void> setResearchModeEnabled(bool enabled) async {
     final next = _current.copyWith(researchModeEnabled: enabled);
     state = AsyncData(next);
-    await ref
-        .read(sharedPrefsProvider)
-        .setBool(_kResearchModeEnabled, enabled);
+    await ref.read(sharedPrefsProvider).setBool(_kResearchModeEnabled, enabled);
   }
 
   static UiPrefs _readUiPrefs(SharedPreferences prefs) {
@@ -650,6 +662,8 @@ class SettingsController extends AsyncNotifier<SettingsState> {
           ttsApi: _current.ttsApi,
           ttsApiKey: _current.ttsApiKey,
           context: _current.context,
+          memoryEnabled: _current.memoryEnabled,
+          researchModeEnabled: _current.researchModeEnabled,
         ),
       );
       await _writeProfiles(prefs, [fresh]);

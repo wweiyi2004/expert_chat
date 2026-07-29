@@ -52,6 +52,7 @@ class StoryPromptAssembler {
 
   static const int maxWorldInfoChars = 8000;
   static const int maxOutlineChars = 3000;
+
   /// Director notes carry hard constraints; keep more room than freeform chat.
   static const int maxAuthorNoteChars = 4000;
   static const int maxCharacterBlockChars = 6000;
@@ -84,7 +85,7 @@ class StoryPromptAssembler {
       if (note.isNotEmpty) {
         blocks.add(
           '【硬性导演说明 / 创作约束】（优先级最高，不可违背、不可淡化）\n'
-          '${_clip(note, maxAuthorNoteChars)}',
+          '${_clipDirectorNote(note, maxAuthorNoteChars)}',
         );
       }
       final outlineBlock = _outlineBlock(
@@ -149,9 +150,7 @@ class StoryPromptAssembler {
 
       final note = conversation.authorNote.trim();
       if (note.isNotEmpty) {
-        blocks.add(
-          '【导演指令 / Author Note】\n${_clip(note, maxAuthorNoteChars)}',
-        );
+        blocks.add('【导演指令 / Author Note】\n${_clip(note, maxAuthorNoteChars)}');
       }
       final lengthBlock = _lengthBudgetBlock(
         conversation,
@@ -166,12 +165,13 @@ class StoryPromptAssembler {
       blocks.add(
         directorMode
             ? '【本回合任务：推进情节】'
-                  '严格依据「硬性导演说明」与「当前大纲节拍」续写一节完整故事正文。'
+                  '严格依据「硬性导演说明」与「当前大纲节拍」续写一段完整、可自然衔接的故事正文。'
                   '你负责旁白和所有登场角色；'
                   '不得偏离用户约束（文风、禁忌、节奏、视角、禁止事项等）；'
                   '不得提前完成或剧透后续未到达的大纲节拍；'
                   '不得让导演成为故事角色或替用户发言；'
                   '若导演说明与自由发挥冲突，以导演说明为准；'
+                  '输出前静默逐项核对人称、地点、禁忌、信息揭示时机、指定结局与篇幅，发现任一不符先改正；'
                   '本回合直接输出正文，不要复述规则或大纲。'
             : '【推进情节】请根据当前大纲节拍与导演指令，续写下一节叙事。'
                   '保持角色口吻与已有情节连贯；不要剧透后续未到达的大纲节拍；'
@@ -182,8 +182,9 @@ class StoryPromptAssembler {
       blocks.add(
         '【本回合任务：执行导演指令】'
         '用户最新一条消息是导演调度/修改意见，必须执行。'
-        '在遵守硬性导演说明与已有大纲的前提下改写或续写；'
+        '在遵守未被本轮明确修改的硬性导演说明与已有大纲的前提下改写或续写；'
         '不得无视、弱化或只完成一部分导演要求；'
+        '输出前静默逐项核对本轮要求与所有仍有效的禁忌；'
         '直接输出故事正文（或导演明确要求的其它形式），不要复述规则。',
       );
     }
@@ -218,6 +219,10 @@ class StoryPromptAssembler {
       ..writeln('4. 角色卡与已发生正文的连贯性')
       ..writeln('5. 世界书等补充设定')
       ..writeln('冲突时取更高优先级；禁止用“更戏剧化/更有趣”为理由突破约束。')
+      ..writeln(
+        '导演有权明确修改旧约束：仅当最新指令清楚写明“修改、替换或取消”某条旧规则时，'
+        '新规则覆盖对应旧条款；普通续写要求不得被当成解除约束。',
+      )
       ..writeln('除非导演明确修改，不得擅自改结局、改基调、换主角核心目标。');
     if (advancePlot) {
       b.writeln('本回合为节拍推进：只演绎「当前节拍」，不要跳拍。');
@@ -393,11 +398,7 @@ class StoryPromptAssembler {
 
     final beats = conversation.outlineBeats;
     final b = StringBuffer()
-      ..writeln(
-        strict
-            ? '【情节大纲】（节拍顺序须遵守；本回合只演绎当前节拍）'
-            : '【情节大纲】',
-      );
+      ..writeln(strict ? '【情节大纲】（节拍顺序须遵守；本回合只演绎当前节拍）' : '【情节大纲】');
     if (outline.isNotEmpty) {
       b.writeln(_clip(outline, maxOutlineChars));
     }
@@ -443,5 +444,20 @@ class StoryPromptAssembler {
   String _clip(String value, int maxChars) {
     if (value.characters.length <= maxChars) return value;
     return '${value.characters.take(maxChars)}…';
+  }
+
+  /// Director setup stores raw constraints at the start and the original
+  /// premise at the end of one structured note. Preserve both ends when that
+  /// note is oversized; ordinary clipping used to keep the rules but silently
+  /// drop the premise.
+  String _clipDirectorNote(String value, int maxChars) {
+    if (value.characters.length <= maxChars) return value;
+    const marker = '\n\n【中间导演说明已因长度裁剪】\n\n';
+    final available = (maxChars - marker.characters.length).clamp(2, maxChars);
+    final headChars = (available * 0.62).floor();
+    final tailChars = available - headChars;
+    return '${value.characters.take(headChars)}'
+        '$marker'
+        '${value.characters.skip(value.characters.length - tailChars)}';
   }
 }

@@ -21,11 +21,7 @@ void main() {
       mode: ConversationMode.story,
       targetTotalChars: 10000,
       messages: [user, a1, a2],
-      activeChildren: {
-        kRootKey: user.id,
-        user.id: a1.id,
-        a1.id: a2.id,
-      },
+      activeChildren: {kRootKey: user.id, user.id: a1.id, a1.id: a2.id},
     );
     expect(StoryLengthBudget.countWrittenChars(convo), 10);
   });
@@ -45,11 +41,42 @@ void main() {
     expect(budget.written, 2000);
     expect(budget.remaining, 8000);
     expect(budget.beatsLeft, 3); // cursor 1 → beats 2,3,4
+    expect(budget.currentBeatTarget, 2500);
+    // Cursor was manually put on beat 2 before beat 1 reached its 2500-char
+    // threshold, so the current beat also catches up that 500-char shortfall.
+    expect(budget.currentBeatRemaining, 3000);
     expect(budget.turnMin, greaterThan(0));
     expect(budget.turnMax, greaterThanOrEqualTo(budget.turnMin));
     expect(budget.turnMax, lessThanOrEqualTo(budget.remaining));
     expect(budget.sessionLabel(), contains('已写'));
     expect(budget.promptBlock(advancePlot: true), contains('篇幅约束'));
+  });
+
+  test('a length-targeted beat stays active until its cumulative quota', () {
+    Conversation storyWithBody(int chars) {
+      final assistant = ChatMessage(
+        role: MessageRole.assistant,
+        content: '字' * chars,
+      );
+      return Conversation(
+        mode: ConversationMode.story,
+        outline: '- 一\n- 二\n- 三\n- 四\n- 五\n- 六\n- 七\n- 八',
+        plotCursor: 0,
+        targetTotalChars: 80000,
+        messages: [assistant],
+        activeChildren: {kRootKey: assistant.id},
+      );
+    }
+
+    final partial = StoryLengthBudget.forConversation(storyWithBody(4000))!;
+    expect(partial.currentBeatTarget, 10000);
+    expect(partial.currentBeatRemaining, 6000);
+    expect(partial.currentBeatTargetReached, isFalse);
+    expect(partial.promptBlock(advancePlot: true), contains('只推进当前节拍的一部分'));
+
+    final complete = StoryLengthBudget.forConversation(storyWithBody(10000))!;
+    expect(complete.currentBeatRemaining, 0);
+    expect(complete.currentBeatTargetReached, isTrue);
   });
 
   test('assembler injects length block for director mode', () {

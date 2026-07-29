@@ -107,7 +107,9 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
         return;
       }
       if (data.length > _maxRemoteBytes) {
-        setState(() => _loadError = '图片过大（>${_maxRemoteBytes ~/ (1024 * 1024)}MB）');
+        setState(
+          () => _loadError = '图片过大（>${_maxRemoteBytes ~/ (1024 * 1024)}MB）',
+        );
         return;
       }
       setState(() => _bytes = Uint8List.fromList(data));
@@ -131,10 +133,10 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
     final ext = mime.contains('jpeg') || mime.contains('jpg')
         ? 'jpg'
         : mime.contains('webp')
-            ? 'webp'
-            : mime.contains('gif')
-                ? 'gif'
-                : 'png';
+        ? 'webp'
+        : mime.contains('gif')
+        ? 'gif'
+        : 'png';
     return 'expert-chat-${DateTime.now().millisecondsSinceEpoch}.$ext';
   }
 
@@ -143,19 +145,8 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
     if (bytes == null || _busy) return;
     setState(() => _busy = true);
     try {
-      final isMobile = !kIsWeb &&
-          (defaultTargetPlatform == TargetPlatform.android ||
-              defaultTargetPlatform == TargetPlatform.iOS);
-      final path = await FilePicker.saveFile(
-        dialogTitle: '保存图片',
-        fileName: _fileName,
-        type: FileType.image,
-        bytes: isMobile ? bytes : null,
-      );
-      if (path == null) return;
-      if (!isMobile) {
-        await File(path).writeAsBytes(bytes, flush: true);
-      }
+      final saved = await _saveBytes(bytes);
+      if (!saved) return;
       if (!mounted) return;
       _toast('已保存');
     } catch (e) {
@@ -166,6 +157,27 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
     }
   }
 
+  Future<bool> _saveBytes(Uint8List bytes) async {
+    final isNativeMobile =
+        !kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.android ||
+            defaultTargetPlatform == TargetPlatform.iOS);
+    final path = await FilePicker.saveFile(
+      dialogTitle: '保存图片',
+      fileName: _fileName,
+      type: FileType.image,
+      bytes: kIsWeb || isNativeMobile ? bytes : null,
+    );
+    // Browser download APIs do not expose a local path. A completed picker
+    // call means the download was initiated successfully.
+    if (kIsWeb) return true;
+    if (path == null) return false;
+    if (!isNativeMobile) {
+      await File(path).writeAsBytes(bytes, flush: true);
+    }
+    return true;
+  }
+
   Future<void> _share() async {
     final bytes = _bytes;
     if (bytes == null || _busy) return;
@@ -173,13 +185,12 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
     try {
       if (kIsWeb) {
         // Web share of binary files is flaky; fall back to save dialog.
-        await _save();
+        final saved = await _saveBytes(bytes);
+        if (saved && mounted) _toast('已保存');
         return;
       }
       final dir = await getTemporaryDirectory();
-      final file = File(
-        '${dir.path}${Platform.pathSeparator}$_fileName',
-      );
+      final file = File('${dir.path}${Platform.pathSeparator}$_fileName');
       await file.writeAsBytes(bytes, flush: true);
       final mime = widget.attachment.mimeType.isNotEmpty
           ? widget.attachment.mimeType
@@ -341,4 +352,3 @@ Uint8List? _decodeBase64Safe(String value) {
     return null;
   }
 }
-

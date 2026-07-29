@@ -26,6 +26,10 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>用于把你的语音转换成可编辑的聊天文字；应用不会长期保存录音。</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>用于把你的语音转换成可编辑的聊天文字。</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

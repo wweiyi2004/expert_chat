@@ -24,9 +24,28 @@ String protectStoryAuthorNote({
   if (prev.isEmpty) return edited;
   final protectedHeader = RegExp(r'【(?:硬性[^】]*|故事原始情节)】');
   if (!protectedHeader.hasMatch(prev)) return edited;
-  if (protectedHeader.hasMatch(next)) return edited;
   if (next.isEmpty) return prev;
-  return '$prev\n\n【情节面板补充】\n$next';
+  if (!protectedHeader.hasMatch(next)) {
+    return '$prev\n\n【情节面板补充】\n$next';
+  }
+
+  // An edit that keeps one protected header must not be allowed to
+  // accidentally erase the other (for example keeping hard constraints while
+  // deleting the original premise). Restore only the missing structured blocks
+  // and leave explicitly edited blocks untouched.
+  final missing = <String>[];
+  final allHeaders = RegExp(r'【[^】]+】').allMatches(prev).toList();
+  for (var i = 0; i < allHeaders.length; i++) {
+    final match = allHeaders[i];
+    final header = match.group(0)!;
+    if (!protectedHeader.hasMatch(header) || next.contains(header)) continue;
+    final end = i + 1 < allHeaders.length
+        ? allHeaders[i + 1].start
+        : prev.length;
+    missing.add(prev.substring(match.start, end).trim());
+  }
+  if (missing.isEmpty) return edited;
+  return '${missing.join('\n\n')}\n\n$next';
 }
 
 /// Bottom sheet host for story outline / author note / world-info picks.

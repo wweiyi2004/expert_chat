@@ -45,6 +45,8 @@ class MessageBubble extends StatefulWidget {
     this.onSpeak,
     this.isSpeechLoading = false,
     this.isSpeaking = false,
+    this.onRemember,
+    this.isRemembered = false,
     this.selectionMode = false,
     this.selected = false,
     this.onToggleSelect,
@@ -79,6 +81,8 @@ class MessageBubble extends StatefulWidget {
   final Future<void> Function()? onSpeak;
   final bool isSpeechLoading;
   final bool isSpeaking;
+  final Future<void> Function()? onRemember;
+  final bool isRemembered;
 
   /// Multi-select share: long-press / secondary-click enters mode.
   final bool selectionMode;
@@ -247,127 +251,140 @@ class _MessageBubbleState extends State<MessageBubble> {
     ChatMessage m,
     bool doc,
   ) {
-      return Align(
-        alignment: doc ? Alignment.centerLeft : Alignment.centerRight,
-        child: Column(
-          crossAxisAlignment: doc
-              ? CrossAxisAlignment.start
-              : CrossAxisAlignment.end,
-          children: [
-            if (m.attachments.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 6),
-                child: Wrap(
-                  alignment: WrapAlignment.end,
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    for (final a in m.attachments)
-                      AttachmentChip(attachment: a),
-                  ],
-                ),
-              ),
-            if (_editing)
-              _EditBox(
-                controller: _editCtrl,
-                onCancel: () => setState(() => _editing = false),
-                onSave: _commitEdit,
-              )
-            else if (m.content.isNotEmpty)
-              Container(
-                margin: EdgeInsets.symmetric(vertical: doc ? 8 : 6),
-                padding: EdgeInsets.symmetric(
-                  horizontal: doc ? 4 : 16,
-                  vertical: doc ? 8 : 12,
-                ),
-                constraints: BoxConstraints(maxWidth: doc ? 900 : 560),
-                width: doc ? double.infinity : null,
-                decoration: doc
-                    ? BoxDecoration(
-                        border: Border(
-                          left: BorderSide(
-                            color: scheme.primary.withValues(alpha: 0.45),
-                            width: 3,
-                          ),
-                        ),
-                      )
-                    : BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: [
-                            scheme.primary,
-                            Color.lerp(scheme.primary, scheme.secondary, 0.22)!,
-                          ],
-                        ),
-                        borderRadius: const BorderRadius.only(
-                          topLeft: Radius.circular(20),
-                          topRight: Radius.circular(20),
-                          bottomLeft: Radius.circular(20),
-                          bottomRight: Radius.circular(6),
-                        ),
-                        boxShadow: [
-                          BoxShadow(
-                            color: scheme.primary.withValues(alpha: 0.18),
-                            blurRadius: 16,
-                            offset: const Offset(0, 6),
-                          ),
-                        ],
-                      ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    if (doc)
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 4),
-                        child: Text(
-                          widget.userLabel ?? '你',
-                          style: Theme.of(context).textTheme.labelMedium
-                              ?.copyWith(
-                                color: scheme.primary,
-                                fontWeight: FontWeight.w700,
-                              ),
-                        ),
-                      ),
-                    SelectableText(
-                      m.content,
-                      style: TextStyle(
-                        color: doc ? scheme.onSurface : scheme.onPrimary,
-                        height: 1.55,
-                        fontSize: 15,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            if (!_editing)
-              Row(
-                mainAxisAlignment: doc
-                    ? MainAxisAlignment.start
-                    : MainAxisAlignment.end,
+    return Align(
+      alignment: doc ? Alignment.centerLeft : Alignment.centerRight,
+      child: Column(
+        crossAxisAlignment: doc
+            ? CrossAxisAlignment.start
+            : CrossAxisAlignment.end,
+        children: [
+          if (m.attachments.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Wrap(
+                alignment: WrapAlignment.end,
+                spacing: 8,
+                runSpacing: 8,
                 children: [
-                  _branchNav(scheme),
-                  if (m.content.isNotEmpty)
-                    IconButton(
-                      iconSize: 16,
-                      tooltip: '复制',
-                      color: scheme.onSurfaceVariant,
-                      icon: const Icon(Icons.copy_outlined),
-                      onPressed: () => _copyMessage(m.content),
-                    ),
-                  if (widget.onEdit != null && !widget.isStreaming)
-                    IconButton(
-                      iconSize: 16,
-                      tooltip: '编辑',
-                      color: scheme.onSurfaceVariant,
-                      icon: const Icon(Icons.edit_outlined),
-                      onPressed: _startEdit,
-                    ),
+                  for (final a in m.attachments) AttachmentChip(attachment: a),
                 ],
               ),
-          ],
-        ),
-      );
+            ),
+          if (_editing)
+            _EditBox(
+              controller: _editCtrl,
+              onCancel: () => setState(() => _editing = false),
+              onSave: _commitEdit,
+            )
+          else if (m.content.isNotEmpty)
+            Container(
+              margin: EdgeInsets.symmetric(vertical: doc ? 8 : 6),
+              padding: EdgeInsets.symmetric(
+                horizontal: doc ? 4 : 16,
+                vertical: doc ? 8 : 12,
+              ),
+              constraints: BoxConstraints(maxWidth: doc ? 900 : 560),
+              width: doc ? double.infinity : null,
+              decoration: doc
+                  ? BoxDecoration(
+                      border: Border(
+                        left: BorderSide(
+                          color: scheme.primary.withValues(alpha: 0.45),
+                          width: 3,
+                        ),
+                      ),
+                    )
+                  : BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [
+                          scheme.primary,
+                          Color.lerp(scheme.primary, scheme.secondary, 0.22)!,
+                        ],
+                      ),
+                      borderRadius: const BorderRadius.only(
+                        topLeft: Radius.circular(20),
+                        topRight: Radius.circular(20),
+                        bottomLeft: Radius.circular(20),
+                        bottomRight: Radius.circular(6),
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: scheme.primary.withValues(alpha: 0.18),
+                          blurRadius: 16,
+                          offset: const Offset(0, 6),
+                        ),
+                      ],
+                    ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (doc)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 4),
+                      child: Text(
+                        widget.userLabel ?? '你',
+                        style: Theme.of(context).textTheme.labelMedium
+                            ?.copyWith(
+                              color: scheme.primary,
+                              fontWeight: FontWeight.w700,
+                            ),
+                      ),
+                    ),
+                  SelectableText(
+                    m.content,
+                    style: TextStyle(
+                      color: doc ? scheme.onSurface : scheme.onPrimary,
+                      height: 1.55,
+                      fontSize: 15,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          if (!_editing)
+            Row(
+              mainAxisAlignment: doc
+                  ? MainAxisAlignment.start
+                  : MainAxisAlignment.end,
+              children: [
+                _branchNav(scheme),
+                if (m.content.isNotEmpty)
+                  IconButton(
+                    iconSize: 16,
+                    tooltip: '复制',
+                    color: scheme.onSurfaceVariant,
+                    icon: const Icon(Icons.copy_outlined),
+                    onPressed: () => _copyMessage(m.content),
+                  ),
+                if (widget.onRemember != null && m.content.isNotEmpty)
+                  IconButton(
+                    iconSize: 16,
+                    tooltip: widget.isRemembered ? '已记住' : '记住这条',
+                    color: widget.isRemembered
+                        ? scheme.primary
+                        : scheme.onSurfaceVariant,
+                    icon: Icon(
+                      widget.isRemembered
+                          ? Icons.bookmark
+                          : Icons.bookmark_add_outlined,
+                    ),
+                    onPressed: widget.isRemembered ? null : widget.onRemember,
+                  ),
+                if (widget.onEdit != null && !widget.isStreaming)
+                  IconButton(
+                    iconSize: 16,
+                    tooltip: '编辑',
+                    color: scheme.onSurfaceVariant,
+                    icon: const Icon(Icons.edit_outlined),
+                    onPressed: _startEdit,
+                  ),
+              ],
+            ),
+        ],
+      ),
+    );
   }
 
   Widget _buildAssistant(
@@ -522,6 +539,22 @@ class _MessageBubbleState extends State<MessageBubble> {
                       icon: const Icon(Icons.copy_outlined),
                       onPressed: () => _copyMessage(m.content),
                     ),
+                    if (widget.onRemember != null)
+                      IconButton(
+                        iconSize: 18,
+                        tooltip: widget.isRemembered ? '已记住' : '记住这条',
+                        color: widget.isRemembered
+                            ? scheme.primary
+                            : scheme.onSurfaceVariant,
+                        icon: Icon(
+                          widget.isRemembered
+                              ? Icons.bookmark
+                              : Icons.bookmark_add_outlined,
+                        ),
+                        onPressed: widget.isRemembered
+                            ? null
+                            : widget.onRemember,
+                      ),
                     if (messageHasHtmlPreview(m.content))
                       IconButton(
                         iconSize: 18,
@@ -624,9 +657,7 @@ class _AppliedWorldInfoBar extends StatelessWidget {
           decoration: BoxDecoration(
             color: scheme.tertiaryContainer.withValues(alpha: 0.45),
             borderRadius: BorderRadius.circular(12),
-            border: Border.all(
-              color: scheme.tertiary.withValues(alpha: 0.22),
-            ),
+            border: Border.all(color: scheme.tertiary.withValues(alpha: 0.22)),
           ),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,

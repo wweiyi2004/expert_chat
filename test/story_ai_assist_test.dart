@@ -170,6 +170,61 @@ void main() {
       expect(userPrompt, contains('"旧角色"'));
     });
 
+    test('validates an explicitly requested outline beat count', () async {
+      final llm = _FakeLlmProvider('''
+{
+  "title": "两拍而非三拍",
+  "outline": "- 开始\\n- 结束",
+  "authorNote": "用户是导演。",
+  "characters": [{"name": "甲"}]
+}
+''');
+
+      await expectLater(
+        StoryAiAssist(llm).generateDirectorStory(
+          config: _readyConfig,
+          premise: '三段式小故事',
+          expectedBeatCount: 3,
+        ),
+        throwsA(
+          isA<Exception>().having(
+            (error) => error.toString(),
+            'message',
+            contains('连续两次未按要求生成 3 个节拍'),
+          ),
+        ),
+      );
+
+      expect(llm.calls, hasLength(2));
+      expect(llm.calls.first.last.content, contains('恰好包含 3 个非空节拍'));
+      expect(llm.calls.last.last.content, contains('上次草稿有 2 个节拍'));
+    });
+
+    test('strict review performs a second constraint-checking pass', () async {
+      final llm = _FakeLlmProvider('''
+{
+  "title": "审稿故事",
+  "outline": "- 只铺线索\\n- 明确结局",
+  "authorNote": "AI 扮演全部角色，用户是导演。",
+  "characters": [{"name": "甲"}]
+}
+''');
+
+      final draft = await StoryAiAssist(llm).generateDirectorStory(
+        config: _readyConfig,
+        premise: '先隐藏真相，最后明确结局。',
+        requirements: '第一拍不得揭晓；第二拍必须明确结局。',
+        expectedBeatCount: 2,
+        strictReview: true,
+      );
+
+      expect(draft.outline, contains('明确结局'));
+      expect(llm.calls, hasLength(2));
+      expect(llm.calls.last.first.content, contains('严格审稿人'));
+      expect(llm.calls.last.last.content, contains('待审候选方案'));
+      expect(llm.calls.last.last.content, contains('必须恰好 2 拍'));
+    });
+
     test('uses safe title and author-note defaults', () async {
       final llm = _FakeLlmProvider('''
 {"title":"","outline":["开始","转折"],"characters":[{"name":"旅人"}]}

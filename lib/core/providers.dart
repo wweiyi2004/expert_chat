@@ -6,12 +6,18 @@ import '../data/character_repository.dart';
 import '../data/conversation_repository.dart';
 import '../data/db/app_database.dart';
 import '../data/drift_conversation_repository.dart';
+import '../data/memory_file_store.dart';
+import '../data/memory_repository.dart';
 import '../data/world_info_repository.dart';
 import '../domain/context/context_window_manager.dart';
 import '../domain/cache/app_cache_service.dart';
 import '../domain/llm/llm_provider.dart';
 import '../domain/llm/openai_compatible_provider.dart';
 import '../domain/media/openai_compatible_media_provider.dart';
+import '../domain/memory/memory_backup_file.dart';
+import '../domain/memory/memory_candidate_service.dart';
+import '../domain/memory/memory_transfer.dart';
+import '../domain/speech/speech_input_service.dart';
 import '../domain/tools/file_parser.dart';
 import '../domain/tools/search_provider.dart';
 import '../domain/tools/tool_engine.dart';
@@ -52,7 +58,27 @@ final worldInfoRepositoryProvider = Provider<WorldInfoRepository>(
   (ref) => WorldInfoRepository(ref.read(appDatabaseProvider)),
 );
 
+final memoryStoreProvider = Provider<MemoryStore>(
+  (ref) => MemoryFileStore(ref.read(sharedPrefsProvider)),
+);
+
+final memoryRepositoryProvider = Provider<MemoryRepository>(
+  (ref) => MemoryRepository(ref.read(memoryStoreProvider)),
+);
+
 final llmProvider = Provider<LlmProvider>((ref) => OpenAiCompatibleProvider());
+
+final memoryCandidateServiceProvider = Provider<MemoryCandidateService>(
+  (ref) => MemoryCandidateService(ref.read(llmProvider)),
+);
+
+final memoryTransferServiceProvider = Provider<MemoryTransferService>(
+  (ref) => const MemoryTransferService(),
+);
+
+final memoryBackupFileServiceProvider = Provider<MemoryBackupFileService>(
+  (ref) => MemoryBackupFileService(),
+);
 
 final mediaApiProvider = Provider<OpenAiCompatibleMediaProvider>(
   (ref) => OpenAiCompatibleMediaProvider(),
@@ -63,6 +89,10 @@ final contextWindowManagerProvider = Provider<ContextWindowManager>(
 );
 
 final fileParserProvider = Provider<FileParser>((ref) => FileParser());
+
+final speechInputServiceProvider = Provider<SpeechInputService>(
+  (ref) => SystemSpeechInputService(),
+);
 
 typedef ToolEngineFactory =
     ToolEngine Function({

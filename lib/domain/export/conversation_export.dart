@@ -196,8 +196,9 @@ class ConversationExport {
     return b.toString();
   }
 
-  /// Saves the conversation as a `.md` file via a native picker. Returns the
-  /// saved path, or null if the user cancelled. Throws on write failure.
+  /// Saves the conversation as a `.md` file via the platform picker. Returns
+  /// the saved path on native platforms, the downloaded filename on Web, or
+  /// null if the native picker was cancelled. Throws on write failure.
   static Future<String?> saveMarkdown(
     Conversation convo, {
     String? characterName,
@@ -209,20 +210,24 @@ class ConversationExport {
         .trim();
     final fileName = '${safeTitle.isEmpty ? 'conversation' : safeTitle}.md';
 
-    final isMobile =
-        defaultTargetPlatform == TargetPlatform.android ||
-        defaultTargetPlatform == TargetPlatform.iOS;
+    final isNativeMobile =
+        !kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.android ||
+            defaultTargetPlatform == TargetPlatform.iOS);
 
     final path = await FilePicker.saveFile(
       dialogTitle: '导出对话',
       fileName: fileName,
       type: FileType.custom,
       allowedExtensions: const ['md'],
-      // Mobile needs bytes to write; desktop returns a path we write ourselves.
-      bytes: isMobile ? bytes : null,
+      // Browser downloads and native mobile need bytes; desktop returns a
+      // path that we write ourselves.
+      bytes: kIsWeb || isNativeMobile ? bytes : null,
     );
+    // Web starts a browser download and has no filesystem path to return.
+    if (kIsWeb) return fileName;
     if (path == null) return null;
-    if (!isMobile) {
+    if (!isNativeMobile) {
       await File(path).writeAsBytes(bytes);
     }
     return path;

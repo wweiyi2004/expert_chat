@@ -14,6 +14,9 @@ class StoryLengthBudget {
     required this.beatCount,
     required this.plotCursor,
     required this.beatsLeft,
+    required this.currentBeatTarget,
+    required this.currentBeatEndTarget,
+    required this.currentBeatRemaining,
     required this.perBeatSuggest,
     required this.turnMin,
     required this.turnMax,
@@ -27,7 +30,16 @@ class StoryLengthBudget {
   final int plotCursor;
   final int beatsLeft;
 
-  /// Suggested characters still to write for the current beat (rough).
+  /// Planned size of the current beat.
+  final int currentBeatTarget;
+
+  /// Cumulative whole-book character threshold at which this beat is complete.
+  final int currentBeatEndTarget;
+
+  /// Characters still needed before the current beat should advance.
+  final int currentBeatRemaining;
+
+  /// Alias used by existing UI: characters still to write for the current beat.
   final int perBeatSuggest;
 
   /// Soft band for **this turn's** output length.
@@ -40,6 +52,14 @@ class StoryLengthBudget {
   bool get hasTarget => targetTotal > 0;
 
   bool get targetReached => hasTarget && written >= targetTotal;
+
+  /// Whether a successful generation has supplied enough body text to commit
+  /// the current outline beat. Without this guard, every click advanced a whole
+  /// beat even though the per-turn quota intentionally wrote only part of it.
+  bool get currentBeatTargetReached =>
+      beatCount > 0 &&
+      plotCursor < beatCount &&
+      written >= currentBeatEndTarget;
 
   /// Count story body on the active path: assistant text only (director cues
   /// and user lines are excluded; generated-image bubbles ignored).
@@ -62,39 +82,63 @@ class StoryLengthBudget {
     final remaining = (target - written).clamp(0, target);
     final beats = conversation.outlineBeats;
     final beatCount = beats.length;
-    final cursor = conversation.plotCursor.clamp(0, beatCount == 0 ? 0 : beatCount);
+    final cursor = conversation.plotCursor.clamp(
+      0,
+      beatCount == 0 ? 0 : beatCount,
+    );
     // Include the current unfinished beat in the remaining denominator.
     final beatsLeft = beatCount == 0
         ? 1
         : (beatCount - cursor).clamp(1, beatCount);
 
-    final perBeat = remaining <= 0 ? 0 : (remaining / beatsLeft).round();
+    final int beatStartTarget;
+    final int beatEndTarget;
+    final int currentBeatTarget;
+    final int currentBeatRemaining;
+    if (beatCount > 0 && cursor < beatCount) {
+      beatStartTarget = (target * cursor / beatCount).round();
+      beatEndTarget = (target * (cursor + 1) / beatCount).round();
+      currentBeatTarget = (beatEndTarget - beatStartTarget).clamp(0, target);
+      currentBeatRemaining = (beatEndTarget - written).clamp(0, remaining);
+    } else {
+      beatStartTarget = written;
+      beatEndTarget = target;
+      currentBeatTarget = remaining;
+      currentBeatRemaining = remaining;
+    }
+    final perBeat = currentBeatRemaining;
 
-    // One "继续下一节" is a fraction of a beat — aim ~1/3 of remaining beat
-    // budget, clamped so models get a usable band without dumping a whole act.
+    // One "继续下一节" is a section within the current outline beat. Aim for
+    // roughly half of what the beat still needs, then commit the beat only after
+    // its cumulative threshold has actually been reached.
     //
     // Dart's num.clamp(lower, upper) requires lower <= upper. Near the end of a
     // long novel, remaining can be < 200; never pass a lower bound above it.
     final int turnMin;
     final int turnMax;
-    if (remaining <= 0) {
+    final turnQuota = currentBeatRemaining > 0
+        ? currentBeatRemaining
+        : remaining;
+    if (remaining <= 0 || turnQuota <= 0) {
       turnMin = 0;
       turnMax = 0;
-    } else if (remaining < 900) {
-      final softMin = (remaining * 0.6).round();
+    } else if (turnQuota < 900) {
+      final softMin = (turnQuota * 0.6).round();
       // Prefer ~60% of what's left, but never exceed remaining and never use
       // clamp(200, remaining) when remaining < 200 (throws ArgumentError).
-      final minV = softMin.clamp(1, remaining);
+      final minV = softMin.clamp(1, turnQuota);
       turnMin = minV;
-      turnMax = remaining;
+      turnMax = turnQuota;
     } else {
-      final center = (perBeat * 0.34).round().clamp(700, 2800);
-      final cappedCenter = center > remaining ? remaining : center;
-      var minV = (cappedCenter * 0.7).round().clamp(1, remaining);
-      var maxV = (cappedCenter * 1.25).round();
-      if (maxV > remaining) maxV = remaining;
-      if (maxV > 3500) maxV = remaining < 3500 ? remaining : 3500;
-      if (minV > maxV) minV = maxV < 1 ? 1 : (maxV * 0.75).round().clamp(1, maxV);
+      final center = (turnQuota * 0.5).round().clamp(900, 4000);
+      final cappedCenter = center > turnQuota ? turnQuota : center;
+      var minV = (cappedCenter * 0.75).round().clamp(1, turnQuota);
+      var maxV = (cappedCenter * 1.2).round();
+      if (maxV > turnQuota) maxV = turnQuota;
+      if (maxV > 5000) maxV = turnQuota < 5000 ? turnQuota : 5000;
+      if (minV > maxV) {
+        minV = maxV < 1 ? 1 : (maxV * 0.75).round().clamp(1, maxV);
+      }
       turnMin = minV;
       turnMax = maxV;
     }
@@ -108,6 +152,9 @@ class StoryLengthBudget {
       beatCount: beatCount,
       plotCursor: cursor,
       beatsLeft: beatsLeft,
+      currentBeatTarget: currentBeatTarget,
+      currentBeatEndTarget: beatEndTarget,
+      currentBeatRemaining: currentBeatRemaining,
       perBeatSuggest: perBeat,
       turnMin: turnMin,
       turnMax: turnMax,
@@ -124,7 +171,7 @@ class StoryLengthBudget {
     }
     final parts = <String>['已写 $w/$t'];
     if (beatCount > 0) {
-      parts.add('本拍约${formatChars(perBeatSuggest)}');
+      parts.add('本拍剩余约${formatChars(perBeatSuggest)}');
     }
     if (turnMax > 0) {
       parts.add('本回合${formatChars(turnMin)}–${formatChars(turnMax)}');
@@ -147,7 +194,9 @@ class StoryLengthBudget {
       final beatNo = plotCursor < beatCount ? plotCursor + 1 : beatCount;
       b.writeln(
         '大纲共 $beatCount 拍，当前第 $beatNo 拍；'
-        '剩余约 $beatsLeft 拍（含当前），本拍建议仍写约 ${formatChars(perBeatSuggest)}字。',
+        '剩余约 $beatsLeft 拍（含当前）；'
+        '本拍计划约 ${formatChars(currentBeatTarget)}字，'
+        '按全书累计进度估算还需约 ${formatChars(currentBeatRemaining)}字。',
       );
     }
 
@@ -160,8 +209,10 @@ class StoryLengthBudget {
       b.writeln(
         advancePlot
             ? '本回合（推进情节）输出控制在约 ${formatChars(turnMin)}–${formatChars(turnMax)}字：'
-                  '完成当前节拍应有的推进，不要提前写后续未解锁节拍；'
-                  '不要远低于下限（过短）也不要远超上限（灌水）。'
+                  '${currentBeatRemaining <= turnMax ? '写完并自然收束当前节拍；' : '只推进当前节拍的一部分，保留自然衔接点；'}'
+                  '达到本拍累计篇幅前不进入下一拍，不要提前写后续未解锁节拍；'
+                  '该区间是硬边界，输出前必须估算正文字符数；宁可在完整句号处提前收住，'
+                  '也不得以“场景完整”为由远超上限。'
             : '本回合输出控制在约 ${formatChars(turnMin)}–${formatChars(turnMax)}字：'
                   '执行导演指令并推进必要情节，禁止注水与无目的的风景/回忆堆砌。',
       );

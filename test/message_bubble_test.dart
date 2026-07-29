@@ -42,4 +42,27 @@ void main() {
     expect(find.text('已复制'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('message exposes an explicit remember action', (tester) async {
+    var remembered = false;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: MessageBubble(
+            message: ChatMessage(
+              role: MessageRole.assistant,
+              content: '这是一条值得保存的结论。',
+            ),
+            isStreaming: false,
+            onRemember: () async => remembered = true,
+          ),
+        ),
+      ),
+    );
+
+    expect(find.byTooltip('记住这条'), findsOneWidget);
+    await tester.tap(find.byTooltip('记住这条'));
+    await tester.pump();
+    expect(remembered, isTrue);
+  });
 }

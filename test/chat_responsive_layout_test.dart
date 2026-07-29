@@ -94,6 +94,7 @@ void main() {
       expect(find.text('联网'), findsOneWidget);
       expect(find.byKey(const ValueKey('composer-plus-button')), findsOneWidget);
       expect(find.byKey(const ValueKey('composer-plus-tray')), findsNothing);
+      expect(find.byTooltip('语音输入'), findsOneWidget);
       expect(find.byTooltip('发送'), findsOneWidget);
 
       await tester.tap(find.byKey(const ValueKey('composer-plus-button')));

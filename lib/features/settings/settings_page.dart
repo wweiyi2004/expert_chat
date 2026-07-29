@@ -15,9 +15,11 @@ import '../../domain/tools/search_provider.dart';
 import '../../domain/update/shorebird_patch.dart';
 import '../../domain/update/shorebird_ui.dart';
 import '../../domain/update/update_ui.dart';
+import '../../state/memory_controller.dart';
 import '../../state/research_mode_fx.dart';
 import '../../state/research_terminal_controller.dart';
 import '../../state/settings_controller.dart';
+import '../memory/memory_page.dart';
 import '../shell/shell_tab.dart';
 
 enum _SettingsCategory {
@@ -616,8 +618,10 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                             const _SectionTitle('实验功能'),
                             _ResearchModeCard(
                               enabled: s.researchModeEnabled,
-                              onChanged: (v, origin) =>
-                                  _setResearchModeEnabled(v, originGlobal: origin),
+                              onChanged: (v, origin) => _setResearchModeEnabled(
+                                v,
+                                originGlobal: origin,
+                              ),
                               onOpenTerminal: s.researchModeEnabled
                                   ? () => openShellTab(ref, ShellTab.terminal)
                                   : null,
@@ -625,6 +629,12 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                             const SizedBox(height: 32),
                           ],
                           if (_category == _SettingsCategory.data) ...[
+                            const _SectionTitle('长期记忆'),
+                            _MemorySettingsCard(
+                              enabled: s.memoryEnabled,
+                              onEnabledChanged: controller.setMemoryEnabled,
+                            ),
+                            const SizedBox(height: 32),
                             const _SectionTitle('存储与缓存'),
                             Card(
                               child: ListTile(
@@ -730,7 +740,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     if (enabled) {
       await controller.setResearchModeEnabled(true);
       // Rainbow ripple expands from the research switch itself.
-      ref.read(researchModeFxProvider.notifier).play(originGlobal: originGlobal);
+      ref
+          .read(researchModeFxProvider.notifier)
+          .play(originGlobal: originGlobal);
       return;
     }
 
@@ -1480,6 +1492,48 @@ class _SectionTitle extends StatelessWidget {
       ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
     ),
   );
+}
+
+class _MemorySettingsCard extends ConsumerWidget {
+  const _MemorySettingsCard({
+    required this.enabled,
+    required this.onEnabledChanged,
+  });
+
+  final bool enabled;
+  final ValueChanged<bool> onEnabledChanged;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final memory = ref.watch(memoryControllerProvider);
+    final count = memory.value?.entries.length;
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        children: [
+          SwitchListTile(
+            secondary: const Icon(Icons.psychology_alt_outlined),
+            title: const Text('启用长期记忆'),
+            subtitle: const Text('从本地 Markdown 文件召回用户明确保存的事实和偏好；默认不自动记忆。'),
+            value: enabled,
+            onChanged: onEnabledChanged,
+          ),
+          const Divider(height: 1),
+          ListTile(
+            leading: const Icon(Icons.folder_copy_outlined),
+            title: const Text('管理记忆'),
+            subtitle: Text(
+              count == null ? '查看本地记忆文件' : '已保存 $count 条 · 可查看、编辑和删除',
+            ),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(
+              context,
+            ).push(MaterialPageRoute(builder: (_) => const MemoryPage())),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 /// M7 experimental research-mode card under 能力 → 实验功能.

@@ -103,6 +103,12 @@ void main() {
 
     expect(find.text('多媒体能力（可选）'), findsNothing);
     expect(find.text('流式实时 Markdown'), findsOneWidget);
+
+    await tester.tap(find.text('数据'));
+    await tester.pumpAndSettle();
+    expect(find.text('启用长期记忆'), findsOneWidget);
+    expect(find.text('管理记忆'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets(

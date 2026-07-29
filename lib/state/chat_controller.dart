@@ -15,6 +15,7 @@ import '../domain/llm/llm_provider.dart';
 import '../domain/media/image_codec_util.dart';
 import '../domain/media/image_prompt_safety.dart';
 import '../domain/notify/generation_notify.dart';
+import '../domain/story/story_length_budget.dart';
 import '../domain/story/story_prompt_assembler.dart';
 import '../domain/tools/search_orchestrator.dart';
 import '../domain/tools/search_provider.dart';
@@ -257,6 +258,10 @@ class ChatController extends AsyncNotifier<ChatState> {
   /// Cleared when a new generation entry point is accepted.
   bool _cancelStart = false;
 
+  /// Shared by callers that must wait until an accepted generation has fully
+  /// unwound before starting a replacement turn.
+  Completer<void>? _idleCompleter;
+
   /// Cancels the active LLM HTTP request (set per generation, fired by [stop]).
   CancelToken? _cancelToken;
 
@@ -280,6 +285,9 @@ class ChatController extends AsyncNotifier<ChatState> {
       _flushActiveStream?.call();
       _sub?.cancel();
       _cancelToken?.cancel();
+      final idle = _idleCompleter;
+      _idleCompleter = null;
+      if (idle != null && !idle.isCompleted) idle.complete();
     });
     final repo = ref.read(conversationRepositoryProvider);
     final conversations = await repo.loadAll();
@@ -294,6 +302,18 @@ class ChatController extends AsyncNotifier<ChatState> {
   }
 
   ChatState get _s => state.value ?? const ChatState();
+
+  void _finishStarting() {
+    _starting = false;
+    _signalIdleIfReady();
+  }
+
+  void _signalIdleIfReady() {
+    if (_starting || _s.isStreaming) return;
+    final idle = _idleCompleter;
+    _idleCompleter = null;
+    if (idle != null && !idle.isCompleted) idle.complete();
+  }
 
   /// Persist only the active conversation (cheap; avoids rewriting the whole DB
   /// on every turn).
@@ -519,6 +539,11 @@ class ChatController extends AsyncNotifier<ChatState> {
       plotCursor: 0,
       targetTotalChars: targetTotalChars < 0 ? 0 : targetTotalChars,
     );
+    // The setup draft is cleared immediately after this method succeeds.
+    // Persist first so a failed/unfinished disk write cannot lose both copies.
+    await _enqueueWrite(
+      () => ref.read(conversationRepositoryProvider).saveConversation(fresh),
+    );
     _set(
       _s.copyWith(
         conversations: [fresh, ..._s.conversations],
@@ -526,7 +551,6 @@ class ChatController extends AsyncNotifier<ChatState> {
         error: null,
       ),
     );
-    _persistSoon(_persist());
   }
 
   /// Multi-character ensemble: cast in one [venue], taking turns.
@@ -694,7 +718,7 @@ class ChatController extends AsyncNotifier<ChatState> {
         commitPlotAdvance: true,
       );
     } finally {
-      _starting = false;
+      _finishStarting();
     }
   }
 
@@ -766,7 +790,7 @@ class ChatController extends AsyncNotifier<ChatState> {
         ensembleSpeaker: card,
       );
     } finally {
-      _starting = false;
+      _finishStarting();
     }
   }
 
@@ -913,6 +937,7 @@ class ChatController extends AsyncNotifier<ChatState> {
     if (completer != null && !completer.isCompleted) completer.complete();
     _streamCompleter = null;
     _set(_s.copyWith(streamingConvoId: null, isSearching: false));
+    _signalIdleIfReady();
     if (persist && streamingId != null) _persistSoon(_persistById(streamingId));
     unawaited(
       GenerationNotify.onGenerationEnd(
@@ -921,6 +946,17 @@ class ChatController extends AsyncNotifier<ChatState> {
         cancelled: true,
       ),
     );
+  }
+
+  /// Stop the active or preflight generation and wait until its entry point has
+  /// completely unwound. This prevents a replacement turn from being dropped
+  /// by the synchronous [_starting] guard.
+  Future<void> stopAndWait({bool persist = true}) async {
+    if (!_starting && !_s.isStreaming) return;
+    final idle = _idleCompleter ??= Completer<void>();
+    stop(persist: persist);
+    _signalIdleIfReady();
+    await idle.future;
   }
 
   String _titleFor(String? convoId) {
@@ -1023,7 +1059,7 @@ class ChatController extends AsyncNotifier<ChatState> {
       );
       return true;
     } finally {
-      _starting = false;
+      _finishStarting();
     }
   }
 
@@ -1107,7 +1143,7 @@ class ChatController extends AsyncNotifier<ChatState> {
         thinking: _s.deepThink,
       );
     } finally {
-      _starting = false;
+      _finishStarting();
     }
   }
 
@@ -1215,7 +1251,7 @@ class ChatController extends AsyncNotifier<ChatState> {
         commitPlotAdvance: commitAdvance,
       );
     } finally {
-      _starting = false;
+      _finishStarting();
     }
   }
 
@@ -1360,7 +1396,7 @@ class ChatController extends AsyncNotifier<ChatState> {
         ensembleSpeaker: card,
       );
     } finally {
-      _starting = false;
+      _finishStarting();
     }
   }
 
@@ -1673,7 +1709,7 @@ class ChatController extends AsyncNotifier<ChatState> {
         if (identical(_cancelToken, cancelToken)) _cancelToken = null;
       }
     } finally {
-      _starting = false;
+      _finishStarting();
     }
   }
 
@@ -2035,6 +2071,18 @@ class ChatController extends AsyncNotifier<ChatState> {
       (c) => c.id == working.id,
       orElse: () => working,
     );
+    var memoryPrompt = '';
+    if (settings.memoryEnabled) {
+      try {
+        final recall = await ref
+            .read(memoryRepositoryProvider)
+            .recall(searchQuery, maxItems: 8, maxChars: 4000);
+        memoryPrompt = recall.toSystemPrompt();
+      } catch (_) {
+        // Long-term memory is optional context. A damaged/unavailable local
+        // memory file must never prevent the user from sending a message.
+      }
+    }
     final vision = config.capabilities.supportsVision;
     final history = cur.activePath
         .where((m) => m.id != assistantId)
@@ -2136,6 +2184,11 @@ class ChatController extends AsyncNotifier<ChatState> {
       // notes (force-image, tools). Never insert tools at index 0 ahead of
       // 【硬性导演说明】.
       final systemPrefix = <LlmRequestMessage>[...prefix.messages];
+      if (memoryPrompt.isNotEmpty) {
+        systemPrefix.add(
+          LlmRequestMessage(role: MessageRole.system, content: memoryPrompt),
+        );
+      }
       if (forceImageNote.isNotEmpty) {
         systemPrefix.add(
           LlmRequestMessage(role: MessageRole.system, content: forceImageNote),
@@ -2168,6 +2221,12 @@ class ChatController extends AsyncNotifier<ChatState> {
       }
       history.insertAll(0, systemPrefix);
     } else {
+      if (memoryPrompt.isNotEmpty) {
+        history.insert(
+          0,
+          LlmRequestMessage(role: MessageRole.system, content: memoryPrompt),
+        );
+      }
       final preset = settings.systemPrompt.trim();
       if (preset.isNotEmpty) {
         history.insert(
@@ -2268,8 +2327,10 @@ class ChatController extends AsyncNotifier<ChatState> {
       ),
     );
 
-    // Auto-advance plot cursor only after a successful first advance (not
-    // regenerate of an already-committed beat).
+    // Auto-advance only after a successful first advance (not regenerate of an
+    // already-committed beat). With a total-length target, one generated
+    // section is intentionally only part of a beat, so keep the cursor on the
+    // same beat until its cumulative character threshold is reached.
     if (succeeded && commitPlotAdvance && cur.isStory) {
       final latest = _s.conversations.firstWhere(
         (c) => c.id == working.id,
@@ -2277,9 +2338,16 @@ class ChatController extends AsyncNotifier<ChatState> {
       );
       if (latest.isStory) {
         final beats = latest.outlineBeats;
-        final next = beats.isEmpty
-            ? latest.plotCursor + 1
-            : (latest.plotCursor + 1).clamp(0, beats.length);
+        final lengthBudget = StoryLengthBudget.forConversation(latest);
+        final shouldAdvance =
+            lengthBudget == null ||
+            beats.isEmpty ||
+            lengthBudget.currentBeatTargetReached;
+        final next = shouldAdvance
+            ? (beats.isEmpty
+                  ? latest.plotCursor + 1
+                  : (latest.plotCursor + 1).clamp(0, beats.length))
+            : latest.plotCursor;
         final updated = latest.copyWith(plotCursor: next);
         _set(_s.copyWith(conversations: _replace(updated)));
         await _persistById(working.id);

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:dio/dio.dart' show CancelToken;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -19,13 +20,19 @@ import '../../data/ui_prefs.dart';
 import '../../domain/context/context_window_manager.dart';
 import '../../domain/export/conversation_export.dart';
 import '../../domain/media/image_codec_util.dart';
+import '../../domain/memory/memory_candidate_service.dart';
+import '../../domain/memory/memory_entry.dart';
+import '../../domain/memory/memory_safety.dart';
+import '../../domain/speech/speech_input_service.dart';
 import '../../domain/story/story_length_budget.dart';
 import '../../domain/tools/file_parser.dart';
 import '../../domain/tools/local_file_reader.dart';
 import '../../state/character_controller.dart';
 import '../../state/chat_controller.dart';
+import '../../state/memory_controller.dart';
 import '../../state/settings_controller.dart';
 import '../shell/shell_tab.dart';
+import '../memory/memory_candidate_review_sheet.dart';
 import '../story/director_story_setup_page.dart';
 import '../story/ensemble_setup_page.dart';
 import '../story/story_panel.dart';
@@ -40,12 +47,23 @@ class ChatPage extends ConsumerStatefulWidget {
   ConsumerState<ChatPage> createState() => _ChatPageState();
 }
 
-class _ChatPageState extends ConsumerState<ChatPage> {
+class _ChatPageState extends ConsumerState<ChatPage>
+    with WidgetsBindingObserver {
   final _input = TextEditingController();
   final _scroll = ScrollController();
   final List<Attachment> _attachments = [];
+  late final SpeechInputService _speechInput;
   bool _picking = false;
   bool _imageMode = false;
+  bool _speechBusy = false;
+  bool _speechListening = false;
+  bool _speechReceivedText = false;
+  bool _speechFailureReported = false;
+  int _speechSession = 0;
+  String _speechBefore = '';
+  String _speechAfter = '';
+  bool _extractingMemoryCandidates = false;
+  CancelToken? _memoryCandidateCancelToken;
 
   /// Wide-layout tools pane (story / ensemble plot). Ignored on phone.
   bool _toolsOpen = true;
@@ -88,6 +106,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _speechInput = ref.read(speechInputServiceProvider);
     _scroll.addListener(_onScroll);
   }
 
@@ -191,10 +211,30 @@ class _ChatPageState extends ConsumerState<ChatPage> {
 
   @override
   void dispose() {
+    _memoryCandidateCancelToken?.cancel('ChatPage disposed');
+    WidgetsBinding.instance.removeObserver(this);
+    _speechSession++;
+    _speechInput.detach();
+    unawaited(_speechInput.cancel());
     _scroll.removeListener(_onScroll);
     _input.dispose();
     _scroll.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Permission sheets temporarily make Android/iOS inactive. Keep the
+    // first-tap initialization alive; a real background transition will
+    // continue to paused/hidden and be cancelled below.
+    if (state == AppLifecycleState.inactive &&
+        _speechBusy &&
+        !_speechListening) {
+      return;
+    }
+    if (state != AppLifecycleState.resumed) {
+      unawaited(_cancelSpeech());
+    }
   }
 
   /// Re-evaluate stick-to-bottom whenever the user scrolls. Programmatic
@@ -233,7 +273,133 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   GlobalKey _keyForMessage(String id) =>
       _messageKeys.putIfAbsent(id, GlobalKey.new);
 
+  Future<void> _toggleSpeech() async {
+    if (_speechBusy) return;
+    if (_speechListening) {
+      await _cancelSpeech();
+      return;
+    }
+
+    final session = ++_speechSession;
+    _speechFailureReported = false;
+    setState(() => _speechBusy = true);
+    final availability = await _speechInput.initialize(
+      onStatus: (status) => _handleSpeechStatus(session, status),
+      onError: (failure) => _handleSpeechError(session, failure),
+    );
+    if (!mounted || session != _speechSession) return;
+
+    if (availability != SpeechInputAvailability.ready) {
+      setState(() => _speechBusy = false);
+      _showSpeechNotice(
+        availability == SpeechInputAvailability.permissionDenied
+            ? '未获得麦克风或语音识别权限，请在系统设置中允许后重试。'
+            : '当前设备没有可用的系统语音识别服务。',
+      );
+      return;
+    }
+
+    final text = _input.text;
+    final selection = _input.selection;
+    final selectionValid =
+        selection.isValid &&
+        selection.start >= 0 &&
+        selection.end <= text.length;
+    final start = selectionValid ? selection.start : text.length;
+    final end = selectionValid ? selection.end : text.length;
+    _speechBefore = text.substring(0, start);
+    _speechAfter = text.substring(end);
+    _speechReceivedText = false;
+
+    final started = await _speechInput.start(
+      onResult: (result) => _handleSpeechResult(session, result),
+    );
+    if (!mounted || session != _speechSession) return;
+    setState(() {
+      _speechBusy = false;
+      _speechListening = started;
+    });
+    if (!started && !_speechFailureReported) {
+      _showSpeechNotice('未能启动系统语音识别，请稍后再试。');
+    }
+  }
+
+  void _handleSpeechResult(int session, SpeechInputResult result) {
+    if (!mounted || session != _speechSession) return;
+    final spoken = result.text.trim();
+    if (spoken.isNotEmpty) {
+      _speechReceivedText = true;
+      final merged = mergeSpeechIntoDraft(
+        before: _speechBefore,
+        transcript: spoken,
+        after: _speechAfter,
+      );
+      _input.value = TextEditingValue(
+        text: merged,
+        selection: TextSelection.collapsed(
+          offset: mergeSpeechIntoDraft(
+            before: _speechBefore,
+            transcript: spoken,
+            after: '',
+          ).length,
+        ),
+      );
+    }
+    if (result.isFinal && (_speechListening || _speechBusy)) {
+      setState(() {
+        _speechListening = false;
+        _speechBusy = false;
+      });
+    }
+  }
+
+  void _handleSpeechStatus(int session, SpeechInputStatus status) {
+    if (!mounted || session != _speechSession) return;
+    final listening = status == SpeechInputStatus.listening;
+    if (_speechListening == listening && !_speechBusy) return;
+    setState(() {
+      _speechListening = listening;
+      _speechBusy = false;
+    });
+  }
+
+  void _handleSpeechError(int session, SpeechInputFailure failure) {
+    if (!mounted || session != _speechSession) return;
+    _speechFailureReported = true;
+    final code = failure.code.toLowerCase();
+    final quietTimeout =
+        _speechReceivedText &&
+        (code.contains('no_match') || code.contains('speech_timeout'));
+    if (_speechListening || _speechBusy) {
+      setState(() {
+        _speechListening = false;
+        _speechBusy = false;
+      });
+    }
+    if (!quietTimeout) _showSpeechNotice(failure.userMessage);
+  }
+
+  Future<void> _cancelSpeech() async {
+    final wasActive = _speechListening || _speechBusy;
+    ++_speechSession;
+    if (mounted && wasActive) {
+      setState(() {
+        _speechListening = false;
+        _speechBusy = false;
+      });
+    }
+    if (wasActive) await _speechInput.cancel();
+  }
+
+  void _showSpeechNotice(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), behavior: SnackBarBehavior.floating),
+    );
+  }
+
   Future<void> _send() async {
+    if (_speechListening || _speechBusy) await _cancelSpeech();
     final text = _input.text;
     if (text.trim().isEmpty && _attachments.isEmpty) return;
     final settings = ref.read(settingsControllerProvider).value;
@@ -597,6 +763,210 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     }
   }
 
+  Future<void> _rememberMessage(
+    Conversation conversation,
+    ChatMessage message,
+  ) async {
+    final flattened = message.content.replaceAll(RegExp(r'\s+'), ' ').trim();
+    final draft = flattened.characters.length > MemorySafety.maxContentChars
+        ? flattened.characters
+              .take(MemorySafety.maxContentChars)
+              .toList()
+              .join()
+        : flattened;
+    final textController = TextEditingController(text: draft);
+    String? validationError;
+    final content = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('记住这条内容'),
+          content: SizedBox(
+            width: 520,
+            child: TextField(
+              controller: textController,
+              autofocus: true,
+              minLines: 3,
+              maxLines: 8,
+              maxLength: MemorySafety.maxContentChars,
+              decoration: InputDecoration(
+                labelText: '保存为长期记忆',
+                helperText: '保存前请整理为准确、独立的一条事实或偏好。',
+                helperMaxLines: 2,
+                errorText: validationError,
+                alignLabelWithHint: true,
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () {
+                try {
+                  final normalized = MemorySafety.normalize(
+                    textController.text,
+                  );
+                  Navigator.of(dialogContext).pop(normalized);
+                } on MemoryValidationException catch (error) {
+                  setDialogState(() => validationError = error.message);
+                }
+              },
+              child: const Text('保存'),
+            ),
+          ],
+        ),
+      ),
+    );
+    textController.dispose();
+    if (content == null || !mounted) return;
+    try {
+      final result = await ref
+          .read(memoryControllerProvider.notifier)
+          .add(
+            content: content,
+            sourceConversationId: conversation.id,
+            sourceMessageId: message.id,
+            sourceRole: message.role.wire,
+          );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(result.created ? '已写入长期记忆' : '这条记忆已经存在'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('保存记忆失败：$error'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  Future<void> _extractMemoryCandidates(Conversation conversation) async {
+    if (_extractingMemoryCandidates) return;
+    if (conversation.isStoryLike) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('故事与角色内容不会整理到全局记忆。'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+    if (ref.read(chatControllerProvider).value?.isStreaming == true) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('请等待当前回复完成后再整理记忆。'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    setState(() => _extractingMemoryCandidates = true);
+    final cancelToken = CancelToken();
+    _memoryCandidateCancelToken = cancelToken;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        const SnackBar(
+          content: Row(
+            children: [
+              SizedBox.square(
+                dimension: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              SizedBox(width: 12),
+              Expanded(child: Text('正在从当前会话整理候选记忆…')),
+            ],
+          ),
+          duration: Duration(seconds: 30),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+
+    try {
+      final settings = await ref.read(settingsControllerProvider.future);
+      if (!settings.memoryEnabled) {
+        throw const MemoryCandidateFormatException('请先在设置中开启“长期记忆”。');
+      }
+      final repository = ref.read(memoryRepositoryProvider);
+      final existing = await repository.load(refresh: true);
+      final chatModel = settings.active?.chatModel ?? settings.model;
+      final candidates = await ref
+          .read(memoryCandidateServiceProvider)
+          .extract(
+            config: settings.config.copyWith(model: chatModel),
+            messages: conversation.activePath,
+            existingMemories: existing.entries,
+            cancelToken: cancelToken,
+          );
+      if (!mounted || cancelToken.isCancelled) return;
+      messenger.hideCurrentSnackBar();
+
+      if (candidates.isEmpty) {
+        messenger.showSnackBar(
+          const SnackBar(
+            content: Text('没有发现值得长期保存的新信息。'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return;
+      }
+
+      final selected =
+          await showModalBottomSheet<List<MemoryCandidateSelection>>(
+            context: context,
+            isScrollControlled: true,
+            useSafeArea: true,
+            builder: (_) => MemoryCandidateReviewSheet(candidates: candidates),
+          );
+      if (!mounted || selected == null || selected.isEmpty) return;
+
+      final result = await ref
+          .read(memoryControllerProvider.notifier)
+          .applyConfirmedCandidates(
+            selected,
+            sourceConversationId: conversation.id,
+          );
+      if (!mounted) return;
+      final summary = <String>[
+        if (result.added > 0) '新增 ${result.added} 条',
+        if (result.replaced > 0) '替换 ${result.replaced} 条',
+        if (result.skipped > 0) '跳过 ${result.skipped} 条',
+      ];
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(summary.isEmpty ? '没有写入新的长期记忆' : summary.join('，')),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (error) {
+      if (!mounted || cancelToken.isCancelled) return;
+      messenger
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text('整理候选记忆失败：$error'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+    } finally {
+      if (identical(_memoryCandidateCancelToken, cancelToken)) {
+        _memoryCandidateCancelToken = null;
+      }
+      if (mounted) setState(() => _extractingMemoryCandidates = false);
+    }
+  }
+
   String? _characterNameFor(Conversation? convo) {
     if (convo == null || !convo.isStory || convo.characterId == null) {
       return null;
@@ -659,6 +1029,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     // Switching conversations resumes following and snaps to the latest turn.
     ref.listen(chatControllerProvider, (prev, next) {
       if (prev?.value?.currentId != next.value?.currentId) {
+        unawaited(_cancelSpeech());
         _stick = true;
         _messageKeys.clear();
         if (_selecting) {
@@ -774,6 +1145,17 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                 : '节拍 ${current.plotCursor.clamp(0, beats.length)}/${beats.length}';
             final settings = ref.watch(settingsControllerProvider).value;
             final contextEnabled = settings?.context.enabled ?? false;
+            final canShowMemoryCandidates =
+                current != null &&
+                !storyLike &&
+                current.activePath.any(
+                  (message) => message.role == MessageRole.user,
+                );
+            final canExtractMemoryCandidates =
+                canShowMemoryCandidates &&
+                settings?.memoryEnabled == true &&
+                asyncState.value?.isStreaming != true &&
+                !_extractingMemoryCandidates;
             final contextReport = current == null
                 ? null
                 : asyncState.value?.contextReports[current.id];
@@ -967,10 +1349,14 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                     tooltip: '更多',
                     icon: const Icon(Icons.more_horiz),
                     onSelected: (v) {
-                      if (v == 'export') _export(current);
+                      if (v == 'export') {
+                        _export(current);
+                      } else if (v == 'memory_candidates' && current != null) {
+                        unawaited(_extractMemoryCandidates(current));
+                      }
                     },
-                    itemBuilder: (_) => const [
-                      PopupMenuItem(
+                    itemBuilder: (_) => [
+                      const PopupMenuItem(
                         value: 'export',
                         child: ListTile(
                           dense: true,
@@ -979,6 +1365,35 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                           title: Text('导出 Markdown'),
                         ),
                       ),
+                      if (canShowMemoryCandidates)
+                        PopupMenuItem(
+                          value: 'memory_candidates',
+                          enabled: canExtractMemoryCandidates,
+                          child: ListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            leading: _extractingMemoryCandidates
+                                ? const SizedBox.square(
+                                    dimension: 20,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Icon(Icons.auto_awesome_outlined),
+                            title: Text(
+                              _extractingMemoryCandidates
+                                  ? '正在整理候选记忆…'
+                                  : '整理候选记忆',
+                            ),
+                            subtitle: Text(
+                              settings?.memoryEnabled != true
+                                  ? '请先在设置中开启长期记忆'
+                                  : asyncState.value?.isStreaming == true
+                                  ? '当前回复完成后可用'
+                                  : '从当前会话提取，确认后才写入',
+                            ),
+                          ),
+                        ),
                     ],
                   ),
                 ],
@@ -1060,6 +1475,13 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         showError && state.error != null && state.error!.contains('API Key');
     final settings = ref.watch(settingsControllerProvider).value;
     final ui = settings?.ui ?? const UiPrefs();
+    final memory = settings?.memoryEnabled == true
+        ? ref.watch(memoryControllerProvider).value
+        : null;
+    final rememberedMessageIds = {
+      for (final entry in memory?.entries ?? const <MemoryEntry>[])
+        if (entry.sourceMessageId != null) entry.sourceMessageId!,
+    };
     final contentMax = ui.contentWidth.maxWidth;
     final densityPad = ui.density == DensityPref.compact
         ? const EdgeInsets.fromLTRB(16, 12, 16, 20)
@@ -1147,6 +1569,16 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                                     ? (text) =>
                                           controller.editMessage(m.id, text)
                                     : null,
+                                onRemember:
+                                    settings?.memoryEnabled == true &&
+                                        !_selecting &&
+                                        !state.isStreaming &&
+                                        m.content.trim().isNotEmpty
+                                    ? () => _rememberMessage(convo, m)
+                                    : null,
+                                isRemembered: rememberedMessageIds.contains(
+                                  m.id,
+                                ),
                                 branchIndex: bIdx,
                                 branchCount: bCount,
                                 onPrevBranch: () =>
@@ -1203,6 +1635,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                 settings?.imageGenerationConfigured ?? false,
             imageMode:
                 _imageMode && (settings?.imageGenerationConfigured ?? false),
+            speechBusy: _speechBusy,
+            speechListening: _speechListening,
             onToggleDeepThink: controller.toggleDeepThink,
             onToggleSearch: controller.toggleSearch,
             onToggleImageGenMode: controller.toggleImageGenMode,
@@ -1210,6 +1644,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
             onPickDocuments: _pickDocuments,
             onPickImages: _pickImages,
             onRemoveAttachment: _removeAttachment,
+            onToggleSpeech: _toggleSpeech,
             onSend: _send,
             onStop: controller.stop,
           ),
@@ -1288,6 +1723,8 @@ class _Composer extends StatefulWidget {
     required this.visionConfigured,
     required this.imageGenerationConfigured,
     required this.imageMode,
+    required this.speechBusy,
+    required this.speechListening,
     required this.onToggleDeepThink,
     required this.onToggleSearch,
     required this.onToggleImageGenMode,
@@ -1295,6 +1732,7 @@ class _Composer extends StatefulWidget {
     required this.onPickDocuments,
     required this.onPickImages,
     required this.onRemoveAttachment,
+    required this.onToggleSpeech,
     required this.onSend,
     required this.onStop,
   });
@@ -1312,6 +1750,8 @@ class _Composer extends StatefulWidget {
   final bool visionConfigured;
   final bool imageGenerationConfigured;
   final bool imageMode;
+  final bool speechBusy;
+  final bool speechListening;
   final VoidCallback onToggleDeepThink;
   final VoidCallback onToggleSearch;
   final VoidCallback onToggleImageGenMode;
@@ -1319,6 +1759,7 @@ class _Composer extends StatefulWidget {
   final VoidCallback onPickDocuments;
   final VoidCallback onPickImages;
   final ValueChanged<String> onRemoveAttachment;
+  final VoidCallback onToggleSpeech;
   final VoidCallback onSend;
   final VoidCallback onStop;
 
@@ -1564,6 +2005,31 @@ class _ComposerState extends State<_Composer> {
                               ),
                             ),
                           ),
+                        if (widget.speechListening)
+                          Padding(
+                            key: const ValueKey('speech-listening-indicator'),
+                            padding: const EdgeInsets.fromLTRB(8, 3, 8, 1),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.graphic_eq_rounded,
+                                  size: 16,
+                                  color: scheme.error,
+                                ),
+                                const SizedBox(width: 6),
+                                Expanded(
+                                  child: Text(
+                                    '正在听… 识别文字不会自动发送',
+                                    style: Theme.of(context).textTheme.bodySmall
+                                        ?.copyWith(
+                                          color: scheme.onSurfaceVariant,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
                         Row(
                           crossAxisAlignment: CrossAxisAlignment.end,
                           children: [
@@ -1580,6 +2046,8 @@ class _ComposerState extends State<_Composer> {
                                     LogicalKeyboardKey.enter,
                                   ): () {
                                     if (!widget.isStreaming &&
+                                        !widget.speechBusy &&
+                                        !widget.speechListening &&
                                         !widget
                                             .controller
                                             .value
@@ -1590,9 +2058,11 @@ class _ComposerState extends State<_Composer> {
                                   },
                                 },
                                 child: TextField(
+                                  key: const ValueKey('composer-text-field'),
                                   controller: widget.controller,
                                   minLines: 1,
                                   maxLines: compactHeight ? 3 : 5,
+                                  readOnly: widget.speechListening,
                                   textInputAction: TextInputAction.newline,
                                   onTap: _closePlus,
                                   decoration: InputDecoration(
@@ -1607,6 +2077,42 @@ class _ComposerState extends State<_Composer> {
                                     ),
                                   ),
                                 ),
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            IconButton.filledTonal(
+                              key: const ValueKey('composer-microphone-button'),
+                              onPressed: widget.isStreaming || widget.speechBusy
+                                  ? null
+                                  : () {
+                                      _closePlus();
+                                      widget.onToggleSpeech();
+                                    },
+                              icon: widget.speechBusy
+                                  ? const SizedBox.square(
+                                      dimension: 18,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : Icon(
+                                      widget.speechListening
+                                          ? Icons.mic_rounded
+                                          : Icons.mic_none_rounded,
+                                    ),
+                              tooltip: widget.speechBusy
+                                  ? '正在准备语音输入'
+                                  : widget.speechListening
+                                  ? '停止语音输入'
+                                  : '语音输入',
+                              style: IconButton.styleFrom(
+                                fixedSize: const Size.square(40),
+                                backgroundColor: widget.speechListening
+                                    ? scheme.errorContainer
+                                    : scheme.secondaryContainer,
+                                foregroundColor: widget.speechListening
+                                    ? scheme.onErrorContainer
+                                    : scheme.onSecondaryContainer,
                               ),
                             ),
                             const SizedBox(width: 4),

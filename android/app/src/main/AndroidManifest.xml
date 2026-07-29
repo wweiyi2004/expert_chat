@@ -3,6 +3,8 @@
          (The debug/profile manifests already declare this for tooling, but
          release builds use only this main manifest.) -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Requested only when the user first taps the voice-input button. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <!-- Completion alerts while a reply is generated in the background. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
@@ -61,6 +63,10 @@
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
+        </intent>
+        <!-- Android 11+ package visibility for the system speech recognizer. -->
+        <intent>
+            <action android:name="android.speech.RecognitionService"/>
         </intent>
         <!-- Package installer for OTA APKs. -->
         <intent>

@@ -1479,6 +1479,10 @@ class ChatController extends AsyncNotifier<ChatState> {
     if (trimmed.isEmpty || _s.isStreaming || _starting) return false;
     _starting = true;
     _cancelStart = false;
+    // Capture the originating conversation before the settings preflight: the
+    // user may switch conversations while settings load, and the turn must
+    // still target the conversation it started from (matching _generate).
+    final originConvo = _s.current;
     try {
       final settings = await ref.read(settingsControllerProvider.future);
       if (!settings.imageGenerationConfigured) {
@@ -1495,7 +1499,7 @@ class ChatController extends AsyncNotifier<ChatState> {
       // Edits APIs typically take one source image; extra refs are ignored.
       final reference = refs.isEmpty ? null : refs.first;
 
-      final convo = _s.current ?? Conversation();
+      final convo = originConvo ?? _s.current ?? Conversation();
       ChatMessage? existingUser;
       if (existingUserMessageId != null) {
         for (final message in convo.messages) {
@@ -1551,13 +1555,17 @@ class ChatController extends AsyncNotifier<ChatState> {
       );
       final cancelToken = CancelToken();
       _cancelToken = cancelToken;
+      // The user may have switched conversations while this turn was
+      // preflighting; don't yank focus back. The image turn itself still
+      // targets [working.id] and writes into it.
+      final holdsFocus = _s.currentId == working.id || _s.currentId == null;
       _set(
         _s.copyWith(
           conversations: [
             working,
             ..._s.conversations.where((c) => c.id != working.id),
           ],
-          currentId: working.id,
+          currentId: holdsFocus ? working.id : _s.currentId,
           streamingConvoId: working.id,
           isSearching: false,
           isGeneratingImage: false,

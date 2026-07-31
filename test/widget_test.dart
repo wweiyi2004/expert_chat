@@ -431,6 +431,22 @@ class DelayedReadySettings extends SettingsController {
   }
 }
 
+/// Settings that stall on first read AND carry an image-generation endpoint,
+/// for preflight-window image-turn tests.
+class DelayedImageSettings extends DelayedReadySettings {
+  @override
+  Future<SettingsState> build() async {
+    final base = await super.build();
+    return base.copyWith(
+      imageGenerationApi: const MediaApiConfig(
+        baseUrl: 'https://media.example/v1',
+        model: 'img-model',
+      ),
+      imageGenerationApiKey: 'sk-img-test',
+    );
+  }
+}
+
 class FakeSpeechInputService implements SpeechInputService {
   FakeSpeechInputService({
     this.availability = SpeechInputAvailability.ready,
@@ -1773,6 +1789,51 @@ void main() {
       final origin = state.conversations.firstWhere((c) => c.id == originId);
       expect(origin.activePath.last.content, 'answer');
       expect(state.current!.messages, isEmpty);
+      expect(state.error, isNull);
+    },
+  );
+
+  test(
+    'an image turn preflighted on one conversation does not yank focus when '
+    'the user switches during preflight',
+    () async {
+      final delayed = DelayedImageSettings();
+      final c = _container(
+        FakeLlmProvider(const []),
+        InMemoryRepo(),
+        settingsBuilder: () => delayed,
+        mediaProvider: FakeMediaProvider(),
+      );
+      addTearDown(c.dispose);
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
+
+      final originId = c.read(chatControllerProvider).value!.currentId!;
+      final send = ctrl.generateImage('draw a cat');
+      await delayed.entered.future;
+      // The user switches away while the turn is still preflighting.
+      ctrl.newConversation();
+      final otherId = c.read(chatControllerProvider).value!.currentId!;
+      expect(otherId, isNot(originId));
+
+      delayed.gate.complete();
+      expect(await send, isTrue);
+
+      final state = c.read(chatControllerProvider).value!;
+      // Focus stays on the conversation the user chose...
+      expect(state.currentId, otherId);
+      expect(state.isStreaming, isFalse);
+      // ...while the image turn still wrote into the origin conversation.
+      final origin = state.conversations.firstWhere((c) => c.id == originId);
+      expect(
+        origin.messages.where((m) => m.kind == MessageKind.generatedImage),
+        isNotEmpty,
+      );
+      expect(
+        state.current!.messages
+            .where((m) => m.kind == MessageKind.generatedImage),
+        isEmpty,
+      );
       expect(state.error, isNull);
     },
   );

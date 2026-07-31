@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -17,7 +19,9 @@ import '../domain/media/openai_compatible_media_provider.dart';
 import '../domain/memory/memory_backup_file.dart';
 import '../domain/memory/memory_candidate_service.dart';
 import '../domain/memory/memory_transfer.dart';
+import '../domain/speech/mimo_speech_input_service.dart';
 import '../domain/speech/speech_input_service.dart';
+import '../domain/speech/text_to_speech_service.dart';
 import '../domain/tools/file_parser.dart';
 import '../domain/tools/search_provider.dart';
 import '../domain/tools/tool_engine.dart';
@@ -93,6 +97,25 @@ final fileParserProvider = Provider<FileParser>((ref) => FileParser());
 final speechInputServiceProvider = Provider<SpeechInputService>(
   (ref) => SystemSpeechInputService(),
 );
+
+/// Cloud ASR path used when a MiMo ASR endpoint is configured in settings.
+final mimoSpeechInputServiceProvider = Provider<MimoSpeechInputService>((ref) {
+  final service = MimoSpeechInputService(
+    mediaProvider: ref.read(mediaApiProvider),
+  );
+  ref.onDispose(() => unawaited(service.dispose()));
+  return service;
+});
+
+/// One app-wide speaker: beginning a new message cleanly replaces any older
+/// read-aloud operation, even when the user changes conversations.
+final textToSpeechServiceProvider = Provider<TextToSpeechService>((ref) {
+  final service = ApiTextToSpeechService(
+    mediaProvider: ref.read(mediaApiProvider),
+  );
+  ref.onDispose(() => unawaited(service.dispose()));
+  return service;
+});
 
 typedef ToolEngineFactory =
     ToolEngine Function({

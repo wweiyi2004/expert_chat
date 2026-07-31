@@ -1,6 +1,9 @@
+import 'dart:io';
+
 import 'package:dio/dio.dart' show CancelToken;
 import 'package:expert_chat/core/providers.dart';
 import 'package:expert_chat/data/conversation_repository.dart';
+import 'package:expert_chat/data/memory_file_store_io.dart';
 import 'package:expert_chat/data/memory_repository.dart';
 import 'package:expert_chat/data/models.dart';
 import 'package:expert_chat/data/provider_profile.dart';
@@ -23,11 +26,16 @@ import 'package:flutter_test/flutter_test.dart';
 class _MemoryStore implements MemoryStore {
   String? markdown;
 
+  /// Simulates a read landing in the "main file moved aside" window of a
+  /// queued write, where the store reports the file as absent.
+  bool simulateMissingFile = false;
+
   @override
   Future<String> locationLabel() async => 'memory-test.md';
 
   @override
-  Future<String?> read() async => markdown;
+  Future<String?> read() async =>
+      simulateMissingFile ? null : markdown;
 
   @override
   Future<void> write(String markdown) async => this.markdown = markdown;
@@ -215,6 +223,95 @@ void main() {
       expect(recall.entries.single.content, contains('本地优先'));
     },
   );
+
+  group('文件存储崩溃恢复', () {
+    late Directory tempDirectory;
+    late String filePath;
+
+    setUp(() async {
+      tempDirectory = await Directory.systemTemp.createTemp('memory_test_');
+      filePath =
+          '${tempDirectory.path}${Platform.pathSeparator}global.memory.md';
+    });
+
+    tearDown(() async {
+      await tempDirectory.delete(recursive: true);
+    });
+
+    test('主文件缺失但 .bak 存在时,read 从 .bak 恢复内容', () async {
+      final store = MemoryFileStore(null, filePath: filePath);
+      await File('$filePath.bak').writeAsString('backup 内容');
+
+      final markdown = await store.read();
+
+      expect(markdown, 'backup 内容');
+      // 无写入进行中时,恢复为“主文件就位”的正常状态。
+      expect(await File(filePath).exists(), isTrue);
+    });
+
+    test('模拟崩溃窗口后,下一次写入不会丢失 .bak 中的数据', () async {
+      final store = MemoryFileStore(null, filePath: filePath);
+      // 崩溃窗口:主文件已移到 .bak,新内容仍在 .tmp,进程被杀。
+      await File('$filePath.bak').writeAsString('已提交内容');
+      await File('$filePath.tmp').writeAsString('未提交的新内容');
+
+      expect(await store.read(), '已提交内容');
+      await store.write('已提交内容 + 新条目');
+
+      expect(await File(filePath).readAsString(), '已提交内容 + 新条目');
+      // 主文件是完整副本,.bak 已清理。
+      expect(await File('$filePath.bak').exists(), isFalse);
+    });
+
+    test('崩溃后重启的仓库保留全部记忆并追加新条目', () async {
+      final store = MemoryFileStore(null, filePath: filePath);
+      final first = MemoryRepository(store);
+      await first.add(content: '项目使用 Flutter 开发。');
+
+      // 模拟崩溃窗口:主文件已被移成 .bak,新内容仍在 .tmp,进程被杀。
+      await File(filePath).rename('$filePath.bak');
+      await File('$filePath.tmp').writeAsString('未提交内容');
+
+      // 新进程:缓存为空,必须从 .bak 恢复全部记忆,而不是空文档。
+      final restarted = MemoryRepository(store);
+      final recovered = await restarted.load(refresh: true);
+      expect(
+        recovered.entries.map((entry) => entry.content),
+        contains('项目使用 Flutter 开发。'),
+      );
+
+      // 追加新记忆后,磁盘上必须同时包含旧记忆与新记忆。
+      await restarted.add(content: '用户偏好中文回答。');
+      final markdown = await File(filePath).readAsString();
+      expect(markdown, contains('项目使用 Flutter 开发。'));
+      expect(markdown, contains('用户偏好中文回答。'));
+    });
+  });
+
+  test('空读不会覆盖已有缓存,后续写入不会清空全部记忆', () async {
+    final store = _MemoryStore();
+    final repository = MemoryRepository(store);
+    await repository.add(content: '项目使用 Flutter 开发。');
+
+    // 模拟读落在“主文件已被移走”的窗口内:read 返回 null。
+    store.simulateMissingFile = true;
+    final refreshed = await repository.load(refresh: true);
+    expect(
+      refreshed.entries.map((entry) => entry.content),
+      contains('项目使用 Flutter 开发。'),
+    );
+
+    // 后续写入基于缓存中的完整内容,不会把全部记忆清空。
+    await repository.add(content: '用户偏好中文回答。');
+    expect(store.markdown, contains('项目使用 Flutter 开发。'));
+    expect(store.markdown, contains('用户偏好中文回答。'));
+  });
+
+  test('首次使用没有文件时仍返回空文档', () async {
+    final repository = MemoryRepository(_MemoryStore());
+    final document = await repository.load();
+    expect(document.entries, isEmpty);
+  });
 
   test('candidate parser rejects unsupported, unsafe and duplicate facts', () {
     final existing = [

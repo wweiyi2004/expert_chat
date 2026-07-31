@@ -287,8 +287,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                           if (_category == _SettingsCategory.capabilities) ...[
                             const _SectionTitle('多媒体能力（可选）'),
                             Text(
-                              '视觉和生图使用彼此独立的 OpenAI 兼容 API。'
-                              '只有 Base URL、模型和 API Key 全部填写后，对应功能才会出现在聊天界面。',
+                              '视觉、生图和语音均可独立配置。MiMo 的 ASR 与 TTS '
+                              '通过 /chat/completions 调用；也保留 OpenAI 兼容的 TTS 接口。',
                               style: Theme.of(context).textTheme.bodySmall,
                             ),
                             const SizedBox(height: 12),
@@ -326,6 +326,74 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                     MediaApiKind.imageGeneration,
                                     value,
                                   ),
+                            ),
+                            const SizedBox(height: 10),
+                            _OptionalApiCard(
+                              title: '云端语音识别（MiMo ASR）',
+                              description:
+                                  '录音结束后上传到 MiMo /chat/completions；配置后优先使用它',
+                              icon: Icons.mic_none_outlined,
+                              config: s.asrApi,
+                              apiKey: s.asrApiKey,
+                              configured: s.asrConfigured,
+                              mimoPreset: const MediaApiConfig(
+                                baseUrl: MediaApiConfig.mimoBaseUrl,
+                                model: MediaApiConfig.mimoAsrModel,
+                                speechProtocol:
+                                    SpeechApiProtocol.mimoChatCompletions,
+                              ),
+                              onConfigChanged: (value) => controller
+                                  .setMediaApiConfig(MediaApiKind.asr, value),
+                              onApiKeyChanged: (value) => controller
+                                  .setMediaApiKey(MediaApiKind.asr, value),
+                            ),
+                            const SizedBox(height: 10),
+                            _OptionalApiCard(
+                              title: '云端语音合成',
+                              description:
+                                  '支持 OpenAI /audio/speech 或 MiMo /chat/completions',
+                              icon: Icons.record_voice_over_outlined,
+                              config: s.ttsApi,
+                              apiKey: s.ttsApiKey,
+                              configured: s.ttsConfigured,
+                              showVoice: true,
+                              showSpeechProtocol: true,
+                              mimoPreset: const MediaApiConfig(
+                                baseUrl: MediaApiConfig.mimoBaseUrl,
+                                model: MediaApiConfig.mimoTtsModel,
+                                voice: MediaApiConfig.mimoDefaultVoice,
+                                speechProtocol:
+                                    SpeechApiProtocol.mimoChatCompletions,
+                              ),
+                              onConfigChanged: (value) => controller
+                                  .setMediaApiConfig(MediaApiKind.tts, value),
+                              onApiKeyChanged: (value) => controller
+                                  .setMediaApiKey(MediaApiKind.tts, value),
+                            ),
+                            const SizedBox(height: 24),
+                            const _SectionTitle('语音朗读'),
+                            Text(
+                              '每条已完成的 AI 回复都可点“朗读”。朗读时会将该回复发送给'
+                              '上方配置的云端语音服务；MiMo 返回 WAV 音频。未配置时无法开始朗读。',
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                            const SizedBox(height: 12),
+                            _PrefRow(
+                              label: '朗读速度',
+                              child: SegmentedButton<TtsSpeedPref>(
+                                segments: [
+                                  for (final speed in TtsSpeedPref.values)
+                                    ButtonSegment<TtsSpeedPref>(
+                                      value: speed,
+                                      label: Text(speed.label),
+                                    ),
+                                ],
+                                selected: {s.ui.ttsSpeed},
+                                onSelectionChanged: (values) =>
+                                    controller.setUiPrefs(
+                                      s.ui.copyWith(ttsSpeed: values.first),
+                                    ),
+                              ),
                             ),
                             const SizedBox(height: 32),
                           ],
@@ -1008,6 +1076,9 @@ class _OptionalApiCard extends StatefulWidget {
     required this.onConfigChanged,
     required this.onApiKeyChanged,
     this.showImageSize = false,
+    this.showVoice = false,
+    this.showSpeechProtocol = false,
+    this.mimoPreset,
   });
 
   final String title;
@@ -1019,6 +1090,9 @@ class _OptionalApiCard extends StatefulWidget {
   final ValueChanged<MediaApiConfig> onConfigChanged;
   final ValueChanged<String> onApiKeyChanged;
   final bool showImageSize;
+  final bool showVoice;
+  final bool showSpeechProtocol;
+  final MediaApiConfig? mimoPreset;
 
   @override
   State<_OptionalApiCard> createState() => _OptionalApiCardState();
@@ -1027,6 +1101,7 @@ class _OptionalApiCard extends StatefulWidget {
 class _OptionalApiCardState extends State<_OptionalApiCard> {
   late final TextEditingController _baseUrl;
   late final TextEditingController _model;
+  late final TextEditingController _voice;
   late final TextEditingController _apiKey;
   bool _obscure = true;
 
@@ -1035,6 +1110,7 @@ class _OptionalApiCardState extends State<_OptionalApiCard> {
     super.initState();
     _baseUrl = TextEditingController(text: widget.config.baseUrl);
     _model = TextEditingController(text: widget.config.model);
+    _voice = TextEditingController(text: widget.config.voice);
     _apiKey = TextEditingController(text: widget.apiKey);
   }
 
@@ -1043,6 +1119,7 @@ class _OptionalApiCardState extends State<_OptionalApiCard> {
     super.didUpdateWidget(oldWidget);
     _sync(_baseUrl, widget.config.baseUrl);
     _sync(_model, widget.config.model);
+    _sync(_voice, widget.config.voice);
     _sync(_apiKey, widget.apiKey);
   }
 
@@ -1058,16 +1135,25 @@ class _OptionalApiCardState extends State<_OptionalApiCard> {
   void dispose() {
     _baseUrl.dispose();
     _model.dispose();
+    _voice.dispose();
     _apiKey.dispose();
     super.dispose();
   }
 
-  void _patch({String? baseUrl, String? model, String? imageSize}) {
+  void _patch({
+    String? baseUrl,
+    String? model,
+    String? imageSize,
+    String? voice,
+    SpeechApiProtocol? speechProtocol,
+  }) {
     widget.onConfigChanged(
       widget.config.copyWith(
         baseUrl: baseUrl,
         model: model,
         imageSize: imageSize,
+        voice: voice,
+        speechProtocol: speechProtocol,
       ),
     );
   }
@@ -1129,6 +1215,46 @@ class _OptionalApiCardState extends State<_OptionalApiCard> {
             ),
             onChanged: (value) => _patch(model: value),
           ),
+          if (widget.showSpeechProtocol) ...[
+            const SizedBox(height: 12),
+            DropdownButtonFormField<SpeechApiProtocol>(
+              initialValue: widget.config.speechProtocol,
+              isExpanded: true,
+              decoration: const InputDecoration(labelText: '语音 API 协议'),
+              items: const [
+                DropdownMenuItem(
+                  value: SpeechApiProtocol.openAiAudio,
+                  child: Text(
+                    'OpenAI /audio/speech',
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                DropdownMenuItem(
+                  value: SpeechApiProtocol.mimoChatCompletions,
+                  child: Text(
+                    'MiMo /chat/completions（WAV）',
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+              onChanged: (value) {
+                if (value != null) _patch(speechProtocol: value);
+              },
+            ),
+          ],
+          if (widget.showVoice) ...[
+            const SizedBox(height: 12),
+            TextField(
+              controller: _voice,
+              autocorrect: false,
+              enableSuggestions: false,
+              decoration: const InputDecoration(
+                labelText: '音色 / Voice',
+                hintText: '例如 alloy、nova；以服务商支持的值为准',
+              ),
+              onChanged: (value) => _patch(voice: value),
+            ),
+          ],
           if (widget.showImageSize) ...[
             const SizedBox(height: 12),
             DropdownButtonFormField<String>(
@@ -1160,6 +1286,17 @@ class _OptionalApiCardState extends State<_OptionalApiCard> {
               onChanged: (value) {
                 if (value != null) _patch(imageSize: value);
               },
+            ),
+          ],
+          if (widget.mimoPreset != null) ...[
+            const SizedBox(height: 12),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: OutlinedButton.icon(
+                onPressed: () => widget.onConfigChanged(widget.mimoPreset!),
+                icon: const Icon(Icons.auto_fix_high_outlined),
+                label: const Text('填入 MiMo 默认配置'),
+              ),
             ),
           ],
           const SizedBox(height: 12),

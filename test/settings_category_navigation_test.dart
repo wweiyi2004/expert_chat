@@ -36,6 +36,8 @@ class _FakeSettingsController extends SettingsController {
         state = AsyncData(current.copyWith(imageGenerationApi: config));
       case MediaApiKind.tts:
         state = AsyncData(current.copyWith(ttsApi: config));
+      case MediaApiKind.asr:
+        state = AsyncData(current.copyWith(asrApi: config));
     }
   }
 
@@ -49,6 +51,8 @@ class _FakeSettingsController extends SettingsController {
         state = AsyncData(current.copyWith(imageGenerationApiKey: key));
       case MediaApiKind.tts:
         state = AsyncData(current.copyWith(ttsApiKey: key));
+      case MediaApiKind.asr:
+        state = AsyncData(current.copyWith(asrApiKey: key));
     }
   }
 }
@@ -91,6 +95,11 @@ void main() {
 
     expect(find.text('模型服务'), findsNothing);
     expect(find.text('多媒体能力（可选）'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('联网搜索'),
+      240,
+      scrollable: find.byType(Scrollable).last,
+    );
     expect(find.text('联网搜索'), findsOneWidget);
 
     await tester.tap(find.text('外观'));
@@ -186,4 +195,60 @@ void main() {
       );
     },
   );
+
+  testWidgets('cloud TTS configuration includes a persisted voice field', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(360, 720);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          settingsControllerProvider.overrideWith(_FakeSettingsController.new),
+        ],
+        child: const MaterialApp(home: SettingsPage(asRootTab: true)),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('能力'));
+    await tester.pumpAndSettle();
+    // The added cloud-ASR card pushes TTS below the initial viewport.
+    await tester.drag(find.byType(ListView), const Offset(0, -360));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('云端语音合成'));
+    await tester.tap(find.text('云端语音合成'));
+    await tester.pumpAndSettle();
+
+    Finder fieldWithLabel(String label) => find.byWidgetPredicate(
+      (widget) => widget is TextField && widget.decoration?.labelText == label,
+    );
+
+    final baseUrl = fieldWithLabel('Base URL');
+    final model = fieldWithLabel('模型');
+    final voice = fieldWithLabel('音色 / Voice');
+    final apiKey = fieldWithLabel('API Key');
+    expect(baseUrl, findsOneWidget);
+    expect(model, findsOneWidget);
+    expect(voice, findsOneWidget);
+    expect(apiKey, findsOneWidget);
+
+    Future<void> setText(Finder field, String value) async {
+      await tester.ensureVisible(field);
+      await tester.tap(field);
+      await tester.enterText(field, value);
+      await tester.pump();
+    }
+
+    await setText(baseUrl, 'https://tts.example.com/v1');
+    await setText(model, 'tts-model');
+    await setText(voice, 'nova');
+    await setText(apiKey, 'sk-tts-test');
+    await tester.pumpAndSettle();
+
+    expect(find.text('已启用'), findsOneWidget);
+    expect(tester.widget<TextField>(voice).controller?.text, 'nova');
+  });
 }

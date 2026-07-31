@@ -228,7 +228,12 @@ class SearchActivity {
 /// scramble time-based ordering.
 DateTime? _parseStoredTime(Object? raw) {
   if (raw == null) return null;
-  return DateTime.tryParse(raw as String? ?? '') ??
+  if (raw is num) {
+    // A numeric timestamp (epoch millis) drifted in from an older writer;
+    // accept it instead of letting the cast throw and drop the record.
+    return DateTime.fromMillisecondsSinceEpoch(raw.toInt());
+  }
+  return DateTime.tryParse(raw.toString()) ??
       DateTime.fromMillisecondsSinceEpoch(0);
 }
 
@@ -615,9 +620,13 @@ class Conversation {
     id: json['id'] as String?,
     title: json['title'] as String? ?? '新对话',
     updatedAt: _parseStoredTime(json['updatedAt']),
-    activeChildren: (json['activeChildren'] as Map<String, dynamic>? ?? {}).map(
-      (k, v) => MapEntry(k, v as String),
-    ),
+    activeChildren: {
+      for (final entry
+          in (json['activeChildren'] as Map<String, dynamic>? ?? {}).entries)
+        // Tolerate non-string values (e.g. numeric ids from an older writer)
+        // rather than throwing and dropping the whole record.
+        if (entry.value != null) entry.key: entry.value.toString(),
+    },
     messages: (json['messages'] as List<dynamic>? ?? [])
         .map((e) => ChatMessage.fromJson(e as Map<String, dynamic>))
         .toList(),

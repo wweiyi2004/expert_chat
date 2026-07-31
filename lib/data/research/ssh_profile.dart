@@ -95,13 +95,23 @@ class SshProfile {
     if (raw == null || raw.trim().isEmpty) return const [];
     try {
       final list = jsonDecode(raw) as List<dynamic>;
-      return [
-        for (final e in list)
-          if (e is Map<String, dynamic>)
-            ?fromJson(e)
-          else if (e is Map)
-            ?fromJson(Map<String, dynamic>.from(e)),
-      ].whereType<SshProfile>().toList();
+      final result = <SshProfile>[];
+      for (final e in list) {
+        // A single corrupt entry (e.g. wrong field type) must not wipe out
+        // the whole list: skip it and keep the healthy profiles.
+        try {
+          if (e is Map<String, dynamic>) {
+            final profile = fromJson(e);
+            if (profile != null) result.add(profile);
+          } else if (e is Map) {
+            final profile = fromJson(Map<String, dynamic>.from(e));
+            if (profile != null) result.add(profile);
+          }
+        } catch (_) {
+          // Skip this corrupt entry; keep parsing the rest.
+        }
+      }
+      return result;
     } catch (_) {
       return const [];
     }

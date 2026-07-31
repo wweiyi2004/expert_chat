@@ -1,10 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
-import 'package:dio/dio.dart' show CancelToken;
+import 'package:dio/dio.dart';
 import 'package:drift/native.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:expert_chat/core/providers.dart';
 import 'package:expert_chat/data/character_repository.dart';
@@ -20,7 +20,9 @@ import 'package:expert_chat/data/world_info_repository.dart';
 import 'package:expert_chat/domain/export/conversation_export.dart';
 import 'package:expert_chat/domain/llm/llm_provider.dart';
 import 'package:expert_chat/domain/media/openai_compatible_media_provider.dart';
+import 'package:expert_chat/domain/speech/mimo_speech_input_service.dart';
 import 'package:expert_chat/domain/speech/speech_input_service.dart';
+import 'package:expert_chat/domain/speech/text_to_speech_service.dart';
 import 'package:expert_chat/domain/story/story_length_budget.dart';
 import 'package:expert_chat/domain/story/story_prompt_assembler.dart';
 import 'package:expert_chat/domain/tools/file_parser.dart';
@@ -204,6 +206,21 @@ class FakeSmallContextSettings extends FakeSettings {
   }
 }
 
+/// Settings with a configured MiMo ASR endpoint (cloud speech input).
+class FakeMimoSettings extends FakeSettings {
+  @override
+  Future<SettingsState> build() async {
+    final base = await super.build();
+    return base.copyWith(
+      asrApi: const MediaApiConfig(
+        baseUrl: MediaApiConfig.mimoBaseUrl,
+        model: MediaApiConfig.mimoAsrModel,
+      ),
+      asrApiKey: 'sk-asr-test',
+    );
+  }
+}
+
 /// Settings with no API key — `config.isReady` is false.
 class FakeUnconfiguredSettings extends SettingsController {
   @override
@@ -373,6 +390,103 @@ class FakeSpeechInputService implements SpeechInputService {
   }
 }
 
+/// In-memory MiMo ASR service: the upload is gated by [finishGate] so tests
+/// can type into the composer while recognition is in flight.
+class FakeMimoSpeechInputService implements MimoSpeechInputService {
+  final Completer<void> finishGate = Completer<void>();
+  SpeechInputResultCallback? _resultCallback;
+  SpeechInputStatusCallback? _statusCallback;
+  var initializeCount = 0;
+  var startCount = 0;
+  var cancelCount = 0;
+
+  @override
+  OpenAiCompatibleMediaProvider get mediaProvider =>
+      OpenAiCompatibleMediaProvider();
+
+  @override
+  bool get isActive => false;
+
+  @override
+  Future<SpeechInputAvailability> initialize({
+    required SpeechInputStatusCallback onStatus,
+    required SpeechInputErrorCallback onError,
+  }) async {
+    initializeCount++;
+    _statusCallback = onStatus;
+    return SpeechInputAvailability.ready;
+  }
+
+  @override
+  Future<bool> start({
+    required MediaApiConfig config,
+    required String apiKey,
+    required SpeechInputResultCallback onResult,
+  }) async {
+    startCount++;
+    _resultCallback = onResult;
+    _statusCallback?.call(SpeechInputStatus.listening);
+    return true;
+  }
+
+  @override
+  Future<void> finish({
+    required MediaApiConfig config,
+    required String apiKey,
+    String language = 'auto',
+  }) async {
+    await finishGate.future;
+    _resultCallback?.call(
+      const SpeechInputResult(text: '识别结果', isFinal: true),
+    );
+    _statusCallback?.call(SpeechInputStatus.stopped);
+  }
+
+  @override
+  Future<void> cancel() async {
+    cancelCount++;
+  }
+
+  @override
+  void detach() {}
+
+  @override
+  Future<void> dispose() async {}
+}
+
+class FakeTextToSpeechService implements TextToSpeechService {
+  final ValueNotifier<TextToSpeechPlayback> _playback = ValueNotifier(
+    const TextToSpeechPlayback(),
+  );
+  final List<TextToSpeechRequest> requests = [];
+  var stopCount = 0;
+  var _requestId = 0;
+
+  @override
+  ValueListenable<TextToSpeechPlayback> get playback => _playback;
+
+  @override
+  Future<void> speak(TextToSpeechRequest request) async {
+    requests.add(request);
+    _playback.value = TextToSpeechPlayback(
+      phase: TextToSpeechPhase.speaking,
+      messageId: request.messageId,
+      requestId: ++_requestId,
+    );
+  }
+
+  @override
+  Future<void> stop() async {
+    stopCount++;
+    _playback.value = TextToSpeechPlayback(requestId: ++_requestId);
+  }
+
+  @override
+  Future<void> dispose() async {
+    _playback.dispose();
+  }
+}
+
 /// In-memory Drift DB for story repos in unit tests (no path_provider).
 ProviderContainer _container(
   LlmProvider llm,
@@ -381,6 +495,8 @@ ProviderContainer _container(
   SettingsController Function() settingsBuilder = FakeSettings.new,
   OpenAiCompatibleMediaProvider? mediaProvider,
   SpeechInputService? speechInputService,
+  MimoSpeechInputService? mimoSpeechInputService,
+  TextToSpeechService? textToSpeechService,
 }) {
   final db = AppDatabase(NativeDatabase.memory());
   final characters = CharacterRepository(db);
@@ -399,6 +515,10 @@ ProviderContainer _container(
         mediaApiProvider.overrideWithValue(mediaProvider),
       if (speechInputService != null)
         speechInputServiceProvider.overrideWithValue(speechInputService),
+      if (mimoSpeechInputService != null)
+        mimoSpeechInputServiceProvider.overrideWithValue(mimoSpeechInputService),
+      if (textToSpeechService != null)
+        textToSpeechServiceProvider.overrideWithValue(textToSpeechService),
     ],
   );
   // Memory DB is not opened via path_provider; close it when the test ends.
@@ -2413,6 +2533,59 @@ void main() {
       expect(path.first.content, '帮我写一封邮件');
     });
 
+    testWidgets('speech errors cancel the native recognizer', (tester) async {
+      final speech = FakeSpeechInputService();
+      final c = _container(
+        FakeLlmProvider(const []),
+        InMemoryRepo(),
+        speechInputService: speech,
+      );
+      addTearDown(c.dispose);
+      await _pumpChat(tester, c);
+
+      await tester.tap(find.byTooltip('语音输入'));
+      await tester.pump();
+      speech.fail('error_audio');
+      await tester.pump();
+
+      expect(speech.cancelCount, 1);
+      expect(find.byTooltip('语音输入'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('speech-listening-indicator')),
+        findsNothing,
+      );
+    });
+
+    testWidgets('assistant replies can be read aloud and stopped', (
+      tester,
+    ) async {
+      final tts = FakeTextToSpeechService();
+      final c = _container(
+        FakeLlmProvider([const ChatChunk(contentDelta: 'hello there')]),
+        InMemoryRepo(),
+        textToSpeechService: tts,
+      );
+      addTearDown(c.dispose);
+      await _pumpChat(tester, c);
+
+      await tester.enterText(find.byType(TextField).first, 'hi');
+      await tester.tap(find.byTooltip('发送'));
+      await _drain(tester);
+
+      expect(find.byTooltip('朗读'), findsOneWidget);
+      await tester.tap(find.byTooltip('朗读'));
+      await tester.pump();
+
+      expect(tts.requests, hasLength(1));
+      expect(tts.requests.single.text, 'hello there');
+      expect(find.byTooltip('停止朗读'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('停止朗读'));
+      await tester.pump();
+      expect(tts.stopCount, 1);
+      expect(find.byTooltip('朗读'), findsOneWidget);
+    });
+
     testWidgets('denied voice permission is explained without starting', (
       tester,
     ) async {
@@ -2433,6 +2606,45 @@ void main() {
       expect(find.text('未获得麦克风或语音识别权限，请在系统设置中允许后重试。'), findsOneWidget);
       expect(speech.initializeCount, 1);
       expect(speech.startCount, 0);
+    });
+
+    testWidgets('MiMo upload keeps edits made to the composer while recognizing', (
+      tester,
+    ) async {
+      final mimo = FakeMimoSpeechInputService();
+      final c = _container(
+        FakeLlmProvider(const []),
+        InMemoryRepo(),
+        settingsBuilder: FakeMimoSettings.new,
+        mimoSpeechInputService: mimo,
+      );
+      addTearDown(c.dispose);
+      await _pumpChat(tester, c);
+
+      await tester.tap(find.byTooltip('语音输入'));
+      await tester.pump();
+      expect(find.byTooltip('结束录音并识别'), findsOneWidget);
+
+      // Finish the recording; the upload is now gated.
+      await tester.tap(find.byTooltip('结束录音并识别'));
+      await tester.pump();
+      expect(find.byTooltip('正在上传语音；点按取消'), findsOneWidget);
+
+      // The composer stays editable while the upload runs.
+      await tester.enterText(
+        find.byKey(const ValueKey('composer-text-field')),
+        '上传期间打的字',
+      );
+      await tester.pump();
+
+      mimo.finishGate.complete();
+      await _drain(tester);
+
+      final field = tester.widget<TextField>(
+        find.byKey(const ValueKey('composer-text-field')),
+      );
+      expect(field.controller?.text, contains('上传期间打的字'));
+      expect(field.controller?.text, contains('识别结果'));
     });
 
     testWidgets('tapping send dispatches the message and renders the reply', (

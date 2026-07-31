@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:expert_chat/core/providers.dart';
 import 'package:expert_chat/data/provider_profile.dart';
 import 'package:expert_chat/state/settings_controller.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_secure_storage/test/test_flutter_secure_storage_platform.dart';
@@ -54,4 +55,76 @@ void main() {
       expect(secureData['apikey_${profile.id}'], 'legacy-secret');
     },
   );
+
+  test('out-of-range themeMode value falls back to system, no crash', () async {
+    SharedPreferences.setMockInitialValues({'themeMode': 99});
+    FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
+      {},
+    );
+    addTearDown(() {
+      FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
+        {},
+      );
+    });
+
+    final prefs = await SharedPreferences.getInstance();
+    final container = ProviderContainer(
+      overrides: [
+        sharedPrefsProvider.overrideWithValue(prefs),
+        secureStorageProvider.overrideWithValue(const FlutterSecureStorage()),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    final state = await container.read(settingsControllerProvider.future);
+    expect(state.themeMode, ThemeMode.system);
+  });
+
+  test('negative themeMode value falls back to system', () async {
+    SharedPreferences.setMockInitialValues({'themeMode': -1});
+    FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
+      {},
+    );
+    addTearDown(() {
+      FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
+        {},
+      );
+    });
+
+    final prefs = await SharedPreferences.getInstance();
+    final container = ProviderContainer(
+      overrides: [
+        sharedPrefsProvider.overrideWithValue(prefs),
+        secureStorageProvider.overrideWithValue(const FlutterSecureStorage()),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    final state = await container.read(settingsControllerProvider.future);
+    expect(state.themeMode, ThemeMode.system);
+  });
+
+  test('in-range themeMode value is honored', () async {
+    SharedPreferences.setMockInitialValues({'themeMode': 2});
+    FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
+      {},
+    );
+    addTearDown(() {
+      FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
+        {},
+      );
+    });
+
+    final prefs = await SharedPreferences.getInstance();
+    final container = ProviderContainer(
+      overrides: [
+        sharedPrefsProvider.overrideWithValue(prefs),
+        secureStorageProvider.overrideWithValue(const FlutterSecureStorage()),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    final state = await container.read(settingsControllerProvider.future);
+    expect(state.themeMode, ThemeMode.dark);
+  });
 }

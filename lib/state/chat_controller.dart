@@ -111,6 +111,7 @@ class ChatState {
     this.searchMode = SearchMode.off,
     this.imageGenMode = ImageGenMode.off,
     this.isSearching = false,
+    this.isGeneratingImage = false,
     this.contextReports = const {},
     this.error,
     this.errorConvoId,
@@ -138,8 +139,12 @@ class ChatState {
   /// composer's pure "图片生成" mode, which bypasses chat entirely.
   final ImageGenMode imageGenMode;
 
-  /// True while a web-search tool call is running (drives a status hint).
+  /// True while a web-search / fetch-url tool call is running (composer hint).
   final bool isSearching;
+
+  /// True while an image generation request is in flight (composer hint).
+  /// Kept separate from [isSearching] so 配图 / 生图 never show "正在联网搜索".
+  final bool isGeneratingImage;
   final Map<String, ContextWindowReport> contextReports;
   final String? error;
 
@@ -174,6 +179,7 @@ class ChatState {
     SearchMode? searchMode,
     ImageGenMode? imageGenMode,
     bool? isSearching,
+    bool? isGeneratingImage,
     Map<String, ContextWindowReport>? contextReports,
     Object? error = _sentinel,
     Object? errorConvoId = _sentinel,
@@ -218,6 +224,7 @@ class ChatState {
       searchMode: searchMode ?? this.searchMode,
       imageGenMode: imageGenMode ?? this.imageGenMode,
       isSearching: isSearching ?? this.isSearching,
+      isGeneratingImage: isGeneratingImage ?? this.isGeneratingImage,
       contextReports: contextReports ?? this.contextReports,
       error: nextError,
       errorConvoId: nextErrorConvoId,
@@ -936,7 +943,13 @@ class ChatController extends AsyncNotifier<ChatState> {
     final completer = _streamCompleter;
     if (completer != null && !completer.isCompleted) completer.complete();
     _streamCompleter = null;
-    _set(_s.copyWith(streamingConvoId: null, isSearching: false));
+    _set(
+      _s.copyWith(
+        streamingConvoId: null,
+        isSearching: false,
+        isGeneratingImage: false,
+      ),
+    );
     _signalIdleIfReady();
     if (persist && streamingId != null) _persistSoon(_persistById(streamingId));
     unawaited(
@@ -1506,6 +1519,7 @@ class ChatController extends AsyncNotifier<ChatState> {
           currentId: working.id,
           streamingConvoId: working.id,
           isSearching: false,
+          isGeneratingImage: false,
           error: null,
         ),
       );
@@ -1627,6 +1641,9 @@ class ChatController extends AsyncNotifier<ChatState> {
           }
         }
 
+        if (_s.isStreaming) {
+          _set(_s.copyWith(isGeneratingImage: true, isSearching: false));
+        }
         final generated = await ref
             .read(mediaApiProvider)
             .generateImage(
@@ -1674,7 +1691,13 @@ class ChatController extends AsyncNotifier<ChatState> {
           thinkingMillis: thinkingMillis,
           model: settings.imageGenerationApi.model,
         );
-        _set(_s.copyWith(streamingConvoId: null, error: null));
+        _set(
+          _s.copyWith(
+            streamingConvoId: null,
+            isGeneratingImage: false,
+            error: null,
+          ),
+        );
         await _persistById(working.id);
         unawaited(
           GenerationNotify.onGenerationEnd(
@@ -1690,11 +1713,14 @@ class ChatController extends AsyncNotifier<ChatState> {
           _set(
             _s.copyWith(
               streamingConvoId: null,
+              isGeneratingImage: false,
               error: _describeError(e),
               errorConvoId: working.id,
               retryOperation: failureOperation,
             ),
           );
+        } else {
+          _set(_s.copyWith(isGeneratingImage: false));
         }
         await _persistById(working.id);
         unawaited(
@@ -1706,6 +1732,9 @@ class ChatController extends AsyncNotifier<ChatState> {
         );
         return true;
       } finally {
+        if (_s.isGeneratingImage) {
+          _set(_s.copyWith(isGeneratingImage: false));
+        }
         if (identical(_cancelToken, cancelToken)) _cancelToken = null;
       }
     } finally {
@@ -1913,6 +1942,7 @@ class ChatController extends AsyncNotifier<ChatState> {
         currentId: working.id,
         streamingConvoId: working.id,
         isSearching: false,
+        isGeneratingImage: false,
         error: null,
       ),
     );
@@ -1989,7 +2019,7 @@ class ChatController extends AsyncNotifier<ChatState> {
     final needPreSearch =
         searchAllowed && (!useWebSearchTool || searchMode == SearchMode.always);
     if (needPreFetch || needPreSearch) {
-      _set(_s.copyWith(isSearching: true));
+      _set(_s.copyWith(isSearching: true, isGeneratingImage: false));
       // Live progress steps land on the assistant placeholder as they happen.
       void activitySink(SearchActivity activity) =>
           _upsertSearchActivity(working.id, assistantId, activity);
@@ -2045,7 +2075,7 @@ class ChatController extends AsyncNotifier<ChatState> {
           _setScopedError(_describeError(e), convoId: working.id);
         }
       } finally {
-        _set(_s.copyWith(isSearching: false));
+        _set(_s.copyWith(isSearching: false, isGeneratingImage: false));
       }
     }
 
@@ -2531,7 +2561,13 @@ class ChatController extends AsyncNotifier<ChatState> {
             allowTools &&
             (toolCalls.isNotEmpty || finishReason == 'tool_calls');
         if (!needsTools) {
-          _set(_s.copyWith(streamingConvoId: null, isSearching: false));
+          _set(
+            _s.copyWith(
+              streamingConvoId: null,
+              isSearching: false,
+              isGeneratingImage: false,
+            ),
+          );
           await _persistById(convoId);
           succeeded = true;
           return true;
@@ -2597,6 +2633,7 @@ class ChatController extends AsyncNotifier<ChatState> {
         _s.copyWith(
           streamingConvoId: null,
           isSearching: false,
+          isGeneratingImage: false,
           // A cancellation raised by stop() is not an error to surface.
           error: _isCancel(e) ? null : _describeError(e),
           errorConvoId: _isCancel(e) ? null : convoId,
@@ -2629,13 +2666,20 @@ class ChatController extends AsyncNotifier<ChatState> {
     CharacterCard? imageCharacter,
   }) async {
     final out = <LlmRequestMessage>[];
-    // Don't re-light the "正在联网搜索" hint if stop() already fired.
-    // Image gen also flips this briefly so the composer shows activity.
-    if (_s.isStreaming) _set(_s.copyWith(isSearching: true));
     try {
       for (var callIndex = 0; callIndex < toolCalls.length; callIndex++) {
         final call = toolCalls[callIndex];
         final toolCallId = call.id ?? '';
+        // Per-tool composer hints — never reuse "正在联网搜索" for image gen.
+        if (_s.isStreaming) {
+          final searching =
+              call.name == ToolEngine.webSearchTool.name ||
+              call.name == ToolEngine.fetchUrlTool.name;
+          final generating = call.name == ToolEngine.generateImageTool.name;
+          _set(
+            _s.copyWith(isSearching: searching, isGeneratingImage: generating),
+          );
+        }
         String toolContent;
         if (callIndex >= _maxToolCallsPerRound) {
           // Every requested call still gets a protocol-valid tool response, but
@@ -2685,7 +2729,7 @@ class ChatController extends AsyncNotifier<ChatState> {
         );
       }
     } finally {
-      _set(_s.copyWith(isSearching: false));
+      _set(_s.copyWith(isSearching: false, isGeneratingImage: false));
     }
     return out;
   }
@@ -2879,6 +2923,9 @@ class ChatController extends AsyncNotifier<ChatState> {
       return (ok: false, error: '生图提示词为空。');
     }
 
+    if (_s.isStreaming) {
+      _set(_s.copyWith(isGeneratingImage: true, isSearching: false));
+    }
     try {
       final generated = await ref
           .read(mediaApiProvider)
@@ -2908,6 +2955,10 @@ class ChatController extends AsyncNotifier<ChatState> {
         return (ok: false, error: null);
       }
       return (ok: false, error: _describeError(e));
+    } finally {
+      if (_s.isGeneratingImage) {
+        _set(_s.copyWith(isGeneratingImage: false));
+      }
     }
   }
 

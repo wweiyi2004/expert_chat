@@ -1,23 +1,36 @@
 import 'conversation_repository.dart';
 import 'models.dart';
 
-/// Imports the legacy JSON store once when the drift store is empty.
+/// Imports the legacy JSON store once, gated on the JSON side rather than the
+/// drift side.
 ///
 /// M1 conversations were persisted as ordered message lists without tree
 /// metadata. Rebuild that linear tree before saving so the active path retains
-/// the complete history. The JSON source is cleared only after drift succeeds.
+/// the complete history. The JSON source is cleared only after drift succeeds;
+/// a drift store that is already non-empty must not skip the import, or data
+/// left behind by an interrupted migration (drift saved, JSON clear failed)
+/// would be orphaned forever. Existing drift conversations are merged by id so
+/// the re-import neither duplicates them nor drops conversations the user
+/// created since; drift's save is an idempotent upsert.
 Future<void> migrateLegacyJsonToDrift(
   ConversationRepository drift, {
   ConversationRepository? json,
 }) async {
   try {
-    if ((await drift.loadAll()).isNotEmpty) return;
-
     final jsonRepository = json ?? JsonConversationRepository();
     final legacy = await jsonRepository.loadAll();
     if (legacy.isEmpty) return;
 
-    await drift.saveAll(legacy.map(_restoreLinearTree).toList());
+    final existing = await drift.loadAll();
+    final existingIds = {for (final conversation in existing) conversation.id};
+    final merged = [
+      ...existing,
+      for (final conversation in legacy)
+        if (!existingIds.contains(conversation.id))
+          _restoreLinearTree(conversation),
+    ];
+
+    await drift.saveAll(merged);
     await jsonRepository.saveAll(const []);
   } catch (_) {
     // Migration is best-effort; a failure must not block app start.

@@ -56,8 +56,8 @@ void main() {
         await migrateLegacyJsonToDrift(drift, json: json);
 
         expect(events, [
-          'drift.loadAll',
           'json.loadAll',
+          'drift.loadAll',
           'drift.saveAll',
           'json.saveAll',
         ]);
@@ -106,10 +106,49 @@ void main() {
 
       await migrateLegacyJsonToDrift(drift, json: json);
 
-      expect(events, ['drift.loadAll', 'json.loadAll', 'drift.saveAll']);
+      expect(events, ['json.loadAll', 'drift.loadAll', 'drift.saveAll']);
       expect(json.conversations, hasLength(1));
       expect(json.conversations.single, same(legacy));
     });
+
+    test('skips when the JSON store is empty', () async {
+      final events = <String>[];
+      final json = _MemoryRepository(name: 'json', events: events);
+      final drift = _MemoryRepository(name: 'drift', events: events);
+
+      await migrateLegacyJsonToDrift(drift, json: json);
+
+      expect(events, ['json.loadAll']);
+    });
+
+    test(
+      'still migrates when drift already has data but JSON was not cleared',
+      () async {
+        final legacy = Conversation(
+          id: 'legacy',
+          messages: [
+            ChatMessage(
+              id: 'message',
+              role: MessageRole.user,
+              content: 'Import me',
+            ),
+          ],
+        );
+        final json = _MemoryRepository(name: 'json', conversations: [legacy]);
+        final drift = _MemoryRepository(
+          name: 'drift',
+          conversations: [Conversation(id: 'already-imported')],
+        );
+
+        await migrateLegacyJsonToDrift(drift, json: json);
+
+        expect(json.conversations, isEmpty);
+        expect(
+          drift.conversations.map((c) => c.id).toSet(),
+          {'already-imported', 'legacy'},
+        );
+      },
+    );
 
     test(
       'preserves conversations that already contain tree metadata',

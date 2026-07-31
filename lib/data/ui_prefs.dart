@@ -80,6 +80,34 @@ enum ContentWidthPref {
       .firstWhere((e) => e.name == v, orElse: () => ContentWidthPref.regular);
 }
 
+/// Read-aloud speed passed to the configured cloud TTS service. OpenAI-style
+/// endpoints receive a `speed` field; MiMo receives the requested pace in its
+/// speech-style instruction.
+enum TtsSpeedPref {
+  slow,
+  normal,
+  fast;
+
+  String get label => switch (this) {
+    TtsSpeedPref.slow => '慢',
+    TtsSpeedPref.normal => '正常',
+    TtsSpeedPref.fast => '快',
+  };
+
+  double get speechRate => switch (this) {
+    TtsSpeedPref.slow => 0.38,
+    TtsSpeedPref.normal => 0.5,
+    TtsSpeedPref.fast => 0.62,
+  };
+
+  String get wire => name;
+
+  static TtsSpeedPref fromWire(String? v) => TtsSpeedPref.values.firstWhere(
+    (e) => e.name == v,
+    orElse: () => TtsSpeedPref.normal,
+  );
+}
+
 class UiPrefs {
   const UiPrefs({
     this.textScale = TextScalePref.medium,
@@ -87,6 +115,7 @@ class UiPrefs {
     this.messageStyle = MessageStylePref.bubble,
     this.contentWidth = ContentWidthPref.regular,
     this.liveMarkdown = true,
+    this.ttsSpeed = TtsSpeedPref.normal,
   });
 
   final TextScalePref textScale;
@@ -97,18 +126,23 @@ class UiPrefs {
   /// When true, stream assistant replies as live Markdown (not plain text).
   final bool liveMarkdown;
 
+  /// Read-aloud speed, independent from visual text size.
+  final TtsSpeedPref ttsSpeed;
+
   UiPrefs copyWith({
     TextScalePref? textScale,
     DensityPref? density,
     MessageStylePref? messageStyle,
     ContentWidthPref? contentWidth,
     bool? liveMarkdown,
+    TtsSpeedPref? ttsSpeed,
   }) => UiPrefs(
     textScale: textScale ?? this.textScale,
     density: density ?? this.density,
     messageStyle: messageStyle ?? this.messageStyle,
     contentWidth: contentWidth ?? this.contentWidth,
     liveMarkdown: liveMarkdown ?? this.liveMarkdown,
+    ttsSpeed: ttsSpeed ?? this.ttsSpeed,
   );
 
   Map<String, dynamic> toJson() => {
@@ -117,6 +151,7 @@ class UiPrefs {
     'messageStyle': messageStyle.wire,
     'contentWidth': contentWidth.wire,
     'liveMarkdown': liveMarkdown,
+    'ttsSpeed': ttsSpeed.wire,
   };
 
   factory UiPrefs.fromJson(Map<String, dynamic>? json) {
@@ -127,6 +162,7 @@ class UiPrefs {
       messageStyle: MessageStylePref.fromWire(json['messageStyle'] as String?),
       contentWidth: ContentWidthPref.fromWire(json['contentWidth'] as String?),
       liveMarkdown: json['liveMarkdown'] as bool? ?? true,
+      ttsSpeed: TtsSpeedPref.fromWire(json['ttsSpeed'] as String?),
     );
   }
 }

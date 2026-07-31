@@ -71,6 +71,11 @@ class MemoryRepository {
     if (!refresh && _cache != null) return _cache!;
     final markdown = await _store.read();
     if (markdown == null || markdown.trim().isEmpty) {
+      // A read can land while a queued write has momentarily moved the main
+      // file aside. Never let that empty read replace a populated cache, or
+      // the next write would drop every memory. A store with no cache yet
+      // still starts from an empty document.
+      if (_cache != null) return _cache!;
       _cache = const MemoryDocument();
     } else {
       _cache = _codec.decode(markdown);

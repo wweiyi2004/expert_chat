@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -35,6 +36,7 @@ void main() {
         model: 'image-1',
         voice: 'nova',
         imageSize: '1536x1024',
+        speechProtocol: SpeechApiProtocol.mimoChatCompletions,
       );
 
       final restored = MediaApiConfig.fromJson(original.toJson());
@@ -42,6 +44,7 @@ void main() {
       expect(restored.model, original.model);
       expect(restored.voice, original.voice);
       expect(restored.imageSize, original.imageSize);
+      expect(restored.speechProtocol, original.speechProtocol);
     });
   });
 
@@ -416,7 +419,302 @@ void main() {
         'voice': 'nova',
         'response_format': 'mp3',
       });
-      expect(audio, <int>[10, 20, 30]);
+      expect(audio.bytes, <int>[10, 20, 30]);
+      expect(audio.fileExtension, 'mp3');
     });
+
+    test('sends a non-default TTS speed when requested', () async {
+      late RequestOptions captured;
+      final dio = Dio()
+        ..interceptors.add(
+          InterceptorsWrapper(
+            onRequest: (options, handler) {
+              captured = options;
+              handler.resolve(
+                Response<dynamic>(
+                  requestOptions: options,
+                  statusCode: 200,
+                  data: <int>[10, 20, 30],
+                ),
+              );
+            },
+          ),
+        );
+
+      await OpenAiCompatibleMediaProvider(dio: dio).synthesizeSpeech(
+        config: const MediaApiConfig(
+          baseUrl: 'https://example.com/v1',
+          model: 'tts-1',
+        ),
+        apiKey: 'secret',
+        text: '你好',
+        speed: 1.24,
+      );
+
+      expect(jsonDecode(captured.data as String)['speed'], 1.24);
+    });
+
+    test('uses MiMo chat completions for TTS and decodes WAV audio', () async {
+      late RequestOptions captured;
+      final dio = Dio()
+        ..interceptors.add(
+          InterceptorsWrapper(
+            onRequest: (options, handler) {
+              captured = options;
+              handler.resolve(
+                Response<dynamic>(
+                  requestOptions: options,
+                  statusCode: 200,
+                  data: {
+                    'choices': [
+                      {
+                        'message': {
+                          'audio': {
+                            'data': base64Encode(const [82, 73, 70]),
+                          },
+                        },
+                      },
+                    ],
+                  },
+                ),
+              );
+            },
+          ),
+        );
+
+      final audio = await OpenAiCompatibleMediaProvider(dio: dio)
+          .synthesizeSpeech(
+            config: const MediaApiConfig(
+              baseUrl: MediaApiConfig.mimoBaseUrl,
+              model: MediaApiConfig.mimoTtsModel,
+              voice: MediaApiConfig.mimoDefaultVoice,
+              speechProtocol: SpeechApiProtocol.mimoChatCompletions,
+            ),
+            apiKey: 'secret',
+            text: '你好，世界。',
+          );
+
+      expect(
+        captured.uri.toString(),
+        '${MediaApiConfig.mimoBaseUrl}/chat/completions',
+      );
+      final body = jsonDecode(captured.data as String) as Map<String, dynamic>;
+      expect(body['model'], MediaApiConfig.mimoTtsModel);
+      expect((body['messages'] as List)[1], {
+        'role': 'assistant',
+        'content': '你好，世界。',
+      });
+      expect(body['audio'], {
+        'format': 'wav',
+        'voice': MediaApiConfig.mimoDefaultVoice,
+      });
+      expect(audio.bytes, <int>[82, 73, 70]);
+      expect(audio.fileExtension, 'wav');
+      expect(audio.mimeType, 'audio/wav');
+    });
+
+    test('uses MiMo chat completions for ASR and returns transcript', () async {
+      late RequestOptions captured;
+      final dio = Dio()
+        ..interceptors.add(
+          InterceptorsWrapper(
+            onRequest: (options, handler) {
+              captured = options;
+              handler.resolve(
+                Response<dynamic>(
+                  requestOptions: options,
+                  statusCode: 200,
+                  data: {
+                    'choices': [
+                      {
+                        'message': {'content': '  你好，MiMo。  '},
+                      },
+                    ],
+                  },
+                ),
+              );
+            },
+          ),
+        );
+
+      final transcript = await OpenAiCompatibleMediaProvider(dio: dio)
+          .transcribeMimoSpeech(
+            config: const MediaApiConfig(
+              baseUrl: MediaApiConfig.mimoBaseUrl,
+              model: MediaApiConfig.mimoAsrModel,
+            ),
+            apiKey: 'secret',
+            audioBytes: Uint8List.fromList(const [1, 2, 3]),
+            mimeType: 'audio/wav',
+          );
+
+      expect(
+        captured.uri.toString(),
+        '${MediaApiConfig.mimoBaseUrl}/chat/completions',
+      );
+      final body = jsonDecode(captured.data as String) as Map<String, dynamic>;
+      expect(body['model'], MediaApiConfig.mimoAsrModel);
+      expect((body['messages'] as List).single, {
+        'role': 'user',
+        'content': [
+          {
+            'type': 'input_audio',
+            'input_audio': {'data': 'data:audio/wav;base64,AQID'},
+          },
+        ],
+      });
+      expect(body['asr_options'], {'language': 'auto'});
+      expect(transcript, '你好，MiMo。');
+    });
+
+    test(
+      'aborts an oversized generated-image download with a clear error',
+      () async {
+        // The provider aborts the URL download itself once the stream would
+        // exceed the 20 MB limit by cancelling the token with a dedicated
+        // reason; that internal abort must surface as a content error, not
+        // as a user cancellation.
+        final dio = Dio()
+          ..interceptors.add(
+            InterceptorsWrapper(
+              onRequest: (options, handler) {
+                if (options.path.contains('/images/generations')) {
+                  handler.resolve(
+                    Response<dynamic>(
+                      requestOptions: options,
+                      statusCode: 200,
+                      data: {
+                        'data': [
+                          {'url': 'https://cdn.example.com/generated.png'},
+                        ],
+                      },
+                    ),
+                  );
+                  return;
+                }
+                handler.reject(
+                  DioException.requestCancelled(
+                    requestOptions: options,
+                    reason: OpenAiCompatibleMediaProvider
+                        .imageDownloadSizeLimitCancelReason,
+                  ),
+                );
+              },
+            ),
+          );
+
+        await expectLater(
+          OpenAiCompatibleMediaProvider(dio: dio).generateImage(
+            config: const MediaApiConfig(
+              baseUrl: 'https://example.com/v1',
+              model: 'image-1',
+            ),
+            apiKey: 'secret',
+            prompt: 'a lighthouse',
+          ),
+          throwsA(
+            isA<FormatException>().having(
+              (e) => e.message,
+              'message',
+              contains('过大'),
+            ),
+          ),
+        );
+      },
+    );
+
+    test(
+      'keeps user cancellation semantics for the image URL download',
+      () async {
+        final dio = Dio()
+          ..interceptors.add(
+            InterceptorsWrapper(
+              onRequest: (options, handler) {
+                if (options.path.contains('/images/generations')) {
+                  handler.resolve(
+                    Response<dynamic>(
+                      requestOptions: options,
+                      statusCode: 200,
+                      data: {
+                        'data': [
+                          {'url': 'https://cdn.example.com/generated.png'},
+                        ],
+                      },
+                    ),
+                  );
+                  return;
+                }
+                // A user stop cancels the shared token with its own reason.
+                handler.reject(
+                  DioException.requestCancelled(
+                    requestOptions: options,
+                    reason: '朗读已停止',
+                  ),
+                );
+              },
+            ),
+          );
+
+        await expectLater(
+          OpenAiCompatibleMediaProvider(dio: dio).generateImage(
+            config: const MediaApiConfig(
+              baseUrl: 'https://example.com/v1',
+              model: 'image-1',
+            ),
+            apiKey: 'secret',
+            prompt: 'a lighthouse',
+          ),
+          throwsA(isA<DioException>()),
+        );
+      },
+    );
+
+    test(
+      'surfaces the server detail from a bytes-typed TTS error body',
+      () async {
+        // /audio/speech is fetched with ResponseType.bytes, so a non-2xx
+        // error body arrives as raw UTF-8 bytes instead of a decoded map; the
+        // service-level detail must still be parsed out of it.
+        final dio = Dio()
+          ..interceptors.add(
+            InterceptorsWrapper(
+              onRequest: (options, handler) {
+                handler.reject(
+                  DioException(
+                    requestOptions: options,
+                    response: Response<List<int>>(
+                      requestOptions: options,
+                      statusCode: 400,
+                      data: utf8.encode(
+                        jsonEncode({
+                          'error': {'message': 'Invalid API key provided'},
+                        }),
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          );
+
+        await expectLater(
+          OpenAiCompatibleMediaProvider(dio: dio).synthesizeSpeech(
+            config: const MediaApiConfig(
+              baseUrl: 'https://example.com/v1',
+              model: 'tts-1',
+            ),
+            apiKey: 'secret',
+            text: '你好',
+          ),
+          throwsA(
+            isA<Exception>().having(
+              (e) => e.toString(),
+              'message',
+              contains('Invalid API key provided'),
+            ),
+          ),
+        );
+      },
+    );
   });
 }

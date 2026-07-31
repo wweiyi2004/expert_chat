@@ -44,6 +44,8 @@ class SettingsState {
     this.imageGenerationApiKey = '',
     this.ttsApi = const MediaApiConfig(),
     this.ttsApiKey = '',
+    this.asrApi = const MediaApiConfig(),
+    this.asrApiKey = '',
     this.context = const ContextPrefs(),
     this.memoryEnabled = false,
     this.researchModeEnabled = false,
@@ -87,6 +89,8 @@ class SettingsState {
   final String imageGenerationApiKey;
   final MediaApiConfig ttsApi;
   final String ttsApiKey;
+  final MediaApiConfig asrApi;
+  final String asrApiKey;
   final ContextPrefs context;
 
   /// Local Markdown long-term memory. Off by default until the user opts in.
@@ -100,6 +104,7 @@ class SettingsState {
   bool get imageGenerationConfigured =>
       imageGenerationApi.isConfiguredWith(imageGenerationApiKey);
   bool get ttsConfigured => ttsApi.isConfiguredWith(ttsApiKey);
+  bool get asrConfigured => asrApi.isConfiguredWith(asrApiKey);
 
   ProviderProfile? get active {
     if (profiles.isEmpty) return null;
@@ -161,6 +166,8 @@ class SettingsState {
     String? imageGenerationApiKey,
     MediaApiConfig? ttsApi,
     String? ttsApiKey,
+    MediaApiConfig? asrApi,
+    String? asrApiKey,
     ContextPrefs? context,
     bool? memoryEnabled,
     bool? researchModeEnabled,
@@ -187,6 +194,8 @@ class SettingsState {
     imageGenerationApiKey: imageGenerationApiKey ?? this.imageGenerationApiKey,
     ttsApi: ttsApi ?? this.ttsApi,
     ttsApiKey: ttsApiKey ?? this.ttsApiKey,
+    asrApi: asrApi ?? this.asrApi,
+    asrApiKey: asrApiKey ?? this.asrApiKey,
     context: context ?? this.context,
     memoryEnabled: memoryEnabled ?? this.memoryEnabled,
     researchModeEnabled: researchModeEnabled ?? this.researchModeEnabled,
@@ -212,6 +221,8 @@ const _kImageGenerationApi = 'imageGenerationApi';
 const _kImageGenerationApiKeySecure = 'image_generation_api_key';
 const _kTtsApi = 'ttsApi';
 const _kTtsApiKeySecure = 'tts_api_key';
+const _kAsrApi = 'asrApi';
+const _kAsrApiKeySecure = 'asr_api_key';
 const _kContextPrefs = 'contextPrefs';
 const _kMemoryEnabled = 'memoryEnabled';
 const _kResearchModeEnabled = 'researchModeEnabled';
@@ -312,6 +323,7 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     final imageGenerationApiKey =
         await secure.read(key: _kImageGenerationApiKeySecure) ?? '';
     final ttsApiKey = await secure.read(key: _kTtsApiKeySecure) ?? '';
+    final asrApiKey = await secure.read(key: _kAsrApiKeySecure) ?? '';
 
     // Drop a stored model override that no longer exists in the active
     // profile's model list (e.g. the profile was edited since), so requests
@@ -333,7 +345,7 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       activeProfileId: activeId,
       apiKey: apiKey,
       selectedModel: selectedModel,
-      themeMode: ThemeMode.values[prefs.getInt(_kThemeMode) ?? 0],
+      themeMode: _readThemeMode(prefs),
       searchBackend: SearchBackendInfo.fromWire(
         prefs.getString(_kSearchBackend),
       ),
@@ -357,6 +369,8 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       imageGenerationApiKey: imageGenerationApiKey,
       ttsApi: _readMediaApi(prefs, _kTtsApi),
       ttsApiKey: ttsApiKey,
+      asrApi: _readMediaApi(prefs, _kAsrApi),
+      asrApiKey: asrApiKey,
       context: _readContextPrefs(prefs),
       memoryEnabled: prefs.getBool(_kMemoryEnabled) ?? false,
       researchModeEnabled: prefs.getBool(_kResearchModeEnabled) ?? false,
@@ -374,6 +388,16 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     final next = _current.copyWith(researchModeEnabled: enabled);
     state = AsyncData(next);
     await ref.read(sharedPrefsProvider).setBool(_kResearchModeEnabled, enabled);
+  }
+
+  /// A stored theme index from a corrupt/older store may fall outside the
+  /// enum range; fall back to the default instead of crashing the whole build.
+  static ThemeMode _readThemeMode(SharedPreferences prefs) {
+    final stored = prefs.getInt(_kThemeMode);
+    if (stored == null || stored < 0 || stored >= ThemeMode.values.length) {
+      return ThemeMode.system;
+    }
+    return ThemeMode.values[stored];
   }
 
   static UiPrefs _readUiPrefs(SharedPreferences prefs) {
@@ -557,6 +581,9 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       case MediaApiKind.tts:
         state = AsyncData(_current.copyWith(ttsApi: config));
         await prefs.setString(_kTtsApi, encoded);
+      case MediaApiKind.asr:
+        state = AsyncData(_current.copyWith(asrApi: config));
+        await prefs.setString(_kAsrApi, encoded);
     }
   }
 
@@ -572,6 +599,9 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       case MediaApiKind.tts:
         state = AsyncData(_current.copyWith(ttsApiKey: key));
         await secure.write(key: _kTtsApiKeySecure, value: key);
+      case MediaApiKind.asr:
+        state = AsyncData(_current.copyWith(asrApiKey: key));
+        await secure.write(key: _kAsrApiKeySecure, value: key);
     }
   }
 
@@ -661,6 +691,8 @@ class SettingsController extends AsyncNotifier<SettingsState> {
           imageGenerationApiKey: _current.imageGenerationApiKey,
           ttsApi: _current.ttsApi,
           ttsApiKey: _current.ttsApiKey,
+          asrApi: _current.asrApi,
+          asrApiKey: _current.asrApiKey,
           context: _current.context,
           memoryEnabled: _current.memoryEnabled,
           researchModeEnabled: _current.researchModeEnabled,

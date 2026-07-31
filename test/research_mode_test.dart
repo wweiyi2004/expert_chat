@@ -608,6 +608,98 @@ void main() {
     });
   });
 
+  group('ssh profile json tolerance', () {
+    test('one corrupt entry is skipped, healthy entries survive', () {
+      final raw = jsonEncode([
+        {
+          'id': 'host1',
+          'name': 'lab',
+          'host': '127.0.0.1',
+          'username': 'u1',
+        },
+        {
+          'id': 'host2',
+          'name': 123, // corrupt: not a String
+          'host': '10.0.0.2',
+          'username': 'u2',
+        },
+      ]);
+      final list = SshProfile.listFromJson(raw);
+      expect(list.length, 1);
+      expect(list.single.id, 'host1');
+      expect(list.single.host, '127.0.0.1');
+    });
+
+    test('corrupt id/host entries are skipped individually', () {
+      final raw = jsonEncode([
+        {
+          'id': 7, // corrupt: not a String
+          'name': 'bad',
+          'host': '10.0.0.9',
+          'username': 'u',
+        },
+        {
+          'id': 'host3',
+          'name': 'ok',
+          'host': ['nope'], // corrupt: not a String
+          'username': 'u3',
+        },
+        {
+          'id': 'host4',
+          'name': 'fine',
+          'host': '10.0.0.4',
+          'username': 'u4',
+        },
+      ]);
+      final list = SshProfile.listFromJson(raw);
+      expect(list.length, 1);
+      expect(list.single.id, 'host4');
+    });
+
+    test('all-corrupt entries return empty, not an exception', () {
+      final raw = jsonEncode([
+        {'id': 1, 'name': 'x', 'host': 2, 'username': 3},
+        {'id': 'a', 'name': 123, 'host': 'h', 'username': 456},
+      ]);
+      expect(SshProfile.listFromJson(raw), isEmpty);
+    });
+
+    test('round-trip preserves healthy profiles', () {
+      const profiles = [
+        SshProfile(
+          id: 'host1',
+          name: 'lab',
+          host: '127.0.0.1',
+          port: 2222,
+          username: 'u1',
+          trustedHostKeyFingerprint: 'SHA256:abc',
+        ),
+        SshProfile(
+          id: 'host2',
+          name: 'other',
+          host: '10.0.0.2',
+          username: 'u2',
+        ),
+      ];
+      final list = SshProfile.listFromJson(SshProfile.listToJson(profiles));
+      expect(list.length, 2);
+      expect(list[0].id, 'host1');
+      expect(list[0].name, 'lab');
+      expect(list[0].host, '127.0.0.1');
+      expect(list[0].port, 2222);
+      expect(list[0].username, 'u1');
+      expect(list[0].trustedHostKeyFingerprint, 'SHA256:abc');
+      expect(list[1].id, 'host2');
+      expect(list[1].name, 'other');
+    });
+
+    test('non-list payload returns empty', () {
+      expect(SshProfile.listFromJson('{"id":"x"}'), isEmpty);
+      expect(SshProfile.listFromJson('not json'), isEmpty);
+      expect(SshProfile.listFromJson(''), isEmpty);
+    });
+  });
+
   group('shell tab visibility', () {
     test('hides terminal unless research on', () {
       expect(ShellTab.visible(researchModeEnabled: false), [

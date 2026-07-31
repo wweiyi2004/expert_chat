@@ -19,6 +19,22 @@ class GeneratedImage {
   final String? revisedPrompt;
 }
 
+/// Audio returned by a configured cloud TTS provider.
+///
+/// The protocol decides the container: OpenAI-compatible TTS returns MP3
+/// bytes, while MiMo returns Base64-encoded WAV in a chat-completion response.
+class SynthesizedSpeech {
+  const SynthesizedSpeech({
+    required this.bytes,
+    required this.fileExtension,
+    required this.mimeType,
+  });
+
+  final Uint8List bytes;
+  final String fileExtension;
+  final String mimeType;
+}
+
 /// Optional OpenAI-compatible image-generation and text-to-speech endpoints.
 ///
 /// Vision chat itself keeps using [LlmProvider], because it is the same
@@ -39,6 +55,17 @@ class OpenAiCompatibleMediaProvider {
 
   static const int _maxAudioBytes = 25 * 1024 * 1024;
   static const int _maxBase64Chars = 32 * 1024 * 1024;
+  static const int _maxImageDownloadBytes = 20 * 1024 * 1024;
+
+  /// Cancel reason used when a TTS audio stream exceeds [_maxAudioBytes].
+  /// The speech service tells this internal abort apart from a
+  /// user-initiated stop by matching the reason.
+  static const String ttsSizeLimitCancelReason = 'TTS 音频超过 25 MB 限制。';
+
+  /// Cancel reason used when a generated-image URL download exceeds
+  /// [_maxImageDownloadBytes]. The provider maps this internal abort to a
+  /// content error, while a user-initiated cancel keeps its Dio semantics.
+  static const String imageDownloadSizeLimitCancelReason = '图片超过 20 MB 限制。';
 
   /// Text-to-image (`/images/generations`) or image-to-image (`/images/edits`)
   /// when [referenceImageBytes] is provided (OpenAI-compatible multipart).
@@ -74,6 +101,7 @@ class OpenAiCompatibleMediaProvider {
         if (config.imageSize.trim().isNotEmpty) 'size': config.imageSize.trim(),
       },
       cancelToken: cancelToken,
+      action: '生图',
     );
     return _parseGeneratedImageResponse(response, cancelToken: cancelToken);
   }
@@ -191,9 +219,18 @@ class OpenAiCompatibleMediaProvider {
           validateStatus: (s) => s != null && s >= 200 && s < 400,
         ),
         cancelToken: cancelToken,
+        // Abort as soon as the stream passes the limit instead of buffering
+        // a multi-hundred-MB response in memory (mobile OOM risk).
+        onReceiveProgress: (received, total) {
+          if (received > _maxImageDownloadBytes) {
+            cancelToken?.cancel(imageDownloadSizeLimitCancelReason);
+          }
+        },
       );
       final bytes = downloaded.data;
-      if (bytes != null && bytes.isNotEmpty && bytes.length <= 20 * 1024 * 1024) {
+      if (bytes != null &&
+          bytes.isNotEmpty &&
+          bytes.length <= _maxImageDownloadBytes) {
         return GeneratedImage(
           base64: base64Encode(bytes),
           mimeType: _mimeFromUrlOrBytes(uri.toString(), bytes),
@@ -206,7 +243,12 @@ class OpenAiCompatibleMediaProvider {
       rethrow;
     } on DioException catch (e) {
       // Preserve cancellation semantics so the controller can tell a user
-      // cancel apart from a real download failure.
+      // cancel apart from a real download failure. Our own size-limit abort
+      // is a cancel at the Dio level too, so match its reason and report it
+      // as a content error before falling through to the rethrow.
+      if (e.error == imageDownloadSizeLimitCancelReason) {
+        throw const FormatException('图片已生成，但返回数据为空或过大，请重试。');
+      }
       if (CancelToken.isCancel(e)) rethrow;
       throw const FormatException('图片已生成，但下载图片数据失败，请重试。');
     } catch (_) {
@@ -245,13 +287,44 @@ class OpenAiCompatibleMediaProvider {
     return 'image/png';
   }
 
-  Future<Uint8List> synthesizeSpeech({
+  /// Synthesizes speech using the configured wire protocol.
+  ///
+  /// MiMo speech is OpenAI *chat* compatible rather than compatible with the
+  /// `/audio/speech` endpoint, so it must be handled as a separate protocol.
+  Future<SynthesizedSpeech> synthesizeSpeech({
     required MediaApiConfig config,
     required String apiKey,
     required String text,
+    double? speed,
     CancelToken? cancelToken,
   }) async {
     _ensureConfigured(config, apiKey, 'TTS');
+    return switch (config.speechProtocol) {
+      SpeechApiProtocol.openAiAudio => _synthesizeOpenAiSpeech(
+        config: config,
+        apiKey: apiKey,
+        text: text,
+        speed: speed,
+        cancelToken: cancelToken,
+      ),
+      SpeechApiProtocol.mimoChatCompletions => _synthesizeMimoSpeech(
+        config: config,
+        apiKey: apiKey,
+        text: text,
+        speed: speed,
+        cancelToken: cancelToken,
+      ),
+    };
+  }
+
+  Future<SynthesizedSpeech> _synthesizeOpenAiSpeech({
+    required MediaApiConfig config,
+    required String apiKey,
+    required String text,
+    double? speed,
+    CancelToken? cancelToken,
+  }) async {
+    final normalizedSpeed = speed?.clamp(0.25, 4.0).toDouble();
     try {
       final response = await _dio.post<List<int>>(
         _endpoint(config.baseUrl, 'audio/speech'),
@@ -260,6 +333,10 @@ class OpenAiCompatibleMediaProvider {
           'input': text.trim(),
           'voice': config.voice.trim().isEmpty ? 'alloy' : config.voice.trim(),
           'response_format': 'mp3',
+          // `speed` is part of the OpenAI-compatible TTS schema. Omit the
+          // default so older gateways that have not adopted it still work.
+          if (normalizedSpeed != null && normalizedSpeed != 1.0)
+            'speed': normalizedSpeed,
         }),
         options: Options(
           responseType: ResponseType.bytes,
@@ -268,7 +345,7 @@ class OpenAiCompatibleMediaProvider {
         cancelToken: cancelToken,
         onReceiveProgress: (received, total) {
           if (received > _maxAudioBytes) {
-            cancelToken?.cancel('TTS 音频超过 25 MB 限制');
+            cancelToken?.cancel(ttsSizeLimitCancelReason);
           }
         },
       );
@@ -277,11 +354,173 @@ class OpenAiCompatibleMediaProvider {
       if (bytes.length > _maxAudioBytes) {
         throw const FormatException('TTS 音频超过 25 MB 限制。');
       }
-      return Uint8List.fromList(bytes);
+      return SynthesizedSpeech(
+        bytes: Uint8List.fromList(bytes),
+        fileExtension: 'mp3',
+        mimeType: 'audio/mpeg',
+      );
     } on DioException catch (e) {
       if (CancelToken.isCancel(e)) rethrow;
       throw await _humanizeError(e, '语音生成');
     }
+  }
+
+  Future<SynthesizedSpeech> _synthesizeMimoSpeech({
+    required MediaApiConfig config,
+    required String apiKey,
+    required String text,
+    double? speed,
+    CancelToken? cancelToken,
+  }) async {
+    final response = await _postJson(
+      _endpoint(config.baseUrl, 'chat/completions'),
+      apiKey: apiKey,
+      body: {
+        'model': config.model.trim(),
+        'messages': [
+          {'role': 'user', 'content': _mimoTtsInstruction(speed)},
+          {'role': 'assistant', 'content': text.trim()},
+        ],
+        'audio': {
+          'format': 'wav',
+          'voice': config.voice.trim().isEmpty
+              ? MediaApiConfig.mimoDefaultVoice
+              : config.voice.trim(),
+        },
+      },
+      cancelToken: cancelToken,
+      action: '语音合成',
+    );
+    final message = _firstChatMessage(response, '语音合成');
+    final audio = message['audio'];
+    if (audio is! Map) {
+      throw const FormatException('语音合成接口没有返回音频数据。');
+    }
+    final rawData = audio['data'];
+    if (rawData is! String || rawData.trim().isEmpty) {
+      throw const FormatException('语音合成接口没有返回音频数据。');
+    }
+    return SynthesizedSpeech(
+      bytes: _decodeBase64Audio(rawData, '语音合成'),
+      fileExtension: 'wav',
+      mimeType: 'audio/wav',
+    );
+  }
+
+  /// Sends a recorded WAV (or another supported audio MIME type) to MiMo ASR
+  /// and returns the transcript contained in `choices[0].message.content`.
+  Future<String> transcribeMimoSpeech({
+    required MediaApiConfig config,
+    required String apiKey,
+    required Uint8List audioBytes,
+    required String mimeType,
+    String language = 'auto',
+    CancelToken? cancelToken,
+  }) async {
+    _ensureConfigured(config, apiKey, '语音识别');
+    if (audioBytes.isEmpty) {
+      throw const FormatException('录音为空，请重新录制。');
+    }
+    if (audioBytes.length > _maxAudioBytes) {
+      throw const FormatException('录音超过 25 MB 限制。');
+    }
+    final normalizedMime = _audioMimeType(mimeType);
+    final normalizedLanguage = language.trim().isEmpty
+        ? 'auto'
+        : language.trim();
+    final response = await _postJson(
+      _endpoint(config.baseUrl, 'chat/completions'),
+      apiKey: apiKey,
+      body: {
+        'model': config.model.trim(),
+        'messages': [
+          {
+            'role': 'user',
+            'content': [
+              {
+                'type': 'input_audio',
+                'input_audio': {
+                  'data':
+                      'data:$normalizedMime;base64,${base64Encode(audioBytes)}',
+                },
+              },
+            ],
+          },
+        ],
+        'asr_options': {'language': normalizedLanguage},
+      },
+      cancelToken: cancelToken,
+      action: '语音识别',
+    );
+    final content = _firstChatMessage(response, '语音识别')['content'];
+    if (content is! String || content.trim().isEmpty) {
+      throw const FormatException('语音识别接口没有返回文字结果。');
+    }
+    return content.trim();
+  }
+
+  String _mimoTtsInstruction(double? speed) {
+    final normalized = speed?.clamp(0.25, 4.0).toDouble() ?? 1;
+    final pace = normalized < 0.9
+        ? '语速稍慢'
+        : normalized > 1.1
+        ? '语速稍快'
+        : '语速自然';
+    return '请用自然、清晰、适合连续阅读的普通话朗读下面内容，$pace。';
+  }
+
+  Map<String, dynamic> _firstChatMessage(
+    Map<String, dynamic> response,
+    String action,
+  ) {
+    final choices = response['choices'];
+    if (choices is! List || choices.isEmpty || choices.first is! Map) {
+      throw FormatException('$action接口没有返回有效结果。');
+    }
+    final message = (choices.first as Map)['message'];
+    if (message is! Map) {
+      throw FormatException('$action接口没有返回有效结果。');
+    }
+    return Map<String, dynamic>.from(message);
+  }
+
+  Uint8List _decodeBase64Audio(String raw, String action) {
+    var payload = raw.trim();
+    if (payload.startsWith('data:')) {
+      final comma = payload.indexOf(',');
+      if (comma < 0) {
+        throw FormatException('$action接口返回了无效的音频数据。');
+      }
+      payload = payload.substring(comma + 1);
+    }
+    if (payload.length > _maxBase64Chars) {
+      throw FormatException('$action音频超过 25 MB 限制。');
+    }
+    final normalized = _normalizeBase64(payload);
+    if (normalized == null) {
+      throw FormatException('$action接口返回了无效的 Base64 音频。');
+    }
+    final pad = (4 - normalized.length % 4) % 4;
+    final padded = pad == 0
+        ? normalized
+        : normalized.padRight(normalized.length + pad, '=');
+    try {
+      final bytes = Uint8List.fromList(base64Decode(padded));
+      if (bytes.isEmpty || bytes.length > _maxAudioBytes) {
+        throw FormatException('$action音频为空或超过 25 MB 限制。');
+      }
+      return bytes;
+    } on FormatException {
+      rethrow;
+    } catch (_) {
+      throw FormatException('$action接口返回了无效的 Base64 音频。');
+    }
+  }
+
+  String _audioMimeType(String raw) {
+    final mime = raw.trim().toLowerCase();
+    if (RegExp(r'^audio/[a-z0-9.+-]+$').hasMatch(mime)) return mime;
+    return 'audio/wav';
   }
 
   Future<Map<String, dynamic>> _postJson(
@@ -289,6 +528,7 @@ class OpenAiCompatibleMediaProvider {
     required String apiKey,
     required Map<String, dynamic> body,
     CancelToken? cancelToken,
+    String action = '请求',
   }) async {
     try {
       final response = await _dio.post<dynamic>(
@@ -306,7 +546,7 @@ class OpenAiCompatibleMediaProvider {
       throw const FormatException('接口返回了无法识别的数据格式。');
     } on DioException catch (e) {
       if (CancelToken.isCancel(e)) rethrow;
-      throw await _humanizeError(e, '生图');
+      throw await _humanizeError(e, action);
     }
   }
 
@@ -461,6 +701,9 @@ class OpenAiCompatibleMediaProvider {
   String? _errorMessage(dynamic raw) {
     try {
       if (raw is String) raw = jsonDecode(raw);
+      // /audio/speech is fetched with ResponseType.bytes, so a non-2xx error
+      // body arrives as raw UTF-8 bytes instead of a decoded map.
+      if (raw is List<int>) raw = jsonDecode(utf8.decode(raw));
       if (raw is! Map) return null;
       final error = raw['error'];
       final value = error is Map

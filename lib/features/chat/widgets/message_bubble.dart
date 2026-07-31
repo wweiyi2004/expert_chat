@@ -569,8 +569,10 @@ class _MessageBubbleState extends State<MessageBubble> {
                     if (widget.onSpeak != null)
                       IconButton(
                         iconSize: 18,
-                        tooltip: widget.isSpeaking ? '停止朗读' : '朗读',
-                        color: widget.isSpeaking
+                        tooltip: widget.isSpeaking || widget.isSpeechLoading
+                            ? '停止朗读'
+                            : '朗读',
+                        color: widget.isSpeaking || widget.isSpeechLoading
                             ? scheme.primary
                             : scheme.onSurfaceVariant,
                         icon: widget.isSpeechLoading
@@ -585,9 +587,9 @@ class _MessageBubbleState extends State<MessageBubble> {
                                     ? Icons.stop_circle_outlined
                                     : Icons.volume_up_outlined,
                               ),
-                        onPressed: widget.isSpeechLoading
-                            ? null
-                            : widget.onSpeak,
+                        // Loading can be a cloud request. Keep this tappable
+                        // so the user can cancel before audio starts.
+                        onPressed: widget.onSpeak,
                       ),
                     if (widget.onRegenerate != null)
                       IconButton(

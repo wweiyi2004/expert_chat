@@ -23,7 +23,9 @@ import '../../domain/media/image_codec_util.dart';
 import '../../domain/memory/memory_candidate_service.dart';
 import '../../domain/memory/memory_entry.dart';
 import '../../domain/memory/memory_safety.dart';
+import '../../domain/speech/mimo_speech_input_service.dart';
 import '../../domain/speech/speech_input_service.dart';
+import '../../domain/speech/text_to_speech_service.dart';
 import '../../domain/story/story_length_budget.dart';
 import '../../domain/tools/file_parser.dart';
 import '../../domain/tools/local_file_reader.dart';
@@ -52,7 +54,11 @@ class _ChatPageState extends ConsumerState<ChatPage>
   final _input = TextEditingController();
   final _scroll = ScrollController();
   final List<Attachment> _attachments = [];
-  late final SpeechInputService _speechInput;
+  late final SpeechInputService _systemSpeechInput;
+  MimoSpeechInputService? _mimoSpeechInput;
+  bool _usingMimoAsr = false;
+  late final TextToSpeechService _textToSpeech;
+  late TextToSpeechPlayback _ttsPlayback;
   bool _picking = false;
   bool _imageMode = false;
   bool _speechBusy = false;
@@ -62,6 +68,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
   int _speechSession = 0;
   String _speechBefore = '';
   String _speechAfter = '';
+  int _shownTtsErrorRequest = -1;
   bool _extractingMemoryCandidates = false;
   CancelToken? _memoryCandidateCancelToken;
 
@@ -107,7 +114,10 @@ class _ChatPageState extends ConsumerState<ChatPage>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _speechInput = ref.read(speechInputServiceProvider);
+    _systemSpeechInput = ref.read(speechInputServiceProvider);
+    _textToSpeech = ref.read(textToSpeechServiceProvider);
+    _ttsPlayback = _textToSpeech.playback.value;
+    _textToSpeech.playback.addListener(_handleTextToSpeechPlayback);
     _scroll.addListener(_onScroll);
   }
 
@@ -214,8 +224,13 @@ class _ChatPageState extends ConsumerState<ChatPage>
     _memoryCandidateCancelToken?.cancel('ChatPage disposed');
     WidgetsBinding.instance.removeObserver(this);
     _speechSession++;
-    _speechInput.detach();
-    unawaited(_speechInput.cancel());
+    _systemSpeechInput.detach();
+    unawaited(_systemSpeechInput.cancel());
+    _mimoSpeechInput?.detach();
+    final mimoSpeechInput = _mimoSpeechInput;
+    if (mimoSpeechInput != null) unawaited(mimoSpeechInput.cancel());
+    _textToSpeech.playback.removeListener(_handleTextToSpeechPlayback);
+    unawaited(_textToSpeech.stop());
     _scroll.removeListener(_onScroll);
     _input.dispose();
     _scroll.dispose();
@@ -234,6 +249,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
     }
     if (state != AppLifecycleState.resumed) {
       unawaited(_cancelSpeech());
+      unawaited(_textToSpeech.stop());
     }
   }
 
@@ -273,20 +289,78 @@ class _ChatPageState extends ConsumerState<ChatPage>
   GlobalKey _keyForMessage(String id) =>
       _messageKeys.putIfAbsent(id, GlobalKey.new);
 
-  Future<void> _toggleSpeech() async {
-    if (_speechBusy) return;
-    if (_speechListening) {
-      await _cancelSpeech();
+  Future<void> _toggleTextToSpeech(
+    ChatMessage message,
+    SettingsState? settings,
+  ) async {
+    if (_ttsPlayback.isFor(message.id) && _ttsPlayback.isActive) {
+      await _textToSpeech.stop();
       return;
     }
 
+    // Never let speaker output feed back into the microphone recognizer.
+    if (_speechListening || _speechBusy) await _cancelSpeech();
+    if (!mounted) return;
+
+    final ui = settings?.ui ?? const UiPrefs();
+    await _textToSpeech.speak(
+      TextToSpeechRequest(
+        messageId: message.id,
+        text: message.content,
+        rate: ui.ttsSpeed.speechRate,
+        apiConfig: settings?.ttsApi,
+        apiKey: settings?.ttsApiKey ?? '',
+      ),
+    );
+  }
+
+  void _handleTextToSpeechPlayback() {
+    if (!mounted) return;
+    final next = _textToSpeech.playback.value;
+    final error = next.errorMessage;
+    final showError = error != null && _shownTtsErrorRequest != next.requestId;
+    if (showError) _shownTtsErrorRequest = next.requestId;
+
+    setState(() => _ttsPlayback = next);
+    if (!showError) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _showSpeechNotice(error);
+    });
+  }
+
+  Future<void> _toggleSpeech() async {
+    if (_speechBusy) {
+      // A second tap during MiMo upload is an explicit cancellation request.
+      if (_usingMimoAsr) await _cancelSpeech();
+      return;
+    }
+    if (_speechListening) {
+      if (_usingMimoAsr) {
+        await _finishMimoSpeech();
+      } else {
+        await _cancelSpeech();
+      }
+      return;
+    }
+
+    await _textToSpeech.stop();
+    if (!mounted) return;
+
+    final settings = ref.read(settingsControllerProvider).value;
+    final useMimoAsr = settings?.asrConfigured ?? false;
     final session = ++_speechSession;
     _speechFailureReported = false;
+    _usingMimoAsr = useMimoAsr;
     setState(() => _speechBusy = true);
-    final availability = await _speechInput.initialize(
-      onStatus: (status) => _handleSpeechStatus(session, status),
-      onError: (failure) => _handleSpeechError(session, failure),
-    );
+    final availability = useMimoAsr
+        ? await _mimoService.initialize(
+            onStatus: (status) => _handleSpeechStatus(session, status),
+            onError: (failure) => _handleSpeechError(session, failure),
+          )
+        : await _systemSpeechInput.initialize(
+            onStatus: (status) => _handleSpeechStatus(session, status),
+            onError: (failure) => _handleSpeechError(session, failure),
+          );
     if (!mounted || session != _speechSession) return;
 
     if (availability != SpeechInputAvailability.ready) {
@@ -294,6 +368,8 @@ class _ChatPageState extends ConsumerState<ChatPage>
       _showSpeechNotice(
         availability == SpeechInputAvailability.permissionDenied
             ? '未获得麦克风或语音识别权限，请在系统设置中允许后重试。'
+            : useMimoAsr
+            ? '当前设备无法录制音频，请检查麦克风是否可用。'
             : '当前设备没有可用的系统语音识别服务。',
       );
       return;
@@ -311,17 +387,68 @@ class _ChatPageState extends ConsumerState<ChatPage>
     _speechAfter = text.substring(end);
     _speechReceivedText = false;
 
-    final started = await _speechInput.start(
-      onResult: (result) => _handleSpeechResult(session, result),
-    );
-    if (!mounted || session != _speechSession) return;
+    final started = useMimoAsr
+        ? await _mimoService.start(
+            config: settings!.asrApi,
+            apiKey: settings.asrApiKey,
+            onResult: (result) => _handleSpeechResult(session, result),
+          )
+        : await _systemSpeechInput.start(
+            onResult: (result) => _handleSpeechResult(session, result),
+          );
+    if (!mounted || session != _speechSession) {
+      if (started) unawaited(_cancelSpeechInput(useMimoAsr));
+      return;
+    }
     setState(() {
       _speechBusy = false;
       _speechListening = started;
     });
-    if (!started && !_speechFailureReported) {
-      _showSpeechNotice('未能启动系统语音识别，请稍后再试。');
+    if (!started) {
+      // Ensure no orphan microphone session if status never flipped active.
+      unawaited(_cancelSpeechInput(useMimoAsr));
+      if (!_speechFailureReported) {
+        _showSpeechNotice(
+          useMimoAsr
+              ? '未能启动录音，请检查麦克风权限后重试。'
+              : defaultTargetPlatform == TargetPlatform.windows
+              ? '未能启动语音识别。请检查麦克风权限，并在系统设置中安装中文语音包。'
+              : '未能启动系统语音识别，请稍后再试。',
+        );
+      }
     }
+  }
+
+  MimoSpeechInputService get _mimoService {
+    final existing = _mimoSpeechInput;
+    if (existing != null) return existing;
+    final created = ref.read(mimoSpeechInputServiceProvider);
+    _mimoSpeechInput = created;
+    return created;
+  }
+
+  Future<void> _finishMimoSpeech() async {
+    if (!_speechListening || !_usingMimoAsr) return;
+    final settings = ref.read(settingsControllerProvider).value;
+    if (settings == null || !settings.asrConfigured) {
+      await _cancelSpeech();
+      _showSpeechNotice('MiMo 云端语音识别配置已变更，请重新开始录音。');
+      return;
+    }
+    final session = _speechSession;
+    setState(() {
+      _speechListening = false;
+      _speechBusy = true;
+    });
+    await _mimoService.finish(
+      config: settings.asrApi,
+      apiKey: settings.asrApiKey,
+    );
+    if (!mounted || session != _speechSession) return;
+    // The service normally sends a final result or a stopped status. This
+    // fallback prevents a broken recorder implementation from leaving the
+    // composer in a perpetual loading state.
+    if (_speechBusy) setState(() => _speechBusy = false);
   }
 
   void _handleSpeechResult(int session, SpeechInputResult result) {
@@ -329,21 +456,52 @@ class _ChatPageState extends ConsumerState<ChatPage>
     final spoken = result.text.trim();
     if (spoken.isNotEmpty) {
       _speechReceivedText = true;
-      final merged = mergeSpeechIntoDraft(
-        before: _speechBefore,
-        transcript: spoken,
-        after: _speechAfter,
-      );
-      _input.value = TextEditingValue(
-        text: merged,
-        selection: TextSelection.collapsed(
-          offset: mergeSpeechIntoDraft(
-            before: _speechBefore,
+      if (_usingMimoAsr) {
+        // The composer stays editable while the MiMo upload is in flight, so
+        // the snapshot taken at recording start may be stale. Insert at the
+        // live cursor position instead of rebuilding from the old snapshot,
+        // which would discard anything typed during the upload.
+        final current = _input.value;
+        final text = current.text;
+        final selection = current.selection;
+        final valid = selection.isValid &&
+            selection.start >= 0 &&
+            selection.end <= text.length;
+        final start = valid ? selection.start : text.length;
+        final end = valid ? selection.end : start;
+        final before = text.substring(0, start);
+        final after = text.substring(end);
+        _input.value = TextEditingValue(
+          text: mergeSpeechIntoDraft(
+            before: before,
             transcript: spoken,
-            after: '',
-          ).length,
-        ),
-      );
+            after: after,
+          ),
+          selection: TextSelection.collapsed(
+            offset: mergeSpeechIntoDraft(
+              before: before,
+              transcript: spoken,
+              after: '',
+            ).length,
+          ),
+        );
+      } else {
+        final merged = mergeSpeechIntoDraft(
+          before: _speechBefore,
+          transcript: spoken,
+          after: _speechAfter,
+        );
+        _input.value = TextEditingValue(
+          text: merged,
+          selection: TextSelection.collapsed(
+            offset: mergeSpeechIntoDraft(
+              before: _speechBefore,
+              transcript: spoken,
+              after: '',
+            ).length,
+          ),
+        );
+      }
     }
     if (result.isFinal && (_speechListening || _speechBusy)) {
       setState(() {
@@ -367,20 +525,25 @@ class _ChatPageState extends ConsumerState<ChatPage>
     if (!mounted || session != _speechSession) return;
     _speechFailureReported = true;
     final code = failure.code.toLowerCase();
+    final wasActive = _speechListening || _speechBusy;
     final quietTimeout =
         _speechReceivedText &&
         (code.contains('no_match') || code.contains('speech_timeout'));
-    if (_speechListening || _speechBusy) {
+    if (wasActive) {
       setState(() {
         _speechListening = false;
         _speechBusy = false;
       });
     }
+    // Some platforms keep the recognizer alive after a non-permanent error.
+    // Always terminate it here so a hidden microphone cannot outlive the UI.
+    if (wasActive) unawaited(_cancelSpeechInput(_usingMimoAsr));
     if (!quietTimeout) _showSpeechNotice(failure.userMessage);
   }
 
   Future<void> _cancelSpeech() async {
     final wasActive = _speechListening || _speechBusy;
+    final useMimoAsr = _usingMimoAsr;
     ++_speechSession;
     if (mounted && wasActive) {
       setState(() {
@@ -388,7 +551,15 @@ class _ChatPageState extends ConsumerState<ChatPage>
         _speechBusy = false;
       });
     }
-    if (wasActive) await _speechInput.cancel();
+    if (wasActive) await _cancelSpeechInput(useMimoAsr);
+  }
+
+  Future<void> _cancelSpeechInput(bool useMimoAsr) async {
+    if (useMimoAsr) {
+      await _mimoSpeechInput?.cancel();
+    } else {
+      await _systemSpeechInput.cancel();
+    }
   }
 
   void _showSpeechNotice(String message) {
@@ -1540,6 +1711,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
                             final isLastAssistant =
                                 isLast && m.role == MessageRole.assistant;
                             final (bIdx, bCount) = convo!.branchInfo(m.id);
+                            final ttsForMessage = _ttsPlayback.isFor(m.id);
                             return KeyedSubtree(
                               key: _keyForMessage(m.id),
                               child: MessageBubble(
@@ -1569,6 +1741,20 @@ class _ChatPageState extends ConsumerState<ChatPage>
                                     ? (text) =>
                                           controller.editMessage(m.id, text)
                                     : null,
+                                onSpeak:
+                                    (m.role == MessageRole.assistant &&
+                                        m.content.trim().isNotEmpty &&
+                                        !_selecting)
+                                    ? () => _toggleTextToSpeech(m, settings)
+                                    : null,
+                                isSpeechLoading:
+                                    ttsForMessage &&
+                                    _ttsPlayback.phase ==
+                                        TextToSpeechPhase.loading,
+                                isSpeaking:
+                                    ttsForMessage &&
+                                    _ttsPlayback.phase ==
+                                        TextToSpeechPhase.speaking,
                                 onRemember:
                                     settings?.memoryEnabled == true &&
                                         !_selecting &&
@@ -1626,6 +1812,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
             searchMode: state.searchMode,
             imageGenMode: state.imageGenMode,
             isSearching: state.isSearching,
+            isGeneratingImage: state.isGeneratingImage,
             attachments: _attachments,
             picking: _picking,
             storyLike: convo != null && (convo.isStory || convo.isEnsemble),
@@ -1637,6 +1824,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
                 _imageMode && (settings?.imageGenerationConfigured ?? false),
             speechBusy: _speechBusy,
             speechListening: _speechListening,
+            speechUsesCloudAsr: _usingMimoAsr,
             onToggleDeepThink: controller.toggleDeepThink,
             onToggleSearch: controller.toggleSearch,
             onToggleImageGenMode: controller.toggleImageGenMode,
@@ -1716,6 +1904,7 @@ class _Composer extends StatefulWidget {
     required this.searchMode,
     required this.imageGenMode,
     required this.isSearching,
+    required this.isGeneratingImage,
     required this.attachments,
     required this.picking,
     required this.storyLike,
@@ -1725,6 +1914,7 @@ class _Composer extends StatefulWidget {
     required this.imageMode,
     required this.speechBusy,
     required this.speechListening,
+    required this.speechUsesCloudAsr,
     required this.onToggleDeepThink,
     required this.onToggleSearch,
     required this.onToggleImageGenMode,
@@ -1743,6 +1933,7 @@ class _Composer extends StatefulWidget {
   final SearchMode searchMode;
   final ImageGenMode imageGenMode;
   final bool isSearching;
+  final bool isGeneratingImage;
   final List<Attachment> attachments;
   final bool picking;
   final bool storyLike;
@@ -1752,6 +1943,7 @@ class _Composer extends StatefulWidget {
   final bool imageMode;
   final bool speechBusy;
   final bool speechListening;
+  final bool speechUsesCloudAsr;
   final VoidCallback onToggleDeepThink;
   final VoidCallback onToggleSearch;
   final VoidCallback onToggleImageGenMode;
@@ -1881,43 +2073,10 @@ class _ComposerState extends State<_Composer> {
                             onSelected: widget.onToggleImageMode,
                           ),
                         ],
-                        if (widget.isSearching) ...[
-                          const SizedBox(width: 6),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 9,
-                              vertical: 6,
-                            ),
-                            decoration: BoxDecoration(
-                              color: scheme.primaryContainer.withValues(
-                                alpha: 0.55,
-                              ),
-                              borderRadius: BorderRadius.circular(999),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                SizedBox(
-                                  width: 12,
-                                  height: 12,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    color: scheme.primary,
-                                  ),
-                                ),
-                                const SizedBox(width: 6),
-                                Text(
-                                  '正在联网搜索',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: scheme.onPrimaryContainer,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
+                        if (widget.isSearching)
+                          const _ComposerStatusChip(label: '正在联网搜索'),
+                        if (widget.isGeneratingImage)
+                          const _ComposerStatusChip(label: '正在生成图片'),
                       ],
                     ),
                   ),
@@ -2082,7 +2241,10 @@ class _ComposerState extends State<_Composer> {
                             const SizedBox(width: 4),
                             IconButton.filledTonal(
                               key: const ValueKey('composer-microphone-button'),
-                              onPressed: widget.isStreaming || widget.speechBusy
+                              onPressed:
+                                  widget.isStreaming ||
+                                      (widget.speechBusy &&
+                                          !widget.speechUsesCloudAsr)
                                   ? null
                                   : () {
                                       _closePlus();
@@ -2101,9 +2263,13 @@ class _ComposerState extends State<_Composer> {
                                           : Icons.mic_none_rounded,
                                     ),
                               tooltip: widget.speechBusy
-                                  ? '正在准备语音输入'
+                                  ? widget.speechUsesCloudAsr
+                                        ? '正在上传语音；点按取消'
+                                        : '正在准备语音输入'
                                   : widget.speechListening
-                                  ? '停止语音输入'
+                                  ? widget.speechUsesCloudAsr
+                                        ? '结束录音并识别'
+                                        : '停止语音输入'
                                   : '语音输入',
                               style: IconButton.styleFrom(
                                 fixedSize: const Size.square(40),
@@ -2475,6 +2641,49 @@ class _ContextUsageChip extends StatelessWidget {
       return '${(value / 1000).toStringAsFixed(value % 1000 == 0 ? 0 : 1)}K';
     }
     return '$value';
+  }
+}
+
+class _ComposerStatusChip extends StatelessWidget {
+  const _ComposerStatusChip({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(left: 6),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+        decoration: BoxDecoration(
+          color: scheme.primaryContainer.withValues(alpha: 0.55),
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              width: 12,
+              height: 12,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: scheme.primary,
+              ),
+            ),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                color: scheme.onPrimaryContainer,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 

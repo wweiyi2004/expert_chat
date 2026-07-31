@@ -77,9 +77,21 @@ dependencies:
   wakelock_plus: ^1.3.3
   # Short-phrase dictation through the device's system speech recognizer.
   speech_to_text: ^7.4.0
+  # Captures a WAV file for the configured cloud ASR service (including MiMo).
+  record: ^7.1.1
+  # Plays OpenAI-compatible /audio/speech responses. Windows needs its
+  # platform implementation as a direct dependency.
+  just_audio: ^0.10.6
+  just_audio_windows: ^0.2.3
   # M7 research mode (native SSH; web uses stubs)
   dartssh2: ^2.22.3
   xterm: ^4.0.0
+
+# Stock speech_to_text_windows 1.0.1 never calls SAPI SetInterest, so listen
+# appears to start but never yields transcripts. Use our patched copy.
+dependency_overrides:
+  speech_to_text_windows:
+    path: third_party/speech_to_text_windows
 
 dev_dependencies:
   flutter_test:

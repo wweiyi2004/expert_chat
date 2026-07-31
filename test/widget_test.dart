@@ -142,6 +142,16 @@ class FailingSaveRepo extends InMemoryRepo {
   }
 }
 
+/// Repo that fails every save, for the generation pipeline's final-write
+/// fallback: the first write already has a try/catch, the closing writes must
+/// surface the same 本地保存失败 banner instead of escaping the stream.
+class FailingSaveEveryTimeRepo extends InMemoryRepo {
+  @override
+  Future<void> saveConversation(Conversation c) async {
+    throw Exception('simulated storage failure');
+  }
+}
+
 /// Media provider that returns a canned image without any network I/O.
 class FakeMediaProvider extends OpenAiCompatibleMediaProvider {
   FakeMediaProvider({this.failuresRemaining = 0});
@@ -1523,6 +1533,98 @@ void main() {
       expect(state.error, contains('simulated stream failure'));
       expect(state.errorVisibleFor(failedId), isTrue);
       expect(state.retryOperation?.conversationId, failedId);
+    },
+  );
+
+  test(
+    'a failed pre-search does not leave its error banner after the model answers',
+    () async {
+      final llm = FakeLlmProvider(
+        [const ChatChunk(contentDelta: 'still answers')],
+      );
+      final c = _container(
+        llm,
+        InMemoryRepo(),
+        toolEngineFactory: ({required backend, required apiKey}) =>
+            ToolEngine(_ThrowingSearch()),
+      );
+      addTearDown(c.dispose);
+
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
+
+      ctrl.toggleSearch(); // auto
+      ctrl.toggleSearch(); // always: forced pre-search runs before the answer
+      await ctrl.sendMessage('what is the weather?');
+
+      final state = c.read(chatControllerProvider).value!;
+      expect(state.error, isNull);
+      expect(state.retryOperation, isNull);
+      expect(state.current!.activePath.last.content, 'still answers');
+    },
+  );
+
+  test(
+    'a failed web_search tool call does not leave its error banner after '
+    'the model answers',
+    () async {
+      final llm = FakeLlmProvider(
+        const [],
+        scriptedChunks: const [
+          [
+            ChatChunk(
+              toolCalls: [
+                ToolCall(
+                  index: 0,
+                  id: 'call_1',
+                  name: 'web_search',
+                  argumentsJson: '{"query":"weather"}',
+                ),
+              ],
+              finishReason: 'tool_calls',
+            ),
+          ],
+          [ChatChunk(contentDelta: 'final answer')],
+        ],
+      );
+      final c = _container(
+        llm,
+        InMemoryRepo(),
+        toolEngineFactory: ({required backend, required apiKey}) =>
+            ToolEngine(_ThrowingSearch()),
+      );
+      addTearDown(c.dispose);
+
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
+
+      ctrl.toggleSearch(); // auto: the model decides whether to search
+      await ctrl.sendMessage('what is the weather?');
+
+      final state = c.read(chatControllerProvider).value!;
+      expect(state.error, isNull);
+      expect(state.retryOperation, isNull);
+      expect(state.current!.activePath.last.content, 'final answer');
+    },
+  );
+
+  test(
+    'a failed final persist surfaces 本地保存失败 instead of escaping the stream',
+    () async {
+      final repo = FailingSaveEveryTimeRepo();
+      final c = _container(
+        FakeLlmProvider([const ChatChunk(contentDelta: 'done')]),
+        repo,
+      );
+      addTearDown(c.dispose);
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
+
+      await ctrl.sendMessage('save me');
+
+      final state = c.read(chatControllerProvider).value!;
+      expect(state.error, contains('本地保存失败'));
+      expect(state.errorConvoId, state.currentId);
     },
   );
 

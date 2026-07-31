@@ -374,6 +374,17 @@ class ChatController extends AsyncNotifier<ChatState> {
     }
   }
 
+  /// Persist a completed turn like the pipeline's first write: a storage
+  /// failure surfaces as a 本地保存失败 banner scoped to [convoId] instead of
+  /// escaping the UI await chain as an unhandled async exception.
+  Future<void> _persistSafely(String convoId) async {
+    try {
+      await _persistById(convoId);
+    } catch (e) {
+      if (ref.mounted) _setScopedError('本地保存失败：$e', convoId: convoId);
+    }
+  }
+
   void _checkpointSoon(String conversationId) {
     if (!_checkpointWritesInFlight.add(conversationId)) return;
     unawaited(_runCheckpoint(conversationId));
@@ -2081,7 +2092,7 @@ class ChatController extends AsyncNotifier<ChatState> {
 
     // The user may have pressed stop during the (awaited) search; honor it.
     if (!_s.isStreaming) {
-      await _persistById(working.id);
+      await _persistSafely(working.id);
       // stop() already ends the notify session when the user pressed stop;
       // still clear wakelock if streaming dropped for another reason.
       unawaited(
@@ -2301,7 +2312,7 @@ class ChatController extends AsyncNotifier<ChatState> {
     }
 
     if (!_s.isStreaming) {
-      await _persistById(working.id);
+      await _persistSafely(working.id);
       return;
     }
 
@@ -2320,7 +2331,7 @@ class ChatController extends AsyncNotifier<ChatState> {
           retryOperation: failureOperation,
         ),
       );
-      await _persistById(working.id);
+      await _persistSafely(working.id);
       unawaited(
         GenerationNotify.onGenerationEnd(
           success: false,
@@ -2380,7 +2391,7 @@ class ChatController extends AsyncNotifier<ChatState> {
             : latest.plotCursor;
         final updated = latest.copyWith(plotCursor: next);
         _set(_s.copyWith(conversations: _replace(updated)));
-        await _persistById(working.id);
+        await _persistSafely(working.id);
       }
     }
   }
@@ -2545,7 +2556,7 @@ class ChatController extends AsyncNotifier<ChatState> {
 
         if (streamError != null) throw streamError!;
         if (!_s.isStreaming) {
-          await _persistById(convoId);
+          await _persistSafely(convoId);
           return false;
         }
 
@@ -2561,14 +2572,17 @@ class ChatController extends AsyncNotifier<ChatState> {
             allowTools &&
             (toolCalls.isNotEmpty || finishReason == 'tool_calls');
         if (!needsTools) {
-          _set(
-            _s.copyWith(
-              streamingConvoId: null,
-              isSearching: false,
-              isGeneratingImage: false,
-            ),
+          // A failed search / image gen earlier in this turn must not leave its
+          // error banner behind once the model answered. Only this
+          // conversation's scoped error is cleared; another conversation's
+          // parked error stays (see selectConversation).
+          final next = _s.copyWith(
+            streamingConvoId: null,
+            isSearching: false,
+            isGeneratingImage: false,
           );
-          await _persistById(convoId);
+          _set(_s.errorConvoId == convoId ? next.copyWith(error: null) : next);
+          await _persistSafely(convoId);
           succeeded = true;
           return true;
         }
@@ -2605,7 +2619,7 @@ class ChatController extends AsyncNotifier<ChatState> {
           imageCharacter: imageCharacter,
         );
         if (!_s.isStreaming) {
-          await _persistById(convoId);
+          await _persistSafely(convoId);
           return false;
         }
         requestMessages.addAll(toolMessages);
@@ -2640,7 +2654,7 @@ class ChatController extends AsyncNotifier<ChatState> {
           retryOperation: _isCancel(e) ? null : failureOperation,
         ),
       );
-      await _persistById(convoId);
+      await _persistSafely(convoId);
       return false;
     } finally {
       uiFlushTimer?.cancel();

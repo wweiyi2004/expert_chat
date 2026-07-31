@@ -173,6 +173,90 @@ void main() {
     expect(MemorySafety.normalize('项目数据优先保存在本机。'), '项目数据优先保存在本机。');
   });
 
+  group('sensitiveReason 凭证拦截', () {
+    test('拦截 Google/Gemini AIzaSy 密钥', () {
+      expect(
+        MemorySafety.sensitiveReason('AIzaSy1234567890abcdefghijklmnopqrstuvwxyz'),
+        isNotNull,
+      );
+    });
+
+    test('拦截 HuggingFace hf_ token', () {
+      expect(
+        MemorySafety.sensitiveReason('hf_abcdefghijklmnopqrstuvwxyz'),
+        isNotNull,
+      );
+    });
+
+    test('拦截 Groq gsk_ key', () {
+      expect(
+        MemorySafety.sensitiveReason('gsk_abcdefghijklmnopqrstuvwxyz'),
+        isNotNull,
+      );
+    });
+
+    test('拦截 xAI xai- key', () {
+      expect(
+        MemorySafety.sensitiveReason(
+          'xai-abcdefghijklmnopqrstuvwxyz1234567890',
+        ),
+        isNotNull,
+      );
+    });
+
+    test('拦截 JWT eyJ 三段式', () {
+      expect(
+        MemorySafety.sensitiveReason(
+          'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0'
+          '.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c',
+        ),
+        isNotNull,
+      );
+    });
+
+    test('拦截裸 token = 标签', () {
+      expect(MemorySafety.sensitiveReason('token = xxx'), isNotNull);
+      expect(MemorySafety.sensitiveReason('auth_token = xxx'), isNotNull);
+      expect(MemorySafety.sensitiveReason('access token = 123456'), isNotNull);
+    });
+
+    test('拦截中文标签 密码/密钥/口令', () {
+      expect(MemorySafety.sensitiveReason('密码 = 123456'), isNotNull);
+      expect(MemorySafety.sensitiveReason('密钥 = abcdef'), isNotNull);
+      expect(MemorySafety.sensitiveReason('口令 = xxx'), isNotNull);
+      expect(MemorySafety.sensitiveReason('秘钥 = abc123'), isNotNull);
+    });
+
+    test('不误拦普通英文句子与中文说明文字', () {
+      expect(MemorySafety.sensitiveReason('Bearer authentication'), isNull);
+      expect(MemorySafety.sensitiveReason('secret = 必填字段'), isNull);
+      expect(MemorySafety.sensitiveReason('secret = 必填字段说明'), isNull);
+      expect(MemorySafety.sensitiveReason('token = 必填字段'), isNull);
+      expect(MemorySafety.sensitiveReason('密码 = 必填字段'), isNull);
+      expect(MemorySafety.sensitiveReason('项目数据优先保存在本机。'), isNull);
+    });
+
+    test('回归:已有格式仍然拦截', () {
+      expect(MemorySafety.sensitiveReason('sk-1234567890abcdef'), isNotNull);
+      expect(
+        MemorySafety.sensitiveReason('api_key = sk-1234567890abcdef'),
+        isNotNull,
+      );
+      expect(
+        MemorySafety.sensitiveReason('password = never-send-this-secret'),
+        isNotNull,
+      );
+      expect(
+        MemorySafety.sensitiveReason('-----BEGIN OPENSSH PRIVATE KEY----- abc'),
+        isNotNull,
+      );
+      expect(
+        MemorySafety.sensitiveReason('http://user:pass@example.com/x'),
+        isNotNull,
+      );
+    });
+  });
+
   test(
     'repository deduplicates and recalls pinned plus relevant memories',
     () async {

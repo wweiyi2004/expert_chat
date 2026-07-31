@@ -1,6 +1,7 @@
+import 'package:dio/dio.dart';
 import 'package:expert_chat/domain/update/app_update.dart';
 import 'package:expert_chat/domain/update/update_prefs.dart';
-import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -135,6 +136,96 @@ void main() {
       );
       expect(hit?.name, contains('windows'));
       expect(hit?.url, endsWith('.zip'));
+    });
+
+    test('picks the Linux AppImage, never the Android APK', () {
+      final linuxAssets = [
+        {
+          'name': 'expert-chat-android-universal-v1.5.0.apk',
+          'browser_download_url': 'https://example/uni.apk',
+        },
+        {
+          'name': 'expert-chat-linux-x64-v1.5.0.AppImage',
+          'browser_download_url': 'https://example/appimage',
+        },
+      ];
+      final hit = AppUpdateChecker.pickAsset(
+        linuxAssets,
+        platform: TargetPlatform.linux,
+      );
+      expect(hit?.name, contains('AppImage'));
+      expect(hit?.url, 'https://example/appimage');
+    });
+
+    test('Linux without a Linux asset resolves nothing (no APK fallback)', () {
+      final apkOnly = [
+        {
+          'name': 'expert-chat-android-universal-v1.5.0.apk',
+          'browser_download_url': 'https://example/uni.apk',
+        },
+      ];
+      final hit = AppUpdateChecker.pickAsset(
+        apkOnly,
+        platform: TargetPlatform.linux,
+      );
+      expect(hit, isNull);
+    });
+
+    test('iOS resolves no asset (App Store updates)', () {
+      final hit = AppUpdateChecker.pickAsset(
+        assets,
+        platform: TargetPlatform.iOS,
+      );
+      expect(hit, isNull);
+    });
+  });
+
+  group('update check request', () {
+    test('sets a connectTimeout so weak networks fail fast', () async {
+      TestWidgetsFlutterBinding.ensureInitialized();
+      const channel = MethodChannel('dev.fluttercommunity.plus/package_info');
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        if (call.method == 'getAll') {
+          return {
+            'appName': 'expert_chat',
+            'packageName': 'com.example.expert_chat',
+            'version': '1.0.0',
+            'buildNumber': '1',
+            'buildSignature': '',
+          };
+        }
+        return null;
+      });
+      addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+
+      final dio = Dio();
+      Duration? connectTimeout;
+      dio.interceptors.add(
+        InterceptorsWrapper(
+          onRequest: (options, handler) {
+            connectTimeout = options.connectTimeout;
+            handler.resolve(
+              Response<Map<String, dynamic>>(
+                requestOptions: options,
+                statusCode: 404,
+              ),
+            );
+          },
+        ),
+      );
+
+      final result = await AppUpdateChecker(dio: dio).check(
+        preferredAbi: 'arm64-v8a',
+      );
+
+      expect(result.hasUpdate, isFalse);
+      expect(connectTimeout, isNotNull);
+      expect(
+        connectTimeout!.inMilliseconds,
+        inInclusiveRange(10000, 15000),
+      );
     });
   });
 

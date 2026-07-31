@@ -205,10 +205,13 @@ Future<void> showUpdateResultDialog(
 }
 
 /// Download the package in-app with a progress dialog, then install / reveal.
+///
+/// [downloader] is injectable for tests.
 Future<void> downloadAndApplyUpdate(
   BuildContext context,
-  UpdateCheckResult result,
-) async {
+  UpdateCheckResult result, {
+  UpdateDownloader? downloader,
+}) async {
   final url = result.downloadUrl;
   if (url == null || url.isEmpty) {
     await _open(result.releaseUrl);
@@ -268,7 +271,7 @@ Future<void> downloadAndApplyUpdate(
   );
 
   try {
-    final path = await UpdateDownloader().download(
+    final path = await (downloader ?? UpdateDownloader()).download(
       url: url,
       fileName: result.assetName,
       expectedSha256: result.assetSha256,
@@ -314,13 +317,16 @@ Future<void> downloadAndApplyUpdate(
       SnackBar(content: Text('已下载：$path'), behavior: SnackBarBehavior.floating),
     );
   } on DioException catch (e) {
-    if (!context.mounted) return;
-    if (Navigator.of(context, rootNavigator: true).canPop()) {
-      Navigator.of(context, rootNavigator: true).pop();
-    }
+    // The 取消 button already popped the progress dialog before cancelling
+    // the token, so a cancel error must not pop the navigator again — that
+    // would close the route underneath (e.g. the Settings page).
     if (CancelToken.isCancel(e)) {
       messenger?.showSnackBar(const SnackBar(content: Text('已取消下载')));
       return;
+    }
+    if (!context.mounted) return;
+    if (Navigator.of(context, rootNavigator: true).canPop()) {
+      Navigator.of(context, rootNavigator: true).pop();
     }
     messenger?.showSnackBar(
       SnackBar(

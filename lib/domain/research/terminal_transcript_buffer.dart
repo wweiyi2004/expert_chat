@@ -58,10 +58,33 @@ class TerminalTranscriptBuffer {
   }
 
   void _pushLine(String line) {
-    final bytes = utf8.encode(line).length;
-    _lines.add(line);
+    // A remote program can emit a line longer than maxBytes (e.g. a minified
+    // file dumped to the terminal). Truncate it to its newest tail, like the
+    // pending-line logic below, instead of letting _trim evict it wholesale
+    // and leave the AI context empty. maxBytes - 1 leaves room for the
+    // newline accounting so _trim keeps the line.
+    var text = line;
+    var bytes = utf8.encode(text).length;
+    if (bytes > maxBytes - 1) {
+      text = _truncateTail(text, maxBytes - 1);
+      bytes = utf8.encode(text).length;
+    }
+    _lines.add(text);
     _byteCount += bytes + 1;
     _trim();
+  }
+
+  /// Keep the newest [budget] bytes of [line], dropping the head.
+  String _truncateTail(String line, int budget) {
+    final encoded = utf8.encode(line);
+    var toDrop = encoded.length - budget;
+    var cut = 0;
+    while (toDrop > 0 && cut < line.length) {
+      final c = line.codeUnitAt(cut);
+      toDrop -= c < 0x80 ? 1 : (c < 0x800 ? 2 : 3);
+      cut++;
+    }
+    return line.substring(cut);
   }
 
   void _trim() {

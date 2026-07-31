@@ -24,6 +24,59 @@ void main() {
     expect(low.maxHistoryMessages, 4);
   });
 
+  test('estimateMessageTokens counts reasoning content', () {
+    final plain = manager.estimateMessageTokens(
+      const LlmRequestMessage(role: MessageRole.assistant, content: 'answer'),
+    );
+    final thinking = manager.estimateMessageTokens(
+      LlmRequestMessage(
+        role: MessageRole.assistant,
+        content: 'answer',
+        reasoningContent: '深' * 1000,
+      ),
+    );
+
+    // CJK deliberately estimates 1 char per token; a 1000-char chain of
+    // thought must add ~1000 tokens, not zero.
+    expect(thinking - plain, 1000);
+  });
+
+  test('estimateMessageTokens without reasoning is unchanged', () {
+    final noField = manager.estimateMessageTokens(
+      const LlmRequestMessage(role: MessageRole.assistant, content: 'answer'),
+    );
+    final emptyField = manager.estimateMessageTokens(
+      const LlmRequestMessage(
+        role: MessageRole.assistant,
+        content: 'answer',
+        reasoningContent: '',
+      ),
+    );
+
+    expect(emptyField, noField);
+  });
+
+  test('long reasoning content counts toward the context budget', () {
+    // Budget is 1024 tokens: a 2000-token reasoning block cannot fit, so the
+    // assistant message carrying it must be dropped rather than silently kept
+    // with the reasoning uncounted.
+    final result = manager.manage(
+      [
+        const LlmRequestMessage(role: MessageRole.system, content: 'persona'),
+        LlmRequestMessage(
+          role: MessageRole.assistant,
+          content: '',
+          reasoningContent: '深' * 2000,
+        ),
+        const LlmRequestMessage(role: MessageRole.user, content: 'QUESTION'),
+      ],
+      const ContextPrefs(contextWindowTokens: 4096, reservedOutputTokens: 3072),
+    );
+
+    expect(result.messages.any((m) => m.reasoningContent != null), isFalse);
+    expect(result.report.droppedMessages, 1);
+  });
+
   test('disabled management preserves the request verbatim', () {
     const messages = [
       LlmRequestMessage(role: MessageRole.system, content: 'system'),

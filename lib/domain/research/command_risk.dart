@@ -65,7 +65,10 @@ class CommandRiskClassifier {
       );
     }
     if (cmd.contains('\u0000') ||
-        RegExp(r'[\x00-\x08\x0b\x0c\x0e-\x1f]').hasMatch(cmd)) {
+        // \r (0x0d) commits the current line in a canonical PTY, so a single
+        // approval could silently run a whole chain. \n stays allowed on
+        // purpose (legitimate multi-line commands).
+        RegExp(r'[\x00-\x08\x0b\x0c\x0d\x0e-\x1f]').hasMatch(cmd)) {
       return const LocalRiskResult(
         risk: CommandRisk.blocked,
         reasons: ['包含不可见控制字符'],
@@ -110,8 +113,27 @@ class CommandRiskClassifier {
       bump(CommandRisk.high, '递归修改权限/所有者');
     }
     if (RegExp(r'curl[^\n|]*\|\s*(ba)?sh').hasMatch(lower) ||
-        RegExp(r'wget[^\n|]*\|\s*(ba)?sh').hasMatch(lower)) {
+        RegExp(r'wget[^\n|]*\|\s*(ba)?sh').hasMatch(lower) ||
+        RegExp(r'\b(curl|wget)\b[^\n|]*\|\s*(python3?|perl)\b').hasMatch(lower) ||
+        RegExp(
+          r'\b(curl|wget)\b[^\n|]*\|\s*(base64|xxd|openssl)[^\n|]*\|\s*(ba)?sh\b',
+        ).hasMatch(lower)) {
       bump(CommandRisk.high, '管道下载并执行脚本');
+    }
+    // Download to a file, then execute that same file later in the line
+    // (`curl -o x URL; bash x`). A lone `curl -o x URL` stays a plain fetch.
+    final dlToFile = RegExp(
+      r'\b(curl|wget)\b[^\n;|&]*\s(?:--output-document|--output|-o|-O)\s*([^\s;&|]+)',
+    ).firstMatch(lower);
+    if (dlToFile != null) {
+      final saved = dlToFile.group(2)!;
+      if (RegExp(
+        r'[;&|]\s*(?:(?:ba)?sh|python3?|perl)\s+[^\n]*' +
+            RegExp.escape(saved) +
+            r'(?=\s|[;&|]|$)',
+      ).hasMatch(lower)) {
+        bump(CommandRisk.high, '下载文件后执行');
+      }
     }
     if (RegExp(r'\b(iptables|ufw|firewall-cmd)\b').hasMatch(lower)) {
       bump(CommandRisk.high, '修改防火墙');
@@ -133,8 +155,9 @@ class CommandRiskClassifier {
     if (RegExp(r'\b(sbatch|scancel|scontrol)\b').hasMatch(lower)) {
       bump(CommandRisk.medium, '集群作业提交/取消');
     }
-    if (RegExp(r'(^|[;&|])\s*(mv|cp)\s+.*\s+/').hasMatch(lower) &&
-        _writeRedirect.hasMatch(raw)) {
+    // mv/cp onto an absolute path can overwrite system files — flagged on its
+    // own, independent of any redirect in the same command.
+    if (RegExp(r'(^|[;&|])\s*(mv|cp)\s+.*\s+/').hasMatch(lower)) {
       bump(CommandRisk.medium, '可能覆盖文件');
     }
     if (_writeRedirect.hasMatch(raw)) {

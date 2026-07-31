@@ -6,17 +6,93 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('buildSandboxedHtmlPreview policy injection', () {
+    String srcdocOf(String out) => out.substring(out.indexOf('srcdoc="'));
+
     test('lands in the real head, not a commented-out one', () {
       final out = buildSandboxedHtmlPreview(
         '<!-- <head> -->'
         '<html><head><title>t</title></head><body>hi</body></html>',
       );
 
-      final srcdoc = out.substring(out.indexOf('srcdoc="'));
+      final srcdoc = srcdocOf(out);
       final commentEnd = srcdoc.indexOf('--&gt;');
       final policyPos = srcdoc.indexOf('Content-Security-Policy');
       expect(commentEnd, greaterThan(-1));
       expect(policyPos, greaterThan(commentEnd));
+    });
+
+    test('ignores a <head> inside a script string literal', () {
+      final out = buildSandboxedHtmlPreview(
+        '<script>var x = "<head>";</script>'
+        '<html><head><title>t</title></head></html>',
+      );
+
+      final srcdoc = srcdocOf(out);
+      final scriptEnd = srcdoc.lastIndexOf('&lt;/script&gt;');
+      final realHead = srcdoc.lastIndexOf('&lt;head&gt;');
+      final policyPos = srcdoc.indexOf('Content-Security-Policy');
+      expect(scriptEnd, greaterThan(-1));
+      // The meta must not be swallowed into the string literal...
+      expect(policyPos, greaterThan(scriptEnd));
+      // ...and must land inside the real head, not the fake one.
+      expect(policyPos, greaterThan(realHead));
+    });
+
+    test('ignores a <head> inside a tag attribute value', () {
+      final out = buildSandboxedHtmlPreview(
+        '<div data-x="<head>">'
+        '<html><head><title>t</title></head></html>',
+      );
+
+      final srcdoc = srcdocOf(out);
+      final realHead = srcdoc.lastIndexOf('&lt;head&gt;');
+      final policyPos = srcdoc.indexOf('Content-Security-Policy');
+      expect(realHead, greaterThan(-1));
+      expect(policyPos, greaterThan(realHead));
+    });
+
+    test('ignores a <head> inside style element content', () {
+      final out = buildSandboxedHtmlPreview(
+        '<style>/* <head> */</style>'
+        '<html><head><title>t</title></head></html>',
+      );
+
+      final srcdoc = srcdocOf(out);
+      final styleEnd = srcdoc.lastIndexOf('&lt;/style&gt;');
+      final realHead = srcdoc.lastIndexOf('&lt;head&gt;');
+      final policyPos = srcdoc.indexOf('Content-Security-Policy');
+      expect(styleEnd, greaterThan(-1));
+      expect(policyPos, greaterThan(styleEnd));
+      expect(policyPos, greaterThan(realHead));
+    });
+
+    test('bare fragment with a fake <head> still gets a policy head', () {
+      final out = buildSandboxedHtmlPreview(
+        '<script>const t = "<head>";</script><p>hi</p>',
+      );
+
+      final srcdoc = srcdocOf(out);
+      final scriptStart = srcdoc.indexOf('&lt;script&gt;');
+      final policyPos = srcdoc.indexOf('Content-Security-Policy');
+      expect(scriptStart, greaterThan(-1));
+      expect(srcdoc, contains('&lt;p&gt;hi&lt;/p&gt;'));
+      // No real head exists, so the wrapper head must carry the policy,
+      // placed before any executable content.
+      expect(policyPos, lessThan(scriptStart));
+    });
+
+    test('keeps injecting into a normal single head (regression)', () {
+      final out = buildSandboxedHtmlPreview(
+        '<HTML><HEAD><TITLE>t</TITLE></HEAD><BODY>x</BODY></HTML>',
+      );
+
+      final srcdoc = srcdocOf(out).toLowerCase();
+      final headPos = srcdoc.indexOf('&lt;head&gt;');
+      final titlePos = srcdoc.indexOf('&lt;title&gt;');
+      final policyPos = srcdoc.indexOf('content-security-policy');
+      expect(headPos, greaterThan(-1));
+      expect(policyPos, greaterThan(headPos));
+      expect(policyPos, lessThan(titlePos));
     });
   });
 

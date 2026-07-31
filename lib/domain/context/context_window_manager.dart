@@ -58,6 +58,9 @@ class ContextWindowManager {
   int estimateMessageTokens(LlmRequestMessage message) =>
       _messageOverheadTokens +
       estimateTextTokens(message.content) +
+      // Reasoning chains of thought are sent back verbatim on assistant turns;
+      // omitting them systematically under-counts tool-loop requests.
+      estimateTextTokens(message.reasoningContent ?? '') +
       message.imageDataUrls.length * _imageEstimateTokens +
       message.toolCalls.fold<int>(
         0,
@@ -270,6 +273,9 @@ class ContextWindowManager {
     required bool keepEnd,
   }) {
     final fixedTokens =
+        // Reasoning is preserved unclipped by [LlmRequestMessage], so its
+        // estimated cost must come out of the clippable text budget.
+        estimateTextTokens(message.reasoningContent ?? '') +
         message.imageDataUrls.length * _imageEstimateTokens +
         message.toolCalls.fold<int>(
           0,

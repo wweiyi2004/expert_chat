@@ -10,8 +10,10 @@ import 'llm_provider.dart';
 /// DeepSeek, OpenAI, xAI Grok, Kimi, 智谱 etc. all share this wire format
 /// (`Authorization: Bearer` + SSE `data:` chunks).
 class OpenAiCompatibleProvider implements LlmProvider {
-  OpenAiCompatibleProvider({Dio? dio})
-    : _dio =
+  OpenAiCompatibleProvider({
+    Dio? dio,
+    this.responseHeaderTimeout = const Duration(seconds: 30),
+  }) : _dio =
           dio ??
           Dio(
             BaseOptions(
@@ -22,6 +24,13 @@ class OpenAiCompatibleProvider implements LlmProvider {
           );
 
   final Dio _dio;
+
+  /// Timeout for the request to reach its response headers. `connectTimeout`
+  /// only covers reaching the server: a server that accepts but never responds
+  /// (or a half-open proxy) would otherwise hang the UI forever. Only guards
+  /// the header wait — the body is covered separately by [_streamIdleTimeout],
+  /// so long streams are unaffected.
+  final Duration responseHeaderTimeout;
 
   /// A stream can stay open for a long answer, but it must not wait forever
   /// without receiving even a heartbeat. This guards against half-open mobile
@@ -77,23 +86,35 @@ class OpenAiCompatibleProvider implements LlmProvider {
 
     final Response<ResponseBody> response;
     try {
-      response = await _dio.post<ResponseBody>(
-        url,
-        options: Options(
-          responseType: ResponseType.stream,
-          headers: {
-            'Authorization': 'Bearer ${config.apiKey}',
-            'Content-Type': 'application/json',
-            'Accept': 'text/event-stream',
-          },
-        ),
-        data: jsonEncode(body),
-        cancelToken: cancelToken,
-      );
+      // The post future completes once response headers arrive; the body
+      // stream is consumed lazily afterwards. Timing out here only guards the
+      // header wait, never the long-lived body stream.
+      response = await _dio
+          .post<ResponseBody>(
+            url,
+            options: Options(
+              responseType: ResponseType.stream,
+              headers: {
+                'Authorization': 'Bearer ${config.apiKey}',
+                'Content-Type': 'application/json',
+                'Accept': 'text/event-stream',
+              },
+            ),
+            data: jsonEncode(body),
+            cancelToken: cancelToken,
+          )
+          .timeout(responseHeaderTimeout);
     } on DioException catch (e) {
       // Stop pressed during connection setup → end the stream quietly.
       if (CancelToken.isCancel(e)) return;
       throw await _humanizeError(e);
+    } on TimeoutException {
+      // If cancellation races with the timeout, stopping remains quiet.
+      if (cancelToken?.isCancelled ?? false) return;
+      throw Exception(
+        '响应超时：服务端在 ${responseHeaderTimeout.inSeconds} 秒内没有开始返回数据，'
+        '请检查网络或稍后重试。',
+      );
     }
 
     // allowMalformed: a connection dropped mid-multibyte-character leaves a

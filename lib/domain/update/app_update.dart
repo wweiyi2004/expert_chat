@@ -61,6 +61,19 @@ class AppUpdateChecker {
     final info = await PackageInfo.fromPlatform();
     final current = normalizeVersion(info.version);
 
+    // Web deployments are refreshed by the server; GitHub Release client
+    // updates do not apply, so skip the check entirely (a stale tag would
+    // otherwise mislead the startup check into prompting).
+    if (kIsWeb) {
+      return UpdateCheckResult(
+        currentVersion: current,
+        latestVersion: current,
+        hasUpdate: false,
+        releaseUrl: kGithubReleasesPage,
+        releaseNotes: '',
+      );
+    }
+
     final response = await _dio.get<Map<String, dynamic>>(
       kGithubReleasesApi,
       options: Options(
@@ -68,6 +81,7 @@ class AppUpdateChecker {
           'Accept': 'application/vnd.github+json',
           'User-Agent': 'expert_chat-update-check',
         },
+        connectTimeout: const Duration(seconds: 15),
         receiveTimeout: const Duration(seconds: 15),
         validateStatus: (s) => s != null && s < 500,
       ),
@@ -203,10 +217,11 @@ class AppUpdateChecker {
   }) {
     if (assets.isEmpty) return null;
 
-    final plat = platform ??
-        (kIsWeb
-            ? TargetPlatform.android
-            : defaultTargetPlatform);
+    // Web builds are updated server-side; never resolve an asset here (the
+    // generic fallback would hand out the Android APK to non-Android users).
+    if (kIsWeb) return null;
+
+    final plat = platform ?? defaultTargetPlatform;
 
     ({String name, String url, String? sha256})? at(int i) {
       final name = (assets[i]['name'] as String? ?? '').trim();
@@ -279,18 +294,23 @@ class AppUpdateChecker {
         (n) => n.contains('mac') && (n.endsWith('.dmg') || n.endsWith('.zip')),
       );
     }
-
-    for (final a in assets) {
-      final name = (a['name'] as String? ?? '').trim();
-      final u = (a['browser_download_url'] as String? ?? '').trim();
-      if (u.isNotEmpty) {
-        return (
-          name: name.isEmpty ? 'download' : name,
-          url: u,
-          sha256: null,
-        );
-      }
+    if (!kIsWeb && plat == TargetPlatform.linux) {
+      return firstWhere(
+        (n) =>
+            n.contains('linux') &&
+            (n.endsWith('.appimage') ||
+                n.endsWith('.tar.gz') ||
+                n.endsWith('.tar.xz') ||
+                n.endsWith('.tar.zst') ||
+                n.endsWith('.deb') ||
+                n.endsWith('.rpm') ||
+                n.endsWith('.zip')),
+      );
     }
+
+    // iOS has no in-app update channel (App Store) and platforms with no
+    // matching asset must not fall back to a generic file — that would be
+    // the Android APK. Return nothing instead.
     return null;
   }
 }

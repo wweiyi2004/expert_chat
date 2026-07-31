@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:dartssh2/dartssh2.dart';
+import 'package:flutter/foundation.dart';
 
 import '../../data/research/ssh_profile.dart';
 
@@ -68,6 +69,16 @@ ResearchSshClient createResearchSshClient() => ResearchSshClientIo();
 
 typedef ResearchSshClientFactory = ResearchSshClient Function();
 
+/// Test seam mirroring [SSHClient]'s constructor: lets tests drive host-key,
+/// auth and channel timing without a real SSH server.
+typedef DebugSshClientFactory = SSHClient Function(
+  SSHSocket socket, {
+  required String username,
+  required List<SSHKeyPair> identities,
+  SSHPasswordRequestHandler? onPasswordRequest,
+  SSHHostkeyVerifyHandler? onVerifyHostKey,
+});
+
 class ResearchSshClientIo implements ResearchSshClient {
   SSHClient? _client;
   SSHSession? _shell;
@@ -83,6 +94,10 @@ class ResearchSshClientIo implements ResearchSshClient {
   String? _lastFp;
 
   static const _maxEarlyStreamBytes = 256 * 1024;
+
+  /// For tests.
+  @visibleForTesting
+  DebugSshClientFactory? debugSshClientFactory;
 
   @override
   Stream<List<int>> get stdout => _stdoutController.stream;
@@ -143,7 +158,12 @@ class ResearchSshClientIo implements ResearchSshClient {
 
     final trusted = profile.trustedHostKeyFingerprint?.trim();
 
-    final client = SSHClient(
+    // Completes once the user has judged the host key. The trust dialog can
+    // stay open as long as the user needs, so it must not count against the
+    // auth timeout below.
+    final hostKeyChecked = Completer<void>();
+
+    final client = _buildClient(
       socket,
       username: profile.username,
       identities: identities,
@@ -154,15 +174,29 @@ class ResearchSshClientIo implements ResearchSshClient {
         final fp = utf8.decode(fingerprintBytes);
         _lastFp = fp;
         final info = ResearchHostKeyInfo(fingerprintSha256: fp, keyType: type);
+        final bool ok;
         if (trusted == null || trusted.isEmpty) {
-          return onHostKeyTrust(info);
+          ok = await onHostKeyTrust(info);
+        } else if (trusted == fp) {
+          ok = true;
+        } else {
+          ok = await onHostKeyMismatch(info, trusted);
         }
-        if (trusted == fp) return true;
-        return onHostKeyMismatch(info, trusted);
+        if (!hostKeyChecked.isCompleted) hostKeyChecked.complete();
+        return ok;
       },
     );
 
     try {
+      // Wait for the fingerprint decision first: it can take longer than
+      // connectTimeout while the user reads the dialog. If the connection
+      // dies before the key is ever presented, surface that error instead of
+      // waiting for a confirmation that can never come. Only the actual
+      // authentication handshake is bounded by connectTimeout.
+      await Future.any<void>([
+        hostKeyChecked.future,
+        client.authenticated.catchError((Object e) => throw e),
+      ]);
       await client.authenticated.timeout(connectTimeout);
     } on TimeoutException {
       client.close();
@@ -181,9 +215,14 @@ class ResearchSshClientIo implements ResearchSshClient {
 
     late final SSHSession shell;
     try {
-      shell = await client.shell(
-        pty: SSHPtyConfig(type: 'xterm-256color', width: cols, height: rows),
-      );
+      shell = await client
+          .shell(
+            pty: SSHPtyConfig(type: 'xterm-256color', width: cols, height: rows),
+          )
+          .timeout(connectTimeout);
+    } on TimeoutException {
+      client.close();
+      throw ResearchSshException('启动远程 shell 超时');
     } catch (_) {
       client.close();
       throw ResearchSshException('无法启动远程 shell');
@@ -275,6 +314,32 @@ class ResearchSshClientIo implements ResearchSshClient {
 
   @override
   Future<void> disconnect() => _teardown(closeStreams: true);
+
+  SSHClient _buildClient(
+    SSHSocket socket, {
+    required String username,
+    required List<SSHKeyPair> identities,
+    SSHPasswordRequestHandler? onPasswordRequest,
+    required SSHHostkeyVerifyHandler onVerifyHostKey,
+  }) {
+    final factory = debugSshClientFactory;
+    if (factory != null) {
+      return factory(
+        socket,
+        username: username,
+        identities: identities,
+        onPasswordRequest: onPasswordRequest,
+        onVerifyHostKey: onVerifyHostKey,
+      );
+    }
+    return SSHClient(
+      socket,
+      username: username,
+      identities: identities,
+      onPasswordRequest: onPasswordRequest,
+      onVerifyHostKey: onVerifyHostKey,
+    );
+  }
 
   Future<void> _teardown({required bool closeStreams}) async {
     _connected = false;

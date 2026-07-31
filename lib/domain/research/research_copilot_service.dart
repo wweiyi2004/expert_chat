@@ -169,9 +169,13 @@ class ResearchCopilotService {
       );
     }
 
-    final command = (parsed['command'] as String?)?.trim() ?? '';
+    // Same defensive tolerance as strList below: a model may emit a field of
+    // the wrong type, degrade to the default instead of throwing.
+    String? strOrNull(dynamic v) => v is String ? v : null;
+
+    final command = strOrNull(parsed['command'])?.trim() ?? '';
     final modelRisk =
-        CommandRisk.tryParse(parsed['risk'] as String?) ?? CommandRisk.medium;
+        CommandRisk.tryParse(strOrNull(parsed['risk'])) ?? CommandRisk.medium;
     final local = _classifier.classify(command);
     final finalRisk = command.isEmpty
         ? CommandRisk.blocked
@@ -194,7 +198,7 @@ class ResearchCopilotService {
 
     return CommandProposal(
       id: proposalId,
-      diagnosis: (parsed['diagnosis'] as String?)?.trim().isNotEmpty == true
+      diagnosis: strOrNull(parsed['diagnosis'])?.trim().isNotEmpty == true
           ? (parsed['diagnosis'] as String).trim()
           : '（无诊断）',
       command: command,
@@ -202,7 +206,7 @@ class ResearchCopilotService {
       evidence: mergedEvidence,
       impacts: strList(parsed['impacts']),
       nonImpacts: strList(parsed['nonImpacts']),
-      rollback: (parsed['rollback'] as String?)?.trim(),
+      rollback: strOrNull(parsed['rollback'])?.trim(),
       rawModelText: raw,
       parseOk: true,
     );

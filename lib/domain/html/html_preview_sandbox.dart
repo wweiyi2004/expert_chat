@@ -83,20 +83,14 @@ String _injectPreviewPolicy(String html) {
 <meta name="referrer" content="no-referrer"/>
 ''';
   final source = html.trim();
-  final head = _firstMatchOutsideComments(
-    source,
-    RegExp(r'<head(?:\s[^>]*)?>', caseSensitive: false),
-  );
-  if (head != null) {
-    return source.replaceRange(head.end, head.end, policy);
+  final headEnd = _firstTagOutsideMarkup(source, 'head');
+  if (headEnd != null) {
+    return source.replaceRange(headEnd, headEnd, policy);
   }
 
-  final root = _firstMatchOutsideComments(
-    source,
-    RegExp(r'<html(?:\s[^>]*)?>', caseSensitive: false),
-  );
-  if (root != null) {
-    return source.replaceRange(root.end, root.end, '<head>$policy</head>');
+  final rootEnd = _firstTagOutsideMarkup(source, 'html');
+  if (rootEnd != null) {
+    return source.replaceRange(rootEnd, rootEnd, '<head>$policy</head>');
   }
 
   return '''
@@ -113,24 +107,152 @@ $source
 ''';
 }
 
-/// First match of [pattern] that is not inside an HTML comment. Generated
-/// markup routinely contains commented-out tags (`<!-- <head> -->`); a policy
-/// injected there would be inert text instead of an active CSP.
-RegExpMatch? _firstMatchOutsideComments(String source, RegExp pattern) {
-  final comments = <(int, int)>[
-    for (final c in RegExp(r'<!--.*?-->', dotAll: true).allMatches(source))
-      (c.start, c.end),
-  ];
-  // An unterminated `<!--` swallows everything after it.
-  final lastOpen = source.lastIndexOf('<!--');
-  if (lastOpen >= 0 && !comments.any((r) => r.$1 == lastOpen)) {
-    comments.add((lastOpen, source.length));
-  }
-  for (final m in pattern.allMatches(source)) {
-    final inComment = comments.any((r) => m.start >= r.$1 && m.start < r.$2);
-    if (!inComment) return m;
+/// End of the first opening `<name ...>` start tag that sits in genuine
+/// markup context: the position right after its closing `>`, or null if there
+/// is none. A single linear scan tracks the contexts in which `<head>` /
+/// `<html>` text must not be trusted as a real element — HTML comments,
+/// script and style element content (including string literals), and tag
+/// attribute values. A policy meta injected into any of those would be inert
+/// text instead of an active CSP, leaving the document unprotected.
+int? _firstTagOutsideMarkup(String source, String name) {
+  var i = 0;
+  final n = source.length;
+  while (i < n) {
+    if (source.codeUnitAt(i) != 0x3C /* < */ ) {
+      i++;
+      continue;
+    }
+    if (i + 1 >= n) break;
+    final next = source.codeUnitAt(i + 1);
+    if (next == 0x21 /* ! */ ) {
+      if (i + 3 < n &&
+          source.codeUnitAt(i + 2) == 0x2D && // -
+          source.codeUnitAt(i + 3) == 0x2D) {
+        // HTML comment: `-->` ends it; an unterminated one swallows the rest.
+        final close = source.indexOf('-->', i + 4);
+        i = close < 0 ? n : close + 3;
+      } else {
+        // Doctype / bogus comment: opaque until its closing `>`.
+        i = _skipTag(source, i);
+      }
+      continue;
+    }
+    if (next == 0x3F /* ? */ ) {
+      // Processing instruction / bogus comment: opaque until its `>`.
+      i = _skipTag(source, i);
+      continue;
+    }
+    if (next == 0x2F /* / */ ) {
+      // Closing tag: nothing of interest inside.
+      i = _skipTag(source, i);
+      continue;
+    }
+    if (!_isAsciiLetter(next)) {
+      i++; // bare '<' in text, not markup
+      continue;
+    }
+    if (_isStartTagAt(source, i, name)) {
+      return _skipTag(source, i);
+    }
+    final isScript = _isStartTagAt(source, i, 'script');
+    final isStyle = _isStartTagAt(source, i, 'style');
+    if (isScript || isStyle) {
+      // Raw-text element: skip its content until the matching close tag.
+      i = _skipRawTextContent(
+        source,
+        _skipTag(source, i),
+        isScript ? _scriptEndTag : _styleEndTag,
+      );
+      continue;
+    }
+    // Ordinary element: only its attribute values are opaque.
+    i = _skipTag(source, i);
   }
   return null;
+}
+
+/// End of the tag starting at [i]: the position after its closing `>`,
+/// honouring quoted attribute values so a `>` inside quotes does not end the
+/// tag.
+int _skipTag(String source, int i) {
+  final n = source.length;
+  var quote = -1;
+  while (i < n) {
+    final c = source.codeUnitAt(i);
+    if (quote >= 0) {
+      if (c == quote) quote = -1;
+    } else if (c == 0x22 || c == 0x27) {
+      // " '
+      quote = c;
+    } else if (c == 0x3E /* > */ ) {
+      return i + 1;
+    }
+    i++;
+  }
+  return n;
+}
+
+/// End of the raw-text content of a script/style element whose start tag ends
+/// at [contentStart]: the position after the matching close tag, or end of
+/// input when it is missing. A `</scriptx>` does not close the element, which
+/// mirrors browser tokenizer behaviour.
+int _skipRawTextContent(String source, int contentStart, RegExp closeTag) {
+  var from = contentStart;
+  while (true) {
+    final match = _firstMatchFrom(closeTag, source, from);
+    if (match == null) return source.length;
+    final boundary = match.end < source.length
+        ? source.codeUnitAt(match.end)
+        : -1;
+    if (boundary == 0x3E /* > */ ||
+        boundary == 0x09 ||
+        boundary == 0x0A ||
+        boundary == 0x0C ||
+        boundary == 0x0D ||
+        boundary == 0x20 ||
+        boundary < 0) {
+      return _skipTag(source, match.start);
+    }
+    from = match.end;
+  }
+}
+
+/// Whether `<name` (ASCII case-insensitive) starts a real tag at [i]: the
+/// character after the name must be a tag boundary (`>`, `/` or whitespace).
+bool _isStartTagAt(String source, int i, String name) {
+  final n = source.length;
+  if (i + 1 + name.length >= n) return false;
+  for (var k = 0; k < name.length; k++) {
+    if (!_eqAsciiFold(source.codeUnitAt(i + 1 + k), name.codeUnitAt(k))) {
+      return false;
+    }
+  }
+  final boundary = source.codeUnitAt(i + 1 + name.length);
+  return boundary == 0x3E ||
+      boundary == 0x2F ||
+      boundary == 0x09 ||
+      boundary == 0x0A ||
+      boundary == 0x0C ||
+      boundary == 0x0D ||
+      boundary == 0x20;
+}
+
+final _scriptEndTag = RegExp(r'</script', caseSensitive: false);
+final _styleEndTag = RegExp(r'</style', caseSensitive: false);
+
+/// First match of [pattern] in [source] at or after [from], or null. The
+/// match is produced lazily so scanning a long document never materialises a
+/// full match list.
+RegExpMatch? _firstMatchFrom(RegExp pattern, String source, int from) {
+  final iterator = pattern.allMatches(source, from).iterator;
+  return iterator.moveNext() ? iterator.current : null;
+}
+
+bool _eqAsciiFold(int a, int b) => a == b || (a | 0x20) == (b | 0x20);
+
+bool _isAsciiLetter(int c) {
+  final lower = c | 0x20;
+  return lower >= 0x61 && lower <= 0x7A;
 }
 
 String _escapeAttribute(String value) => value

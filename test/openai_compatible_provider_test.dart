@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -83,6 +84,78 @@ data: [DONE]
 
     expect(adapter.body, isNot(contains('reasoning_effort')));
   });
+
+  test('times out when response headers never arrive', () async {
+    final dio = Dio()..httpClientAdapter = _HangingAdapter();
+    final provider = OpenAiCompatibleProvider(
+      dio: dio,
+      responseHeaderTimeout: const Duration(milliseconds: 100),
+    );
+
+    await expectLater(
+      provider
+          .streamChat(
+            config: const LlmConfig(
+              baseUrl: 'https://api.example.com/v1',
+              apiKey: 'test-key',
+              model: 'test-model',
+            ),
+            messages: const [
+              LlmRequestMessage(role: MessageRole.user, content: 'hello'),
+            ],
+          )
+          .toList()
+          .timeout(const Duration(seconds: 5)),
+      throwsA(
+        isA<Exception>().having(
+          (e) => e.toString(),
+          'message',
+          contains('响应超时'),
+        ),
+      ),
+    );
+  });
+
+  test('stop wins over a hanging header wait', () async {
+    final dio = Dio()..httpClientAdapter = _HangingAdapter();
+    final provider = OpenAiCompatibleProvider(
+      dio: dio,
+      responseHeaderTimeout: const Duration(seconds: 30),
+    );
+    final token = CancelToken();
+
+    final done = provider
+        .streamChat(
+          config: const LlmConfig(
+            baseUrl: 'https://api.example.com/v1',
+            apiKey: 'test-key',
+            model: 'test-model',
+          ),
+          messages: const [
+            LlmRequestMessage(role: MessageRole.user, content: 'hello'),
+          ],
+          cancelToken: token,
+        )
+        .toList();
+
+    // Let the request dispatch, then stop before any response header arrives.
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    token.cancel();
+
+    await expectLater(done, completes);
+  });
+}
+
+class _HangingAdapter implements HttpClientAdapter {
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelFuture,
+  ) => Completer<ResponseBody>().future;
+
+  @override
+  void close({bool force = false}) {}
 }
 
 class _RecordingAdapter implements HttpClientAdapter {

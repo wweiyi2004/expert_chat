@@ -1,3 +1,4 @@
+import 'package:drift/drift.dart';
 import 'package:drift/native.dart';
 import 'package:expert_chat/data/db/app_database.dart' hide Conversation;
 import 'package:expert_chat/data/drift_conversation_repository.dart';
@@ -386,6 +387,120 @@ void main() {
     );
     final loaded = (await repo.loadAll()).single;
     expect(loaded.targetTotalChars, 80000);
+  });
+
+  test('search treats user % and _ as literal characters', () async {
+    final db = AppDatabase(NativeDatabase.memory());
+    addTearDown(db.close);
+    final repo = DriftConversationRepository(db);
+    final base = DateTime.utc(2026, 6, 1);
+    await repo.saveConversation(
+      Conversation(
+        id: 'percent',
+        title: '进度',
+        messages: [
+          ChatMessage(
+            id: 'p1',
+            role: MessageRole.assistant,
+            content: '任务完成 100%,继续下一步',
+            createdAt: base,
+          ),
+          ChatMessage(
+            id: 'p2',
+            role: MessageRole.user,
+            content: '剩余 50%',
+            createdAt: base.add(const Duration(seconds: 1)),
+          ),
+        ],
+        updatedAt: base,
+      ),
+    );
+    await repo.saveConversation(
+      Conversation(
+        id: 'underscore',
+        title: '文件',
+        messages: [
+          ChatMessage(
+            id: 'u1',
+            role: MessageRole.user,
+            content: '下载 progress_1.apk 后解压',
+            createdAt: base,
+          ),
+        ],
+        updatedAt: base.add(const Duration(seconds: 2)),
+      ),
+    );
+    await repo.saveConversation(
+      Conversation(
+        id: 'dashlike',
+        title: '其他',
+        messages: [
+          ChatMessage(
+            id: 'd1',
+            role: MessageRole.assistant,
+            content: '下载 progressX1.apk 失败',
+            createdAt: base,
+          ),
+        ],
+        updatedAt: base.add(const Duration(seconds: 3)),
+      ),
+    );
+
+    // 未转义时查询里的 % 是通配符,会命中所有消息;转义后只命中字面 "100%"。
+    final percent = await repo.search('100%');
+    expect(percent.map((c) => c.id).toSet(), {'percent'});
+
+    // _ 同理:只命中字面 "progress_1",不命中 "progressX1"。
+    final underscore = await repo.search('progress_1');
+    expect(underscore.map((c) => c.id).toSet(), {'underscore'});
+  });
+
+  test('does not rewrite a row whose stored kind is unknown to this build', () async {
+    final db = AppDatabase(NativeDatabase.memory());
+    addTearDown(db.close);
+    final repo = DriftConversationRepository(db);
+    final timestamp = DateTime.utc(2026, 8, 1);
+    // 模拟未来版本写入的未知 kind 行:旧版本读到后会降级成 text。
+    await db.into(db.conversations).insert(
+      ConversationsCompanion.insert(
+        id: 'future-convo',
+        title: const Value('future'),
+        updatedAt: timestamp,
+      ),
+    );
+    await db.into(db.messages).insert(
+      MessagesCompanion.insert(
+        id: 'future-msg',
+        convoId: 'future-convo',
+        role: 'assistant',
+        content: '来自未来版本的消息',
+        createdAt: timestamp,
+        kind: const Value('futureKind'),
+      ),
+    );
+    await db.customStatement(
+      'CREATE TABLE message_audit (operation TEXT NOT NULL)',
+    );
+    await db.customStatement(
+      "CREATE TRIGGER messages_after_insert AFTER INSERT ON messages "
+      "BEGIN INSERT INTO message_audit VALUES ('insert'); END",
+    );
+    await db.customStatement(
+      "CREATE TRIGGER messages_after_update AFTER UPDATE ON messages "
+      "BEGIN INSERT INTO message_audit VALUES ('update'); END",
+    );
+
+    final loaded = (await repo.loadAll()).single;
+    expect(loaded.messages.single.kind, MessageKind.text);
+
+    // 整库回存不得重写未知 kind 的行,否则会把 kind 静默降级为 text 并持久化。
+    await repo.saveConversation(loaded);
+    expect(await _auditOperations(db), isEmpty);
+
+    final row = await (db.select(
+      db.messages,
+    )..where((m) => m.id.equals('future-msg'))).getSingle();
+    expect(row.kind, 'futureKind');
   });
 
   test('persists message kind across reload', () async {

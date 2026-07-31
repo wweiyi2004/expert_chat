@@ -58,7 +58,10 @@ abstract class ResearchSshClient {
     Duration connectTimeout = const Duration(seconds: 15),
   });
 
-  void write(List<int> data);
+  /// Writes to the interactive shell. Returns false when the channel is gone
+  /// and nothing was sent, so callers can surface a dropped command instead
+  /// of silently losing it.
+  bool write(List<int> data);
   void resize({required int cols, required int rows});
   Future<String> runExec(String command, {Duration timeout});
   Future<void> disconnect();
@@ -94,7 +97,7 @@ class _UnsupportedResearchSshClient implements ResearchSshClient {
   }
 
   @override
-  void write(List<int> data) {}
+  bool write(List<int> data) => false;
 
   @override
   void resize({required int cols, required int rows}) {}

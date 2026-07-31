@@ -27,6 +27,38 @@ void main() {
       }
     });
 
+    test('rejects well-known non-web service ports', () {
+      const unsafePortUrls = [
+        'http://8.8.8.8:22/',
+        'https://example.com:21/',
+        'http://example.com:23/',
+        'https://example.com:25/',
+        'http://example.com:53/',
+        'http://8.8.8.8:3306/',
+        'http://8.8.8.8:6379/',
+        'https://example.com:3389/',
+      ];
+
+      for (final url in unsafePortUrls) {
+        expect(HttpSearchProvider.isSafeHttpUrl(url), isFalse, reason: url);
+      }
+    });
+
+    test('accepts web and dev ports (conservative blacklist)', () {
+      const safePortUrls = [
+        'http://8.8.8.8:8080/',
+        'https://example.com:8443/',
+        'http://example.com:3000/',
+        'https://example.com:8000/',
+        'http://8.8.8.8/',
+        'https://example.com:80/',
+      ];
+
+      for (final url in safePortUrls) {
+        expect(HttpSearchProvider.isSafeHttpUrl(url), isTrue, reason: url);
+      }
+    });
+
     test('accepts canonical public hosts and addresses', () {
       const safeUrls = [
         'https://example.com/article',

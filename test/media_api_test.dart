@@ -30,6 +30,19 @@ void main() {
       );
     });
 
+    test('voice is optional and never gates the configured badge', () {
+      // The OpenAI-compatible path falls back to 'alloy' and the MiMo path to
+      // mimoDefaultVoice, so an empty voice still counts as configured.
+      const config = MediaApiConfig(
+        baseUrl: 'https://example.com/v1',
+        model: 'tts-1',
+        voice: '',
+      );
+
+      expect(config.isConfiguredWith('secret'), isTrue);
+      expect(config.isConfiguredWith(''), isFalse);
+    });
+
     test('round-trips optional fields', () {
       const original = MediaApiConfig(
         baseUrl: 'https://example.com/v1',
@@ -714,6 +727,55 @@ void main() {
             ),
           ),
         );
+      },
+    );
+
+    test(
+      'truncates a long server error message without splitting an emoji',
+      () async {
+        // 199 ASCII chars followed by an emoji: a 200-code-unit cut lands
+        // inside the surrogate pair and produces a lone surrogate, which
+        // corrupted the error banner. The cut must respect grapheme clusters.
+        final message = '${'a' * 199}😀${'b' * 40}';
+        final dio = Dio()
+          ..interceptors.add(
+            InterceptorsWrapper(
+              onRequest: (options, handler) {
+                handler.reject(
+                  DioException(
+                    requestOptions: options,
+                    response: Response<dynamic>(
+                      requestOptions: options,
+                      statusCode: 400,
+                      data: {
+                        'error': {'message': message},
+                      },
+                    ),
+                  ),
+                );
+              },
+            ),
+          );
+
+        try {
+          await OpenAiCompatibleMediaProvider(dio: dio).generateImage(
+            config: const MediaApiConfig(
+              baseUrl: 'https://example.com/v1',
+              model: 'image-1',
+            ),
+            apiKey: 'secret',
+            prompt: 'a lighthouse',
+          );
+          fail('expected the request to fail');
+        } on Exception catch (error) {
+          final text = error.toString();
+          expect(text, contains('😀'));
+          // No lone surrogate (0xD800-0xDFFF) may survive the truncation.
+          expect(
+            text.runes.every((r) => !(r >= 0xD800 && r <= 0xDFFF)),
+            isTrue,
+          );
+        }
       },
     );
   });

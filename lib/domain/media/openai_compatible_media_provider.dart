@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:characters/characters.dart';
 import 'package:dio/dio.dart';
 
 import '../../data/media_api_config.dart';
@@ -711,7 +712,10 @@ class OpenAiCompatibleMediaProvider {
           : error ?? raw['message'];
       if (value is! String || value.trim().isEmpty) return null;
       final trimmed = value.trim();
-      return trimmed.length > 200 ? '${trimmed.substring(0, 200)}…' : trimmed;
+      // Grapheme-aware cut so we can't split an emoji/surrogate pair.
+      return trimmed.characters.length > 200
+          ? '${trimmed.characters.take(200)}…'
+          : trimmed;
     } catch (_) {
       return null;
     }

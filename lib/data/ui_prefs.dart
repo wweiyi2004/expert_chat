@@ -156,13 +156,18 @@ class UiPrefs {
 
   factory UiPrefs.fromJson(Map<String, dynamic>? json) {
     if (json == null) return const UiPrefs();
+    // Resolve each field with a type check so a single corrupt entry falls
+    // back to its own default instead of throwing and resetting every pref
+    // (which the settings layer would then persist over the healthy ones).
+    String? str(String key) => json[key] is String ? json[key] as String : null;
+    bool? flag(String key) => json[key] is bool ? json[key] as bool : null;
     return UiPrefs(
-      textScale: TextScalePref.fromWire(json['textScale'] as String?),
-      density: DensityPref.fromWire(json['density'] as String?),
-      messageStyle: MessageStylePref.fromWire(json['messageStyle'] as String?),
-      contentWidth: ContentWidthPref.fromWire(json['contentWidth'] as String?),
-      liveMarkdown: json['liveMarkdown'] as bool? ?? true,
-      ttsSpeed: TtsSpeedPref.fromWire(json['ttsSpeed'] as String?),
+      textScale: TextScalePref.fromWire(str('textScale')),
+      density: DensityPref.fromWire(str('density')),
+      messageStyle: MessageStylePref.fromWire(str('messageStyle')),
+      contentWidth: ContentWidthPref.fromWire(str('contentWidth')),
+      liveMarkdown: flag('liveMarkdown') ?? true,
+      ttsSpeed: TtsSpeedPref.fromWire(str('ttsSpeed')),
     );
   }
 }

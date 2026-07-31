@@ -33,6 +33,14 @@ class _DirectorStorySetupPageState
     extends ConsumerState<DirectorStorySetupPage> {
   static const _beatOptions = <int>[4, 6, 8, 10, 12, 16, 20];
 
+  /// Preset options plus any restored value that is no longer in the presets,
+  /// so a non-preset [DropdownButton] value stays selectable instead of
+  /// silently resetting to the default.
+  List<int> get _effectiveBeatOptions {
+    if (_beatOptions.contains(_beatCount)) return _beatOptions;
+    return [..._beatOptions, _beatCount]..sort();
+  }
+
   final _formKey = GlobalKey<FormState>();
   final _premise = TextEditingController();
   final _requirements = TextEditingController();
@@ -57,6 +65,7 @@ class _DirectorStorySetupPageState
   var _suppressDraftSave = false;
   var _discardDraftOnDispose = false;
   var _restoredDraftNotice = false;
+  var _draftSaveErrorNotified = false;
   String? _error;
   String? _notice;
 
@@ -132,14 +141,13 @@ class _DirectorStorySetupPageState
       ..addAll(
         saved.styleIds.where((id) => DirectorProseStyle.byId(id) != null),
       );
-    if (_beatOptions.contains(saved.beatCount)) {
+    // Restore the saved values even when they are not in the current preset
+    // options; otherwise the draft silently falls back to 8 / 80000 and the
+    // generation fingerprint no longer matches the restored input.
+    if (saved.beatCount >= 1) {
       _beatCount = saved.beatCount;
     }
-    if (StoryLengthBudget.presets.any(
-      (preset) => preset.chars == saved.targetTotalChars,
-    )) {
-      _targetTotalChars = saved.targetTotalChars;
-    }
+    _targetTotalChars = saved.targetTotalChars;
     _strictReview = saved.strictReview;
 
     final generated = saved.generatedDraft;
@@ -196,8 +204,20 @@ class _DirectorStorySetupPageState
     if (_suppressDraftSave || _discardDraftOnDispose) return;
     try {
       await _localDraftStore.save(_snapshotLocalDraft());
+      _draftSaveErrorNotified = false;
     } catch (error) {
       debugPrint('Director story draft save failed: $error');
+      // Surface persistence failures once per failure streak instead of
+      // re-toasting on every debounce tick.
+      if (!_draftSaveErrorNotified && mounted) {
+        _draftSaveErrorNotified = true;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('草稿保存失败，请检查存储空间。'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
     }
   }
 
@@ -592,7 +612,7 @@ class _DirectorStorySetupPageState
                     helperMaxLines: 2,
                   ),
                   items: [
-                    for (final count in _beatOptions)
+                    for (final count in _effectiveBeatOptions)
                       DropdownMenuItem(value: count, child: Text('$count 个节拍')),
                   ],
                   onChanged: _busy

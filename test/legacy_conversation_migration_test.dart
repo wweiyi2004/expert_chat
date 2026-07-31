@@ -4,6 +4,8 @@ import 'package:expert_chat/data/db/app_database.dart' hide Conversation;
 import 'package:expert_chat/data/drift_conversation_repository.dart';
 import 'package:expert_chat/data/legacy_conversation_migration.dart';
 import 'package:expert_chat/data/models.dart';
+import 'package:expert_chat/domain/story/story_prompt_assembler.dart'
+    show WorldInfoHit;
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -147,6 +149,55 @@ void main() {
           drift.conversations.map((c) => c.id).toSet(),
           {'already-imported', 'legacy'},
         );
+      },
+    );
+
+    test(
+      'linear-tree rebuild keeps extended message fields',
+      () async {
+        final root = ChatMessage(
+          id: 'root',
+          role: MessageRole.user,
+          content: '生成一张图',
+        );
+        final image = ChatMessage(
+          id: 'image',
+          role: MessageRole.assistant,
+          content: '图片已生成',
+          kind: MessageKind.generatedImage,
+          speakerId: 'cast-1',
+          speakerName: '林默',
+          searchActivities: [
+            SearchActivity(
+              kind: SearchActivityKind.search,
+              query: '线索',
+              status: SearchActivityStatus.done,
+              resultCount: 3,
+            ),
+          ],
+          appliedWorldInfo: const [WorldInfoHit(id: 'wi-1', title: '雨夜港口')],
+        );
+        final json = _MemoryRepository(
+          name: 'json',
+          conversations: [
+            Conversation(id: 'legacy', messages: [root, image]),
+          ],
+        );
+        final drift = _MemoryRepository(name: 'drift');
+
+        await migrateLegacyJsonToDrift(drift, json: json);
+
+        final migrated = drift.conversations.single;
+        expect(migrated.messages[1].parentId, 'root');
+        // 重建线性树时不得丢弃 kind / speaker / 搜索过程 / 世界设定等字段。
+        expect(migrated.messages[1].kind, MessageKind.generatedImage);
+        expect(migrated.messages[1].speakerId, 'cast-1');
+        expect(migrated.messages[1].speakerName, '林默');
+        expect(migrated.messages[1].searchActivities.single.query, '线索');
+        expect(migrated.messages[1].searchActivities.single.status,
+            SearchActivityStatus.done);
+        expect(migrated.messages[1].appliedWorldInfo.single.id, 'wi-1');
+        expect(migrated.messages[1].appliedWorldInfo.single.title, '雨夜港口');
       },
     );
 

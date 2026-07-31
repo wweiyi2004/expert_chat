@@ -4,7 +4,7 @@ import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart'
-    show TargetPlatform, defaultTargetPlatform, kIsWeb;
+    show TargetPlatform, defaultTargetPlatform, kIsWeb, visibleForTesting;
 
 import '../../data/story_models.dart';
 import 'studio_asset_codec.dart';
@@ -110,13 +110,23 @@ class StudioAssetIo {
     if (result == null || result.files.isEmpty) return null;
     final file = result.files.single;
     if (file.bytes != null) {
-      return utf8.decode(file.bytes!);
+      return decodeJsonText(file.bytes!);
     }
     final path = file.path;
     if (path == null || path.isEmpty) {
       throw const FormatException('无法读取所选文件。');
     }
-    return File(path).readAsString();
+    return decodeJsonText(await File(path).readAsBytes());
+  }
+
+  /// JSON 导入文本必须为 UTF-8：解码失败时说明原因，而不是笼统的「导入失败」。
+  @visibleForTesting
+  static String decodeJsonText(List<int> bytes) {
+    try {
+      return utf8.decode(bytes);
+    } on FormatException {
+      throw const FormatException('文件不是 UTF-8 编码，请转换为 UTF-8 后重试。');
+    }
   }
 
   String _safeFileName(String name, {required String fallback}) {

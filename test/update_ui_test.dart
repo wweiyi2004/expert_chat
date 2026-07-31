@@ -1,11 +1,122 @@
+import 'dart:io';
+
 import 'package:dio/dio.dart';
 import 'package:expert_chat/domain/update/app_update.dart';
 import 'package:expert_chat/domain/update/update_downloader.dart';
 import 'package:expert_chat/domain/update/update_ui.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  group('resumePendingApkInstall', () {
+    TestWidgetsFlutterBinding.ensureInitialized();
+    const channel = MethodChannel('expert_chat/install');
+
+    test('does not install when the cached APK file was evicted', () async {
+      final installs = <String>[];
+      TestDefaultBinaryMessengerBinding
+          .instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+        if (call.method == 'canRequestPackageInstalls') return true;
+        if (call.method == 'installApk') {
+          installs.add((call.arguments as Map)['path'] as String);
+        }
+        return null;
+      });
+      addTearDown(
+        () => TestDefaultBinaryMessengerBinding
+            .instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, null),
+      );
+
+      // 缓存被系统清理:文件已不存在。
+      final missing = File(
+        '${Directory.systemTemp.path}${Platform.pathSeparator}evicted-update.apk',
+      );
+      expect(missing.existsSync(), isFalse);
+      pendingInstallApkPathForTest = missing.path;
+
+      await resumePendingApkInstall();
+
+      expect(installs, isEmpty);
+      expect(pendingInstallApkPathForTest, isNull);
+    });
+
+    test('clears the pending path after an install failure', () async {
+      TestDefaultBinaryMessengerBinding
+          .instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+        if (call.method == 'canRequestPackageInstalls') return true;
+        if (call.method == 'installApk') {
+          throw PlatformException(code: 'install_failed');
+        }
+        return null;
+      });
+      addTearDown(
+        () => TestDefaultBinaryMessengerBinding
+            .instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, null),
+      );
+
+      final apk = File(
+        '${Directory.systemTemp.path}${Platform.pathSeparator}broken-update.apk',
+      );
+      await apk.writeAsBytes([1, 2, 3]);
+      addTearDown(() {
+        try {
+          apk.deleteSync();
+        } catch (_) {}
+      });
+      pendingInstallApkPathForTest = apk.path;
+
+      await resumePendingApkInstall();
+
+      // 安装永久失败:清除 pending,下次回前台不再重试。
+      expect(pendingInstallApkPathForTest, isNull);
+    });
+
+    test('keeps the pending path while permission is not granted', () async {
+      var allowed = false;
+      final installs = <String>[];
+      TestDefaultBinaryMessengerBinding
+          .instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+        if (call.method == 'canRequestPackageInstalls') return allowed;
+        if (call.method == 'installApk') {
+          installs.add((call.arguments as Map)['path'] as String);
+        }
+        return null;
+      });
+      addTearDown(
+        () => TestDefaultBinaryMessengerBinding
+            .instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, null),
+      );
+
+      final apk = File(
+        '${Directory.systemTemp.path}${Platform.pathSeparator}pending-update.apk',
+      );
+      await apk.writeAsBytes([1, 2, 3]);
+      addTearDown(() {
+        try {
+          apk.deleteSync();
+        } catch (_) {}
+      });
+      pendingInstallApkPathForTest = apk.path;
+
+      // 用户尚未授权:保留路径,等待授权后继续。
+      await resumePendingApkInstall();
+      expect(pendingInstallApkPathForTest, apk.path);
+      expect(installs, isEmpty);
+
+      // 授权后回前台:自动继续安装。
+      allowed = true;
+      await resumePendingApkInstall();
+      expect(installs, [apk.path]);
+    });
+  });
+
   testWidgets('cancel does not pop the route below the progress dialog', (
     tester,
   ) async {

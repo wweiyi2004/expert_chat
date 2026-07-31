@@ -54,9 +54,7 @@ class MemoryPage extends ConsumerWidget {
           IconButton(
             tooltip: '重新读取记忆文件',
             icon: const Icon(Icons.refresh),
-            onPressed: () => ref
-                .read(memoryControllerProvider.notifier)
-                .reload(refresh: true),
+            onPressed: () => unawaited(_reloadMemory(context, ref)),
           ),
         ],
       ),
@@ -73,9 +71,7 @@ class MemoryPage extends ConsumerWidget {
             onRetry: () => ref.invalidate(memoryControllerProvider),
           ),
           data: (memory) => RefreshIndicator(
-            onRefresh: () => ref
-                .read(memoryControllerProvider.notifier)
-                .reload(refresh: true),
+            onRefresh: () => _reloadMemory(context, ref),
             child: ListView(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 100),
               children: [
@@ -190,86 +186,43 @@ class MemoryPage extends ConsumerWidget {
     }
   }
 
+  /// 重新读取记忆文件。失败时保留当前数据并提示,而不是抛未处理的异步异常。
+  static Future<void> _reloadMemory(BuildContext context, WidgetRef ref) async {
+    try {
+      await ref.read(memoryControllerProvider.notifier).reload(refresh: true);
+    } catch (error) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('重新读取失败：$error'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
   static Future<void> _editMemory(
     BuildContext context,
     WidgetRef ref, {
     MemoryEntry? entry,
   }) async {
-    final controller = TextEditingController(text: entry?.content ?? '');
-    var pinned = entry?.pinned ?? true;
-    String? error;
     final result = await showDialog<({String content, bool pinned})>(
       context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: Text(entry == null ? '添加长期记忆' : '编辑长期记忆'),
-          content: SizedBox(
-            width: 520,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: controller,
-                  autofocus: true,
-                  minLines: 3,
-                  maxLines: 8,
-                  maxLength: MemorySafety.maxContentChars,
-                  decoration: InputDecoration(
-                    labelText: '要记住的事实或偏好',
-                    hintText: '例如：回答默认使用中文，并优先给出可执行方案。',
-                    errorText: error,
-                    alignLabelWithHint: true,
-                  ),
-                ),
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('常驻记忆'),
-                  subtitle: const Text('关闭后，仅在内容与当前问题匹配时召回。'),
-                  value: pinned,
-                  onChanged: (value) => setDialogState(() => pinned = value),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: () {
-                try {
-                  final content = MemorySafety.normalize(controller.text);
-                  Navigator.of(
-                    dialogContext,
-                  ).pop((content: content, pinned: pinned));
-                } on MemoryValidationException catch (e) {
-                  setDialogState(() => error = e.message);
-                }
-              },
-              child: const Text('保存'),
-            ),
-          ],
-        ),
-      ),
+      builder: (_) => _MemoryEditDialog(entry: entry),
     );
-    controller.dispose();
     if (result == null || !context.mounted) return;
 
     await _run(context, () async {
       final memoryController = ref.read(memoryControllerProvider.notifier);
       if (entry == null) {
-        final saved = await memoryController.add(content: result.content);
+        // 直接以目标 pinned 状态一次写入,避免先按常驻保存再改成按需的两次文件写。
+        final saved = await ref
+            .read(memoryRepositoryProvider)
+            .add(content: result.content, pinned: result.pinned);
         if (!saved.created) {
           throw const MemoryValidationException('这条记忆已经存在。');
         }
-        if (!result.pinned) {
-          await memoryController.updateEntry(
-            saved.entry.id,
-            content: saved.entry.content,
-            pinned: false,
-          );
-        }
+        await memoryController.reload();
       } else {
         await memoryController.updateEntry(
           entry.id,
@@ -330,6 +283,82 @@ class MemoryPage extends ConsumerWidget {
         ),
       );
     }
+  }
+}
+
+/// 添加/编辑记忆的对话框。控制器归对话框 State 所有,在路由退场动画
+/// 完全结束后才随 State 一起释放,避免对话框动画中用到已 dispose 的控制器。
+class _MemoryEditDialog extends StatefulWidget {
+  const _MemoryEditDialog({this.entry});
+
+  final MemoryEntry? entry;
+
+  @override
+  State<_MemoryEditDialog> createState() => _MemoryEditDialogState();
+}
+
+class _MemoryEditDialogState extends State<_MemoryEditDialog> {
+  late final TextEditingController _controller =
+      TextEditingController(text: widget.entry?.content ?? '');
+  late bool _pinned = widget.entry?.pinned ?? true;
+  String? _error;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.entry == null ? '添加长期记忆' : '编辑长期记忆'),
+      content: SizedBox(
+        width: 520,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _controller,
+              autofocus: true,
+              minLines: 3,
+              maxLines: 8,
+              maxLength: MemorySafety.maxContentChars,
+              decoration: InputDecoration(
+                labelText: '要记住的事实或偏好',
+                hintText: '例如：回答默认使用中文，并优先给出可执行方案。',
+                errorText: _error,
+                alignLabelWithHint: true,
+              ),
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('常驻记忆'),
+              subtitle: const Text('关闭后，仅在内容与当前问题匹配时召回。'),
+              value: _pinned,
+              onChanged: (value) => setState(() => _pinned = value),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: () {
+            try {
+              final content = MemorySafety.normalize(_controller.text);
+              Navigator.of(context).pop((content: content, pinned: _pinned));
+            } on MemoryValidationException catch (e) {
+              setState(() => _error = e.message);
+            }
+          },
+          child: const Text('保存'),
+        ),
+      ],
+    );
   }
 }
 

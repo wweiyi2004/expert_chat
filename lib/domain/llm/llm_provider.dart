@@ -174,7 +174,12 @@ class LlmRequestMessage {
   /// non-empty, `content` is serialized as an OpenAI multimodal parts array.
   final List<String> imageDataUrls;
 
-  Map<String, dynamic> toOpenAiJson() {
+  /// [includeReasoningContent] gates the `reasoning_content` round-trip:
+  /// DeepSeek reasoners need the previous chain passed back for multi-turn
+  /// thinking, while a strict provider that rejects unknown fields could 400
+  /// on it. The provider decides from model capabilities; direct callers
+  /// (tests) keep the historical default.
+  Map<String, dynamic> toOpenAiJson({bool includeReasoningContent = true}) {
     final json = <String, dynamic>{
       'role': role.wire,
       'content': imageDataUrls.isEmpty
@@ -188,7 +193,9 @@ class LlmRequestMessage {
                 },
             ],
     };
-    if (reasoningContent != null && reasoningContent!.isNotEmpty) {
+    if (includeReasoningContent &&
+        reasoningContent != null &&
+        reasoningContent!.isNotEmpty) {
       json['reasoning_content'] = reasoningContent;
     }
     if (toolCallId != null && toolCallId!.isNotEmpty) {

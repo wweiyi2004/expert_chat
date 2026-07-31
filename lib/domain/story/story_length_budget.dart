@@ -86,10 +86,12 @@ class StoryLengthBudget {
       0,
       beatCount == 0 ? 0 : beatCount,
     );
-    // Include the current unfinished beat in the remaining denominator.
+    // Include the current unfinished beat in the remaining denominator. Once
+    // the cursor has advanced past every beat there is none left — clamping
+    // the 0 to 1 would claim "1 beat left" while the outline is fully done.
     final beatsLeft = beatCount == 0
         ? 1
-        : (beatCount - cursor).clamp(1, beatCount);
+        : (beatCount - cursor).clamp(0, beatCount);
 
     final int beatStartTarget;
     final int beatEndTarget;
@@ -192,9 +194,12 @@ class StoryLengthBudget {
 
     if (beatCount > 0) {
       final beatNo = plotCursor < beatCount ? plotCursor + 1 : beatCount;
+      final leftPhrase = beatsLeft == 0
+          ? '已无剩余节拍；'
+          : '剩余约 $beatsLeft 拍（含当前）；';
       b.writeln(
         '大纲共 $beatCount 拍，当前第 $beatNo 拍；'
-        '剩余约 $beatsLeft 拍（含当前）；'
+        '$leftPhrase'
         '本拍计划约 ${formatChars(currentBeatTarget)}字，'
         '按全书累计进度估算还需约 ${formatChars(currentBeatRemaining)}字。',
       );

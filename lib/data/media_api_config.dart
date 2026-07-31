@@ -7,7 +7,7 @@ class MediaApiConfig {
   const MediaApiConfig({
     this.baseUrl = '',
     this.model = '',
-    this.voice = 'alloy',
+    this.voice = openAiDefaultVoice,
     this.imageSize = '1024x1024',
     this.speechProtocol = SpeechApiProtocol.openAiAudio,
   });
@@ -17,6 +17,10 @@ class MediaApiConfig {
   static const mimoAsrModel = 'mimo-v2.5-asr';
   static const mimoTtsModel = 'mimo-v2.5-tts';
   static const mimoDefaultVoice = 'mimo_default';
+
+  /// The voice OpenAI-compatible gateways fall back to when none is sent.
+  /// Deliberately not enforced anywhere (see [isConfiguredWith]).
+  static const openAiDefaultVoice = 'alloy';
 
   final String baseUrl;
   final String model;
@@ -30,6 +34,14 @@ class MediaApiConfig {
   /// The wire protocol used by a text-to-speech endpoint.
   final SpeechApiProtocol speechProtocol;
 
+  /// Whether this endpoint can serve requests: a valid http(s) URL, a model
+  /// id and a non-empty API key.
+  ///
+  /// `voice` is deliberately NOT part of the check: it is an optional field.
+  /// OpenAI-compatible gateways fall back to [openAiDefaultVoice] and the
+  /// MiMo path to [mimoDefaultVoice], so an endpoint remains usable without
+  /// it — forcing a voice here would only confuse users who configured
+  /// baseUrl/model/key but never touched the voice field.
   bool isConfiguredWith(String apiKey) {
     final uri = Uri.tryParse(baseUrl.trim());
     return uri != null &&
@@ -64,7 +76,7 @@ class MediaApiConfig {
   factory MediaApiConfig.fromJson(Map<String, dynamic> json) => MediaApiConfig(
     baseUrl: json['baseUrl'] as String? ?? '',
     model: json['model'] as String? ?? '',
-    voice: json['voice'] as String? ?? 'alloy',
+    voice: json['voice'] as String? ?? openAiDefaultVoice,
     imageSize: json['imageSize'] as String? ?? '1024x1024',
     speechProtocol: SpeechApiProtocol.fromWire(
       json['speechProtocol'] as String?,

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -299,6 +301,10 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                               config: s.visionApi,
                               apiKey: s.visionApiKey,
                               configured: s.visionConfigured,
+                              latestConfig: () =>
+                                  ref.read(settingsControllerProvider).value
+                                          ?.visionApi ??
+                                  const MediaApiConfig(),
                               onConfigChanged: (value) =>
                                   controller.setMediaApiConfig(
                                     MediaApiKind.vision,
@@ -315,6 +321,10 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                               config: s.imageGenerationApi,
                               apiKey: s.imageGenerationApiKey,
                               configured: s.imageGenerationConfigured,
+                              latestConfig: () =>
+                                  ref.read(settingsControllerProvider).value
+                                          ?.imageGenerationApi ??
+                                  const MediaApiConfig(),
                               showImageSize: true,
                               onConfigChanged: (value) =>
                                   controller.setMediaApiConfig(
@@ -336,6 +346,10 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                               config: s.asrApi,
                               apiKey: s.asrApiKey,
                               configured: s.asrConfigured,
+                              latestConfig: () =>
+                                  ref.read(settingsControllerProvider).value
+                                          ?.asrApi ??
+                                  const MediaApiConfig(),
                               mimoPreset: const MediaApiConfig(
                                 baseUrl: MediaApiConfig.mimoBaseUrl,
                                 model: MediaApiConfig.mimoAsrModel,
@@ -356,6 +370,10 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                               config: s.ttsApi,
                               apiKey: s.ttsApiKey,
                               configured: s.ttsConfigured,
+                              latestConfig: () =>
+                                  ref.read(settingsControllerProvider).value
+                                          ?.ttsApi ??
+                                  const MediaApiConfig(),
                               showVoice: true,
                               showSpeechProtocol: true,
                               mimoPreset: const MediaApiConfig(
@@ -1079,6 +1097,7 @@ class _OptionalApiCard extends StatefulWidget {
     this.showVoice = false,
     this.showSpeechProtocol = false,
     this.mimoPreset,
+    this.latestConfig,
   });
 
   final String title;
@@ -1094,16 +1113,32 @@ class _OptionalApiCard extends StatefulWidget {
   final bool showSpeechProtocol;
   final MediaApiConfig? mimoPreset;
 
+  /// Returns the endpoint's most recent config at call time — the provider
+  /// state, not the last build snapshot — so rapid same-frame field edits
+  /// merge instead of having the second overwrite the first.
+  final MediaApiConfig Function()? latestConfig;
+
   @override
   State<_OptionalApiCard> createState() => _OptionalApiCardState();
 }
 
 class _OptionalApiCardState extends State<_OptionalApiCard> {
+  /// Pause before an API-key edit is persisted. Every keystroke resets it, so
+  /// intermediate (incomplete) keys are never written to secure storage; only
+  /// the value the user settles on lands.
+  static const _apiKeySaveDebounce = Duration(milliseconds: 500);
+
   late final TextEditingController _baseUrl;
   late final TextEditingController _model;
   late final TextEditingController _voice;
   late final TextEditingController _apiKey;
   bool _obscure = true;
+  Timer? _apiKeySaveTimer;
+
+  /// True while [onApiKeyChanged] owes the controller a debounced save.
+  /// Guards [didUpdateWidget] from reverting in-flight typing to the last
+  /// persisted value.
+  bool _apiKeyDirty = false;
 
   @override
   void initState() {
@@ -1120,7 +1155,7 @@ class _OptionalApiCardState extends State<_OptionalApiCard> {
     _sync(_baseUrl, widget.config.baseUrl);
     _sync(_model, widget.config.model);
     _sync(_voice, widget.config.voice);
-    _sync(_apiKey, widget.apiKey);
+    if (!_apiKeyDirty) _sync(_apiKey, widget.apiKey);
   }
 
   void _sync(TextEditingController controller, String value) {
@@ -1131,8 +1166,20 @@ class _OptionalApiCardState extends State<_OptionalApiCard> {
     );
   }
 
+  void _onApiKeyChanged(String value) {
+    _apiKeyDirty = true;
+    _apiKeySaveTimer?.cancel();
+    _apiKeySaveTimer = Timer(_apiKeySaveDebounce, () {
+      _apiKeyDirty = false;
+      widget.onApiKeyChanged(value);
+    });
+  }
+
   @override
   void dispose() {
+    // Drop a pending save instead of writing an incomplete key when the
+    // user leaves mid-typing; the last fully settled value stays on disk.
+    _apiKeySaveTimer?.cancel();
     _baseUrl.dispose();
     _model.dispose();
     _voice.dispose();
@@ -1147,12 +1194,33 @@ class _OptionalApiCardState extends State<_OptionalApiCard> {
     String? voice,
     SpeechApiProtocol? speechProtocol,
   }) {
+    // Merge against the latest provider state rather than the last build
+    // snapshot: two field edits landing in the same frame would otherwise
+    // have the second overwrite the first.
+    final current = (widget.latestConfig ?? () => widget.config)();
+    var nextVoice = voice ?? current.voice;
+    if (speechProtocol != null) {
+      // Link the voice to the wire protocol, but only when it still holds
+      // the *other* protocol's default: a MiMo-default voice must never
+      // leak into OpenAI /audio/speech requests, and an empty voice gets
+      // the MiMo default when switching to MiMo. A voice the user picked
+      // (anything else) is kept untouched.
+      if (speechProtocol == SpeechApiProtocol.openAiAudio &&
+          current.voice.trim() == MediaApiConfig.mimoDefaultVoice) {
+        // Empty = "use the endpoint default" (the gateway falls back to
+        // `alloy`), which the helper text below explains.
+        nextVoice = '';
+      } else if (speechProtocol == SpeechApiProtocol.mimoChatCompletions &&
+          current.voice.trim().isEmpty) {
+        nextVoice = MediaApiConfig.mimoDefaultVoice;
+      }
+    }
     widget.onConfigChanged(
-      widget.config.copyWith(
+      current.copyWith(
         baseUrl: baseUrl,
         model: model,
         imageSize: imageSize,
-        voice: voice,
+        voice: nextVoice,
         speechProtocol: speechProtocol,
       ),
     );
@@ -1248,9 +1316,15 @@ class _OptionalApiCardState extends State<_OptionalApiCard> {
               controller: _voice,
               autocorrect: false,
               enableSuggestions: false,
-              decoration: const InputDecoration(
+              decoration: InputDecoration(
                 labelText: '音色 / Voice',
                 hintText: '例如 alloy、nova；以服务商支持的值为准',
+                // voice is optional: the OpenAI-compatible path falls back to
+                // `alloy` and the MiMo path to `mimo_default`, so an empty
+                // field just means "use the endpoint's default".
+                helperText: widget.config.voice.trim().isEmpty
+                    ? '将使用默认音色'
+                    : null,
               ),
               onChanged: (value) => _patch(voice: value),
             ),
@@ -1314,7 +1388,7 @@ class _OptionalApiCardState extends State<_OptionalApiCard> {
                 onPressed: () => setState(() => _obscure = !_obscure),
               ),
             ),
-            onChanged: widget.onApiKeyChanged,
+            onChanged: _onApiKeyChanged,
           ),
         ],
       ),

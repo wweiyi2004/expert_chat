@@ -16,12 +16,18 @@ class ConversationExport {
   ///
   /// Cast/character names come from LLM output; collapse whitespace and
   /// escape Markdown markers so label lines (`_…_`, `## …`) stay intact.
+  /// Brackets/parens are escaped too — an unescaped `[x](https://evil.com)`
+  /// in a name would render as a clickable link inside the heading.
   static String _inlineLabel(String value) => value
       .replaceAll(RegExp(r'\s+'), ' ')
       .replaceAll('\\', r'\\')
       .replaceAll('_', r'\_')
       .replaceAll('*', r'\*')
       .replaceAll('`', r'\`')
+      .replaceAll('[', r'\[')
+      .replaceAll(']', r'\]')
+      .replaceAll('(', r'\(')
+      .replaceAll(')', r'\)')
       .trim();
 
   /// Export a subset of messages (multi-select share) as Markdown.
@@ -34,7 +40,9 @@ class ConversationExport {
     bool directorMode = false,
   }) {
     final b = StringBuffer()
-      ..writeln('# $title')
+      // The title can be a conversation title typed by the user — escape it
+      // like any other label so it can't inject Markdown links/headings.
+      ..writeln('# ${_inlineLabel(title)}')
       ..writeln()
       ..writeln('_导出时间：${DateTime.now().toIso8601String()}_')
       ..writeln()
@@ -100,7 +108,7 @@ class ConversationExport {
   /// [characterName] labels assistant turns in story exports.
   static String toMarkdown(Conversation convo, {String? characterName}) {
     final b = StringBuffer()
-      ..writeln('# ${convo.title}')
+      ..writeln('# ${_inlineLabel(convo.title)}')
       ..writeln()
       ..writeln('_导出时间：${DateTime.now().toIso8601String()}_');
     if (convo.isStory) {

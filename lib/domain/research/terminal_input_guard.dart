@@ -1,8 +1,10 @@
 /// Filters dangerous terminal input before it reaches the remote PTY.
 ///
 /// ASCII ETX (0x03) is Ctrl+C — interrupts the foreground process. FS (0x1C) is
-/// Ctrl+\ — SIGQUIT, which kills it just as dead. When observing a long training
-/// job inside tmux, either one arriving by accident is catastrophic.
+/// Ctrl+\ — SIGQUIT, which kills it just as dead. SUB (0x1A) is Ctrl+Z —
+/// SIGTSTP, which suspends the job mid-step. DC3 (0x13) is Ctrl+S — XOFF,
+/// which freezes terminal output. When observing a long training job inside
+/// tmux, any of these arriving by accident is catastrophic.
 abstract final class TerminalInputGuard {
   /// ASCII End-of-Text = Ctrl+C (SIGINT).
   static const int ctrlCCodeUnit = 0x03;
@@ -10,13 +12,28 @@ abstract final class TerminalInputGuard {
   /// ASCII File-Separator = Ctrl+\ (SIGQUIT).
   static const int ctrlBackslashCodeUnit = 0x1c;
 
+  /// ASCII Substitute = Ctrl+Z (SIGTSTP — suspends the foreground job).
+  static const int ctrlZCodeUnit = 0x1a;
+
+  /// ASCII Device-Control-3 = Ctrl+S (XOFF — freezes terminal output).
+  static const int ctrlSCodeUnit = 0x13;
+
   static final String ctrlC = String.fromCharCode(ctrlCCodeUnit);
   static final String ctrlBackslash = String.fromCharCode(
     ctrlBackslashCodeUnit,
   );
+  static final String ctrlZ = String.fromCharCode(ctrlZCodeUnit);
+  static final String ctrlS = String.fromCharCode(ctrlSCodeUnit);
 
-  /// Control characters that terminate the foreground job.
-  static final List<String> interruptChars = [ctrlC, ctrlBackslash];
+  /// Control characters that would break a long-running foreground job:
+  /// kill it (Ctrl+C / Ctrl+\), suspend it (Ctrl+Z) or freeze its output
+  /// (Ctrl+S).
+  static final List<String> interruptChars = [
+    ctrlC,
+    ctrlBackslash,
+    ctrlZ,
+    ctrlS,
+  ];
 
   /// Returns the string to write and whether any interrupt char was stripped.
   static ({String data, bool blockedInterrupt}) filter(

@@ -97,9 +97,11 @@ class StoryPanelBody extends ConsumerStatefulWidget {
 }
 
 class _StoryPanelBodyState extends ConsumerState<StoryPanelBody> {
-  late final TextEditingController _outline;
-  late final TextEditingController _authorNote;
-  late final TextEditingController _venue;
+  // Not final: re-bound (disposed + recreated) when the panel switches to a
+  // different conversation.
+  late TextEditingController _outline;
+  late TextEditingController _authorNote;
+  late TextEditingController _venue;
   Set<String> _selectedWi = {};
   var _inited = false;
   String? _boundId;
@@ -110,11 +112,33 @@ class _StoryPanelBodyState extends ConsumerState<StoryPanelBody> {
   /// constraint blocks from accidental wipe.
   String _baselineAuthorNote = '';
 
+  /// Cached while the panel is alive: `ref` is unusable from [dispose], which
+  /// still has to flush a pending debounced edit.
+  ChatController? _chatNotifier;
+
   @override
   void dispose() {
     _debounce?.cancel();
     if (_inited) {
-      _flushSave();
+      // An edit may still sit inside the debounce window when the panel goes
+      // away. Capture it now and write it back after the current frame: the
+      // panel's own provider subscription is gone by then, so notifying the
+      // chat controller mid-unmount cannot mark a defunct element dirty.
+      final conversationId = widget.conversationId;
+      final outline = _outline.text;
+      final note = protectStoryAuthorNote(
+        previous: _baselineAuthorNote,
+        edited: _authorNote.text,
+      );
+      final venue = _venue.text;
+      final wiIds = _selectedWi.toList();
+      _deferredFlush(
+        conversationId: conversationId,
+        outline: outline,
+        authorNote: note,
+        venue: venue,
+        worldInfoIds: wiIds,
+      );
       _outline.dispose();
       _authorNote.dispose();
       _venue.dispose();
@@ -122,9 +146,55 @@ class _StoryPanelBodyState extends ConsumerState<StoryPanelBody> {
     super.dispose();
   }
 
+  /// Writes story meta after the current frame, used when the controllers are
+  /// being torn down (session switch or panel close). A synchronous write
+  /// would notify the chat provider while the panel is either mid-build or
+  /// already unmounted — both illegal for its own listener.
+  void _deferredFlush({
+    required String conversationId,
+    required String outline,
+    required String authorNote,
+    required String venue,
+    required List<String> worldInfoIds,
+  }) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      try {
+        _chatNotifier?.updateStoryMeta(
+          conversationId: conversationId,
+          outline: outline,
+          authorNote: authorNote,
+          worldInfoIds: worldInfoIds,
+          venue: venue,
+        );
+      } on Object {
+        // The whole tree — container included — may already be torn down
+        // (app exit / test teardown); there is nothing left to notify.
+      }
+    });
+  }
+
   void _ensureControllers(Conversation convo) {
     if (_inited && _boundId == convo.id) return;
     if (_inited) {
+      // Cancel the pending debounce before anything else: its closure reads
+      // the controllers, which are about to be disposed, and would write the
+      // *new* session's text after the swap.
+      _debounce?.cancel();
+      // The old session may have an edit still sitting in the debounce
+      // window. Flush it against the id these controllers are bound to —
+      // during this rebuild `widget.conversationId` is already the new
+      // session.
+      _deferredFlush(
+        conversationId: _boundId!,
+        outline: _outline.text,
+        authorNote: protectStoryAuthorNote(
+          previous: _baselineAuthorNote,
+          edited: _authorNote.text,
+        ),
+        venue: _venue.text,
+        worldInfoIds: _selectedWi.toList(),
+      );
+      _status = '已保存 · 下轮生效';
       _outline.dispose();
       _authorNote.dispose();
       _venue.dispose();
@@ -137,6 +207,7 @@ class _StoryPanelBodyState extends ConsumerState<StoryPanelBody> {
     _outline.addListener(_scheduleSave);
     _authorNote.addListener(_scheduleSave);
     _venue.addListener(_scheduleSave);
+    _chatNotifier = ref.read(chatControllerProvider.notifier);
     _boundId = convo.id;
     _inited = true;
   }
@@ -156,6 +227,7 @@ class _StoryPanelBodyState extends ConsumerState<StoryPanelBody> {
     _debounce = Timer(const Duration(milliseconds: 450), _flushSave);
   }
 
+  /// Persists the current controllers (debounce timer path).
   void _flushSave() {
     if (!_inited) return;
     final edited = _authorNote.text;
@@ -175,15 +247,13 @@ class _StoryPanelBodyState extends ConsumerState<StoryPanelBody> {
     } else if (note.trim().contains('【硬性')) {
       _baselineAuthorNote = note;
     }
-    ref
-        .read(chatControllerProvider.notifier)
-        .updateStoryMeta(
-          conversationId: widget.conversationId,
-          outline: _outline.text,
-          authorNote: note,
-          worldInfoIds: _selectedWi.toList(),
-          venue: _venue.text,
-        );
+    _chatNotifier?.updateStoryMeta(
+      conversationId: widget.conversationId,
+      outline: _outline.text,
+      authorNote: note,
+      worldInfoIds: _selectedWi.toList(),
+      venue: _venue.text,
+    );
     // Meta is read when the next model turn starts — make that explicit.
     if (mounted) {
       setState(() {
@@ -214,11 +284,37 @@ class _StoryPanelBodyState extends ConsumerState<StoryPanelBody> {
   }
 
   Future<void> _saveLocalCharacter(CharacterCard card) async {
-    await ref.read(characterCardsProvider.notifier).save(card);
+    // Re-saving under the same name must update the library row instead of
+    // piling up infinite same-name duplicates. Await the load first — the
+    // panel does not watch the library, so `.value` may still be null.
+    final cards = await ref.read(characterCardsProvider.future);
+    CharacterCard? existing;
+    for (final c in cards) {
+      if (c.name.trim() == card.name.trim()) {
+        existing = c;
+        break;
+      }
+    }
+    final target = existing == null
+        ? card
+        : existing.copyWith(
+            name: card.name,
+            description: card.description,
+            personality: card.personality,
+            scenario: card.scenario,
+            firstMes: card.firstMes,
+            exampleDialogs: card.exampleDialogs,
+            systemPrompt: card.systemPrompt,
+          );
+    await ref.read(characterCardsProvider.notifier).save(target);
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('“${card.name}”已保存到角色库'),
+        content: Text(
+          existing == null
+              ? '“${card.name}”已保存到角色库'
+              : '“${card.name}”已更新角色库中的同名卡片',
+        ),
         behavior: SnackBarBehavior.floating,
       ),
     );
@@ -515,7 +611,13 @@ class _StoryPanelBodyState extends ConsumerState<StoryPanelBody> {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
-                    onChanged: e.enabled ? (v) => _toggleWi(e.id, v) : null,
+                    // A library-disabled entry may not be newly checked, but a
+                    // session that already selected it must still be able to
+                    // uncheck it — a permanently greyed checkbox would pin the
+                    // stale opt-in forever.
+                    onChanged: (e.enabled || _selectedWi.contains(e.id))
+                        ? (v) => _toggleWi(e.id, v)
+                        : null,
                   ),
               ],
             );

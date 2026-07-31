@@ -16,6 +16,9 @@ void _toast(BuildContext context, String message) {
     );
 }
 
+/// Saves each imported card individually, tolerating per-item failures, and
+/// reports how many actually landed so a mid-batch failure cannot masquerade
+/// as a complete one (and the user knows a re-import may duplicate).
 Future<void> importCharactersAction(
   BuildContext context,
   WidgetRef ref,
@@ -24,11 +27,23 @@ Future<void> importCharactersAction(
   try {
     final cards = await ref.read(studioAssetIoProvider).importCharacters();
     if (cards == null) return;
+    var ok = 0;
+    Object? firstError;
     for (final card in cards) {
-      await ref.read(characterCardsProvider.notifier).save(card);
+      try {
+        await ref.read(characterCardsProvider.notifier).save(card);
+        ok++;
+      } catch (e) {
+        firstError ??= e;
+      }
     }
     if (!context.mounted) return;
-    _toast(context, '已导入 ${cards.length} 张角色卡');
+    final failed = cards.length - ok;
+    if (failed == 0) {
+      _toast(context, '已导入 ${cards.length} 张角色卡');
+    } else {
+      _toast(context, '导入完成：成功 $ok 张，失败 $failed 张（$firstError）');
+    }
   } catch (e) {
     if (!context.mounted) {
       messenger.hideCurrentSnackBar();
@@ -75,15 +90,30 @@ Future<void> exportOneCharacterAction(
   }
 }
 
+/// Saves each imported entry individually, tolerating per-item failures, and
+/// reports how many actually landed so a mid-batch failure cannot masquerade
+/// as a complete one (and the user knows a re-import may duplicate).
 Future<void> importWorldInfoAction(BuildContext context, WidgetRef ref) async {
   try {
     final entries = await ref.read(studioAssetIoProvider).importWorldInfo();
     if (entries == null) return;
+    var ok = 0;
+    Object? firstError;
     for (final entry in entries) {
-      await ref.read(worldInfoProvider.notifier).save(entry);
+      try {
+        await ref.read(worldInfoProvider.notifier).save(entry);
+        ok++;
+      } catch (e) {
+        firstError ??= e;
+      }
     }
     if (!context.mounted) return;
-    _toast(context, '已导入 ${entries.length} 条世界书');
+    final failed = entries.length - ok;
+    if (failed == 0) {
+      _toast(context, '已导入 ${entries.length} 条世界书');
+    } else {
+      _toast(context, '导入完成：成功 $ok 条，失败 $failed 条（$firstError）');
+    }
   } catch (e) {
     if (!context.mounted) return;
     _toast(context, '导入失败：$e');

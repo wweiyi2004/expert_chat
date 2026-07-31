@@ -238,6 +238,10 @@ class ChatState {
 class ChatController extends AsyncNotifier<ChatState> {
   static const int _maxToolCallsPerRound = 3;
 
+  /// Shown when the final (tool-withheld) model round still answers with tool
+  /// calls instead of text, so the turn is never left blank.
+  static const _emptyReplyFallback = '模型未能输出有效回复，请重试。';
+
   /// Streaming providers often emit many tiny SSE chunks per second. Coalescing
   /// them keeps the message list, markdown renderer and scroll controller from
   /// rebuilding for every token while still feeling live to the user.
@@ -289,7 +293,15 @@ class ChatController extends AsyncNotifier<ChatState> {
   @override
   Future<ChatState> build() async {
     ref.onDispose(() {
-      _flushActiveStream?.call();
+      // Riverpod 3 rejects state writes once the element is disposed, so the
+      // flush can throw (UnmountedRefException / lifecycle assert). It must not
+      // abort the teardown below; any checkpoint it would have scheduled is
+      // already best-effort and the repository write queue survives dispose.
+      try {
+        _flushActiveStream?.call();
+      } catch (_) {
+        // Dispose-time state write is not allowed; keep tearing down.
+      }
       _sub?.cancel();
       _cancelToken?.cancel();
       final idle = _idleCompleter;
@@ -700,7 +712,16 @@ class ChatController extends AsyncNotifier<ChatState> {
       final parentId = convo.activePath.isEmpty
           ? null
           : convo.activePath.last.id;
-      final directorCue = convo.plotCursor == 0 && convo.activePath.isEmpty
+      // A failed first attempt leaves an empty assistant placeholder on the
+      // path; until a director reply actually landed, keep cueing 开始第一节.
+      final firstSectionPending =
+          convo.plotCursor == 0 &&
+          !convo.activePath.any(
+            (m) =>
+                m.role == MessageRole.assistant &&
+                m.content.trim().isNotEmpty,
+          );
+      final directorCue = firstSectionPending
           ? '（导演：开始第一节）'
           : '（导演：继续下一节）';
       final userMsg = ChatMessage(
@@ -899,12 +920,17 @@ class ChatController extends AsyncNotifier<ChatState> {
     final nextCurrent = beforeDeletion.currentId == id
         ? nextConversations.first.id
         : beforeDeletion.currentId;
+    // Only the deleted conversation's scoped error is cleared; a banner parked
+    // on another conversation (see selectConversation) must survive.
+    final clearsError = beforeDeletion.errorConvoId == id;
     _set(
       beforeDeletion.copyWith(
         conversations: nextConversations,
         currentId: nextCurrent,
         contextReports: {...beforeDeletion.contextReports}..remove(id),
-        error: null,
+        error: clearsError ? null : beforeDeletion.error,
+        errorConvoId: clearsError ? null : beforeDeletion.errorConvoId,
+        retryOperation: clearsError ? null : beforeDeletion.retryOperation,
       ),
     );
 
@@ -1116,8 +1142,12 @@ class ChatController extends AsyncNotifier<ChatState> {
       final nextAttachments = attachments ?? old.attachments;
       // Only ancestors of the edited turn stay in the regenerated branch;
       // descendants (and their images) are discarded, so they must not pull
-      // the request over to the vision endpoint.
-      final ancestors = convo.activePath.takeWhile((m) => m.id != old.id);
+      // the request over to the vision endpoint. The chain follows the edited
+      // turn's own parent links — it may live on an inactive branch, where
+      // scanning the active path would count unrelated image turns.
+      final ancestors = old.parentId == null
+          ? const <ChatMessage>[]
+          : _pathToMessage(convo, old.parentId!);
       final hasImages =
           nextAttachments.any((a) => a.isImage && a.hasImageData) ||
           ancestors.any(
@@ -1941,6 +1971,10 @@ class ChatController extends AsyncNotifier<ChatState> {
     final cancelToken = CancelToken();
     _cancelToken = cancelToken;
 
+    // The user may have switched conversations while this turn was preflighting
+    // (awaiting settings); don't yank focus back. The stream itself still
+    // targets [working.id] and writes into it.
+    final holdsFocus = _s.currentId == working.id || _s.currentId == null;
     _set(
       _s.copyWith(
         // Move the conversation to the top: it just got new activity, matching
@@ -1950,7 +1984,7 @@ class ChatController extends AsyncNotifier<ChatState> {
           working,
           ..._s.conversations.where((c) => c.id != working.id),
         ],
-        currentId: working.id,
+        currentId: holdsFocus ? working.id : _s.currentId,
         streamingConvoId: working.id,
         isSearching: false,
         isGeneratingImage: false,
@@ -2093,6 +2127,9 @@ class ChatController extends AsyncNotifier<ChatState> {
     // The user may have pressed stop during the (awaited) search; honor it.
     if (!_s.isStreaming) {
       await _persistSafely(working.id);
+      // Drop our token like _streamAnswer's finally would, so a later stop()
+      // or dispose cannot touch a stale one.
+      if (identical(_cancelToken, cancelToken)) _cancelToken = null;
       // stop() already ends the notify session when the user pressed stop;
       // still clear wakelock if streaming dropped for another reason.
       unawaited(
@@ -2313,6 +2350,8 @@ class ChatController extends AsyncNotifier<ChatState> {
 
     if (!_s.isStreaming) {
       await _persistSafely(working.id);
+      // Drop our token like _streamAnswer's finally would.
+      if (identical(_cancelToken, cancelToken)) _cancelToken = null;
       return;
     }
 
@@ -2332,6 +2371,8 @@ class ChatController extends AsyncNotifier<ChatState> {
         ),
       );
       await _persistSafely(working.id);
+      // Drop our token like _streamAnswer's finally would.
+      if (identical(_cancelToken, cancelToken)) _cancelToken = null;
       unawaited(
         GenerationNotify.onGenerationEnd(
           success: false,
@@ -2515,7 +2556,10 @@ class ChatController extends AsyncNotifier<ChatState> {
             finishReason = chunk.finishReason ?? finishReason;
             if (chunk.reasoningDelta != null &&
                 chunk.reasoningDelta!.isNotEmpty) {
-              if (!thinkClock.isRunning && thinkMillis == 0) {
+              // Restart across tool rounds too: the clock is stopped by the
+              // previous round's answer content, and reasoning from later
+              // rounds must keep accumulating into the reported thinking time.
+              if (!thinkClock.isRunning) {
                 thinkClock.start();
               }
               turnReasoning.write(chunk.reasoningDelta!);
@@ -2572,6 +2616,14 @@ class ChatController extends AsyncNotifier<ChatState> {
             allowTools &&
             (toolCalls.isNotEmpty || finishReason == 'tool_calls');
         if (!needsTools) {
+          // The final round withholds the tool list, but a stubborn model may
+          // still emit tool calls without any text; fall back so the turn is
+          // not left blank.
+          if (toolCalls.isNotEmpty && content.isEmpty) {
+            content.write(_emptyReplyFallback);
+            uiDirty = true;
+            flushUi();
+          }
           // A failed search / image gen earlier in this turn must not leave its
           // error banner behind once the model answered. Only this
           // conversation's scoped error is cleared; another conversation's

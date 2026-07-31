@@ -4,7 +4,9 @@ import 'package:expert_chat/data/conversation_repository.dart';
 import 'package:expert_chat/data/models.dart';
 import 'package:expert_chat/data/story_models.dart';
 import 'package:expert_chat/data/world_info_repository.dart';
+import 'package:expert_chat/domain/story/studio_asset_io.dart';
 import 'package:expert_chat/features/shell/shell_tab.dart';
+import 'package:expert_chat/features/story/studio_asset_actions.dart';
 import 'package:expert_chat/features/story/studio_page.dart';
 import 'package:expert_chat/state/chat_controller.dart';
 import 'package:flutter/material.dart';
@@ -117,6 +119,57 @@ class _MemoryWorldInfoRepository implements WorldInfoRepository {
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+/// Character library that fails every save whose 0-based index matches
+/// [failOnSaveIndex], simulating a mid-batch storage failure.
+class _FailingCharacterRepository extends _MemoryCharacterRepository {
+  _FailingCharacterRepository({required this.failOnSaveIndex})
+    : super();
+
+  final int failOnSaveIndex;
+  int _saves = 0;
+
+  @override
+  Future<void> save(CharacterCard card) async {
+    if (_saves++ == failOnSaveIndex) {
+      throw Exception('simulated character save failure');
+    }
+    return super.save(card);
+  }
+}
+
+/// World-info library that fails every save whose 0-based index matches
+/// [failOnSaveIndex], simulating a mid-batch storage failure.
+class _FailingWorldInfoRepository extends _MemoryWorldInfoRepository {
+  _FailingWorldInfoRepository({required this.failOnSaveIndex})
+    : super();
+
+  final int failOnSaveIndex;
+  int _saves = 0;
+
+  @override
+  Future<void> save(WorldInfoEntry entry) async {
+    if (_saves++ == failOnSaveIndex) {
+      throw Exception('simulated world-info save failure');
+    }
+    return super.save(entry);
+  }
+}
+
+/// File-picker stub that hands back canned import payloads without touching
+/// platform channels.
+class _FakeStudioAssetIo extends StudioAssetIo {
+  _FakeStudioAssetIo({this.cards = const [], this.entries = const []});
+
+  final List<CharacterCard> cards;
+  final List<WorldInfoEntry> entries;
+
+  @override
+  Future<List<CharacterCard>?> importCharacters() async => cards;
+
+  @override
+  Future<List<WorldInfoEntry>?> importWorldInfo() async => entries;
 }
 
 void main() {
@@ -284,5 +337,78 @@ void main() {
       'recent-story',
     );
     expect(container.read(shellTabProvider), ShellTab.chat);
+  });
+
+  testWidgets('角色导入中途失败提示部分成功计数', (tester) async {
+    final charRepo = _FailingCharacterRepository(failOnSaveIndex: 1);
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          conversationRepositoryProvider.overrideWithValue(
+            _MemoryConversationRepository(),
+          ),
+          characterRepositoryProvider.overrideWithValue(charRepo),
+          worldInfoRepositoryProvider.overrideWithValue(
+            _MemoryWorldInfoRepository(),
+          ),
+          studioAssetIoProvider.overrideWithValue(
+            _FakeStudioAssetIo(cards: [
+              CharacterCard(name: '甲'),
+              CharacterCard(name: '乙'),
+            ]),
+          ),
+        ],
+        child: const MaterialApp(home: StudioPage(initialTab: 1)),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('导入 / 导出'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(PopupMenuItem<String>, '导入 JSON'));
+    await tester.pumpAndSettle();
+
+    // The toast must report how much actually landed, not a blanket failure.
+    expect(find.textContaining('成功 1 张'), findsOneWidget);
+    expect(find.textContaining('失败 1 张'), findsOneWidget);
+    final saved = await charRepo.loadAll();
+    expect(saved, hasLength(1));
+    expect(saved.single.name, '甲');
+  });
+
+  testWidgets('世界书导入中途失败提示部分成功计数', (tester) async {
+    final worldRepo = _FailingWorldInfoRepository(failOnSaveIndex: 1);
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          conversationRepositoryProvider.overrideWithValue(
+            _MemoryConversationRepository(),
+          ),
+          characterRepositoryProvider.overrideWithValue(
+            _MemoryCharacterRepository(),
+          ),
+          worldInfoRepositoryProvider.overrideWithValue(worldRepo),
+          studioAssetIoProvider.overrideWithValue(
+            _FakeStudioAssetIo(entries: [
+              WorldInfoEntry(title: '夜雨'),
+              WorldInfoEntry(title: '海雾'),
+            ]),
+          ),
+        ],
+        child: const MaterialApp(home: StudioPage(initialTab: 2)),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('导入 / 导出'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(PopupMenuItem<String>, '导入 JSON'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('成功 1 条'), findsOneWidget);
+    expect(find.textContaining('失败 1 条'), findsOneWidget);
+    final saved = await worldRepo.loadAll();
+    expect(saved, hasLength(1));
+    expect(saved.single.title, '夜雨');
   });
 }

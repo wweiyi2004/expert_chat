@@ -331,15 +331,25 @@ class MemoryRepository {
     scored.sort((a, b) {
       final byScore = b.score.compareTo(a.score);
       if (byScore != 0) return byScore;
-      return b.entry.updatedAt.compareTo(a.entry.updatedAt);
+      final byUpdatedAt = b.entry.updatedAt.compareTo(a.entry.updatedAt);
+      if (byUpdatedAt != 0) return byUpdatedAt;
+      // Dart List.sort 不稳定,用 id 兜底保证同分条目顺序确定。
+      return a.entry.id.compareTo(b.entry.id);
     });
 
+    // 常驻记忆最多占用 60% 的条数配额,避免常驻较多时按需匹配永远进不了召回。
+    final maxPinnedItems = math.max(1, (maxItems * 0.6).floor());
+    var pinnedCount = 0;
     var usedChars = 0;
     final selected = <MemoryEntry>[];
     for (final item in scored) {
       if (selected.length >= maxItems) break;
       final cost = item.entry.content.length + 3;
-      if (usedChars + cost > maxChars) continue;
+      if (usedChars + cost > maxChars) break; // 预算耗尽即停止,不再寻找更小的条目。
+      if (item.entry.pinned) {
+        if (pinnedCount >= maxPinnedItems) continue; // 常驻配额已满,让位给按需匹配。
+        pinnedCount++;
+      }
       selected.add(item.entry);
       usedChars += cost;
     }
@@ -363,8 +373,22 @@ class MemoryRepository {
     _cache = next;
   }
 
-  static String _dedupeKey(String value) =>
-      value.toLowerCase().replaceAll(RegExp(r'\s+'), '');
+  static String _dedupeKey(String value) {
+    // 连续空白压成一个空格而非删除,避免 "api key" 与 "apikey" 被误判为重复;
+    // 中文不使用空格分词,与汉字相邻的空格视为排版差异,一并去掉。
+    final collapsed = value.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
+    final cjk = RegExp(r'[㐀-鿿]');
+    final result = StringBuffer();
+    for (var i = 0; i < collapsed.length; i++) {
+      final char = collapsed[i];
+      final spaceTouchesCjk =
+          char == ' ' &&
+          ((i > 0 && cjk.hasMatch(collapsed[i - 1])) ||
+              (i + 1 < collapsed.length && cjk.hasMatch(collapsed[i + 1])));
+      if (!spaceTouchesCjk) result.write(char);
+    }
+    return result.toString();
+  }
 
   static MemoryEntry _validatedImported(MemoryEntry entry, {String? id}) {
     final safeId = id ?? entry.id;

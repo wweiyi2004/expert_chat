@@ -48,8 +48,13 @@ class MemoryBackupFileService {
       allowedExtensions: const ['md'],
     );
     if (path == null) return null;
-    await File(path).writeAsBytes(bytes, flush: true);
-    return path;
+    // 保存对话框允许用户改掉扩展名;导出后必须能被导入(导入按 .md 过滤),
+    // 缺少 .md 后缀时自动补上。
+    final withExtension = path.toLowerCase().endsWith('.md')
+        ? path
+        : '$path.md';
+    await File(withExtension).writeAsBytes(bytes, flush: true);
+    return withExtension;
   }
 
   Future<String?> pickMarkdown() async {

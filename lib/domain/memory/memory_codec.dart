@@ -85,7 +85,9 @@ class MemoryMarkdownCodec {
         MemoryEntry(
           id: id,
           content: content,
-          pinned: metadata['pinned'] != 'false',
+          // 大小写不敏感:手写的 pinned: False 也按“按需”解析。
+          // 缺失时保持向后兼容:旧文件没有该字段,默认视为常驻。
+          pinned: metadata['pinned']?.toLowerCase() != 'false',
           sourceConversationId: _nullable(metadata['source_conversation_id']),
           sourceMessageId: _nullable(metadata['source_message_id']),
           sourceRole: _nullable(metadata['source_role']),

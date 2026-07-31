@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:dio/dio.dart' show CancelToken;
 import 'package:expert_chat/core/providers.dart';
@@ -8,6 +9,7 @@ import 'package:expert_chat/data/memory_repository.dart';
 import 'package:expert_chat/data/models.dart';
 import 'package:expert_chat/data/provider_profile.dart';
 import 'package:expert_chat/domain/llm/llm_provider.dart';
+import 'package:expert_chat/domain/memory/memory_backup_file_io.dart';
 import 'package:expert_chat/domain/memory/memory_candidate_service.dart';
 import 'package:expert_chat/domain/memory/memory_codec.dart';
 import 'package:expert_chat/domain/memory/memory_entry.dart';
@@ -19,6 +21,10 @@ import 'package:expert_chat/features/memory/memory_page.dart';
 import 'package:expert_chat/state/chat_controller.dart';
 import 'package:expert_chat/state/memory_controller.dart';
 import 'package:expert_chat/state/settings_controller.dart';
+import 'package:file_picker/file_picker.dart' show FileType;
+// ignore: implementation_imports
+import 'package:file_picker/src/platform/file_picker_platform_interface.dart';
+import 'package:flutter/foundation.dart' show debugDefaultTargetPlatformOverride;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -30,15 +36,55 @@ class _MemoryStore implements MemoryStore {
   /// queued write, where the store reports the file as absent.
   bool simulateMissingFile = false;
 
+  /// Simulates a damaged/unreadable memory file while refreshing.
+  bool throwOnRead = false;
+
   @override
   Future<String> locationLabel() async => 'memory-test.md';
 
   @override
-  Future<String?> read() async =>
-      simulateMissingFile ? null : markdown;
+  Future<String?> read() async {
+    if (throwOnRead) throw StateError('模拟文件读取失败。');
+    return simulateMissingFile ? null : markdown;
+  }
 
   @override
   Future<void> write(String markdown) async => this.markdown = markdown;
+}
+
+/// Counts every file write so double-write regressions are observable.
+class _CountingMemoryStore implements MemoryStore {
+  int writes = 0;
+  String? markdown;
+
+  @override
+  Future<String> locationLabel() async => 'memory-test.md';
+
+  @override
+  Future<String?> read() async => markdown;
+
+  @override
+  Future<void> write(String markdown) async {
+    this.markdown = markdown;
+    writes++;
+  }
+}
+
+/// In-memory replacement for the native file picker, so the desktop save
+/// dialog can be driven without a platform plugin.
+class _FakeFilePickerPlatform extends FilePickerPlatform {
+  String? saveFilePath;
+
+  @override
+  Future<String?> saveFile({
+    String? dialogTitle,
+    String? fileName,
+    String? initialDirectory,
+    FileType type = FileType.any,
+    List<String>? allowedExtensions,
+    Uint8List? bytes,
+    bool lockParentWindow = false,
+  }) async => saveFilePath;
 }
 
 class _ConversationStore implements ConversationRepository {
@@ -973,4 +1019,241 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  test('dedupe keeps "api key" and "apikey" as distinct contents', () async {
+    final repository = MemoryRepository(_MemoryStore());
+    await repository.add(content: 'api key 配置说明。');
+    final second = await repository.add(content: 'apikey 配置说明。');
+
+    expect(second.created, isTrue);
+  });
+
+  test('dedupe still merges the same text with different whitespace', () async {
+    final repository = MemoryRepository(_MemoryStore());
+    await repository.add(content: '回答 默认 使用 中文。');
+    final duplicate = await repository.add(content: '回答  默认\t使用 中文。');
+
+    expect(duplicate.created, isFalse);
+  });
+
+  test('recall caps pinned memories so on-demand matches can still enter', () async {
+    final repository = MemoryRepository(_MemoryStore());
+    for (var i = 0; i < 8; i++) {
+      await repository.add(content: '固定的团队偏好条目 $i。');
+    }
+    await repository.add(
+      content: '项目使用 Flutter 架构开发。',
+      pinned: false,
+    );
+
+    final recall = await repository.recall(
+      'Flutter 架构',
+      maxItems: 8,
+      maxChars: 4000,
+    );
+    final contents = recall.entries.map((entry) => entry.content).toList();
+
+    expect(contents, contains('项目使用 Flutter 架构开发。'));
+    final pinnedIncluded = contents
+        .where((content) => content.startsWith('固定的团队偏好条目'))
+        .length;
+    // 常驻记忆最多占 60% 的条数配额,剩余配额留给按需匹配。
+    expect(pinnedIncluded, lessThanOrEqualTo(4));
+  });
+
+  test('recall breaks score ties deterministically by id', () async {
+    final store = _MemoryStore();
+    const codec = MemoryMarkdownCodec();
+    final now = DateTime.fromMillisecondsSinceEpoch(1700000000000);
+    store.markdown = codec.encode(
+      MemoryDocument(
+        entries: [
+          // 文档顺序故意与 id 顺序相反,依赖排序本身而非输入顺序。
+          for (var i = 4; i >= 0; i--)
+            MemoryEntry(
+              id: 'id-0$i',
+              content: '同分事实 $i。',
+              pinned: true,
+              createdAt: now,
+              updatedAt: now,
+            ),
+        ],
+      ),
+    );
+
+    final recall = await MemoryRepository(store).recall(
+      '无关查询',
+      maxItems: 8,
+    );
+
+    expect(
+      recall.entries.map((entry) => entry.id),
+      ['id-00', 'id-01', 'id-02', 'id-03'],
+    );
+  });
+
+  test('codec reads pinned case-insensitively and keeps missing pinned as 常驻', () {
+    const codec = MemoryMarkdownCodec();
+    final document = codec.decode('''
+- [id:upper-false] 大写 False
+  - pinned: False
+  - created_at: 2026-01-01T00:00:00Z
+  - updated_at: 2026-01-01T00:00:00Z
+
+- [id:missing] 无 pinned 字段
+  - created_at: 2026-01-01T00:00:00Z
+  - updated_at: 2026-01-01T00:00:00Z
+
+- [id:upper-true] 大写 True
+  - pinned: TRUE
+  - created_at: 2026-01-01T00:00:00Z
+  - updated_at: 2026-01-01T00:00:00Z
+''');
+
+    bool pinnedOf(String id) =>
+        document.entries.singleWhere((entry) => entry.id == id).pinned;
+    expect(pinnedOf('upper-false'), isFalse);
+    expect(pinnedOf('missing'), isTrue);
+    expect(pinnedOf('upper-true'), isTrue);
+  });
+
+  test('export appends .md when the save name lacks the extension', () async {
+    TestWidgetsFlutterBinding.ensureInitialized();
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+
+    final original = FilePickerPlatform.instance;
+    final fake = _FakeFilePickerPlatform();
+    FilePickerPlatform.instance = fake;
+    addTearDown(() => FilePickerPlatform.instance = original);
+
+    final tempDir = await Directory.systemTemp.createTemp('memory_export_');
+    addTearDown(() => tempDir.delete(recursive: true));
+    final savePath = '${tempDir.path}${Platform.pathSeparator}backup';
+    fake.saveFilePath = savePath;
+
+    final service = MemoryBackupFileService();
+    final result = await service.exportMarkdown(
+      markdown: '# Expert Chat 长期记忆',
+      fileName: 'expert-chat-memory.md',
+    );
+
+    expect(result, '$savePath.md');
+    expect(await File('$savePath.md').exists(), isTrue);
+  });
+
+  testWidgets('refresh button failure keeps old data and shows a snackbar', (
+    tester,
+  ) async {
+    final store = _MemoryStore();
+    const codec = MemoryMarkdownCodec();
+    await store.write(
+      codec.encode(
+        MemoryDocument(entries: [MemoryEntry(content: '项目使用 Flutter 开发。')]),
+      ),
+    );
+    final repository = MemoryRepository(store);
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [memoryRepositoryProvider.overrideWithValue(repository)],
+        child: const MaterialApp(home: MemoryPage()),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.textContaining('项目使用 Flutter 开发。'), findsOneWidget);
+
+    store.throwOnRead = true;
+    await tester.tap(find.byTooltip('重新读取记忆文件'));
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(find.textContaining('项目使用 Flutter 开发。'), findsOneWidget);
+    expect(find.textContaining('重新读取失败'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 4));
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets('pull-to-refresh failure keeps old data and shows a snackbar', (
+    tester,
+  ) async {
+    final store = _MemoryStore();
+    const codec = MemoryMarkdownCodec();
+    await store.write(
+      codec.encode(
+        MemoryDocument(entries: [MemoryEntry(content: '项目使用 Flutter 开发。')]),
+      ),
+    );
+    final repository = MemoryRepository(store);
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [memoryRepositoryProvider.overrideWithValue(repository)],
+        child: const MaterialApp(home: MemoryPage()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    store.throwOnRead = true;
+    await tester.fling(find.byType(ListView), const Offset(0, 300), 1000);
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(find.textContaining('项目使用 Flutter 开发。'), findsOneWidget);
+    expect(find.textContaining('重新读取失败'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 4));
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets('adding a non-pinned memory writes the file exactly once', (
+    tester,
+  ) async {
+    final store = _CountingMemoryStore();
+    final repository = MemoryRepository(store);
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [memoryRepositoryProvider.overrideWithValue(repository)],
+        child: const MaterialApp(home: MemoryPage()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('添加记忆'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), '用户喜欢简洁直接的回答。');
+    await tester.tap(find.byType(Switch));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+
+    expect(store.writes, 1);
+    expect(store.markdown, contains('pinned: false'));
+    expect(find.text('按需'), findsWidgets);
+    await tester.pump(const Duration(seconds: 4));
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets('adding a pinned memory still writes the file exactly once', (
+    tester,
+  ) async {
+    final store = _CountingMemoryStore();
+    final repository = MemoryRepository(store);
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [memoryRepositoryProvider.overrideWithValue(repository)],
+        child: const MaterialApp(home: MemoryPage()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('添加记忆'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), '用户偏好简洁直接的回答。');
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+
+    expect(store.writes, 1);
+    expect(store.markdown, contains('pinned: true'));
+    expect(find.text('常驻'), findsWidgets);
+    await tester.pump(const Duration(seconds: 4));
+    await tester.pumpAndSettle();
+  });
 }

@@ -212,7 +212,12 @@ class DriftConversationRepository implements ConversationRepository {
       stored.thinkingMillis == message.thinkingMillis &&
       stored.speakerId == message.speakerId &&
       stored.speakerName == message.speakerName &&
-      stored.kind == message.kind.name &&
+      // A kind written by a newer build falls back to `text` in memory, so a
+      // plain equality would rewrite the row and silently downgrade the kind
+      // on disk. Treat an unrecognized stored kind as matching instead — the
+      // row is preserved until this build genuinely changes something else.
+      (stored.kind == message.kind.name ||
+          !MessageKind.values.any((k) => k.name == stored.kind)) &&
       stored.attachmentsJson == _attachmentsJson(message) &&
       stored.citationsJson == _citationsJson(message) &&
       stored.searchActivitiesJson == _searchActivitiesJson(message) &&
@@ -236,17 +241,24 @@ class DriftConversationRepository implements ConversationRepository {
   Future<List<Conversation>> search(String query) async {
     final q = query.trim();
     if (q.isEmpty) return loadAll();
-    final like = '%${q.toLowerCase()}%';
+    // Escape LIKE wildcards so user input is matched literally — searching
+    // "100%" must not match every row via the wildcard.
+    final escaped = q
+        .toLowerCase()
+        .replaceAll(r'\', r'\\')
+        .replaceAll('%', r'\%')
+        .replaceAll('_', r'\_');
+    final like = '%$escaped%';
     final matchingIds = <String>{};
 
     final titleRows = await (_db.select(
       _db.conversations,
-    )..where((c) => c.title.lower().like(like))).get();
+    )..where((c) => c.title.lower().like(like, escapeChar: r'\'))).get();
     matchingIds.addAll(titleRows.map((c) => c.id));
 
     final msgRows = await (_db.select(
       _db.messages,
-    )..where((m) => m.content.lower().like(like))).get();
+    )..where((m) => m.content.lower().like(like, escapeChar: r'\'))).get();
     matchingIds.addAll(msgRows.map((m) => m.convoId));
 
     if (matchingIds.isEmpty) return const [];

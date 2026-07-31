@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -359,19 +361,39 @@ Future<void> downloadAndApplyUpdate(
 /// APK path waiting for the user to grant unknown-sources install permission.
 String? _pendingInstallApkPath;
 
+/// Test seam: read / write the pending install path.
+@visibleForTesting
+String? get pendingInstallApkPathForTest => _pendingInstallApkPath;
+
+@visibleForTesting
+set pendingInstallApkPathForTest(String? value) {
+  _pendingInstallApkPath = value;
+}
+
 /// Call when the app returns to foreground (e.g. from AppShell) so a download
 /// completed before permission grant can still be installed without re-download.
+///
+/// Failure is terminal: a cache-evicted file or a failing install will never
+/// succeed on a later resume, so the pending path is cleared instead of
+/// retrying a known-bad install on every foreground return.
 Future<void> resumePendingApkInstall() async {
   final path = _pendingInstallApkPath;
   if (path == null || path.isEmpty) return;
   if (!InstallApk.isAndroid) return;
   try {
     final allowed = await InstallApk.canRequestPackageInstalls();
-    if (!allowed) return;
+    if (!allowed) return; // Permission still pending — keep the path.
+    if (!await File(path).exists()) {
+      // The system evicted the cached APK; nothing to install.
+      _pendingInstallApkPath = null;
+      return;
+    }
     _pendingInstallApkPath = null;
     await InstallApk.install(path);
   } catch (_) {
-    // Keep path for another resume attempt if install still fails.
+    // Install failed permanently (corrupt file, system rejection). Clear the
+    // path so the next foreground resume does not retry the same failure.
+    _pendingInstallApkPath = null;
   }
 }
 

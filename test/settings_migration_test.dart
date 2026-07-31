@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:expert_chat/core/providers.dart';
 import 'package:expert_chat/data/provider_profile.dart';
+import 'package:expert_chat/data/ui_prefs.dart';
 import 'package:expert_chat/state/settings_controller.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -102,6 +103,34 @@ void main() {
 
     final state = await container.read(settingsControllerProvider.future);
     expect(state.themeMode, ThemeMode.system);
+  });
+
+  test('wrong-typed uiPrefs field does not wipe the other UI prefs', () async {
+    SharedPreferences.setMockInitialValues({
+      'uiPrefs': jsonEncode({'textScale': 42, 'density': 'compact'}),
+    });
+    FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
+      {},
+    );
+    addTearDown(() {
+      FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
+        {},
+      );
+    });
+
+    final prefs = await SharedPreferences.getInstance();
+    final container = ProviderContainer(
+      overrides: [
+        sharedPrefsProvider.overrideWithValue(prefs),
+        secureStorageProvider.overrideWithValue(const FlutterSecureStorage()),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    final state = await container.read(settingsControllerProvider.future);
+    // 损坏的 textScale 单独回退默认,健康的 density 保留。
+    expect(state.ui.textScale, TextScalePref.medium);
+    expect(state.ui.density, DensityPref.compact);
   });
 
   test('in-range themeMode value is honored', () async {

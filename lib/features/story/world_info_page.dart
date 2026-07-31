@@ -114,7 +114,7 @@ class WorldInfoBody extends ConsumerWidget {
                     } else if (v == 'export') {
                       await exportOneWorldInfoAction(context, ref, e);
                     } else if (v == 'delete') {
-                      await ref.read(worldInfoProvider.notifier).delete(e.id);
+                      await deleteWorldInfoEntry(context, ref, e);
                     }
                   },
                   itemBuilder: (_) => const [
@@ -130,6 +130,34 @@ class WorldInfoBody extends ConsumerWidget {
         );
       },
     );
+  }
+}
+
+Future<void> deleteWorldInfoEntry(
+  BuildContext context,
+  WidgetRef ref,
+  WorldInfoEntry entry,
+) async {
+  final title = entry.title.trim().isEmpty ? '未命名条目' : entry.title.trim();
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('删除世界书条目？'),
+      content: Text('“$title”将被删除，已注入到会话中的内容不会自动移除。'),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx, false),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(ctx, true),
+          child: const Text('删除'),
+        ),
+      ],
+    ),
+  );
+  if (ok == true) {
+    await ref.read(worldInfoProvider.notifier).delete(entry.id);
   }
 }
 

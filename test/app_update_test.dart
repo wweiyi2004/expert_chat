@@ -49,6 +49,17 @@ void main() {
       );
       expect(AppUpdateChecker.isNewerForTest('1.2.1-beta.1', '1.2.0'), isTrue);
     });
+
+    test('unparseable versions never claim an update', () {
+      // 垃圾 tag 不得被解析成 0.0.0 而误报升级。
+      expect(AppUpdateChecker.isNewerForTest('1.2.x', '1.0.0'), isFalse);
+      expect(AppUpdateChecker.isNewerForTest('garbage', '1.0.0'), isFalse);
+      expect(AppUpdateChecker.isNewerForTest('', '1.0.0'), isFalse);
+      expect(AppUpdateChecker.isNewerForTest('v', '1.0.0'), isFalse);
+      // 当前版本无法解析时,任何发布版本都不应宣称有更新。
+      expect(AppUpdateChecker.isNewerForTest('2.0.0', 'not-a-version'), isFalse);
+      expect(AppUpdateChecker.isNewerForTest('1.0.0', ''), isFalse);
+    });
   });
 
   group('pickAsset', () {

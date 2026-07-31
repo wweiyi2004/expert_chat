@@ -1,11 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:characters/characters.dart';
 import 'package:dio/dio.dart';
 import 'package:expert_chat/data/media_api_config.dart';
 import 'package:expert_chat/domain/media/openai_compatible_media_provider.dart';
 import 'package:expert_chat/domain/speech/text_to_speech_service.dart';
+import 'package:expert_chat/domain/speech/text_to_speech_service_io.dart'
+    as tts_io;
 import 'package:expert_chat/domain/speech/text_to_speech_service_stub.dart'
     as web_tts;
 import 'package:flutter_test/flutter_test.dart';
@@ -54,6 +57,31 @@ print('不该朗读的代码');
     test('returns empty text when the input contains only a URL', () {
       expect(prepareTextForSpeech('https://example.com'), isEmpty);
     });
+
+    test('removes a URL without swallowing the punctuation after it', () {
+      // \S+ greedily matched past the URL up to whitespace, so full-width
+      // punctuation like 。 and ， - which is not whitespace - was eaten
+      // together with the URL itself. Full-width marks never occur inside a
+      // valid URL, so they are safe to keep (unlike '.', '?' and '!', which
+      // are also URL characters and cannot be told apart from sentence
+      // endings).
+      expect(
+        prepareTextForSpeech('请访问 https://example.com。谢谢'),
+        '请访问 。谢谢',
+      );
+      expect(
+        prepareTextForSpeech('请看 https://example.com，然后继续'),
+        '请看 ，然后继续',
+      );
+      expect(
+        prepareTextForSpeech('看这里 https://example.com！太棒了'),
+        '看这里 ！太棒了',
+      );
+      expect(
+        prepareTextForSpeech('详见 https://example.com/path?a=1。'),
+        '详见 。',
+      );
+    });
   });
 
   group('splitTextForSpeech', () {
@@ -74,6 +102,67 @@ print('不该朗读的代码');
 
       expect(chunks.map((chunk) => chunk.characters.length), [5, 5, 2]);
       expect(chunks.join(), source);
+    });
+
+    test('keeps consecutive sentence-ending punctuation with the sentence', () {
+      // The regex used to take at most one trailing punctuation mark, so the
+      // second '！' of '明白了！！' was dropped and chunks.join() no longer
+      // equaled the source.
+      const source = '明白了！！真的吗？？？等等！';
+
+      final chunks = splitTextForSpeech(source, maxChunkLength: 600);
+
+      expect(chunks.join(), source);
+      expect(chunks, hasLength(1));
+    });
+
+    test('keeps consecutive punctuation when chunks are small', () {
+      final chunks = splitTextForSpeech('明白了！！', maxChunkLength: 2);
+
+      expect(chunks.join(), '明白了！！');
+    });
+  });
+
+  group('cleanupStaleAudioFiles', () {
+    test('deletes leftover audio files but keeps subdirectories', () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'expert-chat-tts-test-',
+      );
+      addTearDown(() async {
+        if (await directory.exists()) await directory.delete(recursive: true);
+      });
+      final fileA = File(
+        '${directory.path}${Platform.pathSeparator}speech-1-0.mp3',
+      );
+      final fileB = File(
+        '${directory.path}${Platform.pathSeparator}stale.wav',
+      );
+      await fileA.writeAsBytes(const [1]);
+      await fileB.writeAsBytes(const [2]);
+      final sub = Directory(
+        '${directory.path}${Platform.pathSeparator}sub',
+      );
+      final nested = File('${sub.path}${Platform.pathSeparator}keep.mp3');
+      await sub.create();
+      await nested.writeAsBytes(const [3]);
+
+      await tts_io.cleanupStaleAudioFiles(directory);
+
+      expect(await fileA.exists(), isFalse);
+      expect(await fileB.exists(), isFalse);
+      expect(await nested.exists(), isTrue);
+      expect(await directory.exists(), isTrue);
+    });
+
+    test('tolerates a directory that does not exist', () async {
+      final missing = Directory(
+        '${Directory.systemTemp.path}${Platform.pathSeparator}'
+        'expert-chat-tts-missing-${DateTime.now().microsecondsSinceEpoch}',
+      );
+
+      await tts_io.cleanupStaleAudioFiles(missing);
+
+      expect(await missing.exists(), isFalse);
     });
   });
 

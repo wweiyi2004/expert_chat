@@ -216,6 +216,95 @@ class FakeSmallContextSettings extends FakeSettings {
   }
 }
 
+/// Settings with a configured vision API AND a small context window, so an
+/// image attachment overflows the per-turn budget (images cannot be clipped
+/// down by the context manager and must be rejected up front).
+class FakeSmallContextVisionSettings extends FakeVisionSettings {
+  @override
+  Future<SettingsState> build() async {
+    final base = await super.build();
+    return base.copyWith(
+      context: const ContextPrefs(
+        contextWindowTokens: 4096,
+        reservedOutputTokens: 3072,
+        maxHistoryMessages: 6,
+      ),
+    );
+  }
+}
+
+/// Settings with a single tool round, so a two-script stream hits the final
+/// (tool-withheld) round on its second call.
+class FakeOneSearchRoundSettings extends FakeSettings {
+  @override
+  Future<SettingsState> build() async {
+    final base = await super.build();
+    return base.copyWith(searchMaxRounds: 1);
+  }
+}
+
+/// LLM provider that errors on its first call, then answers normally.
+class _FailOnceLlm implements LlmProvider {
+  int callCount = 0;
+
+  @override
+  Stream<ChatChunk> streamChat({
+    required LlmConfig config,
+    required List<LlmRequestMessage> messages,
+    List<ToolSpec>? tools,
+    bool? thinking,
+    CancelToken? cancelToken,
+  }) async* {
+    if (callCount++ == 0) throw Exception('simulated failure');
+    yield const ChatChunk(contentDelta: '第一节正文');
+  }
+}
+
+/// LLM provider that yields scripted chunks with a real per-chunk delay, so
+/// the multi-round thinking stopwatch measures distinguishable intervals.
+class _DelayedChunkProvider implements LlmProvider {
+  _DelayedChunkProvider(this.scripts);
+
+  final List<List<ChatChunk>> scripts;
+  int callCount = 0;
+
+  @override
+  Stream<ChatChunk> streamChat({
+    required LlmConfig config,
+    required List<LlmRequestMessage> messages,
+    List<ToolSpec>? tools,
+    bool? thinking,
+    CancelToken? cancelToken,
+  }) async* {
+    final index = callCount++;
+    final script = scripts[
+        index < scripts.length ? index : scripts.length - 1];
+    for (final chunk in script) {
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      yield chunk;
+    }
+  }
+}
+
+/// LLM provider that delivers one text chunk then holds the stream open, so a
+/// test can dispose the container while a UI flush is still pending.
+class _DisposeMidStreamLlm implements LlmProvider {
+  final delivered = Completer<void>();
+
+  @override
+  Stream<ChatChunk> streamChat({
+    required LlmConfig config,
+    required List<LlmRequestMessage> messages,
+    List<ToolSpec>? tools,
+    bool? thinking,
+    CancelToken? cancelToken,
+  }) async* {
+    yield const ChatChunk(contentDelta: 'partial');
+    if (!delivered.isCompleted) delivered.complete();
+    await Completer<void>().future; // hold the stream open
+  }
+}
+
 /// Settings with a configured MiMo ASR endpoint (cloud speech input).
 class FakeMimoSettings extends FakeSettings {
   @override
@@ -899,6 +988,120 @@ void main() {
     expect(toolMessages.last.content, contains('最多执行 3 次'));
   });
 
+  test(
+    'a stubborn final round emitting only tool calls gets a fallback reply',
+    () async {
+      final llm = FakeLlmProvider(
+        const [],
+        scriptedChunks: const [
+          [
+            ChatChunk(
+              toolCalls: [
+                ToolCall(
+                  index: 0,
+                  id: 'call_1',
+                  name: 'web_search',
+                  argumentsJson: '{"query":"q1"}',
+                ),
+              ],
+              finishReason: 'tool_calls',
+            ),
+          ],
+          [
+            ChatChunk(
+              toolCalls: [
+                ToolCall(
+                  index: 0,
+                  id: 'call_2',
+                  name: 'web_search',
+                  argumentsJson: '{"query":"q2"}',
+                ),
+              ],
+              finishReason: 'tool_calls',
+            ),
+          ],
+        ],
+      );
+      final search = _CountingSearch(const [
+        SearchResult(title: 'Result', url: 'https://example.com'),
+      ]);
+      final c = _container(
+        llm,
+        InMemoryRepo(),
+        settingsBuilder: FakeOneSearchRoundSettings.new,
+        toolEngineFactory: ({required backend, required apiKey}) =>
+            ToolEngine(search),
+      );
+      addTearDown(c.dispose);
+
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
+      ctrl.toggleSearch();
+      await ctrl.sendMessage('stubborn model');
+
+      final state = c.read(chatControllerProvider).value!;
+      expect(llm.callCount, 2);
+      expect(state.error, isNull);
+      final assistant = state.current!.activePath.last;
+      expect(assistant.content, isNotEmpty);
+      expect(assistant.content, '模型未能输出有效回复，请重试。');
+    },
+  );
+
+  test(
+    'thinking time accumulates across multiple tool rounds',
+    () async {
+      final llm = _DelayedChunkProvider([
+        const [
+          ChatChunk(reasoningDelta: 'r1'),
+          ChatChunk(
+            contentDelta: 'need to search',
+            toolCalls: [
+              ToolCall(
+                index: 0,
+                id: 'call_1',
+                name: 'web_search',
+                argumentsJson: '{"query":"q1"}',
+              ),
+            ],
+            finishReason: 'tool_calls',
+          ),
+        ],
+        const [
+          ChatChunk(reasoningDelta: 'r2'),
+          ChatChunk(contentDelta: 'final answer'),
+        ],
+      ]);
+      final search = _CountingSearch(const [
+        SearchResult(title: 'Result', url: 'https://example.com'),
+      ]);
+      final c = _container(
+        llm,
+        InMemoryRepo(),
+        settingsBuilder: FakeOneSearchRoundSettings.new,
+        toolEngineFactory: ({required backend, required apiKey}) =>
+            ToolEngine(search),
+      );
+      addTearDown(c.dispose);
+
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
+      ctrl.toggleSearch();
+      await ctrl.sendMessage('two rounds of thinking');
+
+      final assistant = c
+          .read(chatControllerProvider)
+          .value!
+          .current!
+          .activePath
+          .last;
+      expect(assistant.content, 'final answer');
+      // Both rounds' reasoning spans (~120ms each) must be counted, not just
+      // the first round's.
+      expect(assistant.thinkingMillis, greaterThanOrEqualTo(200));
+    },
+  );
+
   test('ProviderProfile round-trips through JSON', () {
     final p = ProviderProfile(
       name: 'Kimi',
@@ -1316,6 +1519,42 @@ void main() {
   });
 
   test(
+    'a failed first director section still cues 开始第一节 on the next advance',
+    () async {
+      final llm = _FailOnceLlm();
+      final c = _container(llm, InMemoryRepo());
+      addTearDown(c.dispose);
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
+
+      await ctrl.newDirectorStoryConversation(
+        title: '开场',
+        premise: '测试前提。',
+        cast: [CharacterCard(name: '角色甲')],
+        outline: '- 第一节',
+        worldInfoIds: const [],
+      );
+
+      // First attempt fails mid-stream, leaving an empty assistant reply.
+      await ctrl.advancePlot();
+      var convo = c.read(chatControllerProvider).value!.current!;
+      expect(convo.plotCursor, 0);
+      expect(convo.activePath.last.content, isEmpty);
+      expect(
+        c.read(chatControllerProvider).value!.error,
+        contains('simulated failure'),
+      );
+
+      // Retrying the same first section must not turn the cue into 继续下一节.
+      await ctrl.advancePlot();
+      convo = c.read(chatControllerProvider).value!.current!;
+      expect(convo.activePath[2].content, '（导演：开始第一节）');
+      expect(convo.activePath.last.content, '第一节正文');
+      expect(convo.plotCursor, 1);
+    },
+  );
+
+  test(
     'length-targeted story keeps a beat until its quota is reached',
     () async {
       final llm = FakeLlmProvider(
@@ -1505,6 +1744,61 @@ void main() {
   });
 
   test(
+    'a send preflighted on one conversation does not yank focus when the '
+    'user switches during preflight',
+    () async {
+      final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'answer')]);
+      final delayed = DelayedReadySettings();
+      final c = _container(llm, InMemoryRepo(), settingsBuilder: () => delayed);
+      addTearDown(c.dispose);
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
+
+      final originId = c.read(chatControllerProvider).value!.currentId!;
+      final send = ctrl.sendMessage('stream into the background');
+      await delayed.entered.future;
+      // The user switches away while the turn is still preflighting.
+      ctrl.newConversation();
+      final otherId = c.read(chatControllerProvider).value!.currentId!;
+      expect(otherId, isNot(originId));
+
+      delayed.gate.complete();
+      expect(await send, isTrue);
+
+      final state = c.read(chatControllerProvider).value!;
+      // Focus stays on the conversation the user chose...
+      expect(state.currentId, otherId);
+      expect(state.isStreaming, isFalse);
+      // ...while the stream still wrote into the origin conversation.
+      final origin = state.conversations.firstWhere((c) => c.id == originId);
+      expect(origin.activePath.last.content, 'answer');
+      expect(state.current!.messages, isEmpty);
+      expect(state.error, isNull);
+    },
+  );
+
+  test(
+    'disposing the container mid-stream completes teardown without a '
+    'dispose-time state write',
+    () async {
+      final llm = _DisposeMidStreamLlm();
+      final c = _container(llm, InMemoryRepo());
+      // No addTearDown(c.dispose): dispose is exercised explicitly.
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
+
+      unawaited(ctrl.sendMessage('dispose me'));
+      await llm.delivered.future; // chunk queued by the provider
+      // Let the stream listener process the chunk (so a UI flush is pending),
+      // but stay well inside the 50ms coalescing window.
+      await Future<void>.delayed(const Duration(milliseconds: 1));
+      // Must not throw / report an uncaught state-write error on dispose.
+      c.dispose();
+      expect(llm.delivered.isCompleted, isTrue);
+    },
+  );
+
+  test(
     'a background conversation keeps its scoped error when revisited',
     () async {
       final llm = DelayedFailingLlmProvider();
@@ -1533,6 +1827,42 @@ void main() {
       expect(state.error, contains('simulated stream failure'));
       expect(state.errorVisibleFor(failedId), isTrue);
       expect(state.retryOperation?.conversationId, failedId);
+    },
+  );
+
+  test(
+    'deleting a conversation preserves another conversation scoped error',
+    () async {
+      final llm = DelayedFailingLlmProvider();
+      final c = _container(llm, InMemoryRepo());
+      addTearDown(c.dispose);
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
+      final failedId = c.read(chatControllerProvider).value!.currentId!;
+
+      final send = ctrl.sendMessage('will fail');
+      await llm.entered.future;
+      ctrl.newConversation();
+      final otherId = c.read(chatControllerProvider).value!.currentId!;
+      expect(otherId, isNot(failedId));
+      llm.gate.complete();
+      await send;
+
+      var state = c.read(chatControllerProvider).value!;
+      expect(state.errorConvoId, failedId);
+      expect(state.errorVisibleFor(otherId), isFalse);
+
+      // Deleting the OTHER conversation must not erase the parked banner.
+      await ctrl.deleteConversation(otherId);
+      state = c.read(chatControllerProvider).value!;
+      expect(state.error, contains('simulated stream failure'));
+      expect(state.errorConvoId, failedId);
+
+      // Deleting the failed conversation itself still clears it.
+      await ctrl.deleteConversation(failedId);
+      state = c.read(chatControllerProvider).value!;
+      expect(state.error, isNull);
+      expect(state.errorConvoId, isNull);
     },
   );
 
@@ -1625,6 +1955,56 @@ void main() {
       final state = c.read(chatControllerProvider).value!;
       expect(state.error, contains('本地保存失败'));
       expect(state.errorConvoId, state.currentId);
+    },
+  );
+
+  test(
+    'context-budget overflow ends the turn without reaching the model and '
+    'the next generation flows cleanly',
+    () async {
+      final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'never')]);
+      final c = _container(
+        llm,
+        InMemoryRepo(),
+        settingsBuilder: FakeSmallContextVisionSettings.new,
+      );
+      addTearDown(c.dispose);
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
+
+      final accepted = await ctrl.sendMessage(
+        '看图',
+        attachments: [
+          Attachment(
+            name: 'pic.png',
+            mimeType: 'image/png',
+            imageBase64: 'AAAA',
+          ),
+        ],
+      );
+      expect(accepted, isTrue);
+      expect(llm.callCount, 0); // the model was never reached
+
+      var state = c.read(chatControllerProvider).value!;
+      expect(state.isStreaming, isFalse);
+      expect(state.error, contains('上下文预算'));
+      expect(state.retryOperation, isNotNull);
+
+      // A later generation through the same pipeline works normally.
+      llm.chunks
+        ..clear()
+        ..add(const ChatChunk(contentDelta: 'ok'));
+      final userMsg = state.current!.activePath.first;
+      await ctrl.editMessage(
+        userMsg.id,
+        '简短的问题',
+        attachments: const [],
+      );
+      state = c.read(chatControllerProvider).value!;
+      expect(state.error, isNull);
+      expect(state.isStreaming, isFalse);
+      expect(state.current!.activePath.last.content, 'ok');
+      expect(llm.callCount, 1);
     },
   );
 
@@ -2161,6 +2541,54 @@ void main() {
       );
       await ctrl.editMessage(firstUser.id, '改写第一句');
 
+      expect(llm.lastConfig!.apiKey, 'sk-test');
+    },
+  );
+
+  test(
+    'editMessage of an inactive-branch turn ignores active-path images',
+    () async {
+      final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'ok')]);
+      final c = _container(
+        llm,
+        InMemoryRepo(),
+        settingsBuilder: FakeVisionSettings.new,
+      );
+      addTearDown(c.dispose);
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
+
+      // A plain two-turn conversation.
+      await ctrl.sendMessage('第一句');
+      await ctrl.sendMessage('第二句');
+
+      // Edit the first turn: a sibling branch becomes active.
+      var convo = c.read(chatControllerProvider).value!.current!;
+      final firstUser = convo.activePath.first;
+      final secondUser = convo.activePath[2];
+      await ctrl.editMessage(firstUser.id, '改写第一句');
+      expect(llm.lastConfig!.apiKey, 'sk-test');
+
+      // The active branch now carries an image turn...
+      await ctrl.sendMessage(
+        '看图',
+        attachments: [
+          Attachment(
+            name: 'pic.png',
+            mimeType: 'image/png',
+            imageBase64: 'AAAA',
+          ),
+        ],
+      );
+      expect(llm.lastConfig!.apiKey, 'sk-vision-test');
+
+      // ...but editing the SECOND turn on the INACTIVE branch regenerates a
+      // text-only branch whose own ancestors carry no images.
+      convo = c.read(chatControllerProvider).value!.current!;
+      final secondUserOnInactive = convo.messages.firstWhere(
+        (m) => m.id == secondUser.id,
+      );
+      await ctrl.editMessage(secondUserOnInactive.id, '改写第二句');
       expect(llm.lastConfig!.apiKey, 'sk-test');
     },
   );

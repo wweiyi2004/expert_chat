@@ -191,8 +191,22 @@ class MemoryTransferService {
   static bool _sameUserValue(MemoryEntry a, MemoryEntry b) =>
       _contentKey(a.content) == _contentKey(b.content) && a.pinned == b.pinned;
 
-  static String _contentKey(String value) =>
-      value.toLowerCase().replaceAll(RegExp(r'\s+'), '');
+  static String _contentKey(String value) {
+    // 与 memory_repository 保持一致:连续空白压成一个空格而非删除,
+    // 避免 "api key" 与 "apikey" 被误判为重复;与汉字相邻的空格视为排版差异。
+    final collapsed = value.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
+    final cjk = RegExp(r'[㐀-鿿]');
+    final result = StringBuffer();
+    for (var i = 0; i < collapsed.length; i++) {
+      final char = collapsed[i];
+      final spaceTouchesCjk =
+          char == ' ' &&
+          ((i > 0 && cjk.hasMatch(collapsed[i - 1])) ||
+              (i + 1 < collapsed.length && cjk.hasMatch(collapsed[i + 1])));
+      if (!spaceTouchesCjk) result.write(char);
+    }
+    return result.toString();
+  }
 
   static String? _sourceKey(MemoryEntry entry) {
     final conversationId = entry.sourceConversationId?.trim() ?? '';

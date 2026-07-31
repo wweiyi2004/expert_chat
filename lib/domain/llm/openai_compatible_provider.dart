@@ -56,7 +56,18 @@ class OpenAiCompatibleProvider implements LlmProvider {
     final body = <String, dynamic>{
       'model': config.model,
       'stream': true,
-      'messages': messages.map((m) => m.toOpenAiJson()).toList(),
+      // `reasoning_content` round-trip only makes sense for models that emit
+      // it (DeepSeek V4 and reasoners); a strict provider that rejects unknown
+      // fields could 400 when history holds a previous answer's chain.
+      'messages': messages
+          .map(
+            (m) => m.toOpenAiJson(
+              includeReasoningContent:
+                  config.capabilities.isReasoner ||
+                  config.capabilities.sendThinkingField,
+            ),
+          )
+          .toList(),
     };
     // DeepSeek V4 defaults thinking to ENABLED, so we must explicitly disable it
     // for fast normal chat (and enable it for deep-think). The `thinking` field
@@ -131,49 +142,65 @@ class OpenAiCompatibleProvider implements LlmProvider {
         .transform(const LineSplitter())
         .timeout(_streamIdleTimeout);
 
+    // Some gateways fold long JSON payloads across consecutive `data:` lines;
+    // per the SSE spec those lines belong to ONE event and must be joined
+    // with '\n' before parsing. Buffer them and parse at the blank-line event
+    // boundary; the lone-line fast path below keeps streams that omit the
+    // blank separator (like the fixtures) working unchanged.
+    final pendingData = <String>[];
+
     try {
       await for (final line in byteStream) {
         final trimmed = line.trim();
-        if (trimmed.isEmpty || !trimmed.startsWith('data:')) continue;
-        final payload = trimmed.substring(5).trim();
-        if (payload == '[DONE]') return;
-
-        Map<String, dynamic> json;
-        try {
-          json = jsonDecode(payload) as Map<String, dynamic>;
-        } catch (_) {
-          continue; // ignore keep-alive / malformed fragments
-        }
-
-        // Some OpenAI-compatible gateways return a 200 SSE response and put
-        // the actual error in a `data:` event. Surface it instead of silently
-        // ending with an empty answer.
-        final streamError = _streamErrorMessage(json);
-        if (streamError != null) {
-          throw Exception('生成失败：$streamError');
-        }
-
-        final choices = json['choices'] as List<dynamic>?;
-        if (choices == null || choices.isEmpty) continue;
-        final choice = choices.first as Map<String, dynamic>;
-        final delta = choice['delta'] as Map<String, dynamic>?;
-        final finishReason = choice['finish_reason'] as String?;
-        if (delta == null) {
-          if (finishReason != null) yield ChatChunk(finishReason: finishReason);
+        if (trimmed.isEmpty) {
+          // Blank line = end of the current event.
+          if (pendingData.isNotEmpty) {
+            final event = _handleEventPayload(pendingData.join('\n'));
+            pendingData.clear();
+            for (final chunk in event.chunks) {
+              yield chunk;
+            }
+            if (event.done) return;
+          }
           continue;
         }
-
-        // Reasoning field names vary across OpenAI-compatible vendors:
-        // DeepSeek → reasoning_content; some Grok / gateways → reasoning.
-        final reasoning =
-            delta['reasoning_content'] as String? ??
-            delta['reasoning'] as String?;
-        yield ChatChunk(
-          contentDelta: delta['content'] as String?,
-          reasoningDelta: reasoning,
-          toolCalls: _parseToolCalls(delta['tool_calls']),
-          finishReason: finishReason,
-        );
+        if (!trimmed.startsWith('data:')) continue;
+        final payload = trimmed.substring(5).trim();
+        // `[DONE]` may carry trailing content (`data: [DONE] extra`); the
+        // line is trimmed above, so a prefix match tolerates it. A wrapped
+        // event that is still pending is flushed first so its data is not
+        // lost when the gateway skips the blank separator.
+        if (payload.startsWith('[DONE]')) {
+          if (pendingData.isNotEmpty) {
+            final event = _handleEventPayload(pendingData.join('\n'));
+            for (final chunk in event.chunks) {
+              yield chunk;
+            }
+          }
+          return;
+        }
+        if (pendingData.isEmpty) {
+          // Fast path: real streams usually send one complete JSON object per
+          // line. Parse immediately; only treat the line as the start of a
+          // wrapped multi-line event when it does not parse on its own.
+          final decoded = _tryDecodeJson(payload);
+          if (decoded != null) {
+            final event = _handleParsedEvent(decoded);
+            for (final chunk in event.chunks) {
+              yield chunk;
+            }
+            continue;
+          }
+        }
+        pendingData.add(payload);
+      }
+      // Stream ended without a trailing blank line — flush a wrapped event
+      // whose final blank separator was never sent.
+      if (pendingData.isNotEmpty) {
+        final event = _handleEventPayload(pendingData.join('\n'));
+        for (final chunk in event.chunks) {
+          yield chunk;
+        }
       }
     } on DioException catch (e) {
       // Stop pressed mid-stream → end quietly instead of surfacing an error.
@@ -187,6 +214,74 @@ class OpenAiCompatibleProvider implements LlmProvider {
         '请检查网络或稍后重试。',
       );
     }
+  }
+
+  /// Best-effort decode of one SSE event payload. Returns null for malformed
+  /// fragments and for valid JSON that is not an object (both ignored).
+  Map<String, dynamic>? _tryDecodeJson(String payload) {
+    try {
+      final decoded = jsonDecode(payload);
+      return decoded is Map<String, dynamic> ? decoded : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Handles one complete SSE event payload (consecutive `data:` lines joined
+  /// with '\n'). Returns the chunks to yield; [done] marks the terminal
+  /// `[DONE]` event.
+  ({List<ChatChunk> chunks, bool done}) _handleEventPayload(String payload) {
+    final trimmed = payload.trim();
+    if (trimmed.startsWith('[DONE]')) return (chunks: const [], done: true);
+    final json = _tryDecodeJson(trimmed);
+    if (json == null) {
+      // ignore keep-alive / malformed fragments
+      return (chunks: const [], done: false);
+    }
+    return _handleParsedEvent(json);
+  }
+
+  ({List<ChatChunk> chunks, bool done}) _handleParsedEvent(
+    Map<String, dynamic> json,
+  ) {
+    // Some OpenAI-compatible gateways return a 200 SSE response and put the
+    // actual error in a `data:` event. Surface it instead of silently ending
+    // with an empty answer.
+    final streamError = _streamErrorMessage(json);
+    if (streamError != null) {
+      throw Exception('生成失败：$streamError');
+    }
+
+    final choices = json['choices'] as List<dynamic>?;
+    if (choices == null || choices.isEmpty) {
+      return (chunks: const [], done: false);
+    }
+    final choice = choices.first as Map<String, dynamic>;
+    final delta = choice['delta'] as Map<String, dynamic>?;
+    final finishReason = choice['finish_reason'] as String?;
+    if (delta == null) {
+      if (finishReason != null) {
+        return (chunks: [ChatChunk(finishReason: finishReason)], done: false);
+      }
+      return (chunks: const [], done: false);
+    }
+
+    // Reasoning field names vary across OpenAI-compatible vendors:
+    // DeepSeek → reasoning_content; some Grok / gateways → reasoning.
+    final reasoning =
+        delta['reasoning_content'] as String? ??
+        delta['reasoning'] as String?;
+    return (
+      chunks: [
+        ChatChunk(
+          contentDelta: delta['content'] as String?,
+          reasoningDelta: reasoning,
+          toolCalls: _parseToolCalls(delta['tool_calls']),
+          finishReason: finishReason,
+        ),
+      ],
+      done: false,
+    );
   }
 
   String? _streamErrorMessage(Map<String, dynamic> payload) {

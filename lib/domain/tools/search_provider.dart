@@ -689,6 +689,15 @@ class HttpSearchProvider implements SearchProvider {
     return raw;
   }
 
+  /// Ports that never serve web content (FTP/SSH/mail/DB/remote admin…).
+  /// Fetching one of these on a public host is never "reading a search
+  /// source". Conservative blacklist: unknown/dev web ports (3000, 8000,
+  /// 8080, 8443…) stay allowed so legitimate APIs are not broken.
+  static const _nonWebPorts = <int>{
+    21, 22, 23, 25, 53, 110, 135, 139, 143, 445, 993, 995, 1433, 1521, 2049,
+    3306, 3389, 5432, 5900, 6379, 11211, 27017,
+  };
+
   /// Returns false for malformed/non-web URLs and local/private literals.
   /// Hostnames still require [isSafeFetchUrl], which validates every DNS answer.
   static bool isSafeHttpUrl(String url) {
@@ -711,6 +720,10 @@ class HttpSearchProvider implements SearchProvider {
         host.contains('%')) {
       return false;
     }
+
+    // An explicit port pointing at a non-web service (e.g. :22 on a public
+    // IP) is never a safe page to read.
+    if (uri.hasPort && _nonWebPorts.contains(uri.port)) return false;
 
     final ipv4 = _parseCanonicalIpv4(host);
     if (ipv4 != null) return !_isUnsafeIpv4(ipv4);

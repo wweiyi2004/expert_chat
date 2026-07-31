@@ -60,8 +60,15 @@ Conversation _restoreLinearTree(Conversation conversation) {
               reasoning: message.reasoning,
               model: message.model,
               thinkingMillis: message.thinkingMillis,
+              // Rebuilds the tree link only; every other field must carry
+              // over so no extended metadata is silently dropped.
+              kind: message.kind,
+              speakerId: message.speakerId,
+              speakerName: message.speakerName,
               attachments: message.attachments,
               citations: message.citations,
+              searchActivities: message.searchActivities,
+              appliedWorldInfo: message.appliedWorldInfo,
               createdAt: message.createdAt,
             ),
     );

@@ -143,7 +143,11 @@ class AppUpdateChecker {
   static bool isNewer(String latest, String current) {
     final a = _parse(latest);
     final b = _parse(current);
-    if (a == null || b == null) return latest != current && latest.isNotEmpty;
+    // An unparseable version (empty tag, garbage release name) must not be
+    // treated as 0.0.0 — that would either claim an update against a release
+    // that never existed, or upgrade a corrupt current version. Be
+    // conservative and report no update.
+    if (a == null || b == null) return false;
     for (var i = 0; i < 3; i++) {
       if (a.nums[i] != b.nums[i]) return a.nums[i] > b.nums[i];
     }
@@ -164,7 +168,11 @@ class AppUpdateChecker {
     final out = <int>[0, 0, 0];
     for (var i = 0; i < 3; i++) {
       if (i < parts.length) {
-        out[i] = int.tryParse(parts[i]) ?? 0;
+        final n = int.tryParse(parts[i]);
+        // A non-numeric segment (e.g. `1.2.x`) means the string is not a
+        // parseable version at all — return null instead of guessing 0.0.0.
+        if (n == null) return null;
+        out[i] = n;
       }
     }
     return (nums: out, pre: pre);

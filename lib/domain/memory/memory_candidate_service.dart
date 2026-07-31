@@ -445,6 +445,20 @@ relation 为 update 或 conflict 时，relatedMemoryIds 必须引用真正相关
     return '${value.characters.take(maxChars).toString()}…';
   }
 
-  static String _dedupeKey(String value) =>
-      value.toLowerCase().replaceAll(RegExp(r'\s+'), '');
+  static String _dedupeKey(String value) {
+    // 与 memory_repository 保持一致:连续空白压成一个空格而非删除,
+    // 避免 "api key" 与 "apikey" 被误判为重复;与汉字相邻的空格视为排版差异。
+    final collapsed = value.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
+    final cjk = RegExp(r'[㐀-鿿]');
+    final result = StringBuffer();
+    for (var i = 0; i < collapsed.length; i++) {
+      final char = collapsed[i];
+      final spaceTouchesCjk =
+          char == ' ' &&
+          ((i > 0 && cjk.hasMatch(collapsed[i - 1])) ||
+              (i + 1 < collapsed.length && cjk.hasMatch(collapsed[i + 1])));
+      if (!spaceTouchesCjk) result.write(char);
+    }
+    return result.toString();
+  }
 }

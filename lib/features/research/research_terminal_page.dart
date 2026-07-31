@@ -1599,7 +1599,10 @@ class _AiAssistPanelState extends ConsumerState<_AiAssistPanel> {
                 ),
               ),
             ),
-            if (proposal.canOfferExecute) ...[
+            // A blocked command (e.g. after the user edits in a control char)
+            // must stay visible: the card is the only place to reject or
+            // re-edit it. Only the execute button is withheld.
+            if (proposal.parseOk && proposal.command.trim().isNotEmpty) ...[
               const SizedBox(height: 8),
               Card(
                 child: Padding(
@@ -1678,7 +1681,9 @@ class _AiAssistPanelState extends ConsumerState<_AiAssistPanel> {
                             child: Text(_editing ? '完成编辑' : '编辑'),
                           ),
                           FilledButton(
-                            onPressed: () => _confirmExecute(proposal),
+                            onPressed: proposal.risk == CommandRisk.blocked
+                                ? null
+                                : () => _confirmExecute(proposal),
                             child: const Text('确认执行'),
                           ),
                         ],

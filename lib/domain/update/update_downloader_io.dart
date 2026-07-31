@@ -44,26 +44,39 @@ class UpdateDownloader {
       }
     }
 
-    await _dio.download(
-      url,
-      file.path,
-      cancelToken: cancelToken,
-      options: Options(
-        headers: {
-          'Accept': '*/*',
-          'User-Agent': 'expert_chat-update-download',
+    try {
+      await _dio.download(
+        url,
+        file.path,
+        cancelToken: cancelToken,
+        options: Options(
+          headers: {
+            'Accept': '*/*',
+            'User-Agent': 'expert_chat-update-download',
+          },
+          receiveTimeout: const Duration(minutes: 10),
+          followRedirects: true,
+          validateStatus: (s) => s != null && s >= 200 && s < 400,
+        ),
+        onReceiveProgress: (received, total) {
+          if (onProgress != null) onProgress(received, total);
         },
-        receiveTimeout: const Duration(minutes: 10),
-        followRedirects: true,
-        validateStatus: (s) => s != null && s >= 200 && s < 400,
-      ),
-      onReceiveProgress: (received, total) {
-        if (onProgress != null) onProgress(received, total);
-      },
-    );
+      );
 
-    if (!await file.exists() || await file.length() == 0) {
-      throw Exception('下载完成但文件无效');
+      if (!await file.exists() || await file.length() == 0) {
+        throw Exception('下载完成但文件无效');
+      }
+    } catch (_) {
+      // A cancel or failure mid-transfer leaves a partial file behind;
+      // remove it so the stale half-download does not linger (the next
+      // attempt would overwrite it anyway, but a visible residual can
+      // confuse users browsing the download directory).
+      try {
+        if (await file.exists()) await file.delete();
+      } catch (_) {
+        // Best-effort cleanup; ignore errors (e.g. locked file).
+      }
+      rethrow;
     }
 
     final expect = expectedSha256?.trim().toLowerCase();

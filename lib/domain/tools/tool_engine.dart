@@ -57,6 +57,13 @@ class ToolEngine {
   static const int minSourceChars = 40;
   static const int maxTotalChars = 24000;
 
+  /// Character cost of the per-source header lines (`[n] Title`, `URL: …`)
+  /// plus the blank separator, as written into the context buffer. These
+  /// count against [maxTotalChars] alongside the body, otherwise a full
+  /// result list silently exceeds the budget by the headers' length.
+  static int _sourceHeaderChars(int index, String title, String url) =>
+      '[$index] $title\nURL: $url\n\n'.characters.length;
+
   void clearCache() => _searchCache.clear();
 
   /// The OpenAI-format tool spec, exposed both to tool-capable chat models and
@@ -165,7 +172,16 @@ class ToolEngine {
     // Keep request/context size bounded even when a model supplies an
     // unexpectedly high maxResults value in a tool call.
     final boundedMaxResults = maxResults.clamp(1, maxResultsCap).toInt();
-    final cacheKey = _SearchCacheKey(normalizedQuery, boundedMaxResults);
+    // excludeUrls (sorted — order must not matter) and startIndex shape what
+    // this call can use, so they are part of the key: with a stale hit, every
+    // source stays excluded and the orchestration loop spins on "没有新的搜索
+    // 结果" until the TTL expires.
+    final cacheKey = _SearchCacheKey(
+      normalizedQuery,
+      boundedMaxResults,
+      excludeUrls: excludeUrls.toList()..sort(),
+      startIndex: startIndex,
+    );
     final now = DateTime.now();
     _removeExpiredCacheEntries(now);
 
@@ -215,14 +231,15 @@ class ToolEngine {
       // helping the model and make "联网" feel hollow.
       if (text.characters.length < minSourceChars) continue;
 
-      final remaining = maxTotalChars - totalChars;
+      final headerChars = _sourceHeaderChars(index, r.title, url);
+      final remaining = maxTotalChars - totalChars - headerChars;
       if (remaining < minSourceChars) break;
 
       final cap = remaining < perSourceChars ? remaining : perSourceChars;
       final clipped = text.characters.length > cap
           ? '${text.characters.take(cap)}…'
           : text;
-      totalChars += clipped.characters.length;
+      totalChars += headerChars + clipped.characters.length;
 
       buffer
         ..writeln('[$index] ${r.title}')
@@ -327,7 +344,8 @@ class ToolEngine {
         index++;
         continue;
       }
-      final remaining = maxTotalChars - totalChars;
+      final headerChars = _sourceHeaderChars(index, page.title, url);
+      final remaining = maxTotalChars - totalChars - headerChars;
       if (remaining < minSourceChars) {
         onActivity?.call(
           activity.copyWith(
@@ -341,7 +359,7 @@ class ToolEngine {
       final clipped = text.characters.length > cap
           ? '${text.characters.take(cap)}…'
           : text;
-      totalChars += clipped.characters.length;
+      totalChars += headerChars + clipped.characters.length;
       buffer
         ..writeln('[$index] ${page.title}')
         ..writeln('URL: $url')
@@ -411,19 +429,43 @@ class ToolEngine {
 }
 
 class _SearchCacheKey {
-  const _SearchCacheKey(this.query, this.maxResults);
+  const _SearchCacheKey(
+    this.query,
+    this.maxResults, {
+    this.excludeUrls = const [],
+    this.startIndex = 1,
+  });
 
   final String query;
   final int maxResults;
+
+  /// Already sorted at construction, so `{a, b}` and `{b, a}` share an entry.
+  final List<String> excludeUrls;
+  final int startIndex;
 
   @override
   bool operator ==(Object other) =>
       other is _SearchCacheKey &&
       other.query == query &&
-      other.maxResults == maxResults;
+      other.maxResults == maxResults &&
+      other.startIndex == startIndex &&
+      _sameExcludeUrls(excludeUrls, other.excludeUrls);
+
+  static bool _sameExcludeUrls(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
 
   @override
-  int get hashCode => Object.hash(query, maxResults);
+  int get hashCode => Object.hash(
+    query,
+    maxResults,
+    startIndex,
+    Object.hashAll(excludeUrls),
+  );
 }
 
 class _SearchCacheEntry {

@@ -28,6 +28,8 @@ import 'package:flutter_secure_storage/test/test_flutter_secure_storage_platform
 import 'package:flutter_secure_storage_platform_interface/flutter_secure_storage_platform_interface.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+// ignore: depend_on_referenced_packages - test-only transitive platform dep
+import 'package:shared_preferences_platform_interface/shared_preferences_platform_interface.dart';
 
 class _ScriptLlm implements LlmProvider {
   _ScriptLlm(this.reply);
@@ -58,6 +60,10 @@ class _FakeSshClient implements ResearchSshClient {
   Completer<String>? execCompleter;
   Completer<void>? connectCompleter;
   var disconnectCount = 0;
+
+  /// When true, [write] reports failure without recording — simulates the
+  /// transport dying between the caller's isConnected check and the write.
+  var failWrites = false;
   Completer<void>? _done;
 
   @override
@@ -104,8 +110,10 @@ class _FakeSshClient implements ResearchSshClient {
   }
 
   @override
-  void write(List<int> data) {
+  bool write(List<int> data) {
+    if (failWrites) return false;
     writes.add(utf8.decode(data));
+    return connected;
   }
 
   @override
@@ -200,9 +208,32 @@ class _FakeDartSshSession implements SSHSession {
   @override
   void close() {}
 
+  /// Simulates the remote channel dying with an error mid-session.
+  void pushStdoutError(Object e) {
+    _out.addError(e);
+  }
+
   @override
   dynamic noSuchMethod(Invocation invocation) =>
       throw UnimplementedError('${invocation.memberName} not faked');
+}
+
+/// SharedPreferences store that fails every write — storage errors must not be
+/// able to take down a live SSH connection.
+class _FailingPrefsStore extends SharedPreferencesStorePlatform {
+  @override
+  Future<bool> setValue(String valueType, String key, Object value) async {
+    throw StateError('simulated storage failure');
+  }
+
+  @override
+  Future<bool> remove(String key) async => true;
+
+  @override
+  Future<bool> clear() async => true;
+
+  @override
+  Future<Map<String, Object>> getAll() async => const {};
 }
 
 ProviderContainer _baseContainer({
@@ -280,6 +311,34 @@ void main() {
       expect(TerminalInputGuard.applyCtrlLatch('1'), isNull);
       expect(TerminalInputGuard.applyCtrlLatch('ab'), isNull);
       expect(TerminalInputGuard.applyCtrlLatch(''), isNull);
+    });
+
+    test('also strips Ctrl+Z (SIGTSTP) and Ctrl+S (XOFF)', () {
+      // Ctrl+Z suspends the job, Ctrl+S freezes terminal output — both as
+      // catastrophic as Ctrl+C when observing a long training run.
+      final blocked = TerminalInputGuard.filter(
+        'a${TerminalInputGuard.ctrlZ}b${TerminalInputGuard.ctrlS}c',
+        blockInterrupt: true,
+      );
+      expect(blocked.blockedInterrupt, isTrue);
+      expect(blocked.data, 'abc');
+
+      final all = TerminalInputGuard.filter(
+        '${TerminalInputGuard.ctrlC}'
+        '${TerminalInputGuard.ctrlBackslash}'
+        '${TerminalInputGuard.ctrlZ}'
+        '${TerminalInputGuard.ctrlS}x',
+        blockInterrupt: true,
+      );
+      expect(all.data, 'x');
+
+      // Blocking off lets them through, like Ctrl+C.
+      final open = TerminalInputGuard.filter(
+        TerminalInputGuard.ctrlZ,
+        blockInterrupt: false,
+      );
+      expect(open.blockedInterrupt, isFalse);
+      expect(open.data, TerminalInputGuard.ctrlZ);
     });
   });
 
@@ -459,6 +518,46 @@ void main() {
       expect(recent, contains('-TAIL'));
       expect(recent, isNot(contains('HEAD-')));
     });
+
+    test('an escape split across SSH chunks is rejoined before stripping', () {
+      final buf = TerminalTranscriptBuffer();
+      buf.append('\x1B[3');
+      buf.append('1mred');
+      buf.append('\x1B[0');
+      buf.append('m\n');
+      final recent = buf.recentForAi(20);
+      expect(recent, 'red');
+      expect(recent, isNot(contains('\x1B')));
+      expect(recent, isNot(contains('1m')));
+      expect(recent, isNot(contains('3')));
+    });
+
+    test('an escape split right before the line break leaks nothing', () {
+      // The newline completes the line while the escape is still open; the
+      // half-built `\x1B[3` must not reach the AI context as `[3`.
+      final buf = TerminalTranscriptBuffer();
+      buf.append('\x1B[3\n');
+      buf.append('1m');
+      expect(buf.recentForAi(20), isNot(contains('3')));
+      expect(buf.recentForAi(20), isNot(contains('1m')));
+    });
+
+    test('charset declarations ESC ( B / ESC ) 0 are stripped', () {
+      final buf = TerminalTranscriptBuffer();
+      buf.append('\x1B(Bplain\x1B)0other\n');
+      final recent = buf.recentForAi(20);
+      expect(recent, 'plainother');
+      expect(recent, isNot(contains('\x1B')));
+      expect(recent, isNot(contains('(')));
+    });
+
+    test('a charset escape split mid-sequence is rejoined before stripping',
+        () {
+      final buf = TerminalTranscriptBuffer();
+      buf.append('\x1B(');
+      buf.append('Bplain\n');
+      expect(buf.recentForAi(20), 'plain');
+    });
   });
 
   group('tmux parse', () {
@@ -498,11 +597,14 @@ void main() {
 
     test('switch-client when already in tmux; attach when not', () async {
       final fake = _FakeSshClient()..connected = true;
+      final sw = Stopwatch()..start();
       await tmux.switchOrAttachInShell(fake, 'other', currentlyInTmux: true);
-      expect(
-        fake.writes.any((w) => w.contains('switch-client -t other')),
-        isTrue,
-      );
+      sw.stop();
+      // Prefix-free `tmux switch-client`: no C-b byte, no settle window for
+      // user keystrokes to fall into a tmux command prompt mid-switch.
+      expect(fake.writes.single, "tmux switch-client -t 'other'\n");
+      expect(fake.writes.any((w) => w.contains('\x02')), isFalse);
+      expect(sw.elapsedMilliseconds, lessThan(100));
 
       fake.writes.clear();
       await tmux.switchOrAttachInShell(fake, 'fresh', currentlyInTmux: false);
@@ -1218,6 +1320,109 @@ void main() {
       );
     });
 
+    test('latched Ctrl+Z is blocked like Ctrl+C', () async {
+      final ctrl = container.read(researchTerminalProvider.notifier);
+      ctrl.setHostKeyHandlers(
+        onTrust: (_) async => true,
+        onMismatch: (_, _) async => false,
+      );
+      await ctrl.connect(profile);
+      fake.writes.clear();
+
+      ctrl.setCtrlLatched(true);
+      ctrl.terminal.onOutput!('z');
+      expect(fake.writes, isEmpty);
+      expect(
+        container.read(researchTerminalProvider).interruptBlockedFlash,
+        isTrue,
+      );
+    });
+
+    test('multi-char input does not burn the ctrl latch', () async {
+      final ctrl = container.read(researchTerminalProvider.notifier);
+      ctrl.setHostKeyHandlers(
+        onTrust: (_) async => true,
+        onMismatch: (_, _) async => false,
+      );
+      await ctrl.connect(profile);
+      fake.writes.clear();
+
+      // IME composition / paste is not a single Ctrl+key: the latch must stay
+      // armed for the next real keystroke.
+      ctrl.setCtrlLatched(true);
+      ctrl.terminal.onOutput!('paste of several chars');
+      expect(fake.writes, ['paste of several chars']);
+      expect(container.read(researchTerminalProvider).ctrlLatched, isTrue);
+
+      fake.writes.clear();
+      ctrl.terminal.onOutput!('d');
+      expect(fake.writes, ['\x04']);
+      expect(container.read(researchTerminalProvider).ctrlLatched, isFalse);
+    });
+
+    test(
+      'a transport that dies before the approved write surfaces an error',
+      () async {
+        final ctrl = container.read(researchTerminalProvider.notifier);
+        ctrl.setHostKeyHandlers(
+          onTrust: (_) async => true,
+          onMismatch: (_, _) async => false,
+        );
+        await ctrl.connect(profile);
+
+        ctrl.debugSetProposal(
+          const CommandProposal(
+            id: 'prop-race',
+            diagnosis: 'need echo',
+            command: 'echo approved',
+            risk: CommandRisk.low,
+            evidence: ['t'],
+            impacts: ['print'],
+            nonImpacts: [],
+          ),
+        );
+        final approved = ctrl.approveCurrentProposal(
+          command: 'echo approved',
+          cwdHint: '/',
+        );
+        expect(approved, isNotNull);
+
+        // The connection check passes, then the transport dies before the
+        // bytes land — the failure must be reported, not silently dropped.
+        fake.failWrites = true;
+        expect(
+          () => ctrl.executeApproved(approved!),
+          throwsA(isA<StateError>()),
+        );
+        expect(fake.writes, isEmpty);
+        // The proposal survives so the user can retry or reject.
+        expect(container.read(researchTerminalProvider).proposal, isNotNull);
+      },
+    );
+
+    test('fingerprint storage failure never tears down the live connection',
+        () async {
+      final ctrl = container.read(researchTerminalProvider.notifier);
+      ctrl.setHostKeyHandlers(
+        onTrust: (_) async => true,
+        onMismatch: (_, _) async => false,
+      );
+      await ctrl.connect(profile);
+      expect(container.read(researchTerminalProvider).isConnected, isTrue);
+
+      // Storage now fails every write; a reconnect still wants to persist the
+      // fingerprint, and that failure is a prefs problem, not a transport one.
+      SharedPreferencesStorePlatform.instance = _FailingPrefsStore();
+      await ctrl.disconnect();
+      await ctrl.connect(profile);
+
+      final st = container.read(researchTerminalProvider);
+      expect(st.isConnected, isTrue);
+      expect(st.status, ResearchConnectionStatus.connected);
+      expect(st.statusMessage, contains('指纹'));
+      expect(fake.connected, isTrue);
+    });
+
     test('refresh drops a tmux session we are no longer attached to', () async {
       final ctrl = container.read(researchTerminalProvider.notifier);
       ctrl.setHostKeyHandlers(
@@ -1593,6 +1798,41 @@ void main() {
       expect(harness.fake.closed, isTrue);
       await harness.client.disconnect();
     });
+
+    test('a shell channel stream error surfaces through done, not a swallow',
+        () async {
+      final server = await dummyListener();
+      addTearDown(server.close);
+      final harness = newIoWithFake();
+      final session = _FakeDartSshSession();
+      harness.fake.shellFuture = Future.value(session);
+
+      final connecting = harness.client.connect(
+        profile: profile(server),
+        password: 'pw',
+        privateKeyPem: null,
+        passphrase: null,
+        onHostKeyTrust: (_) async => true,
+        onHostKeyMismatch: (_, _) async => false,
+      );
+      await harness.created;
+      harness.fake.verifyHostKey!('ssh-ed25519', utf8.encode('SHA256:io-test'));
+      harness.fake.authCompleter.complete();
+      await connecting;
+      expect(harness.client.isConnected, isTrue);
+
+      var done = false;
+      unawaited(harness.client.done.then((_) => done = true));
+      // The remote channel dies with an error — the client must tear the
+      // session down and notify upstream instead of ignoring the error, or
+      // the UI would keep staring at a dead shell as if it were alive.
+      session.pushStdoutError(ResearchSshException('channel died'));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(harness.client.isConnected, isFalse);
+      expect(done, isTrue);
+      await harness.client.disconnect();
+    });
   });
 
   group('web stub client', () {
@@ -1824,6 +2064,66 @@ void main() {
       );
 
       tester.view.viewInsets = FakeViewPadding.zero;
+      await unpumpPage(tester);
+    });
+
+    testWidgets('a blocked edited command stays visible and rejectable', (
+      tester,
+    ) async {
+      // Wide layout docks the AI panel beside the terminal (embedded), so the
+      // proposal card is directly reachable without the bottom sheet.
+      tester.view.devicePixelRatio = 1.0;
+      tester.view.physicalSize = const Size(1280, 800);
+      addTearDown(tester.view.reset);
+
+      await pumpPage(tester);
+
+      final ctrl = container.read(researchTerminalProvider.notifier);
+      ctrl.debugSetProposal(
+        const CommandProposal(
+          id: 'blocked-1',
+          diagnosis: 'd',
+          command: 'ls -la',
+          risk: CommandRisk.low,
+          evidence: [],
+          impacts: [],
+          nonImpacts: [],
+        ),
+      );
+      await tester.pump();
+
+      await tester.ensureVisible(find.text('命令建议'));
+      await tester.pump();
+      await tester.tap(find.text('编辑'));
+      await tester.pump();
+      // Editing in a control character makes the command blocked.
+      await tester.enterText(find.byType(TextField).last, 'ls -la\x00x');
+      await tester.pump();
+      await tester.pump();
+
+      // The card must not vanish — it is the only place to reject or re-edit.
+      expect(find.text('命令建议'), findsOneWidget);
+      expect(find.text('拒绝'), findsOneWidget);
+      final execute = tester.widget<FilledButton>(
+        find.widgetWithText(FilledButton, '确认执行'),
+      );
+      expect(execute.onPressed, isNull);
+
+      // Editing back to a safe command re-enables execution.
+      await tester.enterText(find.byType(TextField).last, 'ls -la');
+      await tester.pump();
+      final reEnabled = tester.widget<FilledButton>(
+        find.widgetWithText(FilledButton, '确认执行'),
+      );
+      expect(reEnabled.onPressed, isNotNull);
+
+      // 拒绝 still dismisses the proposal.
+      await tester.ensureVisible(find.text('拒绝'));
+      await tester.pump();
+      await tester.tap(find.text('拒绝'));
+      await tester.pump();
+      expect(container.read(researchTerminalProvider).proposal, isNull);
+
       await unpumpPage(tester);
     });
   });

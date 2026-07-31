@@ -19,6 +19,25 @@ void main() {
       ]);
     });
 
+    test('keeps balanced parentheses inside URLs (Wikipedia style)', () {
+      expect(
+        extractHttpUrls('维基：https://en.wikipedia.org/wiki/Foo_(bar)'),
+        ['https://en.wikipedia.org/wiki/Foo_(bar)'],
+      );
+      expect(extractHttpUrls('(https://en.wikipedia.org/wiki/Foo_(bar))'), [
+        'https://en.wikipedia.org/wiki/Foo_(bar)',
+      ]);
+    });
+
+    test('drops unclosed opening parentheses', () {
+      expect(extractHttpUrls('https://en.wikipedia.org/wiki/Foo_(bar'), [
+        'https://en.wikipedia.org/wiki/Foo_',
+      ]);
+      expect(extractHttpUrls('https://example.com/a(1)(2'), [
+        'https://example.com/a(1)',
+      ]);
+    });
+
     test('dedupes and respects limit', () {
       final text =
           'https://a.com https://b.com https://a.com https://c.com https://d.com';

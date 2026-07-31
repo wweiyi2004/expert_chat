@@ -81,6 +81,21 @@ void main() {
       expect(policyPos, lessThan(scriptStart));
     });
 
+    test('does not treat a <head> inside the body as an injection point', () {
+      final out = buildSandboxedHtmlPreview(
+        '<body><p><head></p></body>',
+      );
+
+      final srcdoc = srcdocOf(out);
+      final fakeHead = srcdoc.lastIndexOf('&lt;head&gt;');
+      final policyPos = srcdoc.indexOf('Content-Security-Policy');
+      expect(fakeHead, greaterThan(-1));
+      // There is no real head, so the wrapper head must carry the policy,
+      // placed before any document content — never inside the body-level
+      // fake <head>, where a CSP meta would be inert.
+      expect(policyPos, lessThan(fakeHead));
+    });
+
     test('keeps injecting into a normal single head (regression)', () {
       final out = buildSandboxedHtmlPreview(
         '<HTML><HEAD><TITLE>t</TITLE></HEAD><BODY>x</BODY></HTML>',

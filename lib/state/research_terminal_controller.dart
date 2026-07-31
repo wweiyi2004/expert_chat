@@ -288,9 +288,14 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
     if (client == null || !client.isConnected) return false;
     var payload = data;
     if (!force && state.ctrlLatched && data.isNotEmpty) {
-      payload = TerminalInputGuard.applyCtrlLatch(data) ?? data;
-      // A real Ctrl key releases after one keystroke; so does this.
-      state = state.copyWith(ctrlLatched: false);
+      if (data.length == 1) {
+        payload = TerminalInputGuard.applyCtrlLatch(data) ?? data;
+        // A real Ctrl key releases after one keystroke; so does this.
+        state = state.copyWith(ctrlLatched: false);
+      }
+      // Multi-character input (paste / IME composition) is not a single
+      // Ctrl+key: keep the latch armed for the next real keystroke instead of
+      // burning it on a composite Ctrl has no meaning for.
     }
     final result = TerminalInputGuard.filter(
       payload,
@@ -376,18 +381,26 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
       }
       sw.stop();
 
-      // Persist trusted fingerprint if newly accepted.
-      final fp = client.lastHostKeyFingerprint;
-      if (fp != null &&
-          (profile.trustedHostKeyFingerprint == null ||
-              profile.trustedHostKeyFingerprint != fp)) {
-        final updated = profile.copyWith(
-          trustedHostKeyFingerprint: fp,
-          lastUsedAt: DateTime.now(),
-        );
-        await saveProfile(updated);
-      } else {
-        await saveProfile(profile.copyWith(lastUsedAt: DateTime.now()));
+      // Persist trusted fingerprint if newly accepted. A failing disk must not
+      // be able to take down a live SSH session — that is a storage problem,
+      // not a transport one — so surface it as a message instead of entering
+      // the error path below.
+      var persistWarning = '';
+      try {
+        final fp = client.lastHostKeyFingerprint;
+        if (fp != null &&
+            (profile.trustedHostKeyFingerprint == null ||
+                profile.trustedHostKeyFingerprint != fp)) {
+          final updated = profile.copyWith(
+            trustedHostKeyFingerprint: fp,
+            lastUsedAt: DateTime.now(),
+          );
+          await saveProfile(updated);
+        } else {
+          await saveProfile(profile.copyWith(lastUsedAt: DateTime.now()));
+        }
+      } catch (e) {
+        persistWarning = '指纹保存失败：${_safeError(e)}';
       }
       if (!stillThisClient()) {
         await client.disconnect();
@@ -457,7 +470,7 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
 
       state = state.copyWith(
         status: ResearchConnectionStatus.connected,
-        statusMessage: '已连接',
+        statusMessage: persistWarning.isEmpty ? '已连接' : persistWarning,
         connectionGeneration: state.connectionGeneration + 1,
         latencyMs: sw.elapsedMilliseconds,
         proposal: null,
@@ -817,12 +830,22 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
     if (client == null || hostId == null || !client.isConnected) {
       throw StateError('未连接，无法执行');
     }
+    var wrote = false;
     const ApprovedCommandExecutor().execute(
-      writeToShell: client.write,
+      // The executor validates approval freshness; the write itself can still
+      // fail if the transport died in the window since isConnected was true.
+      writeToShell: (data) {
+        wrote = client.write(data);
+      },
       approved: approved,
       activeHostId: hostId,
       activeConnectionGeneration: state.connectionGeneration,
     );
+    if (!wrote) {
+      // Never drop an approved command silently: surface it so the UI can
+      // tell the user to reconnect, and keep the proposal for a retry.
+      throw StateError('命令未写入：连接已断开');
+    }
     // Invalidate reuse of the same proposal.
     state = state.copyWith(proposal: null);
   }

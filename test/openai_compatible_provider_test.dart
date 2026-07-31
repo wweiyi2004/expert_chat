@@ -116,6 +116,153 @@ data: [DONE]
     );
   });
 
+  test('joins wrapped data: lines into one event (gateway line folding)', () async {
+    // A gateway folds a long JSON payload at a token boundary; the fragments
+    // must be joined with '\n' per the SSE spec and parsed once.
+    final adapter = _RecordingAdapter(sse: '''
+data: {"choices":[{"delta":{"content":"hello"}
+data: ,"finish_reason":"stop"}]}
+
+data: [DONE] done
+
+''');
+    final dio = Dio()..httpClientAdapter = adapter;
+    final provider = OpenAiCompatibleProvider(dio: dio);
+
+    final chunks = await provider
+        .streamChat(
+          config: const LlmConfig(
+            baseUrl: 'https://api.deepseek.com',
+            apiKey: 'deepseek-test',
+            model: 'deepseek-v4-pro',
+          ),
+          messages: const [
+            LlmRequestMessage(role: MessageRole.user, content: 'hello'),
+          ],
+        )
+        .toList();
+
+    // A gateway that folds a long JSON payload across two `data:` lines must
+    // still yield one chunk; per-line jsonDecode drops both fragments.
+    expect(chunks.map((c) => c.contentDelta).whereType<String>(), ['hello']);
+    expect(chunks.single.finishReason, 'stop');
+  });
+
+  test('flushes a wrapped event when the stream ends without a blank line',
+      () async {
+    final adapter = _RecordingAdapter(sse: '''
+data: {"choices":[{"delta":{"content":"tail end"}
+data: ,"finish_reason":"stop"}]}''');
+    final dio = Dio()..httpClientAdapter = adapter;
+    final provider = OpenAiCompatibleProvider(dio: dio);
+
+    final chunks = await provider
+        .streamChat(
+          config: const LlmConfig(
+            baseUrl: 'https://api.deepseek.com',
+            apiKey: 'deepseek-test',
+            model: 'deepseek-v4-pro',
+          ),
+          messages: const [
+            LlmRequestMessage(role: MessageRole.user, content: 'hello'),
+          ],
+        )
+        .toList();
+
+    expect(chunks.map((c) => c.contentDelta).whereType<String>(), ['tail end']);
+  });
+
+  test('[DONE] with trailing content ends the stream early', () async {
+    final adapter = _RecordingAdapter(sse: '''
+data: {"choices":[{"delta":{"content":"answer"},"finish_reason":null}]}
+data: [DONE] extra
+data: {"choices":[{"delta":{"content":"late"},"finish_reason":"stop"}]}
+''');
+    final dio = Dio()..httpClientAdapter = adapter;
+    final provider = OpenAiCompatibleProvider(dio: dio);
+
+    final chunks = await provider
+        .streamChat(
+          config: const LlmConfig(
+            baseUrl: 'https://api.deepseek.com',
+            apiKey: 'deepseek-test',
+            model: 'deepseek-v4-pro',
+          ),
+          messages: const [
+            LlmRequestMessage(role: MessageRole.user, content: 'hello'),
+          ],
+        )
+        .toList();
+
+    // `[DONE] extra` must be recognized as the terminal event; otherwise the
+    // client keeps waiting for the server to close the connection.
+    expect(chunks.map((c) => c.contentDelta).whereType<String>(), ['answer']);
+  });
+
+  test('reasoning_content is not sent back to non-reasoning providers',
+      () async {
+    final adapter = _RecordingAdapter();
+    final dio = Dio()..httpClientAdapter = adapter;
+    final provider = OpenAiCompatibleProvider(dio: dio);
+
+    await provider
+        .streamChat(
+          config: const LlmConfig(
+            baseUrl: 'https://api.openai.com/v1',
+            apiKey: 'openai-test',
+            model: 'gpt-4o',
+          ),
+          messages: const [
+            LlmRequestMessage(
+              role: MessageRole.assistant,
+              content: 'answer',
+              reasoningContent: 'chain of thought',
+            ),
+          ],
+        )
+        .toList();
+
+    final sent =
+        (adapter.body['messages'] as List).single as Map<String, dynamic>;
+    // A strict provider that rejects unknown fields would 400 on this.
+    expect(sent, isNot(contains('reasoning_content')));
+  });
+
+  test('reasoning_content still round-trips for DeepSeek and reasoners',
+      () async {
+    for (final model in [
+      'deepseek-v4-flash',
+      'deepseek-v4-pro',
+      'grok-4.5',
+      'o1-preview',
+    ]) {
+      final adapter = _RecordingAdapter();
+      final dio = Dio()..httpClientAdapter = adapter;
+      final provider = OpenAiCompatibleProvider(dio: dio);
+
+      await provider
+          .streamChat(
+            config: LlmConfig(
+              baseUrl: 'https://api.example.com/v1',
+              apiKey: 'k',
+              model: model,
+            ),
+            messages: const [
+              LlmRequestMessage(
+                role: MessageRole.assistant,
+                content: 'a',
+                reasoningContent: 'r',
+              ),
+            ],
+          )
+          .toList();
+
+      final sent =
+          (adapter.body['messages'] as List).single as Map<String, dynamic>;
+      expect(sent['reasoning_content'], 'r', reason: model);
+    }
+  });
+
   test('stop wins over a hanging header wait', () async {
     final dio = Dio()..httpClientAdapter = _HangingAdapter();
     final provider = OpenAiCompatibleProvider(

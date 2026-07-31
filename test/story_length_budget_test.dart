@@ -128,6 +128,26 @@ void main() {
     expect(StoryLengthBudget.formatChars(42), '42');
   });
 
+  test('beatsLeft drops to 0 once every outline beat has been advanced', () {
+    final body = '字' * 2000;
+    final assistant = ChatMessage(role: MessageRole.assistant, content: body);
+    final convo = Conversation(
+      mode: ConversationMode.story,
+      outline: '- 一\n- 二',
+      plotCursor: 2, // advanced past the final beat
+      targetTotalChars: 10000,
+      messages: [assistant],
+      activeChildren: {kRootKey: assistant.id},
+    );
+    final budget = StoryLengthBudget.forConversation(convo)!;
+    expect(budget.beatsLeft, 0);
+    final block = budget.promptBlock(advancePlot: true);
+    // The outline is fully advanced; nothing may claim a leftover beat.
+    expect(block, contains('已无剩余节拍'));
+    expect(block, isNot(contains('剩余约 1 拍')));
+    expect(block, isNot(contains('剩余约 0 拍（含当前）')));
+  });
+
   test('near-end remaining (<200) does not throw on clamp', () {
     for (final rem in [1, 50, 199, 200, 500, 899]) {
       final written = 10000 - rem;

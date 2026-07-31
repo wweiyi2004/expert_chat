@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:dio/dio.dart' show CancelToken;
 import 'package:drift/native.dart';
@@ -18,6 +19,19 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+// Test-only transitive dependency: used to simulate a failing prefs backend.
+// ignore: depend_on_referenced_packages
+import 'package:shared_preferences_platform_interface/shared_preferences_platform_interface.dart';
+
+/// Prefs backend whose writes always fail, like a full disk.
+class _FailingPrefsStore extends InMemorySharedPreferencesStore {
+  _FailingPrefsStore() : super.withData(const {});
+
+  @override
+  Future<bool> setValue(String valueType, String key, Object value) async {
+    throw StateError('disk full');
+  }
+}
 
 class _ReadySettingsController extends SettingsController {
   @override
@@ -151,7 +165,7 @@ void main() {
     await database.close();
   });
 
-  Widget buildSubject() {
+  Widget buildSubject({SharedPreferences? prefsOverride}) {
     return ProviderScope(
       overrides: [
         llmProvider.overrideWithValue(llm),
@@ -159,7 +173,7 @@ void main() {
         worldInfoRepositoryProvider.overrideWithValue(
           WorldInfoRepository(database),
         ),
-        sharedPrefsProvider.overrideWithValue(prefs),
+        sharedPrefsProvider.overrideWithValue(prefsOverride ?? prefs),
         settingsControllerProvider.overrideWith(_ReadySettingsController.new),
       ],
       child: const MaterialApp(home: DirectorStorySetupPage()),
@@ -545,5 +559,119 @@ void main() {
     expect(llm.calls, hasLength(4), reason: '旧流应被停止，严格审稿与首节生成照常发起');
     expect(story.activePath, isNotEmpty);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'non-preset beat count and length restore without tripping the input guard',
+    (tester) async {
+      llm = _ScriptedLlmProvider(const [
+        '雾气贴着车窗缓慢流动。林澈醒来时，顾舟已经站在车厢尽头。',
+      ]);
+      // 节拍数 7 与总字数 9万 都不在页面预设选项中；生成指纹按这两个值计算。
+      await DirectorStorySetupDraftStore(prefs).save(
+        DirectorStorySetupDraft(
+          premise: '一列夜车驶入雾港。',
+          beatCount: 7,
+          targetTotalChars: 90000,
+          generatedDraft: DirectorStoryDraft(
+            title: '雾港夜车',
+            outline: '- 夜车抵达雾港\n- 林澈发现死亡车票',
+            authorNote: '保持悬念。',
+            characters: [CharacterCardDraft(name: '林澈', description: '记者')],
+          ),
+          generationFingerprint: jsonEncode({
+            'premise': '一列夜车驶入雾港。',
+            'requirements': '',
+            'beatCount': 7,
+            'targetTotalChars': 90000,
+            'strictReview': true,
+          }),
+        ),
+      );
+
+      tester.view.physicalSize = const Size(480, 800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      await tester.pumpWidget(buildSubject());
+      await tester.pumpAndSettle();
+
+      // 非预设的节拍数/字数也必须被恢复，而不是静默回落到默认 8 / 80000。
+      await tester.scrollUntilVisible(
+        find.byType(DropdownButtonFormField<int>),
+        240,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<DropdownButtonFormField<int>>(
+              find.byType(DropdownButtonFormField<int>),
+            )
+            .initialValue,
+        7,
+      );
+      expect(find.text('7 个节拍'), findsOneWidget);
+
+      await tester.scrollUntilVisible(
+        find.byKey(const ValueKey('director-len-120000')),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+      await tester.drag(
+        find.byType(Scrollable).first,
+        const Offset(0, -100),
+      );
+      await tester.pumpAndSettle();
+      expect(find.textContaining('目标约 9万'), findsOneWidget);
+
+      // 恢复后的值与生成时一致：开始演绎不应误报「输入已变化」。
+      await tester.tap(find.widgetWithText(FilledButton, '开始演绎第一节'));
+      await tester.pump();
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('已变化'), findsNothing);
+      expect(
+        llm.calls,
+        isNotEmpty,
+        reason: '指纹与恢复后的实际值一致时，不应被「输入已变化」拦截',
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('draft save failure surfaces a one-time notice', (tester) async {
+    // 用写入必失败的 prefs 后端模拟磁盘已满。
+    SharedPreferences.setMockInitialValues({});
+    SharedPreferencesStorePlatform.instance = _FailingPrefsStore();
+    final failingPrefs = await SharedPreferences.getInstance();
+
+    tester.view.physicalSize = const Size(420, 760);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(buildSubject(prefsOverride: failingPrefs));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(fieldWithLabel('故事情节 *'), '一段需要被自动保存的故事。');
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pump();
+    expect(find.text('草稿保存失败，请检查存储空间。'), findsOneWidget);
+
+    // 提示只弹一次：同一失败周期内继续输入不再重复打扰。
+    // SnackBar 需要逐帧驱动：入场动画完成后才开始 4s 展示计时，随后还有退场动画。
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump(const Duration(seconds: 4));
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(find.text('草稿保存失败，请检查存储空间。'), findsNothing);
+
+    await tester.enterText(fieldWithLabel('故事情节 *'), '再改一句。');
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pump();
+    expect(find.text('草稿保存失败，请检查存储空间。'), findsNothing);
   });
 }

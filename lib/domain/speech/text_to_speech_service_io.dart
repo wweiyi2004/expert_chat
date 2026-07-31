@@ -32,6 +32,7 @@ class ApiTextToSpeechService implements TextToSpeechService {
   File? _activeAudioFile;
   int _requestId = 0;
   bool _disposed = false;
+  bool _tempDirCleaned = false;
 
   @override
   ValueListenable<TextToSpeechPlayback> get playback => _playback;
@@ -243,6 +244,13 @@ class ApiTextToSpeechService implements TextToSpeechService {
       '${cache.path}${Platform.pathSeparator}expert-chat-tts',
     );
     await directory.create(recursive: true);
+    if (!_tempDirCleaned) {
+      // Clear leftovers of previous sessions once per service lifetime, right
+      // before the first write: nothing is being played at that point, so a
+      // stale file can never be the one currently on the audio stack.
+      _tempDirCleaned = true;
+      await cleanupStaleAudioFiles(directory);
+    }
     final file = File(
       '${directory.path}${Platform.pathSeparator}'
       'speech-$requestId-$chunkIndex.${_safeExtension(extension)}',
@@ -298,5 +306,27 @@ class ApiTextToSpeechService implements TextToSpeechService {
       // Player disposal is best effort during app shutdown.
     }
     _playback.dispose();
+  }
+}
+
+/// Deletes audio files left in [directory] by previous sessions so the temp
+/// directory does not accumulate speech files across launches.
+///
+/// Best effort: a file still held by the audio stack (some Windows drivers
+/// release a file just after stop()) is skipped rather than retried - leaving
+/// one stale file is safer than disrupting playback. Never throws.
+Future<void> cleanupStaleAudioFiles(Directory directory) async {
+  try {
+    if (!await directory.exists()) return;
+    await for (final entry in directory.list()) {
+      if (entry is! File) continue;
+      try {
+        await entry.delete();
+      } catch (_) {
+        // A locked file is safe to leave for a later session to retry.
+      }
+    }
+  } catch (_) {
+    // A failed cleanup must never block the write that follows it.
   }
 }

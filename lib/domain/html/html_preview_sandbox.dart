@@ -111,11 +111,14 @@ $source
 /// markup context: the position right after its closing `>`, or null if there
 /// is none. A single linear scan tracks the contexts in which `<head>` /
 /// `<html>` text must not be trusted as a real element — HTML comments,
-/// script and style element content (including string literals), and tag
-/// attribute values. A policy meta injected into any of those would be inert
-/// text instead of an active CSP, leaving the document unprotected.
+/// script and style element content (including string literals), tag
+/// attribute values, and anything after the body has started (an element
+/// nested in `<body>` is not the document head). A policy meta injected into
+/// any of those would be inert text instead of an active CSP, leaving the
+/// document unprotected.
 int? _firstTagOutsideMarkup(String source, String name) {
   var i = 0;
+  var inBody = false; // after `<body>`/`</body>`, head-level tags are inert
   final n = source.length;
   while (i < n) {
     if (source.codeUnitAt(i) != 0x3C /* < */ ) {
@@ -143,7 +146,9 @@ int? _firstTagOutsideMarkup(String source, String name) {
       continue;
     }
     if (next == 0x2F /* / */ ) {
-      // Closing tag: nothing of interest inside.
+      // Closing tag: nothing of interest inside, except `</body>`, which
+      // ends the head region just like an opening `<body>`.
+      if (_isCloseTagAt(source, i, 'body')) inBody = true;
       i = _skipTag(source, i);
       continue;
     }
@@ -152,6 +157,12 @@ int? _firstTagOutsideMarkup(String source, String name) {
       continue;
     }
     if (_isStartTagAt(source, i, name)) {
+      if (inBody) {
+        // `<head>`/`<html>` inside the body is not the document head; a
+        // meta injected there would be inert. Skip it like any element.
+        i = _skipTag(source, i);
+        continue;
+      }
       return _skipTag(source, i);
     }
     final isScript = _isStartTagAt(source, i, 'script');
@@ -165,7 +176,9 @@ int? _firstTagOutsideMarkup(String source, String name) {
       );
       continue;
     }
-    // Ordinary element: only its attribute values are opaque.
+    // Ordinary element: only its attribute values are opaque. An opening
+    // `<body>` also ends the head region for the rest of the document.
+    if (_isStartTagAt(source, i, 'body')) inBody = true;
     i = _skipTag(source, i);
   }
   return null;
@@ -230,6 +243,25 @@ bool _isStartTagAt(String source, int i, String name) {
   final boundary = source.codeUnitAt(i + 1 + name.length);
   return boundary == 0x3E ||
       boundary == 0x2F ||
+      boundary == 0x09 ||
+      boundary == 0x0A ||
+      boundary == 0x0C ||
+      boundary == 0x0D ||
+      boundary == 0x20;
+}
+
+/// Whether `</name` (ASCII case-insensitive) starts a closing tag at [i]: the
+/// character after the name must be `>` or whitespace.
+bool _isCloseTagAt(String source, int i, String name) {
+  final n = source.length;
+  if (i + 2 + name.length >= n) return false;
+  for (var k = 0; k < name.length; k++) {
+    if (!_eqAsciiFold(source.codeUnitAt(i + 2 + k), name.codeUnitAt(k))) {
+      return false;
+    }
+  }
+  final boundary = source.codeUnitAt(i + 2 + name.length);
+  return boundary == 0x3E ||
       boundary == 0x09 ||
       boundary == 0x0A ||
       boundary == 0x0C ||

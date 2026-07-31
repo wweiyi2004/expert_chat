@@ -73,6 +73,14 @@ String prepareTextForSpeech(String source) {
         (match) => match.group(1) ?? '',
       )
       .replaceAll(RegExp(r'<https?://[^>]+>'), '')
+      // A URL is often followed directly by full-width punctuation (。，；！？),
+      // which is not whitespace, so \S+ would swallow it together with the
+      // URL. Full-width marks never occur inside a valid URL, so capture the
+      // first one and keep it; the bare-URL pass below handles the rest.
+      .replaceAllMapped(
+        RegExp(r'https?://\S+?([。，；！？])'),
+        (match) => match.group(1) ?? '',
+      )
       .replaceAll(RegExp(r'https?://\S+'), '')
       .replaceAll(RegExp(r'^\s{0,3}#{1,6}\s*', multiLine: true), '')
       .replaceAll(RegExp(r'^\s*>\s?', multiLine: true), '')
@@ -92,8 +100,10 @@ List<String> splitTextForSpeech(String text, {int maxChunkLength = 600}) {
   if (normalized.isEmpty) return const [];
 
   final sentences = [
+    // The punctuation group is greedy so consecutive marks ('明白了!!')
+    // stay with the sentence they close, keeping chunks.join() == text.
     for (final match in RegExp(
-      r'[^。！？!?；;\n]+[。！？!?；;]?',
+      r'[^。！？!?；;\n]+[。！？!?；;]*',
     ).allMatches(normalized))
       match.group(0)?.trim() ?? '',
   ].where((part) => part.isNotEmpty);

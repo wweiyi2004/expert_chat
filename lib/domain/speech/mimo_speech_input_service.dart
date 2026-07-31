@@ -99,6 +99,7 @@ class MimoSpeechInputService {
   var _recording = false;
   var _disposed = false;
   var _session = 0;
+  var _tempDirCleaned = false;
 
   bool get isActive => _recording || _cancelToken != null;
 
@@ -146,6 +147,13 @@ class MimoSpeechInputService {
         '${cache.path}${Platform.pathSeparator}expert-chat-asr',
       );
       await directory.create(recursive: true);
+      if (!_tempDirCleaned) {
+        // Clear WAV leftovers of previous sessions once per service lifetime,
+        // before the current recording file is created, so cleanup can never
+        // touch the clip currently being recorded.
+        _tempDirCleaned = true;
+        await _deleteStaleTempFiles(directory);
+      }
       final file = File(
         '${directory.path}${Platform.pathSeparator}recording-$session.wav',
       );
@@ -314,11 +322,19 @@ class MimoSpeechInputService {
   }
 
   String _errorMessage(Object error) {
+    if (error is DioException) {
+      // Only a network/API failure earns the cloud troubleshooting copy; the
+      // provider humanizes DioExceptions into plain Exceptions with their own
+      // detail (handled below), so this branch is the last line of defence.
+      return '云端语音识别失败，请检查 API 配置和网络后重试。';
+    }
     final raw = error.toString();
     for (final prefix in const ['Exception: ', 'FormatException: ']) {
       if (raw.startsWith(prefix)) return raw.substring(prefix.length);
     }
-    return '云端语音识别失败，请检查 API 配置和网络后重试。';
+    // Anything else comes from the recording phase (file reads, recorder
+    // stop), so the cloud copy would be misleading here.
+    return '录音文件处理失败，请重试。';
   }
 
   Future<void> _deleteAudioFile(File? file) async {
@@ -327,6 +343,26 @@ class MimoSpeechInputService {
       if (await file.exists()) await file.delete();
     } catch (_) {
       // Do not let a late platform file lock block the next recognition.
+    }
+  }
+
+  /// Deletes files left in [directory] by previous sessions so the temp
+  /// directory does not accumulate WAV clips across launches. Best effort: a
+  /// file still held by the platform is skipped rather than retried. Never
+  /// throws.
+  Future<void> _deleteStaleTempFiles(Directory directory) async {
+    try {
+      if (!await directory.exists()) return;
+      await for (final entry in directory.list()) {
+        if (entry is! File) continue;
+        try {
+          await entry.delete();
+        } catch (_) {
+          // A locked file is safe to leave for a later session to retry.
+        }
+      }
+    } catch (_) {
+      // A failed cleanup must never block the recording that follows it.
     }
   }
 }

@@ -59,7 +59,10 @@ abstract class ResearchSshClient {
     Duration connectTimeout = const Duration(seconds: 15),
   });
 
-  void write(List<int> data);
+  /// Writes to the interactive shell. Returns false when the channel is gone
+  /// and nothing was sent, so callers can surface a dropped command instead
+  /// of silently losing it.
+  bool write(List<int> data);
   void resize({required int cols, required int rows});
   Future<String> runExec(String command, {Duration timeout});
   Future<void> disconnect();
@@ -235,31 +238,42 @@ class ResearchSshClientIo implements ResearchSshClient {
     _subs.add(
       shell.stdout.listen((data) {
         _emitStdout(data);
-      }, onError: (_) {}),
+      }, onError: (Object e) {
+        // A channel error means the session is gone even if TCP is not.
+        // Forward it through the same done-path the controller listens on —
+        // swallowing it would leave the UI staring at a dead shell.
+        debugPrint('research ssh stdout channel error: $e');
+        _markChannelClosed();
+      }),
     );
     _subs.add(
       shell.stderr.listen((data) {
         _emitStderr(data);
-      }, onError: (_) {}),
+      }, onError: (Object e) {
+        debugPrint('research ssh stderr channel error: $e');
+        _markChannelClosed();
+      }),
     );
     unawaited(
       shell.done
-          .then((_) {
-            _connected = false;
-            if (!(_done?.isCompleted ?? true)) _done?.complete();
-          })
-          .catchError((_) {
-            _connected = false;
-            if (!(_done?.isCompleted ?? true)) _done?.complete();
-          }),
+          .then((_) => _markChannelClosed())
+          .catchError((_) => _markChannelClosed()),
     );
   }
 
+  /// The interactive channel is gone: tear down the connected state and
+  /// complete [done] so upstream disconnects instead of hanging on a corpse.
+  void _markChannelClosed() {
+    _connected = false;
+    if (!(_done?.isCompleted ?? true)) _done?.complete();
+  }
+
   @override
-  void write(List<int> data) {
+  bool write(List<int> data) {
     final shell = _shell;
-    if (shell == null || !_connected) return;
+    if (shell == null || !_connected) return false;
     shell.write(Uint8List.fromList(data));
+    return true;
   }
 
   @override

@@ -46,9 +46,6 @@ class TmuxService {
   String attachSessionCommand(String name) =>
       'tmux attach-session -t ${shellSingleQuote(name)}\n';
 
-  /// Default tmux prefix is Ctrl-B (0x02).
-  static const int defaultPrefixCodeUnit = 0x02; // Ctrl-B
-
   Future<List<TmuxSessionInfo>> listSessions(ResearchSshClient client) async {
     try {
       // Do not sniff stdout for "not found": a session name may legitimately
@@ -105,18 +102,12 @@ class TmuxService {
     await client.runExec(detachClientCommand(safe));
   }
 
-  /// Gap between the prefix key and the command that follows it.
-  ///
-  /// tmux must process `C-b` before the next byte arrives, otherwise the `:`
-  /// reaches the pane as literal input. This is timing-dependent by nature —
-  /// there is no ack to wait on — so the window is sized for a slow link
-  /// rather than a fast one.
-  static const prefixSettleDelay = Duration(milliseconds: 150);
-
   /// Switch to another session while already attached (no full detach UX).
   ///
-  /// Uses tmux command mode: `C-b :switch-client -t <name>`. Session names are
-  /// restricted to the same safe charset as create.
+  /// Goes through the shell like attach: typing `tmux switch-client` needs no
+  /// prefix key, so there is no settle window in which user keystrokes could
+  /// fall into a tmux command prompt while the prefix is processed. Session
+  /// names are restricted to the same safe charset as create.
   Future<void> switchClientInShell(
     ResearchSshClient client,
     String name,
@@ -125,10 +116,9 @@ class TmuxService {
     if (safe.isEmpty || !RegExp(r'^[A-Za-z0-9_.:-]+$').hasMatch(safe)) {
       throw ArgumentError('非法的 tmux 会话名');
     }
-    client.write([defaultPrefixCodeUnit]);
-    await Future<void>.delayed(prefixSettleDelay);
-    // Enter command prompt, switch client, confirm.
-    client.write(utf8.encode(':switch-client -t $safe\n'));
+    client.write(
+      utf8.encode('tmux switch-client -t ${shellSingleQuote(safe)}\n'),
+    );
   }
 
   /// Attach if outside tmux; switch-client if already inside a session.

@@ -20,6 +20,10 @@ class _FakeRecorder implements SpeechAudioRecorder {
   /// when stop() completes, as the platform plugin does when it writes the
   /// final header after a cancel() that raced the pending stop().
   Completer<void>? stopGate;
+
+  /// When set, [stop] throws this error instead of returning, mimicking a
+  /// local recorder failure (e.g. a locked file).
+  Object? stopError;
   String? path;
   var cancelled = false;
   var disposed = false;
@@ -36,6 +40,8 @@ class _FakeRecorder implements SpeechAudioRecorder {
 
   @override
   Future<String?> stop() async {
+    final error = stopError;
+    if (error != null) throw error;
     final gate = stopGate;
     if (gate != null) {
       stopPending = true;
@@ -354,6 +360,205 @@ void main() {
         [SpeechInputStatus.listening, SpeechInputStatus.stopped],
       );
       expect(await File(recorder.path!).exists(), isFalse);
+    },
+  );
+
+  test(
+    'cleans stale recordings left by previous sessions before recording',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'expert-chat-asr-',
+      );
+      final asrDirectory = Directory(
+        '${directory.path}${Platform.pathSeparator}expert-chat-asr',
+      );
+      await asrDirectory.create(recursive: true);
+      // A name the current session can never write (sessions start at 1), so
+      // the stale path stays unambiguous after the new recording lands.
+      final stale = File(
+        '${asrDirectory.path}${Platform.pathSeparator}recording-99.wav',
+      );
+      await stale.writeAsBytes(const [1, 2, 3]);
+
+      final recorder = _FakeRecorder(wavBytes: const [9, 9]);
+      final service = MimoSpeechInputService(
+        mediaProvider: OpenAiCompatibleMediaProvider(),
+        recorder: recorder,
+        temporaryDirectory: () async => directory,
+      );
+      addTearDown(() async {
+        await service.dispose();
+        if (await directory.exists()) await directory.delete(recursive: true);
+      });
+
+      await service.initialize(onStatus: (_) {}, onError: (_) {});
+      const config = MediaApiConfig(
+        baseUrl: MediaApiConfig.mimoBaseUrl,
+        model: MediaApiConfig.mimoAsrModel,
+      );
+      expect(
+        await service.start(
+          config: config,
+          apiKey: 'secret',
+          onResult: (_) {},
+        ),
+        isTrue,
+      );
+
+      // The stale file from the previous session is gone, while the freshly
+      // recorded file is untouched.
+      expect(await stale.exists(), isFalse);
+      expect(await File(recorder.path!).exists(), isTrue);
+
+      await service.cancel();
+    },
+  );
+
+  test(
+    'reports a local recording failure as local, not cloud, error',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'expert-chat-asr-',
+      );
+      final recorder = _FakeRecorder()
+        ..stopError = const FileSystemException('Cannot open file');
+      final service = MimoSpeechInputService(
+        mediaProvider: OpenAiCompatibleMediaProvider(),
+        recorder: recorder,
+        temporaryDirectory: () async => directory,
+      );
+      addTearDown(() async {
+        await service.dispose();
+        if (await directory.exists()) await directory.delete(recursive: true);
+      });
+
+      final failures = <SpeechInputFailure>[];
+      await service.initialize(onStatus: (_) {}, onError: failures.add);
+      const config = MediaApiConfig(
+        baseUrl: MediaApiConfig.mimoBaseUrl,
+        model: MediaApiConfig.mimoAsrModel,
+      );
+      expect(
+        await service.start(
+          config: config,
+          apiKey: 'secret',
+          onResult: (_) {},
+        ),
+        isTrue,
+      );
+
+      await service.finish(config: config, apiKey: 'secret');
+
+      // A FileSystemException comes from the recording phase, so the
+      // cloud-troubleshooting copy would be misleading here.
+      expect(failures, hasLength(1));
+      expect(failures.single.code, 'cloud_asr_failed');
+      expect(failures.single.userFacingMessage, '录音文件处理失败，请重试。');
+    },
+  );
+
+  test(
+    'network failures keep the cloud troubleshooting copy',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'expert-chat-asr-',
+      );
+      final recorder = _FakeRecorder()
+        ..stopError = DioException(
+          requestOptions: RequestOptions(path: 'https://example.com'),
+          type: DioExceptionType.connectionError,
+        );
+      final service = MimoSpeechInputService(
+        mediaProvider: OpenAiCompatibleMediaProvider(),
+        recorder: recorder,
+        temporaryDirectory: () async => directory,
+      );
+      addTearDown(() async {
+        await service.dispose();
+        if (await directory.exists()) await directory.delete(recursive: true);
+      });
+
+      final failures = <SpeechInputFailure>[];
+      await service.initialize(onStatus: (_) {}, onError: failures.add);
+      const config = MediaApiConfig(
+        baseUrl: MediaApiConfig.mimoBaseUrl,
+        model: MediaApiConfig.mimoAsrModel,
+      );
+      expect(
+        await service.start(
+          config: config,
+          apiKey: 'secret',
+          onResult: (_) {},
+        ),
+        isTrue,
+      );
+
+      await service.finish(config: config, apiKey: 'secret');
+
+      expect(failures, hasLength(1));
+      expect(
+        failures.single.userFacingMessage,
+        '云端语音识别失败，请检查 API 配置和网络后重试。',
+      );
+    },
+  );
+
+  test(
+    'keeps the humanized cloud API detail instead of a generic copy',
+    () async {
+      final dio = Dio()
+        ..interceptors.add(
+          InterceptorsWrapper(
+            onRequest: (options, handler) {
+              handler.reject(
+                DioException(
+                  requestOptions: options,
+                  response: Response<dynamic>(
+                    requestOptions: options,
+                    statusCode: 400,
+                    data: {
+                      'error': {'message': 'Invalid API key provided'},
+                    },
+                  ),
+                ),
+              );
+            },
+          ),
+        );
+      final directory = await Directory.systemTemp.createTemp(
+        'expert-chat-asr-',
+      );
+      final recorder = _FakeRecorder();
+      final service = MimoSpeechInputService(
+        mediaProvider: OpenAiCompatibleMediaProvider(dio: dio),
+        recorder: recorder,
+        temporaryDirectory: () async => directory,
+      );
+      addTearDown(() async {
+        await service.dispose();
+        if (await directory.exists()) await directory.delete(recursive: true);
+      });
+
+      final failures = <SpeechInputFailure>[];
+      await service.initialize(onStatus: (_) {}, onError: failures.add);
+      const config = MediaApiConfig(
+        baseUrl: MediaApiConfig.mimoBaseUrl,
+        model: MediaApiConfig.mimoAsrModel,
+      );
+      expect(
+        await service.start(
+          config: config,
+          apiKey: 'secret',
+          onResult: (_) {},
+        ),
+        isTrue,
+      );
+
+      await service.finish(config: config, apiKey: 'secret');
+
+      expect(failures, hasLength(1));
+      expect(failures.single.userFacingMessage, contains('400'));
+      expect(failures.single.userFacingMessage, contains('Invalid API key'));
     },
   );
 }

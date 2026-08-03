@@ -540,7 +540,12 @@ class _MessageBubbleState extends State<MessageBubble> {
                 Padding(
                   padding: EdgeInsets.only(
                     top: hasReasoning ? 10 : 0,
-                    bottom: m.content.isNotEmpty ? 10 : 0,
+                    bottom: m.content.isNotEmpty ||
+                            m.attachments.any(
+                              (a) => !a.isImage && a.hasDownloadableBytes,
+                            )
+                        ? 10
+                        : 0,
                   ),
                   child: Wrap(
                     spacing: 10,
@@ -549,6 +554,35 @@ class _MessageBubbleState extends State<MessageBubble> {
                       for (final a in m.attachments)
                         if (a.isImage && a.hasImageData)
                           AttachmentImage(key: ValueKey(a.id), attachment: a),
+                    ],
+                  ),
+                ),
+              // Edited office/text files from document service (and any other
+              // non-image binary) — must be visible with a download action.
+              if (m.attachments.any(
+                (a) => !a.isImage && a.hasDownloadableBytes,
+              ))
+                Padding(
+                  padding: EdgeInsets.only(
+                    top: hasReasoning &&
+                            !m.attachments.any(
+                              (a) => a.isImage && a.hasImageData,
+                            )
+                        ? 10
+                        : 0,
+                    bottom: m.content.isNotEmpty ? 10 : 0,
+                  ),
+                  child: Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final a in m.attachments)
+                        if (!a.isImage && a.hasDownloadableBytes)
+                          AttachmentChip(
+                            key: ValueKey(a.id),
+                            attachment: a,
+                            onDownload: () => _downloadAttachment(context, a),
+                          ),
                     ],
                   ),
                 ),

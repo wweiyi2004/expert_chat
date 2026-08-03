@@ -176,9 +176,9 @@ class _AttachmentChipState extends State<AttachmentChip> {
     );
   }
 
-  /// A small image thumbnail when the attachment is a retained image, else the
-  /// type icon.
-  Widget _leading(Color color) {
+  /// A small image thumbnail when the attachment is a retained image, else a
+  /// format-colored type badge (Word blue / Excel green / …).
+  Widget _leading(Color fallbackColor) {
     final bytes = _imageBytes;
     // Decode only thumbnail resolution — full photo decode here OOMs chat lists.
     final dpr = MediaQuery.devicePixelRatioOf(context);
@@ -188,15 +188,14 @@ class _AttachmentChipState extends State<AttachmentChip> {
         borderRadius: BorderRadius.circular(8),
         child: Image.memory(
           bytes,
-          width: 28,
-          height: 28,
+          width: 32,
+          height: 32,
           cacheWidth: cachePx,
           cacheHeight: cachePx,
           fit: BoxFit.cover,
           gaplessPlayback: true,
           filterQuality: FilterQuality.low,
-          errorBuilder: (_, _, _) =>
-              Icon(_iconFor(widget.attachment), size: 20, color: color),
+          errorBuilder: (_, _, _) => _typeBadge(fallbackColor),
         ),
       );
     }
@@ -206,18 +205,49 @@ class _AttachmentChipState extends State<AttachmentChip> {
         borderRadius: BorderRadius.circular(8),
         child: Image.network(
           remoteUrl,
-          width: 28,
-          height: 28,
+          width: 32,
+          height: 32,
           cacheWidth: cachePx,
           cacheHeight: cachePx,
           fit: BoxFit.cover,
           filterQuality: FilterQuality.low,
-          errorBuilder: (_, _, _) =>
-              Icon(_iconFor(widget.attachment), size: 20, color: color),
+          errorBuilder: (_, _, _) => _typeBadge(fallbackColor),
         ),
       );
     }
-    return Icon(_iconFor(widget.attachment), size: 20, color: color);
+    return _typeBadge(fallbackColor);
+  }
+
+  Widget _typeBadge(Color fallbackColor) {
+    final style = _FileTypeStyle.of(widget.attachment);
+    final accent = widget.attachment.parseError != null
+        ? fallbackColor
+        : style.color;
+    return Container(
+      width: 32,
+      height: 32,
+      decoration: BoxDecoration(
+        color: accent.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: accent.withValues(alpha: 0.35)),
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(style.icon, size: 15, color: accent),
+          Text(
+            style.label,
+            style: TextStyle(
+              fontSize: 7.5,
+              height: 1.0,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0.2,
+              color: accent,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   String _status(Attachment a) {
@@ -227,28 +257,106 @@ class _AttachmentChipState extends State<AttachmentChip> {
         ? '${(kb / 1024).toStringAsFixed(1)} MB'
         : '${kb.toStringAsFixed(0)} KB';
     if (!a.isImage && a.hasDownloadableBytes) {
-      return a.text.trim().isNotEmpty && a.text.contains('文档服务')
-          ? '$size · 可下载'
-          : '$size · 可下载';
+      return '$size · 可下载';
     }
     if (a.truncated) return '$size · 内容已截断';
     return size;
   }
+}
 
-  IconData _iconFor(Attachment a) {
-    if (a.isImage) return Icons.image_outlined;
+/// Visual identity for non-image attachments (icon + short label + brand color).
+class _FileTypeStyle {
+  const _FileTypeStyle({
+    required this.icon,
+    required this.label,
+    required this.color,
+  });
+
+  final IconData icon;
+  final String label;
+  final Color color;
+
+  static const _word = _FileTypeStyle(
+    icon: Icons.description_rounded,
+    label: 'DOC',
+    color: Color(0xFF2B579A),
+  );
+  static const _excel = _FileTypeStyle(
+    icon: Icons.table_chart_rounded,
+    label: 'XLS',
+    color: Color(0xFF217346),
+  );
+  static const _ppt = _FileTypeStyle(
+    icon: Icons.slideshow_rounded,
+    label: 'PPT',
+    color: Color(0xFFC43E1C),
+  );
+  static const _pdf = _FileTypeStyle(
+    icon: Icons.picture_as_pdf_rounded,
+    label: 'PDF',
+    color: Color(0xFFD32F2F),
+  );
+  static const _csv = _FileTypeStyle(
+    icon: Icons.grid_on_rounded,
+    label: 'CSV',
+    color: Color(0xFF00897B),
+  );
+  static const _tsv = _FileTypeStyle(
+    icon: Icons.view_column_rounded,
+    label: 'TSV',
+    color: Color(0xFF00838F),
+  );
+  static const _md = _FileTypeStyle(
+    icon: Icons.code_rounded,
+    label: 'MD',
+    color: Color(0xFF6A1B9A),
+  );
+  static const _txt = _FileTypeStyle(
+    icon: Icons.notes_rounded,
+    label: 'TXT',
+    color: Color(0xFF546E7A),
+  );
+  static const _json = _FileTypeStyle(
+    icon: Icons.data_object_rounded,
+    label: 'JSON',
+    color: Color(0xFFF9A825),
+  );
+  static const _image = _FileTypeStyle(
+    icon: Icons.image_rounded,
+    label: 'IMG',
+    color: Color(0xFF5C6BC0),
+  );
+  static const _file = _FileTypeStyle(
+    icon: Icons.insert_drive_file_rounded,
+    label: 'FILE',
+    color: Color(0xFF78909C),
+  );
+
+  static _FileTypeStyle of(Attachment a) {
+    if (a.isImage) return _image;
     final n = a.name.toLowerCase();
-    if (n.endsWith('.pdf')) return Icons.picture_as_pdf_outlined;
-    if (n.endsWith('.docx')) return Icons.description_outlined;
-    if (n.endsWith('.xlsx')) return Icons.table_chart_outlined;
-    if (n.endsWith('.pptx')) return Icons.slideshow_outlined;
-    if (n.endsWith('.csv') || n.endsWith('.tsv')) {
-      return Icons.grid_on_outlined;
+    if (n.endsWith('.pdf')) return _pdf;
+    if (n.endsWith('.docx') || n.endsWith('.doc')) return _word;
+    if (n.endsWith('.xlsx') || n.endsWith('.xls')) return _excel;
+    if (n.endsWith('.pptx') || n.endsWith('.ppt')) return _ppt;
+    if (n.endsWith('.csv')) return _csv;
+    if (n.endsWith('.tsv')) return _tsv;
+    if (n.endsWith('.md') || n.endsWith('.markdown')) return _md;
+    if (n.endsWith('.txt') || n.endsWith('.log')) return _txt;
+    if (n.endsWith('.json')) return _json;
+    // Fallback: use extension stem as label when short enough.
+    final dot = n.lastIndexOf('.');
+    if (dot >= 0 && dot < n.length - 1) {
+      final ext = n.substring(dot + 1);
+      if (ext.length <= 4) {
+        return _FileTypeStyle(
+          icon: Icons.insert_drive_file_rounded,
+          label: ext.toUpperCase(),
+          color: _file.color,
+        );
+      }
     }
-    if (n.endsWith('.md') || n.endsWith('.txt')) {
-      return Icons.article_outlined;
-    }
-    return Icons.insert_drive_file_outlined;
+    return _file;
   }
 }
 

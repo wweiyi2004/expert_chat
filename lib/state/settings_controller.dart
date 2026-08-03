@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/providers.dart';
 import '../data/context_prefs.dart';
+import '../data/document_service_config.dart';
 import '../data/media_api_config.dart';
 import '../data/provider_profile.dart';
 import '../data/ui_prefs.dart';
@@ -47,6 +48,8 @@ class SettingsState {
     this.asrApi = const MediaApiConfig(),
     this.asrApiKey = '',
     this.context = const ContextPrefs(),
+    this.documentService = const DocumentServiceConfig(),
+    this.documentServiceToken = '',
     this.memoryEnabled = false,
     this.researchModeEnabled = false,
   });
@@ -93,6 +96,10 @@ class SettingsState {
   final String asrApiKey;
   final ContextPrefs context;
 
+  /// Optional Linux document-edit service (xlsx patch → download).
+  final DocumentServiceConfig documentService;
+  final String documentServiceToken;
+
   /// Local Markdown long-term memory. Off by default until the user opts in.
   final bool memoryEnabled;
 
@@ -100,6 +107,8 @@ class SettingsState {
   final bool researchModeEnabled;
 
   bool get searchConfigured => searchApiKey.trim().isNotEmpty;
+  bool get documentServiceConfigured =>
+      documentService.isConfiguredWith(documentServiceToken);
   bool get visionConfigured => visionApi.isConfiguredWith(visionApiKey);
   bool get imageGenerationConfigured =>
       imageGenerationApi.isConfiguredWith(imageGenerationApiKey);
@@ -169,6 +178,8 @@ class SettingsState {
     MediaApiConfig? asrApi,
     String? asrApiKey,
     ContextPrefs? context,
+    DocumentServiceConfig? documentService,
+    String? documentServiceToken,
     bool? memoryEnabled,
     bool? researchModeEnabled,
   }) => SettingsState(
@@ -197,6 +208,8 @@ class SettingsState {
     asrApi: asrApi ?? this.asrApi,
     asrApiKey: asrApiKey ?? this.asrApiKey,
     context: context ?? this.context,
+    documentService: documentService ?? this.documentService,
+    documentServiceToken: documentServiceToken ?? this.documentServiceToken,
     memoryEnabled: memoryEnabled ?? this.memoryEnabled,
     researchModeEnabled: researchModeEnabled ?? this.researchModeEnabled,
   );
@@ -224,6 +237,8 @@ const _kTtsApiKeySecure = 'tts_api_key';
 const _kAsrApi = 'asrApi';
 const _kAsrApiKeySecure = 'asr_api_key';
 const _kContextPrefs = 'contextPrefs';
+const _kDocumentService = 'documentService';
+const _kDocumentServiceTokenSecure = 'document_service_token';
 const _kMemoryEnabled = 'memoryEnabled';
 const _kResearchModeEnabled = 'researchModeEnabled';
 
@@ -234,6 +249,15 @@ const _kLegacyApiKeySecure = 'llm_api_key';
 const _kProfilesCorruptBackup = 'providerProfiles.corrupt';
 
 String _secureKeyForProfile(String profileId) => 'apikey_$profileId';
+
+/// TTS providers keep independent endpoint/model/voice profiles. The legacy
+/// keys above continue to mirror whichever profile is active so old releases
+/// and existing installs remain compatible.
+String _ttsApiProfilePrefsKey(SpeechApiProtocol protocol) =>
+    'ttsApi.${protocol.name}';
+
+String _ttsApiProfileSecureKey(SpeechApiProtocol protocol) =>
+    'tts_api_key.${protocol.name}';
 
 /// Loads settings (profiles + active key) and persists changes. Migrates the
 /// M1 single-config layout to a profile on first run.
@@ -322,8 +346,32 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     final visionApiKey = await secure.read(key: _kVisionApiKeySecure) ?? '';
     final imageGenerationApiKey =
         await secure.read(key: _kImageGenerationApiKeySecure) ?? '';
-    final ttsApiKey = await secure.read(key: _kTtsApiKeySecure) ?? '';
+    final ttsApi = _readMediaApi(prefs, _kTtsApi);
+    var ttsApiKey = await secure.read(key: _kTtsApiKeySecure) ?? '';
+    final activeTtsProtocol = ttsApi.effectiveSpeechProtocol;
+    final activeTtsProfilePrefsKey = _ttsApiProfilePrefsKey(activeTtsProtocol);
+    final activeTtsProfileSecureKey = _ttsApiProfileSecureKey(
+      activeTtsProtocol,
+    );
+
+    // One-time, lossless migration from the old single TTS slot. Keep the old
+    // slot as the active-profile mirror, and seed the matching provider slot
+    // only when it does not already exist.
+    if (!prefs.containsKey(activeTtsProfilePrefsKey)) {
+      await prefs.setString(
+        activeTtsProfilePrefsKey,
+        jsonEncode(ttsApi.toJson()),
+      );
+    }
+    final providerTtsApiKey = await secure.read(key: activeTtsProfileSecureKey);
+    if (providerTtsApiKey != null) {
+      ttsApiKey = providerTtsApiKey;
+    } else if (ttsApiKey.isNotEmpty) {
+      await secure.write(key: activeTtsProfileSecureKey, value: ttsApiKey);
+    }
     final asrApiKey = await secure.read(key: _kAsrApiKeySecure) ?? '';
+    final documentServiceToken =
+        await secure.read(key: _kDocumentServiceTokenSecure) ?? '';
 
     // Drop a stored model override that no longer exists in the active
     // profile's model list (e.g. the profile was edited since), so requests
@@ -367,11 +415,13 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       visionApiKey: visionApiKey,
       imageGenerationApi: _readMediaApi(prefs, _kImageGenerationApi),
       imageGenerationApiKey: imageGenerationApiKey,
-      ttsApi: _readMediaApi(prefs, _kTtsApi),
+      ttsApi: ttsApi,
       ttsApiKey: ttsApiKey,
       asrApi: _readMediaApi(prefs, _kAsrApi),
       asrApiKey: asrApiKey,
       context: _readContextPrefs(prefs),
+      documentService: _readDocumentService(prefs),
+      documentServiceToken: documentServiceToken,
       memoryEnabled: prefs.getBool(_kMemoryEnabled) ?? false,
       researchModeEnabled: prefs.getBool(_kResearchModeEnabled) ?? false,
     );
@@ -411,13 +461,35 @@ class SettingsController extends AsyncNotifier<SettingsState> {
   }
 
   static MediaApiConfig _readMediaApi(SharedPreferences prefs, String key) {
+    return _readMediaApiOrNull(prefs, key) ?? const MediaApiConfig();
+  }
+
+  static MediaApiConfig? _readMediaApiOrNull(
+    SharedPreferences prefs,
+    String key,
+  ) {
     final raw = prefs.getString(key);
-    if (raw == null || raw.isEmpty) return const MediaApiConfig();
+    if (raw == null || raw.isEmpty) return null;
     try {
       return MediaApiConfig.fromJson(jsonDecode(raw) as Map<String, dynamic>);
     } catch (_) {
-      return const MediaApiConfig();
+      return null;
     }
+  }
+
+  static DocumentServiceConfig _readDocumentService(SharedPreferences prefs) {
+    final raw = prefs.getString(_kDocumentService);
+    if (raw == null || raw.isEmpty) return const DocumentServiceConfig();
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map<String, dynamic>) {
+        return DocumentServiceConfig.fromJson(decoded);
+      }
+      if (decoded is Map) {
+        return DocumentServiceConfig.fromJson(Map<String, dynamic>.from(decoded));
+      }
+    } catch (_) {}
+    return const DocumentServiceConfig();
   }
 
   static ContextPrefs _readContextPrefs(SharedPreferences prefs) {
@@ -552,6 +624,20 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     await ref.read(sharedPrefsProvider).setInt(_kSearchMaxResults, bounded);
   }
 
+  Future<void> setDocumentServiceConfig(DocumentServiceConfig config) async {
+    state = AsyncData(_current.copyWith(documentService: config));
+    await ref
+        .read(sharedPrefsProvider)
+        .setString(_kDocumentService, jsonEncode(config.toJson()));
+  }
+
+  Future<void> setDocumentServiceToken(String token) async {
+    state = AsyncData(_current.copyWith(documentServiceToken: token));
+    await ref
+        .read(secureStorageProvider)
+        .write(key: _kDocumentServiceTokenSecure, value: token);
+  }
+
   /// Set the global preset/system prompt (persisted in shared preferences).
   Future<void> setSystemPrompt(String prompt) async {
     state = AsyncData(_current.copyWith(systemPrompt: prompt));
@@ -581,6 +667,10 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       case MediaApiKind.tts:
         state = AsyncData(_current.copyWith(ttsApi: config));
         await prefs.setString(_kTtsApi, encoded);
+        await prefs.setString(
+          _ttsApiProfilePrefsKey(config.effectiveSpeechProtocol),
+          encoded,
+        );
       case MediaApiKind.asr:
         state = AsyncData(_current.copyWith(asrApi: config));
         await prefs.setString(_kAsrApi, encoded);
@@ -588,6 +678,10 @@ class SettingsController extends AsyncNotifier<SettingsState> {
   }
 
   Future<void> setMediaApiKey(MediaApiKind kind, String key) async {
+    // Media cards may flush a debounced key from dispose via microtask; by
+    // then the settings provider can already be gone (route pop / test
+    // teardown). Skip rather than throwing UnmountedRefException.
+    if (!ref.mounted) return;
     final secure = ref.read(secureStorageProvider);
     switch (kind) {
       case MediaApiKind.vision:
@@ -597,12 +691,54 @@ class SettingsController extends AsyncNotifier<SettingsState> {
         state = AsyncData(_current.copyWith(imageGenerationApiKey: key));
         await secure.write(key: _kImageGenerationApiKeySecure, value: key);
       case MediaApiKind.tts:
+        final protocol = _current.ttsApi.effectiveSpeechProtocol;
         state = AsyncData(_current.copyWith(ttsApiKey: key));
         await secure.write(key: _kTtsApiKeySecure, value: key);
+        await secure.write(key: _ttsApiProfileSecureKey(protocol), value: key);
       case MediaApiKind.asr:
         state = AsyncData(_current.copyWith(asrApiKey: key));
         await secure.write(key: _kAsrApiKeySecure, value: key);
     }
+  }
+
+  /// Switches the active TTS provider without overwriting another provider's
+  /// endpoint, model, voice, or API key. [fallback] is used only the first
+  /// time that provider is selected.
+  Future<void> selectTtsProvider(
+    SpeechApiProtocol protocol,
+    MediaApiConfig fallback,
+  ) async {
+    if (!ref.mounted) return;
+    final prefs = ref.read(sharedPrefsProvider);
+    final secure = ref.read(secureStorageProvider);
+    final current = _current;
+    final currentProtocol = current.ttsApi.effectiveSpeechProtocol;
+
+    // Capture the active provider before loading the target. This also covers
+    // a legacy install that has not switched providers since migration.
+    await prefs.setString(
+      _ttsApiProfilePrefsKey(currentProtocol),
+      jsonEncode(current.ttsApi.toJson()),
+    );
+    await secure.write(
+      key: _ttsApiProfileSecureKey(currentProtocol),
+      value: current.ttsApiKey,
+    );
+
+    final targetConfig =
+        _readMediaApiOrNull(prefs, _ttsApiProfilePrefsKey(protocol)) ??
+        fallback.copyWith(speechProtocol: protocol);
+    final targetApiKey =
+        await secure.read(key: _ttsApiProfileSecureKey(protocol)) ?? '';
+    if (!ref.mounted) return;
+
+    state = AsyncData(
+      _current.copyWith(ttsApi: targetConfig, ttsApiKey: targetApiKey),
+    );
+
+    // Mirror the selected profile to the original active TTS keys.
+    await prefs.setString(_kTtsApi, jsonEncode(targetConfig.toJson()));
+    await secure.write(key: _kTtsApiKeySecure, value: targetApiKey);
   }
 
   /// Switch the active profile, loading its stored key.
@@ -694,6 +830,8 @@ class SettingsController extends AsyncNotifier<SettingsState> {
           asrApi: _current.asrApi,
           asrApiKey: _current.asrApiKey,
           context: _current.context,
+          documentService: _current.documentService,
+          documentServiceToken: _current.documentServiceToken,
           memoryEnabled: _current.memoryEnabled,
           researchModeEnabled: _current.researchModeEnabled,
         ),

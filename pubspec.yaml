@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 2.2.0+13
+version: 2.9.9+14
 
 environment:
   sdk: ^3.12.0
@@ -86,6 +86,7 @@ dependencies:
   # M7 research mode (native SSH; web uses stubs)
   dartssh2: ^2.22.3
   xterm: ^4.0.0
+  photo_manager: ^3.11.0
 
 # Stock speech_to_text_windows 1.0.1 never calls SAPI SetInterest, so listen
 # appears to start but never yields transcripts. Use our patched copy.
@@ -98,6 +99,10 @@ dev_dependencies:
     sdk: flutter
   # Tests install the package's fake platform implementation directly.
   flutter_secure_storage_platform_interface: ^2.0.1
+  # Tests install the package's fake platform implementation directly.
+  path_provider_platform_interface: ^2.1.2
+  # TTS playback tests fake the just_audio platform via this interface.
+  just_audio_platform_interface: ^4.6.0
   # M2 — drift codegen (keep drift_dev on the same minor as drift)
   drift_dev: ^2.33.0
   build_runner: ^2.15.0
@@ -129,6 +134,9 @@ flutter:
         - asset: assets/fonts/NotoSansSC.ttf
   assets:
     - shorebird.yaml
+    # Short Edge-TTS samples used as optional clone seeds for anime-style
+    # voice packs (archetypes, not copyrighted character rips).
+    - assets/tts_voices/
 
   # To add assets to your application, add an assets section, like this:
   # assets:

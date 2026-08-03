@@ -14,7 +14,7 @@ import '../data/world_info_repository.dart';
 import '../domain/context/context_window_manager.dart';
 import '../domain/cache/app_cache_service.dart';
 import '../domain/llm/llm_provider.dart';
-import '../domain/llm/openai_compatible_provider.dart';
+import '../domain/llm/routing_llm_provider.dart';
 import '../domain/media/openai_compatible_media_provider.dart';
 import '../domain/memory/memory_backup_file.dart';
 import '../domain/memory/memory_candidate_service.dart';
@@ -22,6 +22,7 @@ import '../domain/memory/memory_transfer.dart';
 import '../domain/speech/mimo_speech_input_service.dart';
 import '../domain/speech/speech_input_service.dart';
 import '../domain/speech/text_to_speech_service.dart';
+import '../domain/document/document_service_client.dart';
 import '../domain/tools/file_parser.dart';
 import '../domain/tools/search_provider.dart';
 import '../domain/tools/tool_engine.dart';
@@ -70,7 +71,7 @@ final memoryRepositoryProvider = Provider<MemoryRepository>(
   (ref) => MemoryRepository(ref.read(memoryStoreProvider)),
 );
 
-final llmProvider = Provider<LlmProvider>((ref) => OpenAiCompatibleProvider());
+final llmProvider = Provider<LlmProvider>((ref) => RoutingLlmProvider());
 
 final memoryCandidateServiceProvider = Provider<MemoryCandidateService>(
   (ref) => MemoryCandidateService(ref.read(llmProvider)),
@@ -93,6 +94,10 @@ final contextWindowManagerProvider = Provider<ContextWindowManager>(
 );
 
 final fileParserProvider = Provider<FileParser>((ref) => FileParser());
+
+final documentServiceClientProvider = Provider<DocumentServiceClient>(
+  (ref) => DocumentServiceClient(),
+);
 
 final speechInputServiceProvider = Provider<SpeechInputService>(
   (ref) => SystemSpeechInputService(),

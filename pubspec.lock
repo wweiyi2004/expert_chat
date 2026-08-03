@@ -625,7 +625,7 @@ packages:
     source: hosted
     version: "0.10.6"
   just_audio_platform_interface:
-    dependency: transitive
+    dependency: "direct dev"
     description:
       name: just_audio_platform_interface
       sha256: "2532c8d6702528824445921c5ff10548b518b13f808c2e34c2fd54793b999a6a"
@@ -825,7 +825,7 @@ packages:
     source: hosted
     version: "2.2.1"
   path_provider_platform_interface:
-    dependency: transitive
+    dependency: "direct dev"
     description:
       name: path_provider_platform_interface
       sha256: "88f5779f72ba699763fa3a3b06aa4bf6de76c8e5de842cf6f29e2e06476c2334"
@@ -848,6 +848,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "7.0.2"
+  photo_manager:
+    dependency: "direct main"
+    description:
+      name: photo_manager
+      sha256: "4f7de6c9778993c5c54cf1fb2eaa8d5c27c0771dc24a4dfca341aa81aef13fe1"
+      url: "https://pub.dev"
+    source: hosted
+    version: "3.11.0"
   pinenacl:
     dependency: transitive
     description:

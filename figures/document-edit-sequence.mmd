@@ -1,0 +1,37 @@
+sequenceDiagram
+  autonumber
+  actor User as 用户
+  participant App as Expert Chat
+  participant LLM as LLM API<br/>DeepSeek 等
+  participant Svc as Linux 文档服务
+
+  User->>App: 上传 sales.xlsx
+  App->>App: 大小检查 / 本地解析抽文本
+  alt 解析失败
+    App-->>User: 附件显示解析错误
+  else 解析成功
+    App-->>User: 附件就绪可发送
+  end
+
+  User->>App: 发送: 金额列乘 1.1 并导出
+  App->>LLM: 上下文含表格抽样 + 用户指令
+  LLM-->>App: 流式文字说明 和/或 DocumentPatch
+
+  alt 未开文档服务 或 用户只要问答
+    App-->>User: 仅文字回复, 无新文件
+  else 触发改稿 手动或 tool
+    App->>App: 校验 DocumentPatch
+    alt 补丁非法
+      App->>LLM: 回灌错误, 有限次重试
+      LLM-->>App: 修正后的 Patch
+    end
+    App->>Svc: POST /v1/documents/edit<br/>file + patch + Bearer
+    alt 401 / 超时 / 补丁执行失败
+      Svc-->>App: error.code + message
+      App-->>User: 失败提示, 原文件仍在
+    else 成功
+      Svc-->>App: 修改后 xlsx 二进制
+      Svc->>Svc: 删除临时目录
+      App-->>User: 气泡: 下载 / 分享新文件
+    end
+  end

@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:photo_manager/photo_manager.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../../core/mode_style.dart';
@@ -40,7 +41,9 @@ import '../story/ensemble_setup_page.dart';
 import '../story/story_panel.dart';
 import 'jump_to_message.dart';
 import 'widgets/attachment_chip.dart';
+import 'widgets/image_pick_confirm_bar.dart';
 import 'widgets/message_bubble.dart';
+import 'widgets/recent_photo_sheet.dart';
 
 class ChatPage extends ConsumerStatefulWidget {
   const ChatPage({super.key});
@@ -61,6 +64,11 @@ class _ChatPageState extends ConsumerState<ChatPage>
   late TextToSpeechPlayback _ttsPlayback;
   bool _picking = false;
   bool _imageMode = false;
+
+  /// After system image pick: confirm strip (scroll + checkbox) before attach.
+  List<PendingImagePick>? _pendingImagePicks;
+  bool _pendingImageForGen = false;
+  int _pendingImageMaxSlots = 1;
   bool _speechBusy = false;
   bool _speechListening = false;
   bool _speechReceivedText = false;
@@ -308,6 +316,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
         messageId: message.id,
         text: message.content,
         rate: ui.ttsSpeed.speechRate,
+        autoEmotion: ui.ttsAutoEmotion,
         apiConfig: settings?.ttsApi,
         apiKey: settings?.ttsApiKey ?? '',
       ),
@@ -416,6 +425,9 @@ class _ChatPageState extends ConsumerState<ChatPage>
               : '未能启动系统语音识别，请稍后再试。',
         );
       }
+    } else if (useMimoAsr && mounted) {
+      // Cloud ASR has no partials; make the second-tap finish step obvious.
+      _showSpeechNotice('已开始录音。说完后再次点击麦克风即可识别。');
     }
   }
 
@@ -503,7 +515,13 @@ class _ChatPageState extends ConsumerState<ChatPage>
         );
       }
     }
-    if (result.isFinal && (_speechListening || _speechBusy)) {
+    // Cloud ASR emits a single final transcript after upload — that ends the
+    // session. System dictation emits one finalResult per phrase while the
+    // platform session is still open (pauseFor/listenFor); treating those as
+    // session-end hid the listening indicator and left the mic orphaned.
+    if (result.isFinal &&
+        _usingMimoAsr &&
+        (_speechListening || _speechBusy)) {
       setState(() {
         _speechListening = false;
         _speechBusy = false;
@@ -569,13 +587,34 @@ class _ChatPageState extends ConsumerState<ChatPage>
     );
   }
 
-  Future<void> _send() async {
+  Future<void> _send({bool forceDocumentEdit = false}) async {
     if (_speechListening || _speechBusy) await _cancelSpeech();
+    if (_pendingImagePicks != null) {
+      _showAttachmentNotice('请先确认或取消待添加的图片');
+      return;
+    }
     final text = _input.text;
-    if (text.trim().isEmpty && _attachments.isEmpty) return;
     final settings = ref.read(settingsControllerProvider).value;
+    if (forceDocumentEdit) {
+      if (settings == null || !settings.documentServiceConfigured) {
+        _showAttachmentNotice('请先在设置中配置文档服务（Base URL + Token）');
+        return;
+      }
+      if (!_attachments.any((a) => a.isEditableDocument)) {
+        _showAttachmentNotice('请先上传可编辑的 .xlsx / .docx / .pptx');
+        return;
+      }
+      if (_imageMode) {
+        _showAttachmentNotice('请先退出生图模式再改文档');
+        return;
+      }
+    } else if (text.trim().isEmpty && _attachments.isEmpty) {
+      return;
+    }
     final useImageGeneration =
-        _imageMode && (settings?.imageGenerationConfigured ?? false);
+        !forceDocumentEdit &&
+        _imageMode &&
+        (settings?.imageGenerationConfigured ?? false);
     if (useImageGeneration) {
       if (text.trim().isEmpty) {
         _showAttachmentNotice(
@@ -602,7 +641,11 @@ class _ChatPageState extends ConsumerState<ChatPage>
                 if (a.isImage && a.hasImageData) a,
             ],
           )
-        : await chat.sendMessage(text, attachments: attachments);
+        : await chat.sendMessage(
+            text,
+            attachments: attachments,
+            forceDocumentEdit: forceDocumentEdit,
+          );
     // Rejected (e.g. API key 未配置 / 正在生成中) → restore the draft so the
     // user's input isn't lost. Only restore when the field is still empty, so
     // we don't clobber anything the user started typing during the await.
@@ -652,10 +695,50 @@ class _ChatPageState extends ConsumerState<ChatPage>
         _showAttachmentNotice('请先在设置中配置视觉 API，再上传图片。');
         return;
       }
-      // 图生图：每次仅 1 张参考图（OpenAI-compatible edits 惯例）。
-      final maxSlots = forImageGeneration && imagesOnly ? 1 : _maxAttachments;
+      // 图生图：gpt-image-* 可多参考；其它 edits 网关仍 1 张。
+      final maxImageEditRefs =
+          settings?.imageGenerationApi.maxImageEditReferences ?? 1;
+      final maxSlots = forImageGeneration && imagesOnly
+          ? maxImageEditRefs.clamp(1, _maxAttachments)
+          : _maxAttachments;
+
+      // Mobile: recent album sheet first; desktop / web keep system picker.
+      if (imagesOnly && supportsRecentPhotoSheet && mounted) {
+        final remaining = forImageGeneration
+            ? (maxSlots - _attachments.where((a) => a.isImage).length).clamp(
+                0,
+                maxSlots,
+              )
+            : _maxAttachments - _attachments.length;
+        if (remaining <= 0) {
+          _showAttachmentNotice(
+            forImageGeneration
+                ? (maxSlots <= 1
+                      ? '图生图每次仅支持 1 张参考图，请先移除当前图片。'
+                      : '图生图最多 $maxSlots 张参考图，请先移除部分图片。')
+                : '最多可添加 $_maxAttachments 个附件。',
+          );
+          return;
+        }
+        final album = await showRecentPhotoPicker(
+          context,
+          maxCount: remaining,
+        );
+        if (!mounted) return;
+        if (album == null) return;
+        if (!album.fromFiles) {
+          await _ingestAlbumAssets(
+            album.assets,
+            forImageGeneration: forImageGeneration,
+            maxSlots: remaining,
+          );
+          return;
+        }
+        // fromFiles → fall through to FilePicker below.
+      }
+
       final result = await FilePicker.pickFiles(
-        allowMultiple: !(forImageGeneration && imagesOnly),
+        allowMultiple: !(forImageGeneration && imagesOnly && maxSlots <= 1),
         withData: false,
         withReadStream: true,
         type: FileType.custom,
@@ -674,7 +757,9 @@ class _ChatPageState extends ConsumerState<ChatPage>
       if (slots <= 0) {
         _showAttachmentNotice(
           forImageGeneration && imagesOnly
-              ? '图生图每次仅支持 1 张参考图，请先移除当前图片。'
+              ? (maxSlots <= 1
+                    ? '图生图每次仅支持 1 张参考图，请先移除当前图片。'
+                    : '图生图最多 $maxSlots 张参考图，请先移除部分图片。')
               : '最多可添加 $_maxAttachments 个附件。',
         );
         return;
@@ -770,30 +855,14 @@ class _ChatPageState extends ConsumerState<ChatPage>
         additions.add(attachment);
         runningTotal += attachedSize;
       }
-      if (additions.isNotEmpty && mounted) {
-        setState(() {
-          if (forImageGeneration && imagesOnly) {
-            // Replace any prior reference so only one image remains.
-            _attachments
-              ..removeWhere((a) => a.isImage)
-              ..addAll(additions.take(1));
-          } else {
-            _attachments.addAll(additions);
-          }
-        });
-      }
       final notices = <String>[];
-      if (additions.isNotEmpty) {
-        notices.add(
-          forImageGeneration && imagesOnly
-              ? '已添加参考图（图生图）'
-              : '已添加 ${additions.length} 个附件',
-        );
-      }
       if (tooMany > 0) {
+        final cap = forImageGeneration && imagesOnly
+            ? (settings?.imageGenerationApi.maxImageEditReferences ?? 1)
+            : _maxAttachments;
         notices.add(
           forImageGeneration && imagesOnly
-              ? '图生图仅使用 1 张参考图'
+              ? '跳过 $tooMany 个（图生图最多 $cap 张参考图）'
               : '跳过 $tooMany 个（最多 $_maxAttachments 个）',
         );
       }
@@ -802,10 +871,115 @@ class _ChatPageState extends ConsumerState<ChatPage>
       }
       if (overTotal > 0) notices.add('跳过 $overTotal 个（总计最大 20 MB）');
       if (unreadable > 0) notices.add('跳过 $unreadable 个（无法读取）');
+
+      if (additions.isNotEmpty && mounted) {
+        if (imagesOnly) {
+          // Image path: confirm strip (scroll + checkbox) before attaching.
+          final usable = [
+            for (final a in additions)
+              if (a.parseError == null && a.hasImageData) a,
+          ];
+          final broken = additions.length - usable.length;
+          if (broken > 0) {
+            notices.add('跳过 $broken 个无效图片');
+          }
+          if (usable.isEmpty) {
+            notices.add('没有可用的图片');
+          } else {
+            setState(() {
+              _pendingImageForGen = forImageGeneration;
+              _pendingImageMaxSlots = slots;
+              _pendingImagePicks = [
+                for (var i = 0; i < usable.length; i++)
+                  PendingImagePick(
+                    attachment: usable[i],
+                    // Pre-check within remaining slots; single-slot = first only.
+                    selected: slots <= 1 ? i == 0 : i < slots,
+                  ),
+              ];
+            });
+          }
+        } else {
+          setState(() => _attachments.addAll(additions));
+          notices.insert(0, '已添加 ${additions.length} 个附件');
+        }
+      }
       if (notices.isNotEmpty) _showAttachmentNotice(notices.join('；'));
     } finally {
       if (mounted) setState(() => _picking = false);
     }
+  }
+
+  /// Turn album [AssetEntity]s into the same pending confirm strip as file pick.
+  Future<void> _ingestAlbumAssets(
+    List<AssetEntity> assets, {
+    required bool forImageGeneration,
+    required int maxSlots,
+  }) async {
+    final additions = <Attachment>[];
+    var runningTotal = _attachments.fold<int>(
+      0,
+      (total, attachment) => total + attachment.sizeBytes,
+    );
+    var tooLarge = 0;
+    var unreadable = 0;
+    for (final asset in assets) {
+      if (additions.length >= maxSlots) break;
+      try {
+        final bytes = await loadAssetImageBytes(asset);
+        if (bytes == null || bytes.isEmpty) {
+          unreadable++;
+          continue;
+        }
+        if (bytes.lengthInBytes > _maxAttachmentBytes) {
+          tooLarge++;
+          continue;
+        }
+        if (runningTotal + bytes.lengthInBytes > _maxTotalAttachmentBytes) {
+          tooLarge++;
+          continue;
+        }
+        final title = asset.title?.trim();
+        final name = (title == null || title.isEmpty)
+            ? 'photo_${DateTime.now().microsecondsSinceEpoch}.jpg'
+            : (title.contains('.') ? title : '$title.jpg');
+        final built = await _buildImageAttachment(
+          name: name,
+          mimeType: 'image/jpeg',
+          sizeBytes: bytes.lengthInBytes,
+          bytes: bytes,
+        );
+        if (built.parseError != null || !built.hasImageData) {
+          unreadable++;
+          continue;
+        }
+        additions.add(built);
+        runningTotal += built.sizeBytes;
+      } catch (_) {
+        unreadable++;
+      }
+    }
+    if (!mounted) return;
+    final notices = <String>[];
+    if (tooLarge > 0) notices.add('跳过 $tooLarge 个（过大）');
+    if (unreadable > 0) notices.add('跳过 $unreadable 个（无法读取）');
+    if (additions.isEmpty) {
+      notices.add('没有可用的图片');
+      if (notices.isNotEmpty) _showAttachmentNotice(notices.join('；'));
+      return;
+    }
+    setState(() {
+      _pendingImageForGen = forImageGeneration;
+      _pendingImageMaxSlots = maxSlots;
+      _pendingImagePicks = [
+        for (var i = 0; i < additions.length; i++)
+          PendingImagePick(
+            attachment: additions[i],
+            selected: maxSlots <= 1 ? i == 0 : i < maxSlots,
+          ),
+      ];
+    });
+    if (notices.isNotEmpty) _showAttachmentNotice(notices.join('；'));
   }
 
   /// Build an image [Attachment] with the bytes pre-scaled to ≤1536px on the
@@ -868,27 +1042,83 @@ class _ChatPageState extends ConsumerState<ChatPage>
     setState(() => _attachments.removeWhere((a) => a.id == id));
   }
 
+  void _cancelPendingImages() {
+    setState(() {
+      _pendingImagePicks = null;
+      _pendingImageForGen = false;
+    });
+  }
+
+  void _confirmPendingImages() {
+    final pending = _pendingImagePicks;
+    if (pending == null || pending.isEmpty) return;
+    final chosen = [
+      for (final p in pending)
+        if (p.selected && p.attachment.hasImageData) p.attachment,
+    ];
+    if (chosen.isEmpty) {
+      _showAttachmentNotice('请至少勾选一张图片');
+      return;
+    }
+    // [_pendingImageMaxSlots] is remaining capacity computed at pick time.
+    final take = chosen
+        .take(_pendingImageMaxSlots.clamp(1, _maxAttachments))
+        .toList();
+    final forGen = _pendingImageForGen;
+    final singleRefReplace =
+        forGen &&
+        (ref
+                .read(settingsControllerProvider)
+                .value
+                ?.imageGenerationApi
+                .maxImageEditReferences ??
+            1) <=
+            1;
+    setState(() {
+      if (singleRefReplace) {
+        _attachments.removeWhere((a) => a.isImage);
+      }
+      _attachments.addAll(take);
+      _pendingImagePicks = null;
+      _pendingImageForGen = false;
+    });
+    final n = take.length;
+    _showAttachmentNotice(
+      forGen || _imageMode
+          ? (n > 1 ? '已添加 $n 张参考图（图生图）' : '已添加参考图（图生图）')
+          : (n > 1 ? '已添加 $n 张图片' : '已添加图片'),
+    );
+  }
+
   void _toggleImageMode() {
     if (_imageMode) {
       setState(() => _imageMode = false);
       return;
     }
-    // Entering 生图: keep at most one image as reference; drop non-images.
+    // Entering 生图: drop non-images; cap refs by model capability.
+    final settings = ref.read(settingsControllerProvider).value;
+    final maxRefs =
+        settings?.imageGenerationApi.maxImageEditReferences ?? 1;
     final images = [
       for (final a in _attachments)
         if (a.isImage && a.hasImageData) a,
     ];
     final droppedDocs = _attachments.any((a) => !a.isImage);
+    final kept = images.take(maxRefs).toList();
     setState(() {
       _attachments
         ..clear()
-        ..addAll(images.take(1));
+        ..addAll(kept);
       _imageMode = true;
     });
     if (droppedDocs) {
       _showAttachmentNotice('生图模式仅保留图片作为参考，已移除非图片附件。');
-    } else if (images.length > 1) {
-      _showAttachmentNotice('图生图每次仅使用 1 张参考图。');
+    } else if (images.length > maxRefs) {
+      _showAttachmentNotice(
+        maxRefs <= 1
+            ? '图生图每次仅使用 1 张参考图。'
+            : '当前模型最多 $maxRefs 张参考图，已保留前 $maxRefs 张。',
+      );
     }
   }
 
@@ -1208,11 +1438,16 @@ class _ChatPageState extends ConsumerState<ChatPage>
           _selectedIds.clear();
         }
         // Do not carry composer draft / reference images across conversations.
-        if (_attachments.isNotEmpty || _input.text.isNotEmpty || _imageMode) {
+        if (_attachments.isNotEmpty ||
+            _input.text.isNotEmpty ||
+            _imageMode ||
+            _pendingImagePicks != null) {
           setState(() {
             _attachments.clear();
             _input.clear();
             _imageMode = false;
+            _pendingImagePicks = null;
+            _pendingImageForGen = false;
           });
         }
       }
@@ -1804,6 +2039,16 @@ class _ChatPageState extends ConsumerState<ChatPage>
             onCopy: () => _copySelectedMarkdown(messages, convo),
             onShare: () => _shareSelected(messages, convo),
           ),
+        if (!_selecting &&
+            _pendingImagePicks != null &&
+            _pendingImagePicks!.isNotEmpty)
+          ImagePickConfirmBar(
+            candidates: _pendingImagePicks!,
+            maxSelectable: _pendingImageMaxSlots.clamp(1, _maxAttachments),
+            onChanged: () => setState(() {}),
+            onCancel: _cancelPendingImages,
+            onConfirm: _confirmPendingImages,
+          ),
         if (!_selecting)
           _Composer(
             controller: _input,
@@ -1822,6 +2067,12 @@ class _ChatPageState extends ConsumerState<ChatPage>
                 settings?.imageGenerationConfigured ?? false,
             imageMode:
                 _imageMode && (settings?.imageGenerationConfigured ?? false),
+            maxImageEditReferences:
+                settings?.imageGenerationApi.maxImageEditReferences ?? 1,
+            documentEditAvailable:
+                (settings?.documentServiceConfigured ?? false) &&
+                _attachments.any((a) => a.isEditableDocument) &&
+                !_imageMode,
             speechBusy: _speechBusy,
             speechListening: _speechListening,
             speechUsesCloudAsr: _usingMimoAsr,
@@ -1833,7 +2084,8 @@ class _ChatPageState extends ConsumerState<ChatPage>
             onPickImages: _pickImages,
             onRemoveAttachment: _removeAttachment,
             onToggleSpeech: _toggleSpeech,
-            onSend: _send,
+            onSend: () => _send(),
+            onDocumentEdit: () => _send(forceDocumentEdit: true),
             onStop: controller.stop,
           ),
       ],
@@ -1912,6 +2164,8 @@ class _Composer extends StatefulWidget {
     required this.visionConfigured,
     required this.imageGenerationConfigured,
     required this.imageMode,
+    this.maxImageEditReferences = 1,
+    this.documentEditAvailable = false,
     required this.speechBusy,
     required this.speechListening,
     required this.speechUsesCloudAsr,
@@ -1924,6 +2178,7 @@ class _Composer extends StatefulWidget {
     required this.onRemoveAttachment,
     required this.onToggleSpeech,
     required this.onSend,
+    this.onDocumentEdit,
     required this.onStop,
   });
 
@@ -1941,6 +2196,8 @@ class _Composer extends StatefulWidget {
   final bool visionConfigured;
   final bool imageGenerationConfigured;
   final bool imageMode;
+  final int maxImageEditReferences;
+  final bool documentEditAvailable;
   final bool speechBusy;
   final bool speechListening;
   final bool speechUsesCloudAsr;
@@ -1953,6 +2210,7 @@ class _Composer extends StatefulWidget {
   final ValueChanged<String> onRemoveAttachment;
   final VoidCallback onToggleSpeech;
   final VoidCallback onSend;
+  final VoidCallback? onDocumentEdit;
   final VoidCallback onStop;
 
   @override
@@ -2077,6 +2335,22 @@ class _ComposerState extends State<_Composer> {
                           const _ComposerStatusChip(label: '正在联网搜索'),
                         if (widget.isGeneratingImage)
                           const _ComposerStatusChip(label: '正在生成图片'),
+                        if (widget.documentEditAvailable &&
+                            !widget.isStreaming) ...[
+                          const SizedBox(width: 6),
+                          _ComposerToggleChip(
+                            selected: false,
+                            icon: Icons.edit_document,
+                            label: '改文档',
+                            tooltip:
+                                '强制调用文档服务：根据你的说明修改已上传的 '
+                                '.xlsx / .docx / .pptx 并回传下载',
+                            onSelected: () {
+                              _closePlus();
+                              widget.onDocumentEdit?.call();
+                            },
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -2092,6 +2366,8 @@ class _ComposerState extends State<_Composer> {
                               imageGenerationConfigured:
                                   widget.imageGenerationConfigured,
                               imageMode: widget.imageMode,
+                              maxImageEditReferences:
+                                  widget.maxImageEditReferences,
                               enabled:
                                   canAttachDocs ||
                                   canAttachImages ||
@@ -2178,7 +2454,11 @@ class _ComposerState extends State<_Composer> {
                                 const SizedBox(width: 6),
                                 Expanded(
                                   child: Text(
-                                    '正在听… 识别文字不会自动发送',
+                                    // Cloud ASR only transcribes after a second
+                                    // mic tap; system ASR streams partial text.
+                                    widget.speechUsesCloudAsr
+                                        ? '正在录音… 说完后再点麦克风识别（不会自动发送）'
+                                        : '正在听… 识别文字不会自动发送',
                                     style: Theme.of(context).textTheme.bodySmall
                                         ?.copyWith(
                                           color: scheme.onSurfaceVariant,
@@ -2406,6 +2686,7 @@ class _ComposerPlusTray extends StatelessWidget {
     required this.visionConfigured,
     required this.imageGenerationConfigured,
     required this.imageMode,
+    this.maxImageEditReferences = 1,
     required this.enabled,
     required this.picking,
     required this.onPickDocuments,
@@ -2416,6 +2697,7 @@ class _ComposerPlusTray extends StatelessWidget {
   final bool visionConfigured;
   final bool imageGenerationConfigured;
   final bool imageMode;
+  final int maxImageEditReferences;
   final bool enabled;
   final bool picking;
   final VoidCallback? onPickDocuments;
@@ -2425,6 +2707,7 @@ class _ComposerPlusTray extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final multiRef = maxImageEditReferences > 1;
     return Container(
       key: const ValueKey('composer-plus-tray'),
       padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
@@ -2452,7 +2735,9 @@ class _ComposerPlusTray extends StatelessWidget {
               icon: Icons.image_outlined,
               label: imageMode ? '参考图' : '上传图片',
               tooltip: imageMode
-                  ? '上传 1 张参考图做图生图（需生图 API 支持 images/edits）'
+                  ? (multiRef
+                        ? '上传最多 $maxImageEditReferences 张参考图（gpt-image 多图 edits）'
+                        : '上传 1 张参考图做图生图（images/edits）')
                   : visionConfigured
                   ? '上传图片供视觉模型分析（最多 5 个，单个最大 10 MB）'
                   : '请先在设置中配置视觉 API',

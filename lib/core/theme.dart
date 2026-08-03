@@ -1,22 +1,210 @@
 import 'package:flutter/material.dart';
 
-/// Ink-teal editorial desk: calm work surface, not neon AI chrome.
+import '../data/ui_prefs.dart';
+
+/// Shared radii / bubble metrics so widgets can follow [CornerStylePref].
+@immutable
+class AppMetrics extends ThemeExtension<AppMetrics> {
+  const AppMetrics({
+    required this.radiusMd,
+    required this.radiusLg,
+    required this.bubbleMain,
+    required this.bubbleTail,
+    required this.chatSurface,
+  });
+
+  final double radiusMd;
+  final double radiusLg;
+  final double bubbleMain;
+  final double bubbleTail;
+  final ChatSurfacePref chatSurface;
+
+  factory AppMetrics.fromPrefs(UiPrefs ui) => AppMetrics(
+    radiusMd: ui.cornerStyle.radiusMd,
+    radiusLg: ui.cornerStyle.radiusLg,
+    bubbleMain: ui.cornerStyle.bubbleMain,
+    bubbleTail: ui.cornerStyle.bubbleTail,
+    chatSurface: ui.chatSurface,
+  );
+
+  BorderRadius get bubbleUser => BorderRadius.only(
+    topLeft: Radius.circular(bubbleMain),
+    topRight: Radius.circular(bubbleMain),
+    bottomLeft: Radius.circular(bubbleMain),
+    bottomRight: Radius.circular(bubbleTail),
+  );
+
+  BorderRadius get bubbleAssistant => BorderRadius.only(
+    topLeft: Radius.circular(bubbleTail),
+    topRight: Radius.circular(bubbleMain),
+    bottomLeft: Radius.circular(bubbleMain),
+    bottomRight: Radius.circular(bubbleMain),
+  );
+
+  @override
+  AppMetrics copyWith({
+    double? radiusMd,
+    double? radiusLg,
+    double? bubbleMain,
+    double? bubbleTail,
+    ChatSurfacePref? chatSurface,
+  }) => AppMetrics(
+    radiusMd: radiusMd ?? this.radiusMd,
+    radiusLg: radiusLg ?? this.radiusLg,
+    bubbleMain: bubbleMain ?? this.bubbleMain,
+    bubbleTail: bubbleTail ?? this.bubbleTail,
+    chatSurface: chatSurface ?? this.chatSurface,
+  );
+
+  @override
+  AppMetrics lerp(ThemeExtension<AppMetrics>? other, double t) {
+    if (other is! AppMetrics) return this;
+    return AppMetrics(
+      radiusMd: lerpDouble(radiusMd, other.radiusMd, t) ?? radiusMd,
+      radiusLg: lerpDouble(radiusLg, other.radiusLg, t) ?? radiusLg,
+      bubbleMain: lerpDouble(bubbleMain, other.bubbleMain, t) ?? bubbleMain,
+      bubbleTail: lerpDouble(bubbleTail, other.bubbleTail, t) ?? bubbleTail,
+      chatSurface: t < 0.5 ? chatSurface : other.chatSurface,
+    );
+  }
+}
+
+double? lerpDouble(double a, double b, double t) => a + (b - a) * t;
+
+/// Palette knobs for [AppTheme].
+class _Palette {
+  const _Palette({
+    required this.seed,
+    required this.accent,
+    required this.lightSurface,
+    required this.lightPanel,
+    required this.lightInput,
+    required this.lightBorder,
+    required this.lightInk,
+    required this.darkSurface,
+    required this.darkPanel,
+    required this.darkInput,
+    required this.darkBorder,
+    required this.darkInk,
+  });
+
+  final Color seed;
+  final Color accent;
+  final Color lightSurface;
+  final Color lightPanel;
+  final Color lightInput;
+  final Color lightBorder;
+  final Color lightInk;
+  final Color darkSurface;
+  final Color darkPanel;
+  final Color darkInput;
+  final Color darkBorder;
+  final Color darkInk;
+
+  static _Palette of(ColorThemePref theme) => switch (theme) {
+    ColorThemePref.inkTeal => const _Palette(
+      seed: Color(0xFF1F5C6B),
+      accent: Color(0xFFC45C26),
+      lightSurface: Color(0xFFF4F1EA),
+      lightPanel: Color(0xFFFFFCF7),
+      lightInput: Color(0xFFEFEAE1),
+      lightBorder: Color(0xFFDDD4C6),
+      lightInk: Color(0xFF1C2430),
+      darkSurface: Color(0xFF121820),
+      darkPanel: Color(0xFF1A222D),
+      darkInput: Color(0xFF232C38),
+      darkBorder: Color(0xFF334155),
+      darkInk: Color(0xFFE8EEF5),
+    ),
+    ColorThemePref.ocean => const _Palette(
+      seed: Color(0xFF2B6CB0),
+      accent: Color(0xFF0D9488),
+      lightSurface: Color(0xFFF0F5FA),
+      lightPanel: Color(0xFFF8FBFE),
+      lightInput: Color(0xFFE4EEF7),
+      lightBorder: Color(0xFFC9D9E8),
+      lightInk: Color(0xFF1A2B3C),
+      darkSurface: Color(0xFF0F1724),
+      darkPanel: Color(0xFF172033),
+      darkInput: Color(0xFF1E2A40),
+      darkBorder: Color(0xFF334155),
+      darkInk: Color(0xFFE2EAF4),
+    ),
+    ColorThemePref.forest => const _Palette(
+      seed: Color(0xFF2F6B4F),
+      accent: Color(0xFFB45309),
+      lightSurface: Color(0xFFF1F5F0),
+      lightPanel: Color(0xFFF8FBF7),
+      lightInput: Color(0xFFE4EDE5),
+      lightBorder: Color(0xFFC9D6CB),
+      lightInk: Color(0xFF1A2A20),
+      darkSurface: Color(0xFF101814),
+      darkPanel: Color(0xFF18241C),
+      darkInput: Color(0xFF223028),
+      darkBorder: Color(0xFF3A4A40),
+      darkInk: Color(0xFFE4EEE7),
+    ),
+    ColorThemePref.rose => const _Palette(
+      seed: Color(0xFFB04A6E),
+      accent: Color(0xFF7C3AED),
+      lightSurface: Color(0xFFFAF5F7),
+      lightPanel: Color(0xFFFFFBFC),
+      lightInput: Color(0xFFF3E6EB),
+      lightBorder: Color(0xFFE4CCD6),
+      lightInk: Color(0xFF2A1820),
+      darkSurface: Color(0xFF181218),
+      darkPanel: Color(0xFF241820),
+      darkInput: Color(0xFF302028),
+      darkBorder: Color(0xFF4A3540),
+      darkInk: Color(0xFFF2E6EC),
+    ),
+    ColorThemePref.violet => const _Palette(
+      seed: Color(0xFF6B5B95),
+      accent: Color(0xFFDB2777),
+      lightSurface: Color(0xFFF5F3F9),
+      lightPanel: Color(0xFFFCFAFE),
+      lightInput: Color(0xFFEBE6F3),
+      lightBorder: Color(0xFFD4CCE3),
+      lightInk: Color(0xFF1E1830),
+      darkSurface: Color(0xFF14121C),
+      darkPanel: Color(0xFF1C1828),
+      darkInput: Color(0xFF282438),
+      darkBorder: Color(0xFF403850),
+      darkInk: Color(0xFFECE6F5),
+    ),
+    ColorThemePref.amber => const _Palette(
+      seed: Color(0xFFB7791F),
+      accent: Color(0xFF0F766E),
+      lightSurface: Color(0xFFFAF6EF),
+      lightPanel: Color(0xFFFFFCF7),
+      lightInput: Color(0xFFF1E8D8),
+      lightBorder: Color(0xFFE0D2B8),
+      lightInk: Color(0xFF2A2114),
+      darkSurface: Color(0xFF16120C),
+      darkPanel: Color(0xFF221C14),
+      darkInput: Color(0xFF2E261C),
+      darkBorder: Color(0xFF4A4030),
+      darkInk: Color(0xFFF2EADF),
+    ),
+    ColorThemePref.slate => const _Palette(
+      seed: Color(0xFF4A5568),
+      accent: Color(0xFF64748B),
+      lightSurface: Color(0xFFF4F5F7),
+      lightPanel: Color(0xFFFBFBFC),
+      lightInput: Color(0xFFE8EAEE),
+      lightBorder: Color(0xFFD0D5DD),
+      lightInk: Color(0xFF1A1F2A),
+      darkSurface: Color(0xFF111418),
+      darkPanel: Color(0xFF1A1E24),
+      darkInput: Color(0xFF252A32),
+      darkBorder: Color(0xFF3A4250),
+      darkInk: Color(0xFFE6EAF0),
+    ),
+  };
+}
+
+/// Editorial desk themes driven by [UiPrefs] color / corner choices.
 class AppTheme {
-  static const _seed = Color(0xFF1F5C6B);
-  static const _accent = Color(0xFFC45C26);
-
-  static const _lightSurface = Color(0xFFF4F1EA);
-  static const _lightPanel = Color(0xFFFFFCF7);
-  static const _lightInput = Color(0xFFEFEAE1);
-  static const _lightBorder = Color(0xFFDDD4C6);
-  static const _lightInk = Color(0xFF1C2430);
-
-  static const _darkSurface = Color(0xFF121820);
-  static const _darkPanel = Color(0xFF1A222D);
-  static const _darkInput = Color(0xFF232C38);
-  static const _darkBorder = Color(0xFF334155);
-  static const _darkInk = Color(0xFFE8EEF5);
-
   static const _cjkFallback = <String>[
     'Microsoft YaHei UI',
     'Microsoft YaHei',
@@ -28,54 +216,57 @@ class AppTheme {
     'sans-serif',
   ];
 
-  static ThemeData light() => _base(Brightness.light);
-  static ThemeData dark() => _base(Brightness.dark);
+  static ThemeData light([UiPrefs ui = const UiPrefs()]) =>
+      _base(Brightness.light, ui);
 
-  static ThemeData _base(Brightness brightness) {
+  static ThemeData dark([UiPrefs ui = const UiPrefs()]) =>
+      _base(Brightness.dark, ui);
+
+  static ThemeData _base(Brightness brightness, UiPrefs ui) {
     final isDark = brightness == Brightness.dark;
+    final palette = _Palette.of(ui.colorTheme);
+    final r = ui.cornerStyle.radiusMd;
+    final rLg = ui.cornerStyle.radiusLg;
+
     final generated = ColorScheme.fromSeed(
-      seedColor: _seed,
+      seedColor: palette.seed,
       brightness: brightness,
     );
     final scheme = generated.copyWith(
-      primary: isDark ? const Color(0xFF6BB8C6) : _seed,
-      onPrimary: isDark ? const Color(0xFF00333C) : Colors.white,
-      primaryContainer: isDark
-          ? const Color(0xFF1A4550)
-          : const Color(0xFFD5EBEF),
-      onPrimaryContainer: isDark
-          ? const Color(0xFFD7F2F7)
-          : const Color(0xFF0B3A44),
-      secondary: isDark ? const Color(0xFFE08A58) : _accent,
+      primary: isDark
+          ? Color.lerp(palette.seed, Colors.white, 0.35)!
+          : palette.seed,
+      onPrimary: isDark
+          ? Color.lerp(palette.seed, Colors.black, 0.75)!
+          : Colors.white,
+      secondary: isDark
+          ? Color.lerp(palette.accent, Colors.white, 0.25)!
+          : palette.accent,
       onSecondary: Colors.white,
-      secondaryContainer: isDark
-          ? const Color(0xFF5A3118)
-          : const Color(0xFFF7E0D2),
-      onSecondaryContainer: isDark
-          ? const Color(0xFFFFE8DA)
-          : const Color(0xFF4A220C),
-      tertiary: isDark ? const Color(0xFFB7A4E8) : const Color(0xFF5B4B8A),
-      surface: isDark ? _darkSurface : _lightSurface,
-      onSurface: isDark ? _darkInk : _lightInk,
+      surface: isDark ? palette.darkSurface : palette.lightSurface,
+      onSurface: isDark ? palette.darkInk : palette.lightInk,
       surfaceContainerLowest: isDark
-          ? const Color(0xFF0D1218)
-          : const Color(0xFFEDE8DF),
-      surfaceContainerLow: isDark ? const Color(0xFF161D26) : _lightInput,
-      surfaceContainer: isDark ? _darkPanel : _lightPanel,
+          ? Color.lerp(palette.darkSurface, Colors.black, 0.25)!
+          : Color.lerp(palette.lightSurface, palette.lightBorder, 0.35)!,
+      surfaceContainerLow: isDark
+          ? Color.lerp(palette.darkPanel, palette.darkSurface, 0.4)!
+          : palette.lightInput,
+      surfaceContainer: isDark ? palette.darkPanel : palette.lightPanel,
       surfaceContainerHigh: isDark
-          ? const Color(0xFF202936)
-          : const Color(0xFFF8F4ED),
-      surfaceContainerHighest: isDark ? _darkInput : _lightInput,
-      outline: isDark ? _darkBorder : _lightBorder,
+          ? Color.lerp(palette.darkPanel, palette.darkInput, 0.5)!
+          : Color.lerp(palette.lightPanel, Colors.white, 0.4)!,
+      surfaceContainerHighest: isDark ? palette.darkInput : palette.lightInput,
+      outline: isDark ? palette.darkBorder : palette.lightBorder,
       outlineVariant: isDark
-          ? const Color(0xFF3D4B5E)
-          : const Color(0xFFE6DDD0),
-      shadow: isDark ? Colors.black : const Color(0xFF1C2430),
+          ? Color.lerp(palette.darkBorder, palette.darkInk, 0.15)!
+          : Color.lerp(palette.lightBorder, palette.lightSurface, 0.35)!,
+      shadow: isDark ? Colors.black : palette.lightInk,
     );
 
     final border = scheme.outlineVariant;
     final inputFill = scheme.surfaceContainerHighest;
     final textTheme = _textTheme(scheme);
+    final metrics = AppMetrics.fromPrefs(ui);
 
     return ThemeData(
       useMaterial3: true,
@@ -84,6 +275,7 @@ class AppTheme {
       fontFamilyFallback: _cjkFallback,
       scaffoldBackgroundColor: scheme.surface,
       textTheme: textTheme,
+      extensions: [metrics],
       dividerTheme: DividerThemeData(color: border, thickness: 1, space: 1),
       appBarTheme: AppBarTheme(
         backgroundColor: scheme.surface.withValues(alpha: 0.92),
@@ -102,7 +294,7 @@ class AppTheme {
         elevation: 0,
         margin: EdgeInsets.zero,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(18),
+          borderRadius: BorderRadius.circular(rLg),
           side: BorderSide(color: border.withValues(alpha: 0.9)),
         ),
       ),
@@ -114,15 +306,15 @@ class AppTheme {
           vertical: 12,
         ),
         border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(r),
           borderSide: BorderSide(color: border),
         ),
         enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(r),
           borderSide: BorderSide(color: border),
         ),
         focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(r),
           borderSide: BorderSide(color: scheme.primary, width: 1.5),
         ),
         helperStyle: textTheme.bodySmall?.copyWith(
@@ -136,7 +328,7 @@ class AppTheme {
         labelStyle: TextStyle(color: scheme.onSurface, fontSize: 13),
         secondaryLabelStyle: TextStyle(color: scheme.onPrimaryContainer),
         padding: const EdgeInsets.symmetric(horizontal: 4),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(r - 2)),
       ),
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
@@ -145,7 +337,7 @@ class AppTheme {
           minimumSize: const Size(48, 44),
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(14),
+            borderRadius: BorderRadius.circular(r),
           ),
         ),
       ),
@@ -155,7 +347,7 @@ class AppTheme {
           side: BorderSide(color: border),
           minimumSize: const Size(48, 44),
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(14),
+            borderRadius: BorderRadius.circular(r),
           ),
         ),
       ),
@@ -166,7 +358,7 @@ class AppTheme {
           padding: const EdgeInsets.all(10),
           tapTargetSize: MaterialTapTargetSize.padded,
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: BorderRadius.circular(r - 2),
           ),
         ),
       ),
@@ -174,41 +366,43 @@ class AppTheme {
         selectedColor: scheme.primary,
         selectedTileColor: scheme.primaryContainer.withValues(alpha: 0.55),
         contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(r)),
         iconColor: scheme.onSurfaceVariant,
       ),
       snackBarTheme: SnackBarThemeData(
         behavior: SnackBarBehavior.floating,
-        backgroundColor: isDark ? const Color(0xFF243041) : _lightInk,
+        backgroundColor: isDark
+            ? Color.lerp(palette.darkPanel, Colors.black, 0.15)!
+            : palette.lightInk,
         contentTextStyle: const TextStyle(color: Colors.white),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(r)),
       ),
       dialogTheme: DialogThemeData(
         backgroundColor: scheme.surfaceContainer,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(rLg + 4)),
       ),
       bottomSheetTheme: BottomSheetThemeData(
         backgroundColor: scheme.surfaceContainer,
         surfaceTintColor: Colors.transparent,
-        shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(rLg + 4)),
         ),
       ),
       popupMenuTheme: PopupMenuThemeData(
         color: scheme.surfaceContainer,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(r)),
         elevation: 6,
       ),
       floatingActionButtonTheme: FloatingActionButtonThemeData(
         backgroundColor: scheme.primary,
         foregroundColor: scheme.onPrimary,
         elevation: 2,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(r + 2)),
       ),
       segmentedButtonTheme: SegmentedButtonThemeData(
         style: ButtonStyle(
           shape: WidgetStatePropertyAll(
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(r - 2)),
           ),
           side: WidgetStatePropertyAll(BorderSide(color: border)),
         ),
@@ -218,6 +412,19 @@ class AppTheme {
         unselectedLabelColor: scheme.onSurfaceVariant,
         indicatorColor: scheme.primary,
         dividerColor: border,
+      ),
+      navigationBarTheme: NavigationBarThemeData(
+        backgroundColor: scheme.surfaceContainer,
+        indicatorColor: scheme.primaryContainer,
+        labelTextStyle: WidgetStatePropertyAll(
+          textTheme.labelSmall?.copyWith(fontWeight: FontWeight.w600),
+        ),
+      ),
+      navigationRailTheme: NavigationRailThemeData(
+        backgroundColor: scheme.surfaceContainer,
+        indicatorColor: scheme.primaryContainer,
+        selectedIconTheme: IconThemeData(color: scheme.primary),
+        unselectedIconTheme: IconThemeData(color: scheme.onSurfaceVariant),
       ),
     );
   }
@@ -246,5 +453,38 @@ class AppTheme {
       labelMedium: base(12, FontWeight.w600, height: 1.2),
       labelSmall: base(11, FontWeight.w500, height: 1.2),
     );
+  }
+
+  /// Decorative chat / shell background based on [ChatSurfacePref].
+  static BoxDecoration surfaceDecoration(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final metrics = Theme.of(context).extension<AppMetrics>();
+    final surface = metrics?.chatSurface ?? ChatSurfacePref.plain;
+    return switch (surface) {
+      ChatSurfacePref.plain => BoxDecoration(color: scheme.surface),
+      ChatSurfacePref.paper => BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            scheme.surface,
+            Color.lerp(scheme.surface, scheme.surfaceContainerLow, 0.55)!,
+            scheme.surface,
+          ],
+          stops: const [0, 0.55, 1],
+        ),
+      ),
+      ChatSurfacePref.tinted => BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            Color.lerp(scheme.surface, scheme.primary, 0.06)!,
+            scheme.surface,
+            Color.lerp(scheme.surface, scheme.secondary, 0.05)!,
+          ],
+        ),
+      ),
+    };
   }
 }

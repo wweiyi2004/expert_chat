@@ -146,6 +146,7 @@ class _RecordingLlm implements LlmProvider {
     required List<LlmRequestMessage> messages,
     List<ToolSpec>? tools,
     bool? thinking,
+    String? forceToolName,
     CancelToken? cancelToken,
   }) async* {
     lastMessages = List.unmodifiable(messages);
@@ -166,6 +167,7 @@ class _CandidateLlm implements LlmProvider {
     required List<LlmRequestMessage> messages,
     List<ToolSpec>? tools,
     bool? thinking,
+    String? forceToolName,
     CancelToken? cancelToken,
   }) async* {
     lastMessages = List.unmodifiable(messages);

@@ -10,6 +10,11 @@
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <!-- In-app full-package OTA: install a downloaded APK. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
+    <!-- Recent-photo picker (Android 13+). Older devices use READ_EXTERNAL_STORAGE. -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32"/>
     <application
         android:label="Expert Chat"
         android:name="${applicationName}"

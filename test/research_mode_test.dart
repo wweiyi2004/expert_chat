@@ -41,6 +41,7 @@ class _ScriptLlm implements LlmProvider {
     required List<LlmRequestMessage> messages,
     List<ToolSpec>? tools,
     bool? thinking,
+    String? forceToolName,
     CancelToken? cancelToken,
   }) async* {
     yield ChatChunk(contentDelta: reply);

@@ -169,6 +169,13 @@ void SpeechToTextWindowsPlugin::RegisterWithRegistrar(
 
   auto plugin = std::make_unique<SpeechToTextWindowsPlugin>();
   plugin->m_channel = std::move(channel);
+  plugin->m_channel->SetMethodCallHandler(
+      [plugin_pointer = plugin.get()](
+          const flutter::MethodCall<flutter::EncodableValue>& method_call,
+          std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>
+              result) {
+        plugin_pointer->HandleMethodCall(method_call, std::move(result));
+      });
   plugin->m_registrar = registrar;
   if (auto* view = registrar->GetView()) {
     plugin->m_window_handle = view->GetNativeWindow();

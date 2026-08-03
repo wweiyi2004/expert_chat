@@ -51,8 +51,8 @@ class Attachment {
   /// Set when local parsing failed; surfaced in the UI.
   final String? parseError;
 
-  /// Base64-encoded image bytes, retained for vision-capable models. Null for
-  /// non-images or images too large to attach.
+  /// Base64-encoded binary payload. Used for vision images and for
+  /// downloadable office files retained for document-edit round-trips.
   final String? imageBase64;
 
   /// Optional remote image URL returned by a generation API. Base64 output is
@@ -64,8 +64,37 @@ class Attachment {
 
   /// True when this image can be sent to a vision model.
   bool get hasImageData =>
-      (imageBase64 != null && imageBase64!.isNotEmpty) ||
-      (remoteUrl != null && remoteUrl!.isNotEmpty);
+      isImage &&
+      ((imageBase64 != null && imageBase64!.isNotEmpty) ||
+          (remoteUrl != null && remoteUrl!.isNotEmpty));
+
+  /// Non-empty base64 body available for save/share (image or office file).
+  bool get hasDownloadableBytes =>
+      imageBase64 != null && imageBase64!.isNotEmpty;
+
+  /// Excel workbook kept for document-service edits.
+  bool get isEditableSpreadsheet {
+    final n = name.toLowerCase();
+    return n.endsWith('.xlsx') && hasDownloadableBytes;
+  }
+
+  /// Office file retained for document-service round-trip (xlsx/docx/pptx).
+  bool get isEditableDocument {
+    final n = name.toLowerCase();
+    return (n.endsWith('.xlsx') ||
+            n.endsWith('.docx') ||
+            n.endsWith('.pptx')) &&
+        hasDownloadableBytes;
+  }
+
+  /// DocumentPatch `format` for this attachment, or null if not editable.
+  String? get documentPatchFormat {
+    final n = name.toLowerCase();
+    if (n.endsWith('.xlsx')) return 'xlsx';
+    if (n.endsWith('.docx')) return 'docx';
+    if (n.endsWith('.pptx')) return 'pptx';
+    return null;
+  }
 
   /// `data:` URL for the OpenAI `image_url` content part (vision models).
   String get imageDataUrl => imageBase64 != null && imageBase64!.isNotEmpty
@@ -76,8 +105,8 @@ class Attachment {
     String? text,
     bool? truncated,
     String? parseError,
-    String? imageBase64,
-    String? remoteUrl,
+    Object? imageBase64 = _attachSentinel,
+    Object? remoteUrl = _attachSentinel,
   }) => Attachment(
     id: id,
     name: name,
@@ -86,9 +115,15 @@ class Attachment {
     text: text ?? this.text,
     truncated: truncated ?? this.truncated,
     parseError: parseError ?? this.parseError,
-    imageBase64: imageBase64 ?? this.imageBase64,
-    remoteUrl: remoteUrl ?? this.remoteUrl,
+    imageBase64: identical(imageBase64, _attachSentinel)
+        ? this.imageBase64
+        : imageBase64 as String?,
+    remoteUrl: identical(remoteUrl, _attachSentinel)
+        ? this.remoteUrl
+        : remoteUrl as String?,
   );
+
+  static const _attachSentinel = Object();
 
   Map<String, dynamic> toJson() => {
     'id': id,

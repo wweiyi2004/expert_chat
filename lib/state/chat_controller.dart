@@ -13,10 +13,14 @@ import '../data/story_models.dart';
 import '../domain/context/context_window_manager.dart';
 import '../domain/llm/llm_provider.dart';
 import '../domain/media/image_codec_util.dart';
+import '../domain/media/image_edit_reference.dart';
 import '../domain/media/image_prompt_safety.dart';
 import '../domain/notify/generation_notify.dart';
 import '../domain/story/story_length_budget.dart';
 import '../domain/story/story_prompt_assembler.dart';
+import '../domain/document/document_edit_tools.dart';
+import '../domain/document/document_patch.dart';
+import '../domain/document/document_service_client.dart';
 import '../domain/tools/search_orchestrator.dart';
 import '../domain/tools/search_provider.dart';
 import '../domain/tools/search_query.dart';
@@ -1036,12 +1040,18 @@ class ChatController extends AsyncNotifier<ChatState> {
   Future<bool> sendMessage(
     String text, {
     List<Attachment> attachments = const [],
+    /// When true, force the model to call [edit_document] (manual「改文档」).
+    bool forceDocumentEdit = false,
   }) async {
     final trimmed = text.trim();
     if ((trimmed.isEmpty && attachments.isEmpty) ||
         _s.isStreaming ||
         _starting) {
       return false;
+    }
+    if (forceDocumentEdit) {
+      final hasDoc = attachments.any((a) => a.isEditableDocument);
+      if (!hasDoc) return false;
     }
     _starting = true;
     _cancelStart = false;
@@ -1062,17 +1072,34 @@ class ChatController extends AsyncNotifier<ChatState> {
         requireVision: requiresVision,
       );
       if (settings == null || _cancelStart) return false;
+      if (forceDocumentEdit && !settings.documentServiceConfigured) {
+        _set(_s.copyWith(error: '请先在设置中配置文档服务（Base URL + Token）。'));
+        return false;
+      }
       final config = _configFor(
         settings,
         vision: hasImages && settings.visionConfigured,
       );
+      if (forceDocumentEdit && !config.capabilities.supportsTools) {
+        _set(
+          _s.copyWith(
+            error: '当前模型不支持工具调用，无法强制改文档。请换用支持 function calling 的对话模型。',
+          ),
+        );
+        return false;
+      }
 
       final parentId = convo.activePath.isEmpty
           ? null
           : convo.activePath.last.id;
+      final userContent = forceDocumentEdit && trimmed.isEmpty
+          ? '请根据本轮附件，调用 edit_document 修改文件并回传。'
+          : (forceDocumentEdit
+                ? '$trimmed\n\n【系统】请务必调用 edit_document 完成本次文件修改并回传。'
+                : trimmed);
       final userMsg = ChatMessage(
         role: MessageRole.user,
-        content: trimmed,
+        content: userContent,
         attachments: attachments,
         parentId: parentId,
       );
@@ -1104,8 +1131,9 @@ class ChatController extends AsyncNotifier<ChatState> {
         assistantId: assistantMsg.id,
         config: config,
         settings: settings,
-        searchQuery: trimmed,
+        searchQuery: userContent,
         thinking: _s.deepThink,
+        forceDocumentEdit: forceDocumentEdit,
       );
       return true;
     } finally {
@@ -1496,8 +1524,8 @@ class ChatController extends AsyncNotifier<ChatState> {
       }
       if (_cancelStart) return false;
 
-      // Edits APIs typically take one source image; extra refs are ignored.
-      final reference = refs.isEmpty ? null : refs.first;
+      final maxRefs = settings.imageGenerationApi.maxImageEditReferences;
+      final usedRefs = refs.length > maxRefs ? refs.sublist(0, maxRefs) : refs;
 
       final convo = originConvo ?? _s.current ?? Conversation();
       ChatMessage? existingUser;
@@ -1520,7 +1548,7 @@ class ChatController extends AsyncNotifier<ChatState> {
             role: MessageRole.user,
             content: trimmed,
             parentId: parentId,
-            attachments: reference == null ? const [] : [reference],
+            attachments: usedRefs,
           );
       final assistantMsg = ChatMessage(
         role: MessageRole.assistant,
@@ -1631,54 +1659,52 @@ class ChatController extends AsyncNotifier<ChatState> {
         // append an SFW suffix before hitting the media API.
         imagePrompt = ImagePromptSafety.freeform(imagePrompt);
 
-        List<int>? refBytes;
-        var refMime = 'image/png';
-        var refName = 'reference.png';
-        if (reference != null) {
+        final preparedRefs = <ImageEditReference>[];
+        for (final reference in usedRefs) {
           final b64 = reference.imageBase64;
-          if (b64 != null && b64.isNotEmpty) {
-            try {
-              // Large phone photos: decode base64 off the UI isolate, then
-              // downscale on the UI isolate (target-bound decode that never
-              // materialises the full-size buffer). References picked through
-              // the composer are already pre-scaled, so this is usually a
-              // no-op; it stays as a fallback for non-picker sources.
-              final raw = b64.length >= 256 * 1024
-                  ? await compute(base64Decode, b64)
-                  : base64Decode(b64);
-              final prepared = await ImageCodecUtil.prepareReferenceImage(
-                Uint8List.fromList(raw),
-                mimeType: reference.mimeType,
-                name: reference.name,
-              );
-              refBytes = prepared.bytes;
-              refMime = prepared.mimeType;
-              refName = prepared.name;
-            } on FormatException {
-              _setScopedError(
-                '参考图数据无效，请重新选择图片。',
-                convoId: working.id,
-                retryOperation: failureOperation,
-              );
-              _set(_s.copyWith(streamingConvoId: null));
-              await _persistById(working.id);
-              unawaited(
-                GenerationNotify.onGenerationEnd(
-                  success: false,
-                  conversationTitle: working.title,
-                ),
-              );
-              return true;
-            }
-          } else {
+          if (b64 == null || b64.isEmpty) {
             _set(
               _s.copyWith(
-                error: '参考图缺少本地数据，请重新从相册/文件选择图片。',
+                error: '参考图「${reference.name}」缺少本地数据，请重新从相册/文件选择。',
                 errorConvoId: working.id,
                 retryOperation: failureOperation,
                 streamingConvoId: null,
               ),
             );
+            await _persistById(working.id);
+            unawaited(
+              GenerationNotify.onGenerationEnd(
+                success: false,
+                conversationTitle: working.title,
+              ),
+            );
+            return true;
+          }
+          try {
+            // Large phone photos: decode base64 off the UI isolate, then
+            // downscale on the UI isolate (target-bound decode).
+            final raw = b64.length >= 256 * 1024
+                ? await compute(base64Decode, b64)
+                : base64Decode(b64);
+            final prepared = await ImageCodecUtil.prepareReferenceImage(
+              Uint8List.fromList(raw),
+              mimeType: reference.mimeType,
+              name: reference.name,
+            );
+            preparedRefs.add(
+              ImageEditReference(
+                bytes: prepared.bytes,
+                mimeType: prepared.mimeType,
+                fileName: prepared.name,
+              ),
+            );
+          } on FormatException {
+            _setScopedError(
+              '参考图「${reference.name}」数据无效，请重新选择图片。',
+              convoId: working.id,
+              retryOperation: failureOperation,
+            );
+            _set(_s.copyWith(streamingConvoId: null));
             await _persistById(working.id);
             unawaited(
               GenerationNotify.onGenerationEnd(
@@ -1700,9 +1726,7 @@ class ChatController extends AsyncNotifier<ChatState> {
               apiKey: settings.imageGenerationApiKey,
               prompt: imagePrompt,
               cancelToken: cancelToken,
-              referenceImageBytes: refBytes,
-              referenceMimeType: refMime,
-              referenceFileName: refName,
+              referenceImages: preparedRefs,
             );
         if (!_s.isStreaming || cancelToken.isCancelled) {
           await _persistById(working.id);
@@ -1729,7 +1753,7 @@ class ChatController extends AsyncNotifier<ChatState> {
           originalPrompt: trimmed,
           optimizedByModel: optimizedByModel,
           revisedByApi: generated.revisedPrompt,
-          usedReferenceImage: reference != null,
+          usedReferenceImage: preparedRefs.isNotEmpty,
         );
         _updateGeneratedImage(
           working.id,
@@ -1935,11 +1959,22 @@ class ChatController extends AsyncNotifier<ChatState> {
     int? promptPlotCursor,
     bool commitPlotAdvance = false,
     CharacterCard? ensembleSpeaker,
+    bool forceDocumentEdit = false,
   }) async {
     final searchMode = _s.searchMode;
     final searchAllowed =
         searchMode != SearchMode.off && searchQuery.trim().isNotEmpty;
-    final useWebSearchTool = searchAllowed && config.capabilities.supportsTools;
+    // Hosted web_search (DeepSeek Responses) when the user picked the provider
+    // backend and the active model supports it. Otherwise the client tool /
+    // pre-search path stays in charge.
+    final useProviderSearch =
+        searchAllowed &&
+        settings.searchBackend.isProviderHosted &&
+        config.capabilities.supportsServerWebSearch;
+    final useWebSearchTool =
+        searchAllowed &&
+        !useProviderSearch &&
+        config.capabilities.supportsTools;
     // Only expose direct page fetching when this turn actually contains a URL.
     // The executor also restricts calls to this exact allow-list so a model
     // cannot invent unrelated network targets while "联网" is off.
@@ -1957,10 +1992,33 @@ class ChatController extends AsyncNotifier<ChatState> {
     final imageGenConfigured = settings.imageGenerationConfigured;
     final imageGenWanted =
         imageGenMode != ImageGenMode.off && imageGenConfigured;
-    final toolSpecs = <ToolSpec>[
-      if (useWebSearchTool) ToolEngine.webSearchTool,
-      if (useFetchUrlTool) ToolEngine.fetchUrlTool,
+    // Document edit: Linux service + Office file with retained bytes + tools.
+    final turnUserAttachments = _userAttachmentsForTurn(working, assistantId);
+    final editableDocuments = [
+      for (final a in turnUserAttachments)
+        if (a.isEditableDocument) a,
     ];
+    final useDocumentEditTool =
+        settings.documentServiceConfigured &&
+        config.capabilities.supportsTools &&
+        editableDocuments.isNotEmpty;
+    final forceDocTool =
+        forceDocumentEdit && useDocumentEditTool;
+    final toolSpecs = <ToolSpec>[
+      if (useWebSearchTool && !forceDocTool) ToolEngine.webSearchTool,
+      if (useFetchUrlTool && !forceDocTool) ToolEngine.fetchUrlTool,
+      if (useDocumentEditTool) DocumentEditTools.editDocumentTool,
+    ];
+    if (searchAllowed &&
+        settings.searchBackend.isProviderHosted &&
+        !config.capabilities.supportsServerWebSearch) {
+      // Soft notice once per turn: official search only works on flash today.
+      _setScopedError(
+        '当前模型不支持提供商官方联网（需 deepseek-v4-flash），'
+        '本轮将回退到客户端搜索后端。',
+        convoId: working.id,
+      );
+    }
     final allowedFetchUrls = {for (final url in pastedUrls) _fetchUrlKey(url)};
     final imageBudget = _TurnImageBudget();
     final failureOperation = ChatRetryOperation(
@@ -2069,8 +2127,18 @@ class ChatController extends AsyncNotifier<ChatState> {
     // without function calling keep the deterministic pre-fetch fallback.
     final needPreFetch =
         directPageFetchAllowed && pastedUrls.isNotEmpty && !useFetchUrlTool;
+    // Provider-hosted search is done inside the Responses stream — skip the
+    // client pre-search (including 联网·强制, which becomes tool_choice).
     final needPreSearch =
-        searchAllowed && (!useWebSearchTool || searchMode == SearchMode.always);
+        searchAllowed &&
+        !useProviderSearch &&
+        (!useWebSearchTool || searchMode == SearchMode.always);
+    // When official search is unavailable, fall back to a free client backend
+    // so the turn still has a search path without requiring a search key.
+    final clientSearchBackend =
+        settings.searchBackend.isProviderHosted && !useProviderSearch
+        ? SearchBackend.duckduckgo
+        : settings.searchBackend;
     if (needPreFetch || needPreSearch) {
       _set(_s.copyWith(isSearching: true, isGeneratingImage: false));
       // Live progress steps land on the assistant placeholder as they happen.
@@ -2078,7 +2146,7 @@ class ChatController extends AsyncNotifier<ChatState> {
           _upsertSearchActivity(working.id, assistantId, activity);
       try {
         final engine = ref.read(toolEngineFactoryProvider)(
-          backend: settings.searchBackend,
+          backend: clientSearchBackend,
           apiKey: settings.searchApiKey,
         );
         final citations = <Citation>[];
@@ -2301,6 +2369,18 @@ class ChatController extends AsyncNotifier<ChatState> {
             hint.write('需要配图时调用 generate_image（每轮最多一次）；提示词必须 SFW，禁止色情内容。');
           }
         }
+        if (useDocumentEditTool) {
+          hint.write(
+            forceDocTool
+                ? '用户点击了「改文档」。你必须调用 edit_document，'
+                    '给出完整 DocumentPatch（schema_version=1；format 为 xlsx/docx/pptx 之一；ops）。'
+                    'xlsx 用 set_cells/set_range/add_sheet/ensure_sheet；'
+                    'docx 用 replace_text；pptx 用 set_shape_text。'
+                : '用户上传了可编辑的 Office 文件（.xlsx/.docx/.pptx）。'
+                    '若要求改文件/导出/回传，调用 edit_document 并给出完整 DocumentPatch。',
+          );
+          hint.write('不要编造未上传的附件名。');
+        }
         systemPrefix.add(
           LlmRequestMessage(role: MessageRole.system, content: hint.toString()),
         );
@@ -2349,6 +2429,18 @@ class ChatController extends AsyncNotifier<ChatState> {
             hint.write('需要配图时调用 generate_image（每轮最多一次）；提示词必须 SFW，禁止色情内容。');
           }
         }
+        if (useDocumentEditTool) {
+          hint.write(
+            forceDocTool
+                ? '用户点击了「改文档」。你必须调用 edit_document，'
+                    '给出完整 DocumentPatch（schema_version=1；format 为 xlsx/docx/pptx 之一；ops）。'
+                    'xlsx 用 set_cells/set_range/add_sheet/ensure_sheet；'
+                    'docx 用 replace_text；pptx 用 set_shape_text。'
+                : '用户上传了可编辑的 Office 文件（.xlsx/.docx/.pptx）。'
+                    '若要求改文件/导出/回传，调用 edit_document 并给出完整 DocumentPatch。',
+          );
+          hint.write('不要编造未上传的附件名。');
+        }
         history.insert(
           0,
           LlmRequestMessage(role: MessageRole.system, content: hint.toString()),
@@ -2390,15 +2482,20 @@ class ChatController extends AsyncNotifier<ChatState> {
       return;
     }
 
+    final streamConfig = config.copyWith(
+      serverWebSearch: useProviderSearch,
+      forceServerWebSearch:
+          useProviderSearch && searchMode == SearchMode.always,
+    );
     final succeeded = await _streamAnswer(
-      config: config,
+      config: streamConfig,
       history: contextResult.messages,
       convoId: working.id,
       assistantId: assistantId,
       thinking: thinking,
       settings: settings,
       fallbackSearchQuery: searchQuery,
-      enableTools: enableTools,
+      enableTools: enableTools || useProviderSearch,
       toolSpecs: toolSpecs,
       initialCitations: searchContext?.citations ?? const <Citation>[],
       allowedFetchUrls: Set<String>.unmodifiable(allowedFetchUrls),
@@ -2406,6 +2503,10 @@ class ChatController extends AsyncNotifier<ChatState> {
       imageBudget: imageBudget,
       imageCharacter: imageCharacter,
       failureOperation: failureOperation,
+      clientSearchBackend: clientSearchBackend,
+      forceToolName: forceDocTool
+          ? DocumentEditTools.editDocumentToolName
+          : null,
     );
 
     unawaited(
@@ -2480,6 +2581,8 @@ class ChatController extends AsyncNotifier<ChatState> {
     required _TurnImageBudget imageBudget,
     required ChatRetryOperation failureOperation,
     CharacterCard? imageCharacter,
+    SearchBackend clientSearchBackend = SearchBackend.duckduckgo,
+    String? forceToolName,
   }) async {
     final llm = ref.read(llmProvider);
     final requestMessages = List<LlmRequestMessage>.of(history);
@@ -2549,16 +2652,26 @@ class ChatController extends AsyncNotifier<ChatState> {
         // to answer from what it has, instead of us erroring out mid-answer.
         final allowTools =
             enableTools && toolSpecs.isNotEmpty && round < maxToolRounds - 1;
+        // Force hosted search only on the first model round; later rounds are
+        // for answering after client function tools and must not re-trigger
+        // tool_choice: web_search.
+        final roundConfig = round == 0
+            ? config
+            : config.copyWith(forceServerWebSearch: false);
         final stream = llm.streamChat(
-          config: config,
+          config: roundConfig,
           messages: requestMessages,
           tools: allowTools ? toolSpecs : null,
           thinking: thinking,
+          // Force only on the first tool-enabled round so later answer rounds
+          // are free to write the final reply.
+          forceToolName: allowTools && round == 0 ? forceToolName : null,
           cancelToken: cancelToken,
         );
         final completer = Completer<void>();
         _streamCompleter = completer;
 
+        var turnResponseItems = <Map<String, dynamic>>[];
         _sub = stream.listen(
           (chunk) {
             finishReason = chunk.finishReason ?? finishReason;
@@ -2585,6 +2698,44 @@ class ChatController extends AsyncNotifier<ChatState> {
               (toolDrafts[call.index] ??= ToolCallDraft(
                 call.index,
               )).merge(call);
+            }
+            if (chunk.serverSearchActivity != null) {
+              _upsertSearchActivity(
+                convoId,
+                assistantId,
+                chunk.serverSearchActivity!,
+              );
+              if (chunk.serverSearchActivity!.status ==
+                      SearchActivityStatus.running &&
+                  _s.isStreaming) {
+                _set(
+                  _s.copyWith(isSearching: true, isGeneratingImage: false),
+                );
+              } else if (chunk.serverSearchActivity!.status ==
+                      SearchActivityStatus.done &&
+                  _s.isStreaming) {
+                _set(_s.copyWith(isSearching: false));
+              }
+            }
+            if (chunk.citations != null && chunk.citations!.isNotEmpty) {
+              // Merge by URL so repeated annotation events don't renumber.
+              final known = {for (final c in citations) c.url};
+              for (final c in chunk.citations!) {
+                if (known.add(c.url)) {
+                  citations.add(
+                    Citation(
+                      index: citations.length + 1,
+                      title: c.title,
+                      url: c.url,
+                      snippet: c.snippet,
+                    ),
+                  );
+                }
+              }
+              _setCitations(convoId, assistantId, List<Citation>.of(citations));
+            }
+            if (chunk.responseOutputItems != null) {
+              turnResponseItems = chunk.responseOutputItems!;
             }
             scheduleUiFlush();
           },
@@ -2657,6 +2808,7 @@ class ChatController extends AsyncNotifier<ChatState> {
             content: turnContent.toString(),
             reasoningContent: turnReasoning.toString(),
             toolCalls: toolCalls,
+            responseOutputItems: turnResponseItems,
           ),
         );
 
@@ -2677,6 +2829,14 @@ class ChatController extends AsyncNotifier<ChatState> {
           cancelToken: cancelToken,
           imageBudget: imageBudget,
           imageCharacter: imageCharacter,
+          clientSearchBackend: clientSearchBackend,
+          editableAttachments: _userAttachmentsForTurn(
+            _s.conversations.firstWhere(
+              (c) => c.id == convoId,
+              orElse: () => Conversation(id: convoId),
+            ),
+            assistantId,
+          ),
         );
         if (!_s.isStreaming) {
           await _persistSafely(convoId);
@@ -2738,6 +2898,8 @@ class ChatController extends AsyncNotifier<ChatState> {
     required CancelToken cancelToken,
     required _TurnImageBudget imageBudget,
     CharacterCard? imageCharacter,
+    SearchBackend clientSearchBackend = SearchBackend.duckduckgo,
+    List<Attachment> editableAttachments = const [],
   }) async {
     final out = <LlmRequestMessage>[];
     try {
@@ -2748,7 +2910,8 @@ class ChatController extends AsyncNotifier<ChatState> {
         if (_s.isStreaming) {
           final searching =
               call.name == ToolEngine.webSearchTool.name ||
-              call.name == ToolEngine.fetchUrlTool.name;
+              call.name == ToolEngine.fetchUrlTool.name ||
+              call.name == DocumentEditTools.editDocumentToolName;
           final generating = call.name == ToolEngine.generateImageTool.name;
           _set(
             _s.copyWith(isSearching: searching, isGeneratingImage: generating),
@@ -2769,6 +2932,7 @@ class ChatController extends AsyncNotifier<ChatState> {
             assistantId,
             citations,
             cancelToken,
+            clientSearchBackend: clientSearchBackend,
           );
         } else if (call.name == ToolEngine.fetchUrlTool.name) {
           toolContent = await _runFetchUrlTool(
@@ -2779,6 +2943,7 @@ class ChatController extends AsyncNotifier<ChatState> {
             citations,
             allowedFetchUrls,
             cancelToken,
+            clientSearchBackend: clientSearchBackend,
           );
         } else if (call.name == ToolEngine.generateImageTool.name) {
           toolContent = await _runGenerateImageTool(
@@ -2789,6 +2954,15 @@ class ChatController extends AsyncNotifier<ChatState> {
             imageBudget: imageBudget,
             imageCharacter: imageCharacter,
             userText: fallbackSearchQuery,
+            cancelToken: cancelToken,
+          );
+        } else if (call.name == DocumentEditTools.editDocumentToolName) {
+          toolContent = await _runEditDocumentTool(
+            call,
+            settings: settings,
+            convoId: convoId,
+            assistantId: assistantId,
+            sources: editableAttachments,
             cancelToken: cancelToken,
           );
         } else {
@@ -2815,12 +2989,13 @@ class ChatController extends AsyncNotifier<ChatState> {
     String convoId,
     String assistantId,
     List<Citation> citations,
-    CancelToken cancelToken,
-  ) async {
+    CancelToken cancelToken, {
+    SearchBackend clientSearchBackend = SearchBackend.duckduckgo,
+  }) async {
     final query = _searchQueryFromArgs(call.argumentsJson, fallbackSearchQuery);
     try {
       final engine = ref.read(toolEngineFactoryProvider)(
-        backend: settings.searchBackend,
+        backend: clientSearchBackend,
         apiKey: settings.searchApiKey,
       );
       final context = await engine.runSearch(
@@ -2855,8 +3030,9 @@ class ChatController extends AsyncNotifier<ChatState> {
     String assistantId,
     List<Citation> citations,
     Set<String> allowedFetchUrls,
-    CancelToken cancelToken,
-  ) async {
+    CancelToken cancelToken, {
+    SearchBackend clientSearchBackend = SearchBackend.duckduckgo,
+  }) async {
     final url = _urlFromArgs(call.argumentsJson);
     if (url == null) {
       return '无效的 URL 参数；请提供完整的 http(s) 网址。';
@@ -2865,8 +3041,12 @@ class ChatController extends AsyncNotifier<ChatState> {
       return '已拒绝读取：fetch_url 只能访问用户在本轮消息中明确提供的网址。';
     }
     try {
+      // fetch_url only needs the page client; backend choice is irrelevant as
+      // long as it is not the provider-hosted marker (which refuses client ops).
       final engine = ref.read(toolEngineFactoryProvider)(
-        backend: settings.searchBackend,
+        backend: clientSearchBackend.isProviderHosted
+            ? SearchBackend.duckduckgo
+            : clientSearchBackend,
         apiKey: settings.searchApiKey,
       );
       final context = await engine.runFetchUrls(
@@ -3034,6 +3214,138 @@ class ChatController extends AsyncNotifier<ChatState> {
         _set(_s.copyWith(isGeneratingImage: false));
       }
     }
+  }
+
+  /// User attachments belonging to the turn that produced [assistantId]
+  /// (walk parent chain to the nearest user message).
+  List<Attachment> _userAttachmentsForTurn(
+    Conversation working,
+    String assistantId,
+  ) {
+    final byId = {for (final m in working.messages) m.id: m};
+    var cur = byId[assistantId];
+    // Also accept the latest user message if the assistant is a fresh placeholder.
+    while (cur != null) {
+      if (cur.role == MessageRole.user) {
+        return List<Attachment>.unmodifiable(cur.attachments);
+      }
+      final parentId = cur.parentId;
+      if (parentId == null) break;
+      cur = byId[parentId];
+    }
+    for (var i = working.messages.length - 1; i >= 0; i--) {
+      final m = working.messages[i];
+      if (m.role == MessageRole.user && m.attachments.isNotEmpty) {
+        return List<Attachment>.unmodifiable(m.attachments);
+      }
+    }
+    return const [];
+  }
+
+  Future<String> _runEditDocumentTool(
+    ToolCall call, {
+    required SettingsState settings,
+    required String convoId,
+    required String assistantId,
+    required List<Attachment> sources,
+    required CancelToken cancelToken,
+  }) async {
+    if (!settings.documentServiceConfigured) {
+      return '文档服务未配置：请在设置中启用并填写 Base URL 与 Token。';
+    }
+    try {
+      final args = DocumentEditTools.parseEditDocumentArgs(call.argumentsJson);
+      final source = _pickDocumentSource(sources, args.attachmentName);
+      if (source == null) {
+        final names = [
+          for (final a in sources)
+            if (a.isEditableDocument ||
+                a.name.toLowerCase().endsWith('.xlsx') ||
+                a.name.toLowerCase().endsWith('.docx') ||
+                a.name.toLowerCase().endsWith('.pptx'))
+              a.name,
+        ];
+        return names.isEmpty
+            ? '本轮没有可编辑的 Office 附件（.xlsx/.docx/.pptx，需重新上传并保留原文件）。'
+            : '找不到附件「${args.attachmentName}」。本轮可用：${names.join("、")}';
+      }
+      if (!source.hasDownloadableBytes) {
+        return '附件「${source.name}」未保留原始文件字节，无法提交文档服务。请重新上传。';
+      }
+      final expectedFormat = source.documentPatchFormat;
+      if (expectedFormat != null &&
+          args.patch.format.toLowerCase() != expectedFormat) {
+        return '补丁 format="${args.patch.format}" 与附件「${source.name}」'
+            '（$expectedFormat）不一致，请修正后重试。';
+      }
+      late final Uint8List fileBytes;
+      try {
+        fileBytes = Uint8List.fromList(base64Decode(source.imageBase64!));
+      } catch (_) {
+        return '附件「${source.name}」数据损坏，无法编辑。';
+      }
+
+      final client = ref.read(documentServiceClientProvider);
+      final result = await client.edit(
+        config: settings.documentService,
+        apiToken: settings.documentServiceToken,
+        fileBytes: fileBytes,
+        filename: source.name,
+        patch: args.patch,
+        cancelToken: cancelToken,
+      );
+      if (!_s.isStreaming) return '文档编辑已取消。';
+
+      final out = Attachment(
+        name: result.filename,
+        mimeType: result.contentType,
+        sizeBytes: result.bytes.length,
+        text: '（文档服务已修改，可下载）',
+        imageBase64: base64Encode(result.bytes),
+      );
+      _appendAssistantAttachment(convoId, assistantId, out);
+      final kb = (result.bytes.length / 1024).toStringAsFixed(1);
+      return '已生成修改后的文件「${result.filename}」（$kb KB），'
+          '已附在本轮回复中，请点击附件下载。';
+    } on DocumentPatchException catch (e) {
+      return '补丁无效：${e.message}';
+    } on DocumentServiceException catch (e) {
+      if (_isCancel(e)) return '文档编辑已取消。';
+      _setScopedError(e.message, convoId: convoId);
+      return '文档编辑失败：${e.message}';
+    } catch (e) {
+      if (_isCancel(e)) return '文档编辑已取消。';
+      _setScopedError(_describeError(e), convoId: convoId);
+      return '文档编辑失败：$e';
+    }
+  }
+
+  Attachment? _pickDocumentSource(
+    List<Attachment> sources,
+    String? attachmentName,
+  ) {
+    final docs = [
+      for (final a in sources)
+        if (a.name.toLowerCase().endsWith('.xlsx') ||
+            a.name.toLowerCase().endsWith('.docx') ||
+            a.name.toLowerCase().endsWith('.pptx'))
+          a,
+    ];
+    if (docs.isEmpty) return null;
+    final want = attachmentName?.trim();
+    if (want != null && want.isNotEmpty) {
+      for (final a in docs) {
+        if (a.name == want || a.name.toLowerCase() == want.toLowerCase()) {
+          return a;
+        }
+      }
+      return null;
+    }
+    if (docs.length == 1) return docs.first;
+    for (final a in docs) {
+      if (a.isEditableDocument) return a;
+    }
+    return docs.first;
   }
 
   void _appendAssistantAttachment(

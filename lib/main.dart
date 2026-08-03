@@ -119,15 +119,17 @@ class ExpertChatApp extends ConsumerWidget {
       data: (s) => s.ui,
       orElse: () => const UiPrefs(),
     );
-    final density = ui.density == DensityPref.compact
-        ? VisualDensity.compact
-        : VisualDensity.standard;
+    final density = switch (ui.density) {
+      DensityPref.spacious => VisualDensity.comfortable,
+      DensityPref.comfortable => VisualDensity.standard,
+      DensityPref.compact => VisualDensity.compact,
+    };
 
     return MaterialApp(
       title: 'Expert Chat',
       debugShowCheckedModeBanner: false,
-      theme: AppTheme.light().copyWith(visualDensity: density),
-      darkTheme: AppTheme.dark().copyWith(visualDensity: density),
+      theme: AppTheme.light(ui).copyWith(visualDensity: density),
+      darkTheme: AppTheme.dark(ui).copyWith(visualDensity: density),
       themeMode: themeMode,
       builder: (context, child) {
         final mq = MediaQuery.of(context);

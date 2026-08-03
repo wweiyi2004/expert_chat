@@ -1,18 +1,25 @@
 import 'dart:async';
+import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:package_info_plus/package_info_plus.dart';
 
 import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:path_provider/path_provider.dart';
 
 import '../../core/providers.dart';
 import '../../data/context_prefs.dart';
+import '../../data/custom_tts_voices.dart';
+import '../../data/document_service_config.dart';
 import '../../data/provider_profile.dart';
 import '../../data/media_api_config.dart';
 import '../../data/ui_prefs.dart';
+import '../../domain/document/document_service_client.dart';
 import '../../domain/llm/llm_provider.dart';
+import '../../domain/speech/custom_tts_voice_installer.dart';
 import '../../domain/tools/search_provider.dart';
 import '../../domain/update/shorebird_patch.dart';
 import '../../domain/update/shorebird_ui.dart';
@@ -83,15 +90,21 @@ class SettingsPage extends ConsumerStatefulWidget {
 class _SettingsPageState extends ConsumerState<SettingsPage> {
   final _apiKey = TextEditingController();
   final _searchKey = TextEditingController();
+  final _docServiceUrl = TextEditingController();
+  final _docServiceToken = TextEditingController();
   final _systemPrompt = TextEditingController();
   bool _obscure = true;
   bool _obscureSearch = true;
+  bool _obscureDocToken = true;
   String? _syncedForProfile; // profile id whose key is in the field
   bool _searchKeySynced = false;
+  bool _docServiceSynced = false;
   bool _systemPromptSynced = false;
   bool _clearingCache = false;
   bool _testingSearch = false;
+  bool _testingDocService = false;
   String? _searchTestResult;
+  String? _docServiceTestResult;
   _SettingsCategory _category = _SettingsCategory.model;
 
   @override
@@ -117,6 +130,11 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       _searchKey.text = s.searchApiKey;
       _searchKeySynced = true;
     }
+    if (!_docServiceSynced) {
+      _docServiceUrl.text = s.documentService.baseUrl;
+      _docServiceToken.text = s.documentServiceToken;
+      _docServiceSynced = true;
+    }
     if (!_systemPromptSynced) {
       _systemPrompt.text = s.systemPrompt;
       _systemPromptSynced = true;
@@ -127,8 +145,38 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   void dispose() {
     _apiKey.dispose();
     _searchKey.dispose();
+    _docServiceUrl.dispose();
+    _docServiceToken.dispose();
     _systemPrompt.dispose();
     super.dispose();
+  }
+
+  Future<void> _testDocService() async {
+    final s = ref.read(settingsControllerProvider).value;
+    if (s == null || _testingDocService) return;
+    setState(() {
+      _testingDocService = true;
+      _docServiceTestResult = null;
+    });
+    try {
+      final client = ref.read(documentServiceClientProvider);
+      final health = await client.health(config: s.documentService);
+      if (!mounted) return;
+      final formats = health['formats'];
+      final version = health['version']?.toString() ?? '?';
+      setState(() {
+        _docServiceTestResult =
+            '连通正常：version=$version'
+            '${formats is List ? '，formats=${formats.join(",")}' : ''}。'
+            '${s.documentServiceConfigured ? '' : '（仍需填写 Token 并启用才能改文件）'}';
+      });
+    } catch (e) {
+      if (!mounted) return;
+      final msg = e is DocumentServiceException ? e.message : '$e';
+      setState(() => _docServiceTestResult = '测试失败：$msg');
+    } finally {
+      if (mounted) setState(() => _testingDocService = false);
+    }
   }
 
   /// Fires one real search against the configured backend so the user learns
@@ -140,6 +188,19 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       _testingSearch = true;
       _searchTestResult = null;
     });
+    if (s.searchBackend.isProviderHosted) {
+      final model = s.model;
+      final ok = ModelCapabilities.resolve(model).supportsServerWebSearch;
+      setState(() {
+        _searchTestResult = ok
+            ? '官方联网已就绪：当前模型「$model」支持 DeepSeek Responses web_search。'
+                '请在聊天中开启「联网」实测（此处不单独发起搜索请求）。'
+            : '当前模型「$model」尚不支持官方联网（需 deepseek-v4-flash）。'
+                '深度思考用 pro 时会自动回退到客户端搜索。';
+        _testingSearch = false;
+      });
+      return;
+    }
     final stopwatch = Stopwatch()..start();
     try {
       final engine = ref.read(toolEngineFactoryProvider)(
@@ -289,8 +350,10 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                           if (_category == _SettingsCategory.capabilities) ...[
                             const _SectionTitle('多媒体能力（可选）'),
                             Text(
-                              '视觉、生图和语音均可独立配置。MiMo 的 ASR 与 TTS '
-                              '通过 /chat/completions 调用；也保留 OpenAI 兼容的 TTS 接口。',
+                              '视觉、生图和语音均可独立配置，API Key 与聊天服务互不共用。'
+                              'MiMo 的 ASR 与 TTS 走 /chat/completions；'
+                              'TTS 也支持阿里百炼和 OpenAI /audio/speech。'
+                              '粘贴服务地址或模型时会自动选用正确协议。',
                               style: Theme.of(context).textTheme.bodySmall,
                             ),
                             const SizedBox(height: 12),
@@ -302,8 +365,10 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                               apiKey: s.visionApiKey,
                               configured: s.visionConfigured,
                               latestConfig: () =>
-                                  ref.read(settingsControllerProvider).value
-                                          ?.visionApi ??
+                                  ref
+                                      .read(settingsControllerProvider)
+                                      .value
+                                      ?.visionApi ??
                                   const MediaApiConfig(),
                               onConfigChanged: (value) =>
                                   controller.setMediaApiConfig(
@@ -322,8 +387,10 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                               apiKey: s.imageGenerationApiKey,
                               configured: s.imageGenerationConfigured,
                               latestConfig: () =>
-                                  ref.read(settingsControllerProvider).value
-                                          ?.imageGenerationApi ??
+                                  ref
+                                      .read(settingsControllerProvider)
+                                      .value
+                                      ?.imageGenerationApi ??
                                   const MediaApiConfig(),
                               showImageSize: true,
                               onConfigChanged: (value) =>
@@ -347,8 +414,10 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                               apiKey: s.asrApiKey,
                               configured: s.asrConfigured,
                               latestConfig: () =>
-                                  ref.read(settingsControllerProvider).value
-                                          ?.asrApi ??
+                                  ref
+                                      .read(settingsControllerProvider)
+                                      .value
+                                      ?.asrApi ??
                                   const MediaApiConfig(),
                               mimoPreset: const MediaApiConfig(
                                 baseUrl: MediaApiConfig.mimoBaseUrl,
@@ -364,15 +433,16 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                             const SizedBox(height: 10),
                             _OptionalApiCard(
                               title: '云端语音合成',
-                              description:
-                                  '支持 OpenAI /audio/speech 或 MiMo /chat/completions',
+                              description: '阿里百炼 Qwen/CosyVoice、OpenAI 或 MiMo',
                               icon: Icons.record_voice_over_outlined,
                               config: s.ttsApi,
                               apiKey: s.ttsApiKey,
                               configured: s.ttsConfigured,
                               latestConfig: () =>
-                                  ref.read(settingsControllerProvider).value
-                                          ?.ttsApi ??
+                                  ref
+                                      .read(settingsControllerProvider)
+                                      .value
+                                      ?.ttsApi ??
                                   const MediaApiConfig(),
                               showVoice: true,
                               showSpeechProtocol: true,
@@ -383,16 +453,27 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                 speechProtocol:
                                     SpeechApiProtocol.mimoChatCompletions,
                               ),
+                              aliyunTtsPreset: const MediaApiConfig(
+                                baseUrl:
+                                    MediaApiConfig.aliyunModelStudioBaseUrl,
+                                model: MediaApiConfig.aliyunQwen3TtsModel,
+                                voice: MediaApiConfig.aliyunQwen3DefaultVoice,
+                                speechProtocol:
+                                    SpeechApiProtocol.aliyunModelStudio,
+                              ),
                               onConfigChanged: (value) => controller
                                   .setMediaApiConfig(MediaApiKind.tts, value),
                               onApiKeyChanged: (value) => controller
                                   .setMediaApiKey(MediaApiKind.tts, value),
+                              onSpeechProviderSelected:
+                                  controller.selectTtsProvider,
                             ),
                             const SizedBox(height: 24),
                             const _SectionTitle('语音朗读'),
                             Text(
-                              '每条已完成的 AI 回复都可点“朗读”。朗读时会将该回复发送给'
-                              '上方配置的云端语音服务；MiMo 返回 WAV 音频。未配置时无法开始朗读。',
+                              '每条已完成的 AI 回复都可点“朗读”。开启自动语气后，会按句子'
+                              '推断情绪（开心/感伤/叙事等）并调整演绎；也可一键套用'
+                              '动漫风自制音色。',
                               style: Theme.of(context).textTheme.bodySmall,
                             ),
                             const SizedBox(height: 12),
@@ -412,6 +493,64 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                       s.ui.copyWith(ttsSpeed: values.first),
                                     ),
                               ),
+                            ),
+                            const SizedBox(height: 12),
+                            SwitchListTile(
+                              contentPadding: EdgeInsets.zero,
+                              title: const Text('自动语气'),
+                              subtitle: const Text('按每句内容自动选择情绪与演绎方式，长文更有感情'),
+                              value: s.ui.ttsAutoEmotion,
+                              onChanged: (value) => controller.setUiPrefs(
+                                s.ui.copyWith(ttsAutoEmotion: value),
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              '自制音色（动漫风）',
+                              style: Theme.of(context).textTheme.titleSmall,
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              '基于角色人设的文案设计音色；有样本时也可走克隆。'
+                              '并非搬运正版动漫原声，避免版权问题。',
+                              style: Theme.of(context).textTheme.bodySmall
+                                  ?.copyWith(
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.onSurfaceVariant,
+                                  ),
+                            ),
+                            const SizedBox(height: 10),
+                            _AnimeVoicePackGrid(
+                              selectedId: s.ui.ttsVoicePackId,
+                              onSelect: (pack) async {
+                                final installer = CustomTtsVoiceInstaller();
+                                final next = await installer.applyPack(
+                                  pack: pack,
+                                  current: s.ttsApi,
+                                  preferredMode: CustomTtsVoiceApplyMode.design,
+                                );
+                                await controller.setMediaApiConfig(
+                                  MediaApiKind.tts,
+                                  next,
+                                );
+                                await controller.setUiPrefs(
+                                  s.ui.copyWith(ttsVoicePackId: pack.id),
+                                );
+                                if (!context.mounted) return;
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text(
+                                      '已套用「${pack.name}」：${pack.tagline}',
+                                    ),
+                                  ),
+                                );
+                              },
+                              onClear: () async {
+                                await controller.setUiPrefs(
+                                  s.ui.copyWith(ttsVoicePackId: ''),
+                                );
+                              },
                             ),
                             const SizedBox(height: 32),
                           ],
@@ -552,7 +691,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                             const _SectionTitle('联网搜索'),
                             Text(
                               '聊天输入框的「联网」开关分三档：关闭 / 自动（模型自行判断）/ '
-                              '强制（先搜索再回答）。搜索过程会在回答上方逐步展示。',
+                              '强制（先搜索再回答）。搜索过程会在回答上方逐步展示。\n'
+                              '「API 提供商官方联网」使用 DeepSeek Responses 的服务端 '
+                              'web_search（当前仅 deepseek-v4-flash），无需搜索 Key。',
                               style: Theme.of(context).textTheme.bodySmall,
                             ),
                             const SizedBox(height: 12),
@@ -581,8 +722,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                               enableSuggestions: false,
                               decoration: InputDecoration(
                                 labelText: '搜索 API Key（可选）',
-                                helperText:
-                                    'DuckDuckGo 免费后端可留空；Tavily / Exa / 博查需要填写 Key。',
+                                helperText: s.searchBackend.isProviderHosted
+                                    ? '官方联网使用 LLM API Key，此处可留空。'
+                                    : 'DuckDuckGo 免费后端可留空；Tavily / Exa / 博查需要填写 Key。',
                                 helperMaxLines: 2,
                                 suffixIcon: IconButton(
                                   tooltip: _obscureSearch
@@ -700,6 +842,138 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                               ),
                               trailing: Text('${s.searchMaxResults} 条'),
                             ),
+                            const SizedBox(height: 32),
+                            const _SectionTitle('文档处理服务'),
+                            Text(
+                              '可选。在 Linux 上部署文档服务后，可对上传的 '
+                              '.xlsx / .docx / .pptx 按补丁改写并回传。'
+                              '聊天输入区会出现「改文档」按钮（强制执行）。'
+                              '未配置时附件仍仅本地抽文本。',
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                            const SizedBox(height: 12),
+                            SwitchListTile(
+                              contentPadding: EdgeInsets.zero,
+                              title: const Text('启用文档服务'),
+                              value: s.documentService.enabled,
+                              onChanged: (v) => controller
+                                  .setDocumentServiceConfig(
+                                    s.documentService.copyWith(enabled: v),
+                                  ),
+                            ),
+                            TextField(
+                              controller: _docServiceUrl,
+                              autocorrect: false,
+                              enableSuggestions: false,
+                              keyboardType: TextInputType.url,
+                              decoration: const InputDecoration(
+                                labelText: '文档服务 Base URL',
+                                helperText: '例如 http://192.168.1.10:8787',
+                                helperMaxLines: 2,
+                              ),
+                              onChanged: (v) => controller
+                                  .setDocumentServiceConfig(
+                                    s.documentService.copyWith(baseUrl: v),
+                                  ),
+                            ),
+                            const SizedBox(height: 12),
+                            TextField(
+                              controller: _docServiceToken,
+                              obscureText: _obscureDocToken,
+                              autocorrect: false,
+                              enableSuggestions: false,
+                              decoration: InputDecoration(
+                                labelText: '文档服务 Token',
+                                helperText: '对应服务器环境变量 DOC_API_TOKEN',
+                                suffixIcon: IconButton(
+                                  tooltip: _obscureDocToken
+                                      ? '显示 Token'
+                                      : '隐藏 Token',
+                                  icon: Icon(
+                                    _obscureDocToken
+                                        ? Icons.visibility
+                                        : Icons.visibility_off,
+                                  ),
+                                  onPressed: () => setState(
+                                    () => _obscureDocToken = !_obscureDocToken,
+                                  ),
+                                ),
+                              ),
+                              onChanged: controller.setDocumentServiceToken,
+                            ),
+                            const SizedBox(height: 12),
+                            ListTile(
+                              contentPadding: EdgeInsets.zero,
+                              title: const Text('请求超时'),
+                              subtitle: Slider(
+                                value: s.documentService.timeoutSeconds
+                                    .toDouble()
+                                    .clamp(
+                                      DocumentServiceConfig.minTimeoutSeconds
+                                          .toDouble(),
+                                      DocumentServiceConfig.maxTimeoutSeconds
+                                          .toDouble(),
+                                    ),
+                                min: DocumentServiceConfig.minTimeoutSeconds
+                                    .toDouble(),
+                                max: DocumentServiceConfig.maxTimeoutSeconds
+                                    .toDouble(),
+                                divisions:
+                                    (DocumentServiceConfig.maxTimeoutSeconds -
+                                        DocumentServiceConfig.minTimeoutSeconds) ~/
+                                    30,
+                                label: '${s.documentService.timeoutSeconds}s',
+                                onChanged: (v) => controller
+                                    .setDocumentServiceConfig(
+                                      s.documentService.copyWith(
+                                        timeoutSeconds: v.round(),
+                                      ),
+                                    ),
+                              ),
+                              trailing: Text(
+                                '${s.documentService.timeoutSeconds}s',
+                              ),
+                            ),
+                            Row(
+                              children: [
+                                OutlinedButton.icon(
+                                  onPressed: _testingDocService
+                                      ? null
+                                      : _testDocService,
+                                  icon: _testingDocService
+                                      ? const SizedBox.square(
+                                          dimension: 16,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                          ),
+                                        )
+                                      : const Icon(
+                                          Icons.cloud_done_outlined,
+                                          size: 18,
+                                        ),
+                                  label: Text(
+                                    _testingDocService
+                                        ? '测试中…'
+                                        : '测试文档服务连通性',
+                                  ),
+                                ),
+                              ],
+                            ),
+                            if (_docServiceTestResult != null) ...[
+                              const SizedBox(height: 8),
+                              Text(
+                                _docServiceTestResult!,
+                                style: Theme.of(context).textTheme.bodySmall
+                                    ?.copyWith(
+                                      color:
+                                          _docServiceTestResult!.startsWith(
+                                            '测试失败',
+                                          )
+                                          ? Theme.of(context).colorScheme.error
+                                          : null,
+                                    ),
+                              ),
+                            ],
                             const SizedBox(height: 32),
                             const _SectionTitle('实验功能'),
                             _ResearchModeCard(
@@ -1097,6 +1371,8 @@ class _OptionalApiCard extends StatefulWidget {
     this.showVoice = false,
     this.showSpeechProtocol = false,
     this.mimoPreset,
+    this.aliyunTtsPreset,
+    this.onSpeechProviderSelected,
     this.latestConfig,
   });
 
@@ -1112,6 +1388,12 @@ class _OptionalApiCard extends StatefulWidget {
   final bool showVoice;
   final bool showSpeechProtocol;
   final MediaApiConfig? mimoPreset;
+  final MediaApiConfig? aliyunTtsPreset;
+  final Future<void> Function(
+    SpeechApiProtocol protocol,
+    MediaApiConfig fallback,
+  )?
+  onSpeechProviderSelected;
 
   /// Returns the endpoint's most recent config at call time — the provider
   /// state, not the last build snapshot — so rapid same-frame field edits
@@ -1131,8 +1413,10 @@ class _OptionalApiCardState extends State<_OptionalApiCard> {
   late final TextEditingController _baseUrl;
   late final TextEditingController _model;
   late final TextEditingController _voice;
+  late final TextEditingController _voiceDesignPrompt;
   late final TextEditingController _apiKey;
   bool _obscure = true;
+  bool _pickingCloneSample = false;
   Timer? _apiKeySaveTimer;
 
   /// True while [onApiKeyChanged] owes the controller a debounced save.
@@ -1146,6 +1430,9 @@ class _OptionalApiCardState extends State<_OptionalApiCard> {
     _baseUrl = TextEditingController(text: widget.config.baseUrl);
     _model = TextEditingController(text: widget.config.model);
     _voice = TextEditingController(text: widget.config.voice);
+    _voiceDesignPrompt = TextEditingController(
+      text: widget.config.voiceDesignPrompt,
+    );
     _apiKey = TextEditingController(text: widget.apiKey);
   }
 
@@ -1155,6 +1442,7 @@ class _OptionalApiCardState extends State<_OptionalApiCard> {
     _sync(_baseUrl, widget.config.baseUrl);
     _sync(_model, widget.config.model);
     _sync(_voice, widget.config.voice);
+    _sync(_voiceDesignPrompt, widget.config.voiceDesignPrompt);
     if (!_apiKeyDirty) _sync(_apiKey, widget.apiKey);
   }
 
@@ -1170,19 +1458,95 @@ class _OptionalApiCardState extends State<_OptionalApiCard> {
     _apiKeyDirty = true;
     _apiKeySaveTimer?.cancel();
     _apiKeySaveTimer = Timer(_apiKeySaveDebounce, () {
-      _apiKeyDirty = false;
-      widget.onApiKeyChanged(value);
+      _commitApiKey(value);
+    });
+  }
+
+  /// Persists the latest key field immediately (debounce complete or leave).
+  void _commitApiKey(String value) {
+    _apiKeySaveTimer?.cancel();
+    _apiKeySaveTimer = null;
+    _apiKeyDirty = false;
+    widget.onApiKeyChanged(value);
+  }
+
+  MediaApiConfig _fallbackForSpeechProtocol(SpeechApiProtocol protocol) =>
+      switch (protocol) {
+        SpeechApiProtocol.mimoChatCompletions =>
+          widget.mimoPreset ??
+              const MediaApiConfig(
+                baseUrl: MediaApiConfig.mimoBaseUrl,
+                model: MediaApiConfig.mimoTtsModel,
+                voice: MediaApiConfig.mimoDefaultVoice,
+                speechProtocol: SpeechApiProtocol.mimoChatCompletions,
+              ),
+        SpeechApiProtocol.aliyunModelStudio =>
+          widget.aliyunTtsPreset ??
+              const MediaApiConfig(
+                baseUrl: MediaApiConfig.aliyunModelStudioBaseUrl,
+                model: MediaApiConfig.aliyunQwen3TtsModel,
+                voice: MediaApiConfig.aliyunQwen3DefaultVoice,
+                speechProtocol: SpeechApiProtocol.aliyunModelStudio,
+              ),
+        SpeechApiProtocol.openAiAudio => const MediaApiConfig(
+          voice: '',
+          speechProtocol: SpeechApiProtocol.openAiAudio,
+        ),
+      };
+
+  Future<void> _switchSpeechProvider(
+    SpeechApiProtocol protocol, {
+    MediaApiConfig? fallback,
+  }) async {
+    // A provider switch is also a settle point for debounced key editing. Save
+    // the current field before changing profiles so the key cannot land in
+    // the newly selected provider's secure-storage slot.
+    if (_apiKeyDirty) _commitApiKey(_apiKey.text);
+    final target = fallback ?? _fallbackForSpeechProtocol(protocol);
+    final select = widget.onSpeechProviderSelected;
+    if (select != null) {
+      await select(protocol, target);
+    } else {
+      widget.onConfigChanged(target);
+    }
+  }
+
+  /// Flush any in-flight key edit so leaving the card/page cannot drop it.
+  ///
+  /// Debounce still avoids writing every intermediate keystroke while the
+  /// user is actively typing; dispose / category switch is the settle point.
+  ///
+  /// The actual write is deferred with [scheduleMicrotask]: calling the
+  /// settings controller *during* [dispose] can hit an unmounted Riverpod
+  /// ref when the whole tree is tearing down, and can also assert if a
+  /// parent rebuild is interleaved with the unmount walk.
+  void _flushPendingApiKey() {
+    if (!_apiKeyDirty) {
+      _apiKeySaveTimer?.cancel();
+      _apiKeySaveTimer = null;
+      return;
+    }
+    final value = _apiKey.text;
+    final commit = widget.onApiKeyChanged;
+    _apiKeySaveTimer?.cancel();
+    _apiKeySaveTimer = null;
+    _apiKeyDirty = false;
+    scheduleMicrotask(() {
+      try {
+        commit(value);
+      } catch (_) {
+        // Settings provider already disposed (app/test teardown).
+      }
     });
   }
 
   @override
   void dispose() {
-    // Drop a pending save instead of writing an incomplete key when the
-    // user leaves mid-typing; the last fully settled value stays on disk.
-    _apiKeySaveTimer?.cancel();
+    _flushPendingApiKey();
     _baseUrl.dispose();
     _model.dispose();
     _voice.dispose();
+    _voiceDesignPrompt.dispose();
     _apiKey.dispose();
     super.dispose();
   }
@@ -1192,28 +1556,90 @@ class _OptionalApiCardState extends State<_OptionalApiCard> {
     String? model,
     String? imageSize,
     String? voice,
+    String? voiceDesignPrompt,
+    String? voiceClonePath,
     SpeechApiProtocol? speechProtocol,
   }) {
     // Merge against the latest provider state rather than the last build
     // snapshot: two field edits landing in the same frame would otherwise
     // have the second overwrite the first.
     final current = (widget.latestConfig ?? () => widget.config)();
+    final nextBaseUrl = baseUrl ?? current.baseUrl;
+    final nextModel = model ?? current.model;
+    // When the user pastes a MiMo URL/model on the TTS card, upgrade the
+    // wire protocol automatically so requests do not hit /audio/speech.
+    final nextProtocol =
+        speechProtocol ??
+        (widget.showSpeechProtocol
+            ? MediaApiConfig.inferSpeechProtocol(
+                baseUrl: nextBaseUrl,
+                model: nextModel,
+                current: current.speechProtocol,
+              )
+            : current.speechProtocol);
     var nextVoice = voice ?? current.voice;
-    if (speechProtocol != null) {
+    final nextConfigShape = MediaApiConfig(
+      baseUrl: nextBaseUrl,
+      model: nextModel,
+      speechProtocol: nextProtocol,
+    );
+    if (nextProtocol != current.speechProtocol) {
       // Link the voice to the wire protocol, but only when it still holds
       // the *other* protocol's default: a MiMo-default voice must never
-      // leak into OpenAI /audio/speech requests, and an empty voice gets
-      // the MiMo default when switching to MiMo. A voice the user picked
-      // (anything else) is kept untouched.
-      if (speechProtocol == SpeechApiProtocol.openAiAudio &&
-          current.voice.trim() == MediaApiConfig.mimoDefaultVoice) {
+      // leak into OpenAI /audio/speech requests, and an empty / OpenAI
+      // default voice becomes mimo_default on MiMo. A voice the user
+      // picked (anything else) is kept untouched.
+      final trimmedVoice = current.voice.trim();
+      if (nextProtocol == SpeechApiProtocol.openAiAudio &&
+          (trimmedVoice == MediaApiConfig.mimoDefaultVoice ||
+              MediaApiConfig.mimoBuiltinVoices.any(
+                (v) => v.id == trimmedVoice,
+              ) ||
+              MediaApiConfig.aliyunQwen3BuiltinVoices.any(
+                (v) => v.id == trimmedVoice,
+              ) ||
+              MediaApiConfig.aliyunQwenAudioBuiltinVoices.any(
+                (v) => v.id == trimmedVoice,
+              ))) {
         // Empty = "use the endpoint default" (the gateway falls back to
         // `alloy`), which the helper text below explains.
         nextVoice = '';
-      } else if (speechProtocol == SpeechApiProtocol.mimoChatCompletions &&
-          current.voice.trim().isEmpty) {
+      } else if (nextProtocol == SpeechApiProtocol.mimoChatCompletions &&
+          (trimmedVoice.isEmpty ||
+              trimmedVoice == MediaApiConfig.openAiDefaultVoice ||
+              MediaApiConfig.openAiBuiltinVoices.any(
+                (v) => v.id == trimmedVoice,
+              ) ||
+              MediaApiConfig.aliyunQwen3BuiltinVoices.any(
+                (v) => v.id == trimmedVoice,
+              ) ||
+              MediaApiConfig.aliyunQwenAudioBuiltinVoices.any(
+                (v) => v.id == trimmedVoice,
+              ))) {
         nextVoice = MediaApiConfig.mimoDefaultVoice;
+      } else if (nextProtocol == SpeechApiProtocol.aliyunModelStudio &&
+          (trimmedVoice.isEmpty ||
+              trimmedVoice == MediaApiConfig.mimoDefaultVoice ||
+              MediaApiConfig.mimoBuiltinVoices.any(
+                (v) => v.id == trimmedVoice,
+              ) ||
+              MediaApiConfig.openAiBuiltinVoices.any(
+                (v) => v.id == trimmedVoice,
+              ))) {
+        nextVoice = nextConfigShape.aliyunDefaultVoice;
       }
+    } else if (nextProtocol == SpeechApiProtocol.aliyunModelStudio &&
+        nextModel != current.model &&
+        current.aliyunBuiltinVoices.any(
+          (option) => option.id == current.voice.trim(),
+        ) &&
+        !nextConfigShape.aliyunBuiltinVoices.any(
+          (option) => option.id == current.voice.trim(),
+        )) {
+      // A system voice belongs to one Alibaba model family only. When the
+      // model changes, swap that known preset for the new family's default;
+      // keep truly custom clone/design IDs untouched.
+      nextVoice = nextConfigShape.aliyunDefaultVoice;
     }
     widget.onConfigChanged(
       current.copyWith(
@@ -1221,9 +1647,141 @@ class _OptionalApiCardState extends State<_OptionalApiCard> {
         model: model,
         imageSize: imageSize,
         voice: nextVoice,
-        speechProtocol: speechProtocol,
+        voiceDesignPrompt: voiceDesignPrompt,
+        voiceClonePath: voiceClonePath,
+        speechProtocol: nextProtocol,
       ),
     );
+  }
+
+  void _selectMimoTtsMode(MimoTtsMode mode) {
+    final current = (widget.latestConfig ?? () => widget.config)();
+    final nextModel = MediaApiConfig.modelForMimoTtsMode(mode, current.model);
+    var nextVoice = current.voice;
+    if (mode == MimoTtsMode.builtin &&
+        (nextVoice.trim().isEmpty ||
+            nextVoice.trim().startsWith('data:') ||
+            MediaApiConfig.openAiBuiltinVoices.any(
+              (v) => v.id == nextVoice.trim(),
+            ))) {
+      nextVoice = MediaApiConfig.mimoDefaultVoice;
+    }
+    _patch(
+      model: nextModel,
+      voice: nextVoice,
+      speechProtocol: SpeechApiProtocol.mimoChatCompletions,
+    );
+  }
+
+  void _selectAliyunTtsModel(String model) {
+    final current = (widget.latestConfig ?? () => widget.config)();
+    final target = MediaApiConfig(
+      baseUrl: current.baseUrl,
+      model: model,
+      speechProtocol: SpeechApiProtocol.aliyunModelStudio,
+    );
+    final selectedVoice = current.voice.trim();
+    final isKnownProviderVoice =
+        MediaApiConfig.openAiBuiltinVoices.any(
+          (option) => option.id == selectedVoice,
+        ) ||
+        MediaApiConfig.mimoBuiltinVoices.any(
+          (option) => option.id == selectedVoice,
+        ) ||
+        MediaApiConfig.aliyunQwen3BuiltinVoices.any(
+          (option) => option.id == selectedVoice,
+        ) ||
+        MediaApiConfig.aliyunQwenAudioBuiltinVoices.any(
+          (option) => option.id == selectedVoice,
+        );
+    final nextVoice = selectedVoice.isEmpty || isKnownProviderVoice
+        ? target.aliyunDefaultVoice
+        : selectedVoice;
+    _patch(
+      // Qwen3-TTS uses public DashScope. Qwen-Audio/CosyVoice keep the current
+      // base so users can paste their workspace-scoped domain once.
+      baseUrl: target.isAliyunQwen3TtsModel
+          ? MediaApiConfig.aliyunModelStudioBaseUrl
+          : current.baseUrl,
+      model: model,
+      voice: nextVoice,
+      speechProtocol: SpeechApiProtocol.aliyunModelStudio,
+    );
+  }
+
+  Future<void> _pickVoiceCloneSample() async {
+    if (_pickingCloneSample || kIsWeb) return;
+    setState(() => _pickingCloneSample = true);
+    try {
+      final result = await FilePicker.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['mp3', 'wav', 'mpeg'],
+        withData: false,
+      );
+      if (result == null || result.files.isEmpty) return;
+      final picked = result.files.first;
+      final sourcePath = picked.path;
+      if (sourcePath == null || sourcePath.isEmpty) return;
+
+      final source = File(sourcePath);
+      if (!await source.exists()) {
+        if (mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('无法读取所选音频文件。')));
+        }
+        return;
+      }
+      final size = await source.length();
+      if (size > 7 * 1024 * 1024) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('样本过大，请选择不超过约 7 MB 的 mp3/wav。')),
+          );
+        }
+        return;
+      }
+
+      final support = await getApplicationSupportDirectory();
+      final dir = Directory(
+        '${support.path}${Platform.pathSeparator}tts-voice-clone',
+      );
+      await dir.create(recursive: true);
+      final name = picked.name.toLowerCase();
+      final ext = name.endsWith('.mp3') || name.endsWith('.mpeg')
+          ? 'mp3'
+          : 'wav';
+      final dest = File('${dir.path}${Platform.pathSeparator}user-voice.$ext');
+      await source.copy(dest.path);
+      _selectMimoTtsMode(MimoTtsMode.clone);
+      _patch(voiceClonePath: dest.path, voice: '');
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('已保存用户音色样本：${picked.name}')));
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('导入音色样本失败：$error')));
+      }
+    } finally {
+      if (mounted) setState(() => _pickingCloneSample = false);
+    }
+  }
+
+  Future<void> _clearVoiceCloneSample() async {
+    final path = widget.config.voiceClonePath.trim();
+    if (path.isNotEmpty) {
+      try {
+        final file = File(path);
+        if (await file.exists()) await file.delete();
+      } catch (_) {
+        // Best effort — missing file is fine.
+      }
+    }
+    _patch(voiceClonePath: '');
   }
 
   @override
@@ -1285,10 +1843,22 @@ class _OptionalApiCardState extends State<_OptionalApiCard> {
           ),
           if (widget.showSpeechProtocol) ...[
             const SizedBox(height: 12),
+            // Keyed by protocol so auto-inference / MiMo preset remounts the
+            // field; FormField initialValue alone would keep a stale choice.
             DropdownButtonFormField<SpeechApiProtocol>(
-              initialValue: widget.config.speechProtocol,
+              key: ValueKey(
+                'speech-protocol-${widget.config.effectiveSpeechProtocol.name}',
+              ),
+              initialValue: widget.config.effectiveSpeechProtocol,
               isExpanded: true,
-              decoration: const InputDecoration(labelText: '语音 API 协议'),
+              decoration: InputDecoration(
+                labelText: '语音 API 协议',
+                helperText: widget.config.looksLikeMimoSpeechEndpoint
+                    ? '已根据 MiMo 地址/模型自动选用 /chat/completions'
+                    : widget.config.looksLikeAliyunSpeechEndpoint
+                    ? '已根据百炼地址/模型自动选用 Model Studio HTTP API'
+                    : null,
+              ),
               items: const [
                 DropdownMenuItem(
                   value: SpeechApiProtocol.openAiAudio,
@@ -1304,30 +1874,28 @@ class _OptionalApiCardState extends State<_OptionalApiCard> {
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
+                DropdownMenuItem(
+                  value: SpeechApiProtocol.aliyunModelStudio,
+                  child: Text(
+                    '阿里百炼 Model Studio TTS',
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
               ],
               onChanged: (value) {
-                if (value != null) _patch(speechProtocol: value);
+                if (value != null) _switchSpeechProvider(value);
               },
             ),
           ],
+          if (widget.showVoice &&
+              widget.config.effectiveSpeechProtocol ==
+                  SpeechApiProtocol.aliyunModelStudio) ...[
+            const SizedBox(height: 12),
+            _buildAliyunModelPresets(context),
+          ],
           if (widget.showVoice) ...[
             const SizedBox(height: 12),
-            TextField(
-              controller: _voice,
-              autocorrect: false,
-              enableSuggestions: false,
-              decoration: InputDecoration(
-                labelText: '音色 / Voice',
-                hintText: '例如 alloy、nova；以服务商支持的值为准',
-                // voice is optional: the OpenAI-compatible path falls back to
-                // `alloy` and the MiMo path to `mimo_default`, so an empty
-                // field just means "use the endpoint's default".
-                helperText: widget.config.voice.trim().isEmpty
-                    ? '将使用默认音色'
-                    : null,
-              ),
-              onChanged: (value) => _patch(voice: value),
-            ),
+            _buildVoiceSection(context),
           ],
           if (widget.showImageSize) ...[
             const SizedBox(height: 12),
@@ -1362,14 +1930,43 @@ class _OptionalApiCardState extends State<_OptionalApiCard> {
               },
             ),
           ],
-          if (widget.mimoPreset != null) ...[
+          if (widget.mimoPreset != null || widget.aliyunTtsPreset != null) ...[
             const SizedBox(height: 12),
             Align(
               alignment: Alignment.centerLeft,
-              child: OutlinedButton.icon(
-                onPressed: () => widget.onConfigChanged(widget.mimoPreset!),
-                icon: const Icon(Icons.auto_fix_high_outlined),
-                label: const Text('填入 MiMo 默认配置'),
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  if (widget.aliyunTtsPreset != null)
+                    FilledButton.tonalIcon(
+                      onPressed: () => _switchSpeechProvider(
+                        SpeechApiProtocol.aliyunModelStudio,
+                        fallback: widget.aliyunTtsPreset!,
+                      ),
+                      icon: const Icon(Icons.graphic_eq_outlined),
+                      label: const Text('切换到百炼 TTS'),
+                    ),
+                  if (widget.mimoPreset != null)
+                    OutlinedButton.icon(
+                      onPressed: () => _switchSpeechProvider(
+                        SpeechApiProtocol.mimoChatCompletions,
+                        fallback: widget.mimoPreset!,
+                      ),
+                      icon: const Icon(Icons.auto_fix_high_outlined),
+                      label: const Text('切换到 MiMo TTS'),
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 6),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                '不同服务商的地址、模型、API Key 和音色会分别保存。',
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
               ),
             ),
           ],
@@ -1392,6 +1989,388 @@ class _OptionalApiCardState extends State<_OptionalApiCard> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildAliyunModelPresets(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final model = widget.config.model.trim();
+    final needsWorkspace =
+        widget.config.isAliyunQwenAudioTtsModel ||
+        widget.config.isAliyunCosyVoiceTtsModel;
+    const presets = <(String, String, String)>[
+      (MediaApiConfig.aliyunQwen3TtsModel, 'Qwen3 性价比', '指令音色 · ¥0.8/万字'),
+      (
+        MediaApiConfig.aliyunQwenAudioTtsModel,
+        'Qwen-Audio 低延迟',
+        '情绪/复刻 · ¥1/万字',
+      ),
+      (
+        MediaApiConfig.aliyunCosyVoiceTtsModel,
+        'CosyVoice 自定义',
+        '设计/复刻 · ¥0.8/万字',
+      ),
+    ];
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerLow,
+        border: Border.all(color: scheme.outlineVariant),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('百炼 TTS 模型', style: Theme.of(context).textTheme.titleSmall),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final preset in presets)
+                ChoiceChip(
+                  label: Text(preset.$2),
+                  tooltip: '${preset.$1}\n${preset.$3}',
+                  selected: model == preset.$1,
+                  onSelected: (_) => _selectAliyunTtsModel(preset.$1),
+                ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            needsWorkspace
+                ? widget.config.hasAliyunWorkspaceBaseUrl
+                      ? '已使用百炼 Workspace 地址。'
+                      : '该模型需要把 Base URL 换成 '
+                            'https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api/v1'
+                : 'Qwen3 使用公共 DashScope Base URL，可直接填写百炼 API Key。',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: needsWorkspace && !widget.config.hasAliyunWorkspaceBaseUrl
+                  ? scheme.error
+                  : scheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// TTS voice picker: MiMo modes (builtin / design / clone) + OpenAI chips +
+  /// free-form custom id, matching the official MiMo V2.5 TTS docs.
+  Widget _buildVoiceSection(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final isMimo =
+        widget.config.effectiveSpeechProtocol ==
+        SpeechApiProtocol.mimoChatCompletions;
+    final isAliyun =
+        widget.config.effectiveSpeechProtocol ==
+        SpeechApiProtocol.aliyunModelStudio;
+    final mode = widget.config.mimoTtsMode;
+    final selectedVoice = widget.config.voice.trim();
+    final builtinOptions = isMimo
+        ? MediaApiConfig.mimoBuiltinVoices
+        : isAliyun
+        ? widget.config.aliyunBuiltinVoices
+        : MediaApiConfig.openAiBuiltinVoices;
+    final isKnownBuiltin = builtinOptions.any((v) => v.id == selectedVoice);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('音色', style: Theme.of(context).textTheme.titleSmall),
+        const SizedBox(height: 4),
+        Text(
+          isMimo
+              ? '支持官方内置音色、文案设计音色，以及上传录音克隆你的声音。'
+              : isAliyun
+              ? widget.config.isAliyunCosyVoiceTtsModel
+                    ? 'CosyVoice v3.5 没有系统音色，请填写百炼中创建的复刻/设计 Voice ID。'
+                    : '选择当前百炼模型支持的系统音色，或填写复刻/基础 Voice ID。'
+              : '选择 OpenAI 兼容预设音色，或填写服务商自定义 Voice ID。',
+          style: Theme.of(
+            context,
+          ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+        ),
+        if (isMimo) ...[
+          const SizedBox(height: 12),
+          SegmentedButton<MimoTtsMode>(
+            showSelectedIcon: false,
+            segments: [
+              for (final value in MimoTtsMode.values)
+                ButtonSegment<MimoTtsMode>(
+                  value: value,
+                  label: Text(value.label, overflow: TextOverflow.ellipsis),
+                  tooltip: value.description,
+                ),
+            ],
+            selected: {mode},
+            onSelectionChanged: (values) {
+              if (values.isNotEmpty) _selectMimoTtsMode(values.first);
+            },
+          ),
+          const SizedBox(height: 8),
+          Text(
+            mode.description,
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+          ),
+        ],
+        if (!isMimo || mode == MimoTtsMode.builtin) ...[
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final option in builtinOptions)
+                FilterChip(
+                  label: Text(option.label),
+                  tooltip: option.detail.isEmpty
+                      ? option.id
+                      : '${option.label}（${option.detail}）',
+                  selected:
+                      selectedVoice == option.id ||
+                      (selectedVoice.isEmpty &&
+                          option.id ==
+                              (isMimo
+                                  ? MediaApiConfig.mimoDefaultVoice
+                                  : isAliyun
+                                  ? widget.config.aliyunDefaultVoice
+                                  : MediaApiConfig.openAiDefaultVoice)),
+                  onSelected: (_) => _patch(voice: option.id),
+                ),
+              FilterChip(
+                label: const Text('自定义 ID'),
+                selected: !isKnownBuiltin,
+                onSelected: (_) {
+                  // Leave free-form mode: clear a preset/data-URI selection so
+                  // the text field appears (empty = endpoint default).
+                  if (isKnownBuiltin || selectedVoice.startsWith('data:')) {
+                    _patch(voice: '');
+                    _sync(_voice, '');
+                  }
+                },
+              ),
+            ],
+          ),
+          if (!isKnownBuiltin) ...[
+            const SizedBox(height: 12),
+            TextField(
+              controller: _voice,
+              autocorrect: false,
+              enableSuggestions: false,
+              decoration: InputDecoration(
+                labelText: '自定义 Voice ID',
+                hintText: isMimo
+                    ? '例如 冰糖、Chloe，或服务商自定义 ID'
+                    : isAliyun
+                    ? widget.config.isAliyunCosyVoiceTtsModel
+                          ? '填写声音复刻/设计生成的 Voice ID'
+                          : '例如 Cherry、longanhuan_v3.6 或复刻 ID'
+                    : '例如 alloy、nova，以服务商为准',
+                helperText: selectedVoice.isEmpty
+                    ? isAliyun && widget.config.aliyunDefaultVoice.isEmpty
+                          ? '当前模型必须填写 Voice ID'
+                          : '将使用默认音色'
+                    : null,
+              ),
+              onChanged: (value) => _patch(voice: value),
+            ),
+          ],
+        ],
+        if (isMimo && mode == MimoTtsMode.design) ...[
+          const SizedBox(height: 12),
+          TextField(
+            controller: _voiceDesignPrompt,
+            minLines: 3,
+            maxLines: 6,
+            decoration: const InputDecoration(
+              labelText: '音色描述（必填）',
+              alignLabelWithHint: true,
+              hintText: '例如：二十多岁年轻女性，声音清亮柔和，语速适中，像电台深夜主播。',
+              helperText: '用自然语言描述性别、年龄、质感、情绪与语速；中英文均可。',
+              helperMaxLines: 3,
+              border: OutlineInputBorder(),
+            ),
+            onChanged: (value) => _patch(voiceDesignPrompt: value),
+          ),
+        ],
+        if (isMimo && mode == MimoTtsMode.clone) ...[
+          const SizedBox(height: 12),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              border: Border.all(color: scheme.outlineVariant),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  widget.config.hasVoiceCloneSample ? '已导入用户音色样本' : '尚未导入音色样本',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  widget.config.hasVoiceCloneSample
+                      ? _basename(widget.config.voiceClonePath)
+                      : '支持 mp3 / wav，建议清晰人声、数秒至一分钟，不超过约 7 MB。',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    FilledButton.tonalIcon(
+                      onPressed: _pickingCloneSample
+                          ? null
+                          : _pickVoiceCloneSample,
+                      icon: _pickingCloneSample
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.upload_file_outlined),
+                      label: Text(
+                        widget.config.hasVoiceCloneSample ? '重新上传' : '上传录音',
+                      ),
+                    ),
+                    if (widget.config.hasVoiceCloneSample)
+                      OutlinedButton.icon(
+                        onPressed: _clearVoiceCloneSample,
+                        icon: const Icon(Icons.delete_outline),
+                        label: const Text('清除样本'),
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _voiceDesignPrompt,
+            minLines: 2,
+            maxLines: 4,
+            decoration: const InputDecoration(
+              labelText: '风格指令（可选）',
+              alignLabelWithHint: true,
+              hintText: '例如：温和、沉稳，适合连续阅读；或加入方言/情绪标签说明。',
+              helperText: '会作为 user 指令发送，不影响克隆音色本身。',
+              helperMaxLines: 2,
+              border: OutlineInputBorder(),
+            ),
+            onChanged: (value) => _patch(voiceDesignPrompt: value),
+          ),
+        ],
+        if (isMimo && mode == MimoTtsMode.builtin) ...[
+          const SizedBox(height: 12),
+          TextField(
+            controller: _voiceDesignPrompt,
+            minLines: 2,
+            maxLines: 4,
+            decoration: const InputDecoration(
+              labelText: '风格 / 导演指令（可选）',
+              alignLabelWithHint: true,
+              hintText: '例如：轻快上扬、略快语速；或（温柔）式标签说明。',
+              helperText: '留空则使用默认「自然清晰、适合连续阅读」指令。',
+              helperMaxLines: 2,
+              border: OutlineInputBorder(),
+            ),
+            onChanged: (value) => _patch(voiceDesignPrompt: value),
+          ),
+        ],
+        if (isAliyun) ...[
+          const SizedBox(height: 12),
+          TextField(
+            controller: _voiceDesignPrompt,
+            minLines: 2,
+            maxLines: 5,
+            decoration: InputDecoration(
+              labelText: '风格 / 情绪指令（可选）',
+              alignLabelWithHint: true,
+              hintText: '例如：温柔亲切，像朋友聊天；语速稍慢，重点词轻微加重。',
+              helperText: widget.config.isAliyunQwen3TtsModel
+                  ? 'Qwen3 Instruct 会优化这条指令；开启自动语气后还会按句调整。'
+                  : 'Qwen-Audio/CosyVoice 使用 instruction；自动语气可按句覆盖演绎。',
+              helperMaxLines: 3,
+              border: const OutlineInputBorder(),
+            ),
+            onChanged: (value) => _patch(voiceDesignPrompt: value),
+          ),
+        ],
+      ],
+    );
+  }
+
+  String _basename(String path) {
+    final normalized = path.replaceAll('\\', '/');
+    final index = normalized.lastIndexOf('/');
+    return index < 0 ? path : normalized.substring(index + 1);
+  }
+}
+
+class _AnimeVoicePackGrid extends StatelessWidget {
+  const _AnimeVoicePackGrid({
+    required this.selectedId,
+    required this.onSelect,
+    required this.onClear,
+  });
+
+  final String selectedId;
+  final Future<void> Function(CustomTtsVoicePack pack) onSelect;
+  final Future<void> Function() onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            for (final pack in kAnimeStyleVoicePacks)
+              FilterChip(
+                selected: selectedId == pack.id,
+                label: Text(pack.name),
+                tooltip: '${pack.tagline}\n点按套用到云端语音合成',
+                onSelected: (_) => onSelect(pack),
+              ),
+            if (selectedId.isNotEmpty)
+              ActionChip(
+                avatar: Icon(
+                  Icons.clear,
+                  size: 16,
+                  color: scheme.onSurfaceVariant,
+                ),
+                label: const Text('清除套用'),
+                onPressed: () => onClear(),
+              ),
+          ],
+        ),
+        if (selectedId.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Builder(
+            builder: (context) {
+              final pack = customTtsVoicePackById(selectedId);
+              if (pack == null) return const SizedBox.shrink();
+              return Text(
+                '当前：${pack.name} · ${pack.tagline}',
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: scheme.primary),
+              );
+            },
+          ),
+        ],
+      ],
     );
   }
 }

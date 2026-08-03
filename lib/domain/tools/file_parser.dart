@@ -129,9 +129,18 @@ class FileParser {
         return base.copyWith(parseError: '未能从文件中提取到文本（可能是扫描件/图片型文档）。');
       }
       final truncated = text.length > maxChars;
+      // Keep original Office bytes so document-edit can round-trip to a Linux
+      // service. Cap retention to avoid huge DB rows.
+      final retainBinary =
+          (lower.endsWith('.xlsx') ||
+              lower.endsWith('.docx') ||
+              lower.endsWith('.pptx')) &&
+          bytes.lengthInBytes <= maxFileBytes &&
+          bytes.lengthInBytes <= 10 * 1024 * 1024;
       return base.copyWith(
         text: truncated ? text.substring(0, maxChars) : text,
         truncated: truncated,
+        imageBase64: retainBinary ? base64Encode(bytes) : null,
       );
     } catch (e) {
       return base.copyWith(parseError: '解析失败：$e');

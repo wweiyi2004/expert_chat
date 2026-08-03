@@ -41,12 +41,19 @@ Uint8List? _tryDecodeBase64(String value) {
 
 /// Compact file card shown in the composer (and on user message bubbles).
 /// Surfaces the file name, a status line (size / truncated / parse error) and,
-/// when [onRemove] is given, a remove button.
+/// when [onRemove] is given, a remove button. [onDownload] shows a save action
+/// for assistant-returned binary files (e.g. edited xlsx).
 class AttachmentChip extends StatefulWidget {
-  const AttachmentChip({super.key, required this.attachment, this.onRemove});
+  const AttachmentChip({
+    super.key,
+    required this.attachment,
+    this.onRemove,
+    this.onDownload,
+  });
 
   final Attachment attachment;
   final VoidCallback? onRemove;
+  final VoidCallback? onDownload;
 
   @override
   State<AttachmentChip> createState() => _AttachmentChipState();
@@ -73,6 +80,11 @@ class _AttachmentChipState extends State<AttachmentChip> {
   }
 
   void _decode() {
+    // Office round-trip files also use [imageBase64]; only decode real images.
+    if (!widget.attachment.isImage) {
+      _imageBytes = null;
+      return;
+    }
     final b64 = widget.attachment.imageBase64;
     if (b64 == null) {
       _imageBytes = null;
@@ -144,6 +156,13 @@ class _AttachmentChipState extends State<AttachmentChip> {
                 ],
               ),
             ),
+            if (widget.onDownload != null && attachment.hasDownloadableBytes)
+              IconButton(
+                tooltip: '下载 ${attachment.name}',
+                onPressed: widget.onDownload,
+                icon: const Icon(Icons.download_rounded, size: 18),
+                color: scheme.primary,
+              ),
             if (onRemove != null)
               IconButton(
                 tooltip: '移除 ${attachment.name}',
@@ -207,6 +226,11 @@ class _AttachmentChipState extends State<AttachmentChip> {
     final size = kb >= 1024
         ? '${(kb / 1024).toStringAsFixed(1)} MB'
         : '${kb.toStringAsFixed(0)} KB';
+    if (!a.isImage && a.hasDownloadableBytes) {
+      return a.text.trim().isNotEmpty && a.text.contains('文档服务')
+          ? '$size · 可下载'
+          : '$size · 可下载';
+    }
     if (a.truncated) return '$size · 内容已截断';
     return size;
   }

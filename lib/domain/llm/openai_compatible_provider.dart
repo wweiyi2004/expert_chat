@@ -47,6 +47,7 @@ class OpenAiCompatibleProvider implements LlmProvider {
     required List<LlmRequestMessage> messages,
     List<ToolSpec>? tools,
     bool? thinking,
+    String? forceToolName,
     CancelToken? cancelToken,
   }) async* {
     final url =
@@ -92,7 +93,15 @@ class OpenAiCompatibleProvider implements LlmProvider {
         tools.isNotEmpty &&
         config.capabilities.supportsTools) {
       body['tools'] = tools.map((t) => t.toJson()).toList();
-      body['tool_choice'] = 'auto';
+      final force = forceToolName?.trim();
+      if (force != null && force.isNotEmpty) {
+        body['tool_choice'] = {
+          'type': 'function',
+          'function': {'name': force},
+        };
+      } else {
+        body['tool_choice'] = 'auto';
+      }
     }
 
     final Response<ResponseBody> response;

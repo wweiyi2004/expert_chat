@@ -11,6 +11,8 @@ class LlmConfig {
     required this.apiKey,
     required this.model,
     ModelCapabilities? capabilities,
+    this.serverWebSearch = false,
+    this.forceServerWebSearch = false,
     // A public param feeding a private backing field (the getter falls back to
     // resolve()); an initializing formal can't keep the public name here.
     // ignore: prefer_initializing_formals
@@ -27,16 +29,29 @@ class LlmConfig {
   /// truth — so callers needn't pass anything for the common case.
   final ModelCapabilities? _capabilities;
 
+  /// Prefer the provider's Responses API + hosted `web_search` when the model
+  /// advertises [ModelCapabilities.supportsServerWebSearch].
+  final bool serverWebSearch;
+
+  /// When [serverWebSearch] is on, force `tool_choice: web_search` (联网·强制).
+  final bool forceServerWebSearch;
+
   ModelCapabilities get capabilities =>
       _capabilities ?? ModelCapabilities.resolve(model);
 
   bool get isReady => apiKey.trim().isNotEmpty && baseUrl.trim().isNotEmpty;
+
+  /// True when this request should hit Responses with server-side search.
+  bool get useServerWebSearch =>
+      serverWebSearch && capabilities.supportsServerWebSearch;
 
   LlmConfig copyWith({
     String? baseUrl,
     String? apiKey,
     String? model,
     ModelCapabilities? capabilities,
+    bool? serverWebSearch,
+    bool? forceServerWebSearch,
   }) => LlmConfig(
     baseUrl: baseUrl ?? this.baseUrl,
     apiKey: apiKey ?? this.apiKey,
@@ -44,6 +59,8 @@ class LlmConfig {
     // Keep an explicit override only if one was set; otherwise stay null so a
     // changed [model] re-derives its own capabilities.
     capabilities: capabilities ?? _capabilities,
+    serverWebSearch: serverWebSearch ?? this.serverWebSearch,
+    forceServerWebSearch: forceServerWebSearch ?? this.forceServerWebSearch,
   );
 }
 
@@ -140,12 +157,26 @@ class ChatChunk {
     this.reasoningDelta,
     this.toolCalls,
     this.finishReason,
+    this.serverSearchActivity,
+    this.citations,
+    this.responseOutputItems,
   });
 
   final String? contentDelta;
   final String? reasoningDelta;
   final List<ToolCall>? toolCalls;
   final String? finishReason;
+
+  /// Live progress for a provider-hosted `web_search` (Responses API).
+  final SearchActivity? serverSearchActivity;
+
+  /// Citations extracted from Responses annotations / search actions.
+  final List<Citation>? citations;
+
+  /// Full Responses `output` items for the current turn. When non-null after
+  /// `finish_reason: tool_calls`, the controller must re-send these items
+  /// (plus `function_call_output`) on the next Responses request.
+  final List<Map<String, dynamic>>? responseOutputItems;
 }
 
 /// One request message sent to an OpenAI-compatible chat endpoint. This is
@@ -159,6 +190,7 @@ class LlmRequestMessage {
     this.toolCallId,
     this.toolCalls = const [],
     this.imageDataUrls = const [],
+    this.responseOutputItems = const [],
   });
 
   factory LlmRequestMessage.fromChatMessage(ChatMessage message) =>
@@ -173,6 +205,12 @@ class LlmRequestMessage {
   /// `data:` image URLs sent alongside [content] to a vision model. When
   /// non-empty, `content` is serialized as an OpenAI multimodal parts array.
   final List<String> imageDataUrls;
+
+  /// Raw Responses API output items from a prior assistant turn that used
+  /// server-side tools (`web_search_call`, `function_call`, `reasoning`…).
+  /// When non-empty, the Responses provider re-sends them instead of
+  /// synthesizing from [content] / [toolCalls].
+  final List<Map<String, dynamic>> responseOutputItems;
 
   /// [includeReasoningContent] gates the `reasoning_content` round-trip:
   /// DeepSeek reasoners need the previous chain passed back for multi-turn
@@ -219,6 +257,9 @@ abstract class LlmProvider {
     // DeepSeek V4 thinking-mode toggle. null = omit the field (use provider
     // default / non-DeepSeek providers); true/false = enable/disable.
     bool? thinking,
+    // When non-null and [tools] is non-empty, force the model to call this
+    // function (OpenAI `tool_choice: {type:function, function:{name}}`).
+    String? forceToolName,
     // Cancels the in-flight HTTP request when the user presses stop, including
     // during connection setup (before any chunk has streamed).
     CancelToken? cancelToken,
@@ -237,6 +278,7 @@ class ModelCapabilities {
     required this.supportsVision,
     this.supportsReasoningEffort = false,
     this.reasoningCanBeDisabled = false,
+    this.supportsServerWebSearch = false,
   });
 
   /// Streams a separate `reasoning_content` field (drives the thinking panel).
@@ -259,6 +301,10 @@ class ModelCapabilities {
   /// Accepts image content parts (`image_url`) — i.e. is a vision model. When
   /// false, image attachments are described in text rather than sent.
   final bool supportsVision;
+
+  /// Hosted `web_search` via the Responses API (DeepSeek `deepseek-v4-flash`
+  /// today; pro support is pending per DeepSeek docs).
+  final bool supportsServerWebSearch;
 
   /// Best-effort capability detection from a model id. Heuristic, but kept in a
   /// single place so adding a provider/model means editing only here. Mirrors
@@ -347,6 +393,11 @@ class ModelCapabilities {
             (m.contains('vision') ||
                 (m.startsWith('grok-4.') && !m.contains('build'))));
 
+    // DeepSeek Responses API currently only accepts flash for web_search;
+    // pro is documented as landing early August 2026.
+    final serverWebSearch =
+        m == 'deepseek-v4-flash' || m.startsWith('deepseek-v4-flash-');
+
     return ModelCapabilities(
       isReasoner: reasoner,
       supportsTools: tools,
@@ -355,6 +406,7 @@ class ModelCapabilities {
       supportsVision: vision,
       supportsReasoningEffort: grok43 || grok45,
       reasoningCanBeDisabled: grok43,
+      supportsServerWebSearch: serverWebSearch,
     );
   }
 }

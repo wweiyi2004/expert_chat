@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:expert_chat/core/providers.dart';
+import 'package:expert_chat/data/media_api_config.dart';
 import 'package:expert_chat/data/provider_profile.dart';
 import 'package:expert_chat/data/ui_prefs.dart';
 import 'package:expert_chat/state/settings_controller.dart';
@@ -13,6 +14,105 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  test('TTS provider profiles keep independent configs and keys', () async {
+    const mimoConfig = MediaApiConfig(
+      baseUrl: MediaApiConfig.mimoBaseUrl,
+      model: MediaApiConfig.mimoTtsModel,
+      voice: '冰糖',
+      speechProtocol: SpeechApiProtocol.mimoChatCompletions,
+    );
+    const aliyunFallback = MediaApiConfig(
+      baseUrl: MediaApiConfig.aliyunModelStudioBaseUrl,
+      model: MediaApiConfig.aliyunQwen3TtsModel,
+      voice: MediaApiConfig.aliyunQwen3DefaultVoice,
+      speechProtocol: SpeechApiProtocol.aliyunModelStudio,
+    );
+    const customizedAliyun = MediaApiConfig(
+      baseUrl: MediaApiConfig.aliyunModelStudioBaseUrl,
+      model: MediaApiConfig.aliyunQwen3TtsModel,
+      voice: 'Serena',
+      voiceDesignPrompt: '温柔自然',
+      speechProtocol: SpeechApiProtocol.aliyunModelStudio,
+    );
+
+    SharedPreferences.setMockInitialValues({
+      'ttsApi': jsonEncode(mimoConfig.toJson()),
+    });
+    final secureData = <String, String>{'tts_api_key': 'mimo-secret'};
+    FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
+      secureData,
+    );
+    addTearDown(() {
+      FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
+        {},
+      );
+    });
+
+    final prefs = await SharedPreferences.getInstance();
+    final firstContainer = ProviderContainer(
+      overrides: [
+        sharedPrefsProvider.overrideWithValue(prefs),
+        secureStorageProvider.overrideWithValue(const FlutterSecureStorage()),
+      ],
+    );
+    var state = await firstContainer.read(settingsControllerProvider.future);
+    expect(state.ttsApi.voice, '冰糖');
+    expect(state.ttsApiKey, 'mimo-secret');
+
+    final firstController = firstContainer.read(
+      settingsControllerProvider.notifier,
+    );
+    await firstController.selectTtsProvider(
+      SpeechApiProtocol.aliyunModelStudio,
+      aliyunFallback,
+    );
+    state = firstContainer.read(settingsControllerProvider).requireValue;
+    expect(state.ttsApi, isNot(same(mimoConfig)));
+    expect(state.ttsApi.model, MediaApiConfig.aliyunQwen3TtsModel);
+    expect(state.ttsApiKey, isEmpty);
+
+    await firstController.setMediaApiConfig(MediaApiKind.tts, customizedAliyun);
+    await firstController.setMediaApiKey(MediaApiKind.tts, 'aliyun-secret');
+
+    await firstController.selectTtsProvider(
+      SpeechApiProtocol.mimoChatCompletions,
+      mimoConfig,
+    );
+    state = firstContainer.read(settingsControllerProvider).requireValue;
+    expect(state.ttsApi.voice, '冰糖');
+    expect(state.ttsApiKey, 'mimo-secret');
+
+    await firstController.selectTtsProvider(
+      SpeechApiProtocol.aliyunModelStudio,
+      aliyunFallback,
+    );
+    state = firstContainer.read(settingsControllerProvider).requireValue;
+    expect(state.ttsApi.voice, 'Serena');
+    expect(state.ttsApi.voiceDesignPrompt, '温柔自然');
+    expect(state.ttsApiKey, 'aliyun-secret');
+    firstContainer.dispose();
+
+    // Recreate the controller to prove this is persistent profile storage,
+    // not only an in-memory UI cache.
+    final secondContainer = ProviderContainer(
+      overrides: [
+        sharedPrefsProvider.overrideWithValue(prefs),
+        secureStorageProvider.overrideWithValue(const FlutterSecureStorage()),
+      ],
+    );
+    addTearDown(secondContainer.dispose);
+    state = await secondContainer.read(settingsControllerProvider.future);
+    expect(state.ttsApi.voice, 'Serena');
+    expect(state.ttsApiKey, 'aliyun-secret');
+
+    await secondContainer
+        .read(settingsControllerProvider.notifier)
+        .selectTtsProvider(SpeechApiProtocol.mimoChatCompletions, mimoConfig);
+    state = secondContainer.read(settingsControllerProvider).requireValue;
+    expect(state.ttsApi.voice, '冰糖');
+    expect(state.ttsApiKey, 'mimo-secret');
+  });
+
   test(
     'already-migrated profiles delete the verified legacy API key',
     () async {

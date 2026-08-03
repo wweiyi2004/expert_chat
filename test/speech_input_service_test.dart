@@ -252,7 +252,7 @@ void main() {
       );
       expect(statuses, [
         SpeechInputStatus.listening, // A confirmed listening
-        SpeechInputStatus.stopped, // A's late stopped status
+        // A's late stopped status is quarantined while B starts.
         SpeechInputStatus.listening, // B confirmed listening
       ]);
     });
@@ -289,6 +289,11 @@ void main() {
         errors.where((e) => e.code == 'listen_failed'),
         isEmpty,
         reason: 'B is actually listening; no listen_failed may be reported',
+      );
+      expect(
+        errors,
+        isEmpty,
+        reason: 'A late platform error must not reach B\'s UI callback',
       );
     });
 

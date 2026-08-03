@@ -1,8 +1,14 @@
+import 'dart:convert';
+import 'dart:io' show File;
+
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart' show defaultTargetPlatform, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../../core/theme.dart';
 import '../../../data/models.dart';
 import '../../../data/ui_prefs.dart';
 import '../../../domain/html/html_snippet.dart';
@@ -129,6 +135,56 @@ class _MessageBubbleState extends State<MessageBubble> {
         behavior: SnackBarBehavior.floating,
       ),
     );
+  }
+
+  Future<void> _downloadAttachment(BuildContext context, Attachment a) async {
+    final b64 = a.imageBase64;
+    if (b64 == null || b64.isEmpty) return;
+    late final Uint8List bytes;
+    try {
+      bytes = Uint8List.fromList(base64Decode(b64));
+    } catch (_) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('文件数据无效，无法下载')),
+      );
+      return;
+    }
+    final ext = a.name.contains('.') ? a.name.split('.').last : 'bin';
+    try {
+      final isNativeMobile =
+          !kIsWeb &&
+          (defaultTargetPlatform == TargetPlatform.android ||
+              defaultTargetPlatform == TargetPlatform.iOS);
+      final path = await FilePicker.saveFile(
+        dialogTitle: '保存 ${a.name}',
+        fileName: a.name,
+        type: FileType.custom,
+        allowedExtensions: [ext],
+        bytes: kIsWeb || isNativeMobile ? bytes : null,
+      );
+      if (kIsWeb) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('已开始下载：${a.name}')));
+        }
+        return;
+      }
+      if (path == null) return;
+      if (!isNativeMobile) {
+        await File(path).writeAsBytes(bytes, flush: true);
+      }
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('已保存：${a.name}')));
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('保存失败：$e')));
+    }
   }
 
   bool get _document => widget.messageStyle == MessageStylePref.document;
@@ -266,7 +322,13 @@ class _MessageBubbleState extends State<MessageBubble> {
                 spacing: 8,
                 runSpacing: 8,
                 children: [
-                  for (final a in m.attachments) AttachmentChip(attachment: a),
+                  for (final a in m.attachments)
+                    AttachmentChip(
+                      attachment: a,
+                      onDownload: a.hasDownloadableBytes && !a.isImage
+                          ? () => _downloadAttachment(context, a)
+                          : null,
+                    ),
                 ],
               ),
             ),
@@ -303,12 +365,14 @@ class _MessageBubbleState extends State<MessageBubble> {
                           Color.lerp(scheme.primary, scheme.secondary, 0.22)!,
                         ],
                       ),
-                      borderRadius: const BorderRadius.only(
-                        topLeft: Radius.circular(20),
-                        topRight: Radius.circular(20),
-                        bottomLeft: Radius.circular(20),
-                        bottomRight: Radius.circular(6),
-                      ),
+                      borderRadius:
+                          Theme.of(context).extension<AppMetrics>()?.bubbleUser ??
+                          const BorderRadius.only(
+                            topLeft: Radius.circular(20),
+                            topRight: Radius.circular(20),
+                            bottomLeft: Radius.circular(20),
+                            bottomRight: Radius.circular(6),
+                          ),
                       boxShadow: [
                         BoxShadow(
                           color: scheme.primary.withValues(alpha: 0.18),
@@ -499,12 +563,16 @@ class _MessageBubbleState extends State<MessageBubble> {
                       ? null
                       : BoxDecoration(
                           color: scheme.surfaceContainer,
-                          borderRadius: const BorderRadius.only(
-                            topLeft: Radius.circular(6),
-                            topRight: Radius.circular(20),
-                            bottomLeft: Radius.circular(20),
-                            bottomRight: Radius.circular(20),
-                          ),
+                          borderRadius:
+                              Theme.of(context)
+                                  .extension<AppMetrics>()
+                                  ?.bubbleAssistant ??
+                              const BorderRadius.only(
+                                topLeft: Radius.circular(6),
+                                topRight: Radius.circular(20),
+                                bottomLeft: Radius.circular(20),
+                                bottomRight: Radius.circular(20),
+                              ),
                           border: Border.all(
                             color: scheme.outlineVariant.withValues(
                               alpha: 0.95,

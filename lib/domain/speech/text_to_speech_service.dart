@@ -39,6 +39,7 @@ class TextToSpeechRequest {
     required this.apiConfig,
     required this.apiKey,
     this.rate = 0.5,
+    this.autoEmotion = true,
   });
 
   final String messageId;
@@ -49,6 +50,10 @@ class TextToSpeechRequest {
   /// UI rate normalized to the 0.0–1.0 scale and adapted to the selected
   /// cloud TTS protocol before a request is sent.
   final double rate;
+
+  /// When true, each sentence gets an auto-inferred delivery instruction so
+  /// long replies change tone with the text (happy / sad / narrative…).
+  final bool autoEmotion;
 }
 
 abstract class TextToSpeechService {
@@ -93,8 +98,19 @@ String prepareTextForSpeech(String source) {
 }
 
 /// Splits a long message into API-safe sentence-sized chunks.
+///
 /// Each chunk is at most [maxChunkLength] grapheme clusters long.
-List<String> splitTextForSpeech(String text, {int maxChunkLength = 600}) {
+///
+/// When [packSentences] is true (default), adjacent short sentences are merged
+/// until the length budget is reached — fewer API calls for bulk synthesis.
+/// When false, each sentence is its own chunk (unless it exceeds
+/// [maxChunkLength] and must be split). Use false for pipelined playback so
+/// one sentence can play while the next ones download.
+List<String> splitTextForSpeech(
+  String text, {
+  int maxChunkLength = 600,
+  bool packSentences = true,
+}) {
   if (maxChunkLength < 1) return const [];
   final normalized = text.trim();
   if (normalized.isEmpty) return const [];
@@ -107,6 +123,14 @@ List<String> splitTextForSpeech(String text, {int maxChunkLength = 600}) {
     ).allMatches(normalized))
       match.group(0)?.trim() ?? '',
   ].where((part) => part.isNotEmpty);
+
+  if (!packSentences) {
+    return [
+      for (final sentence in sentences)
+        for (final part in _splitOversizedSpeechPart(sentence, maxChunkLength))
+          part,
+    ];
+  }
 
   final chunks = <String>[];
   var buffer = '';

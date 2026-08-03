@@ -1,0 +1,48 @@
+flowchart TD
+  start([用户选择 Office 文件]) --> sizeCheck{大小是否超限?}
+  sizeCheck -->|超限| rejectSize[提示过大]
+  sizeCheck -->|通过| dualPath[双线并行准备]
+
+  dualPath --> lineA[线A: 本地抽文本 / 抽样]
+  dualPath --> keepBin[保留原文件字节<br/>待写回时使用]
+
+  lineA --> userMsg[用户说明如何修改]
+  userMsg --> needEdit{需要改文件并回传?<br/>手动按钮或模型工具}
+
+  needEdit -->|否: 只问答| llmChat[LLM 仅文字回答]
+  llmChat --> endChat([结束: 无新文件])
+
+  needEdit -->|是| svcOn{文档服务已配置<br/>且连通?}
+  svcOn -->|否| degrade[降级: 只给文字改法<br/>提示未配置服务器]
+  degrade --> endChat
+
+  svcOn -->|是| llmPatch[LLM 产出 DocumentPatch JSON]
+  llmPatch --> validate{App 校验补丁<br/>schema / 范围 / op 数}
+  validate -->|非法| retry{未超重试上限?}
+  retry -->|是| llmPatch
+  retry -->|否| failPatch[提示补丁无效]
+  failPatch --> endFail([结束: 无新文件])
+
+  validate -->|合法| upload[HTTPS 上传<br/>原文件 + patch]
+  upload --> auth{服务器鉴权}
+  auth -->|失败| failAuth[401 提示检查 Token]
+  auth -->|通过| apply[Linux 按格式应用补丁<br/>xlsx/docx/pptx]
+  apply --> applyOk{写入成功?}
+  applyOk -->|失败| failApply[返回错误码与中文说明]
+  applyOk -->|成功| download[返回修改后文件流]
+  download --> bubble[助手消息挂下载 / 分享]
+  bubble --> cleanup[服务器删除临时目录]
+  cleanup --> endOk([结束: 用户拿到新文件])
+
+  failAuth --> endFail
+  failApply --> endFail
+  rejectSize --> endFail
+
+  classDef ok fill:#ECFDF5,stroke:#059669,color:#064E3B
+  classDef fail fill:#FEF2F2,stroke:#DC2626,color:#7F1D1D
+  classDef proc fill:#EFF6FF,stroke:#2563EB,color:#1E3A8A
+  classDef warn fill:#FFFBEB,stroke:#D97706,color:#78350F
+  class start,lineA,keepBin,download,bubble,cleanup,endOk,endChat ok
+  class rejectSize,failPatch,failAuth,failApply,endFail fail
+  class dualPath,userMsg,llmPatch,upload,apply,llmChat proc
+  class degrade,needEdit,svcOn,validate,retry,sizeCheck,auth,applyOk warn

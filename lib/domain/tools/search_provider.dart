@@ -30,11 +30,13 @@ class SearchResult {
   String get bestText => content.trim().isNotEmpty ? content : snippet;
 }
 
-/// Selectable search backends. The user supplies their own key (pure client).
-enum SearchBackend { duckduckgo, tavily, bocha, exa }
+/// Selectable search backends. The user supplies their own key (pure client),
+/// except [provider] which uses the active LLM vendor's hosted web search.
+enum SearchBackend { provider, duckduckgo, tavily, bocha, exa }
 
 extension SearchBackendInfo on SearchBackend {
   String get label => switch (this) {
+    SearchBackend.provider => 'API 提供商官方联网',
     SearchBackend.duckduckgo => 'DuckDuckGo（免费，无 Key）',
     SearchBackend.tavily => 'Tavily',
     SearchBackend.bocha => '博查 Bocha（中文）',
@@ -44,9 +46,13 @@ extension SearchBackendInfo on SearchBackend {
   String get wire => name;
 
   bool get requiresApiKey => switch (this) {
-    SearchBackend.duckduckgo => false,
+    SearchBackend.provider || SearchBackend.duckduckgo => false,
     SearchBackend.tavily || SearchBackend.bocha || SearchBackend.exa => true,
   };
+
+  /// Hosted search runs on the LLM endpoint (DeepSeek Responses `web_search`
+  /// today). No separate search key and no client-side SERP fetch.
+  bool get isProviderHosted => this == SearchBackend.provider;
 
   static SearchBackend fromWire(String? v) => SearchBackend.values.firstWhere(
     (b) => b.name == v,
@@ -162,11 +168,18 @@ class HttpSearchProvider implements SearchProvider {
     final normalizedQuery = query.trim();
     if (normalizedQuery.isEmpty) return const [];
     final boundedMaxResults = maxResults.clamp(1, _maxSearchResults).toInt();
+    if (backend.isProviderHosted) {
+      throw Exception(
+        '「API 提供商官方联网」由模型端托管执行，不能单独做客户端搜索测试。'
+        '请在聊天中开启「联网」，并使用支持官方联网的模型（当前：deepseek-v4-flash）。',
+      );
+    }
     if (backend.requiresApiKey && apiKey.trim().isEmpty) {
       throw Exception('未配置联网搜索的 API Key，请在设置中填写。');
     }
     try {
       return switch (backend) {
+        SearchBackend.provider => throw StateError('provider search is server-side'),
         SearchBackend.duckduckgo => await _duckduckgo(
           normalizedQuery,
           boundedMaxResults,

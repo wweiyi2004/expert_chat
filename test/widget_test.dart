@@ -58,6 +58,7 @@ class FakeLlmProvider implements LlmProvider {
     required List<LlmRequestMessage> messages,
     List<ToolSpec>? tools,
     bool? thinking,
+    String? forceToolName,
     CancelToken? cancelToken,
   }) async* {
     final callIndex = callCount++;
@@ -87,6 +88,7 @@ class DelayedFailingLlmProvider implements LlmProvider {
     required List<LlmRequestMessage> messages,
     List<ToolSpec>? tools,
     bool? thinking,
+    String? forceToolName,
     CancelToken? cancelToken,
   }) async* {
     if (!entered.isCompleted) entered.complete();
@@ -253,6 +255,7 @@ class _FailOnceLlm implements LlmProvider {
     required List<LlmRequestMessage> messages,
     List<ToolSpec>? tools,
     bool? thinking,
+    String? forceToolName,
     CancelToken? cancelToken,
   }) async* {
     if (callCount++ == 0) throw Exception('simulated failure');
@@ -274,6 +277,7 @@ class _DelayedChunkProvider implements LlmProvider {
     required List<LlmRequestMessage> messages,
     List<ToolSpec>? tools,
     bool? thinking,
+    String? forceToolName,
     CancelToken? cancelToken,
   }) async* {
     final index = callCount++;
@@ -297,6 +301,7 @@ class _DisposeMidStreamLlm implements LlmProvider {
     required List<LlmRequestMessage> messages,
     List<ToolSpec>? tools,
     bool? thinking,
+    String? forceToolName,
     CancelToken? cancelToken,
   }) async* {
     yield const ChatChunk(contentDelta: 'partial');
@@ -2251,6 +2256,8 @@ void main() {
       expect(SearchBackendInfo.fromWire(b.wire), b);
     }
     expect(SearchBackendInfo.fromWire('garbage'), SearchBackend.duckduckgo);
+    expect(SearchBackend.provider.requiresApiKey, isFalse);
+    expect(SearchBackend.provider.isProviderHosted, isTrue);
     expect(SearchBackend.duckduckgo.requiresApiKey, isFalse);
     expect(SearchBackend.tavily.requiresApiKey, isTrue);
   });

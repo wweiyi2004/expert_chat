@@ -111,6 +111,11 @@ class SystemSpeechInputService implements SpeechInputService {
   Completer<bool>? _listeningReady;
   Completer<void>? _platformStopped;
   var _initialized = false;
+  // Platform callbacks do not carry a session id. While a new listen() call
+  // is waiting for its own "listening" acknowledgement, Windows may still
+  // deliver terminal callbacks queued by the session we just cancelled.
+  // Quarantine those callbacks so they cannot stop the new UI session.
+  var _awaitingFreshListening = false;
 
   @override
   Future<SpeechInputAvailability> initialize({
@@ -166,6 +171,7 @@ class SystemSpeechInputService implements SpeechInputService {
 
     final ready = Completer<bool>();
     _listeningReady = ready;
+    _awaitingFreshListening = true;
 
     try {
       final localeId = await _preferredLocaleId(preferredLanguageCode);
@@ -188,6 +194,7 @@ class SystemSpeechInputService implements SpeechInputService {
       // Platform listen() resolves before the async "listening" status lands
       // (especially Windows). Do not trust isListening immediately.
       if (_speech.isListening) {
+        _awaitingFreshListening = false;
         _completeListeningReady(true);
         return true;
       }
@@ -197,12 +204,16 @@ class SystemSpeechInputService implements SpeechInputService {
         onTimeout: () => _speech.isListening,
       );
       if (!started) {
+        _awaitingFreshListening = false;
         _errorCallback?.call(
           const SpeechInputFailure(code: 'listen_failed', permanent: false),
         );
+      } else {
+        _awaitingFreshListening = false;
       }
       return started;
     } catch (e) {
+      _awaitingFreshListening = false;
       _completeListeningReady(false);
       final code = e is ListenFailedException
           ? (e.message ?? 'listen_failed')
@@ -216,6 +227,7 @@ class SystemSpeechInputService implements SpeechInputService {
 
   @override
   Future<void> cancel() async {
+    _awaitingFreshListening = false;
     _completeListeningReady(false);
     final shouldWaitForStopped =
         _speech.isListening ||
@@ -249,6 +261,7 @@ class SystemSpeechInputService implements SpeechInputService {
 
   @override
   void detach() {
+    _awaitingFreshListening = false;
     _completeListeningReady(false);
     _completePlatformStopped();
     _platformStopped = null;
@@ -328,6 +341,7 @@ class SystemSpeechInputService implements SpeechInputService {
       // A "listening" status always belongs to the current session: the page
       // can only stop (and thus start a newer session) after start() resolved,
       // which requires this session's own "listening" to have been delivered.
+      _awaitingFreshListening = false;
       _completeListeningReady(true);
       _statusCallback?.call(SpeechInputStatus.listening);
     } else if (status == SpeechToText.doneStatus ||
@@ -339,6 +353,7 @@ class SystemSpeechInputService implements SpeechInputService {
       // actually listening. False completion is left to the session's own
       // operations: cancel(), detach() and start()'s error/timeout paths.
       _completePlatformStopped();
+      if (_awaitingFreshListening) return;
       _statusCallback?.call(SpeechInputStatus.stopped);
     }
   }
@@ -346,7 +361,9 @@ class SystemSpeechInputService implements SpeechInputService {
   void _handleError(SpeechRecognitionError error) {
     // See _handleStatus: the error may belong to a previous session, so it
     // must not complete the current session's listening-ready completer.
-    // The error callback still fires; consumers filter stale sessions.
+    // Quarantine it until the new session confirms listening; otherwise a
+    // cancelled session's late timeout would immediately cancel the new one.
+    if (_awaitingFreshListening) return;
     _errorCallback?.call(
       SpeechInputFailure(code: error.errorMsg, permanent: error.permanent),
     );

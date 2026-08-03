@@ -5,6 +5,7 @@ import 'package:characters/characters.dart';
 import 'package:dio/dio.dart';
 
 import '../../data/media_api_config.dart';
+import 'image_edit_reference.dart';
 
 class GeneratedImage {
   const GeneratedImage({
@@ -69,7 +70,10 @@ class OpenAiCompatibleMediaProvider {
   static const String imageDownloadSizeLimitCancelReason = '图片超过 20 MB 限制。';
 
   /// Text-to-image (`/images/generations`) or image-to-image (`/images/edits`)
-  /// when [referenceImageBytes] is provided (OpenAI-compatible multipart).
+  /// when reference image(s) are provided (OpenAI-compatible multipart).
+  ///
+  /// Prefer [referenceImages] for multi-ref GPT Image models. The single
+  /// [referenceImageBytes] fields remain for backward-compatible call sites.
   Future<GeneratedImage> generateImage({
     required MediaApiConfig config,
     required String apiKey,
@@ -78,17 +82,28 @@ class OpenAiCompatibleMediaProvider {
     List<int>? referenceImageBytes,
     String referenceMimeType = 'image/png',
     String referenceFileName = 'reference.png',
+    List<ImageEditReference> referenceImages = const [],
   }) async {
     _ensureConfigured(config, apiKey, '生图');
-    final ref = referenceImageBytes;
-    if (ref != null && ref.isNotEmpty) {
+    final refs = <ImageEditReference>[
+      ...referenceImages.where((r) => r.bytes.isNotEmpty),
+      if (referenceImages.isEmpty &&
+          referenceImageBytes != null &&
+          referenceImageBytes.isNotEmpty)
+        ImageEditReference(
+          bytes: referenceImageBytes,
+          mimeType: referenceMimeType,
+          fileName: referenceFileName,
+        ),
+    ];
+    final maxRefs = config.maxImageEditReferences;
+    final bounded = refs.length > maxRefs ? refs.sublist(0, maxRefs) : refs;
+    if (bounded.isNotEmpty) {
       return _editImage(
         config: config,
         apiKey: apiKey,
         prompt: prompt,
-        imageBytes: ref,
-        mimeType: referenceMimeType,
-        fileName: referenceFileName,
+        references: bounded,
         cancelToken: cancelToken,
       );
     }
@@ -108,44 +123,41 @@ class OpenAiCompatibleMediaProvider {
   }
 
   /// OpenAI-compatible image edit / img2img via multipart `images/edits`.
+  ///
+  /// - Legacy single-image gateways: one part named `image`
+  /// - GPT Image multi-ref: repeated parts named `image[]` (official curl form)
   Future<GeneratedImage> _editImage({
     required MediaApiConfig config,
     required String apiKey,
     required String prompt,
-    required List<int> imageBytes,
-    required String mimeType,
-    required String fileName,
+    required List<ImageEditReference> references,
     CancelToken? cancelToken,
   }) async {
-    if (imageBytes.length > 20 * 1024 * 1024) {
-      throw const FormatException('参考图超过 20 MB 限制。');
+    if (references.isEmpty) {
+      throw const FormatException('图生图需要至少一张参考图。');
     }
-    // Prefer an extension that matches the mime so gateways sniff correctly.
-    var safeName = fileName.trim().isEmpty ? 'reference.png' : fileName.trim();
-    final mime = mimeType.trim().isEmpty || !mimeType.startsWith('image/')
-        ? 'image/png'
-        : mimeType.trim();
-    if (!safeName.contains('.')) {
-      final ext = switch (mime) {
-        'image/jpeg' || 'image/jpg' => 'jpg',
-        'image/webp' => 'webp',
-        'image/gif' => 'gif',
-        _ => 'png',
-      };
-      safeName = '$safeName.$ext';
+    for (final ref in references) {
+      if (ref.bytes.length > 20 * 1024 * 1024) {
+        throw const FormatException('参考图超过 20 MB 限制。');
+      }
     }
-    final form = FormData.fromMap({
-      'model': config.model.trim(),
-      'prompt': prompt.trim(),
-      if (config.imageSize.trim().isNotEmpty) 'size': config.imageSize.trim(),
-      // Without an explicit contentType Dio sends application/octet-stream,
-      // which several OpenAI-compatible gateways reject as "invalid image".
-      'image': MultipartFile.fromBytes(
-        imageBytes,
-        filename: safeName,
-        contentType: _mediaTypeOf(mime),
-      ),
-    });
+
+    // GPT Image multi-ref docs use repeated `image[]` parts; classic single
+    // edits gateways expect one part named `image`.
+    final imageField =
+        config.supportsMultiReferenceImages ? 'image[]' : 'image';
+
+    final form = FormData();
+    form.fields.add(MapEntry('model', config.model.trim()));
+    form.fields.add(MapEntry('prompt', prompt.trim()));
+    if (config.imageSize.trim().isNotEmpty) {
+      form.fields.add(MapEntry('size', config.imageSize.trim()));
+    }
+    for (var i = 0; i < references.length; i++) {
+      form.files.add(
+        MapEntry(imageField, _multipartImage(references[i], index: i)),
+      );
+    }
 
     try {
       final response = await _dio.post<dynamic>(
@@ -178,6 +190,30 @@ class OpenAiCompatibleMediaProvider {
       if (CancelToken.isCancel(e)) rethrow;
       throw await _humanizeError(e, '图生图');
     }
+  }
+
+  MultipartFile _multipartImage(ImageEditReference ref, {required int index}) {
+    var safeName =
+        ref.fileName.trim().isEmpty ? 'reference_$index.png' : ref.fileName.trim();
+    final mime = ref.mimeType.trim().isEmpty || !ref.mimeType.startsWith('image/')
+        ? 'image/png'
+        : ref.mimeType.trim();
+    if (!safeName.contains('.')) {
+      final ext = switch (mime) {
+        'image/jpeg' || 'image/jpg' => 'jpg',
+        'image/webp' => 'webp',
+        'image/gif' => 'gif',
+        _ => 'png',
+      };
+      safeName = '$safeName.$ext';
+    }
+    // Without an explicit contentType Dio sends application/octet-stream,
+    // which several OpenAI-compatible gateways reject as "invalid image".
+    return MultipartFile.fromBytes(
+      ref.bytes is Uint8List ? ref.bytes as Uint8List : Uint8List.fromList(ref.bytes),
+      filename: safeName,
+      contentType: _mediaTypeOf(mime),
+    );
   }
 
   Future<GeneratedImage> _parseGeneratedImageResponse(
@@ -292,15 +328,22 @@ class OpenAiCompatibleMediaProvider {
   ///
   /// MiMo speech is OpenAI *chat* compatible rather than compatible with the
   /// `/audio/speech` endpoint, so it must be handled as a separate protocol.
+  ///
+  /// [voiceSampleBytes] is required for `mimo-v2.5-tts-voiceclone` when the
+  /// sample is not already inlined as a data URI in [MediaApiConfig.voice].
   Future<SynthesizedSpeech> synthesizeSpeech({
     required MediaApiConfig config,
     required String apiKey,
     required String text,
     double? speed,
     CancelToken? cancelToken,
+    Uint8List? voiceSampleBytes,
+    String voiceSampleMimeType = 'audio/wav',
   }) async {
     _ensureConfigured(config, apiKey, 'TTS');
-    return switch (config.speechProtocol) {
+    // Use effectiveSpeechProtocol so a MiMo base URL / model still works when
+    // the saved protocol was left at the OpenAI default (a common setup miss).
+    return switch (config.effectiveSpeechProtocol) {
       SpeechApiProtocol.openAiAudio => _synthesizeOpenAiSpeech(
         config: config,
         apiKey: apiKey,
@@ -309,6 +352,15 @@ class OpenAiCompatibleMediaProvider {
         cancelToken: cancelToken,
       ),
       SpeechApiProtocol.mimoChatCompletions => _synthesizeMimoSpeech(
+        config: config,
+        apiKey: apiKey,
+        text: text,
+        speed: speed,
+        cancelToken: cancelToken,
+        voiceSampleBytes: voiceSampleBytes,
+        voiceSampleMimeType: voiceSampleMimeType,
+      ),
+      SpeechApiProtocol.aliyunModelStudio => _synthesizeAliyunSpeech(
         config: config,
         apiKey: apiKey,
         text: text,
@@ -366,38 +418,306 @@ class OpenAiCompatibleMediaProvider {
     }
   }
 
-  Future<SynthesizedSpeech> _synthesizeMimoSpeech({
+  /// Alibaba Model Studio non-real-time TTS.
+  ///
+  /// Qwen3-TTS uses DashScope's multimodal-generation endpoint. The newer
+  /// Qwen-Audio-TTS and CosyVoice families use the workspace-scoped
+  /// SpeechSynthesizer endpoint. Both return a short-lived audio URL in
+  /// `output.audio.url`, which is downloaded before this method returns so
+  /// playback never depends on an expiring URL.
+  Future<SynthesizedSpeech> _synthesizeAliyunSpeech({
     required MediaApiConfig config,
     required String apiKey,
     required String text,
     double? speed,
     CancelToken? cancelToken,
   }) async {
+    final model = config.model.trim();
+    final voice = config.voice.trim().isEmpty
+        ? config.aliyunDefaultVoice
+        : config.voice.trim();
+    var instruction = config.voiceDesignPrompt.trim();
+    final normalizedSpeed = speed?.clamp(0.5, 2.0).toDouble() ?? 1.0;
+    if (instruction.isEmpty && normalizedSpeed != 1.0) {
+      instruction = normalizedSpeed < 0.9 ? '语速稍慢，从容自然。' : '语速稍快，清晰利落。';
+    }
+
+    late final String endpoint;
+    late final Map<String, dynamic> input;
+    if (config.isAliyunQwen3TtsModel) {
+      if (voice.isEmpty) {
+        throw const FormatException('请为 Qwen3-TTS 选择一个系统音色。');
+      }
+      endpoint = _endpoint(
+        config.baseUrl,
+        'services/aigc/multimodal-generation/generation',
+      );
+      final supportsInstructions = model.toLowerCase().contains('instruct');
+      input = {
+        'text': text.trim(),
+        'voice': voice,
+        'language_type': _aliyunLanguageType(text),
+        if (supportsInstructions && instruction.isNotEmpty)
+          'instructions': instruction,
+        if (supportsInstructions && instruction.isNotEmpty)
+          'optimize_instructions': true,
+      };
+    } else if (config.isAliyunQwenAudioTtsModel ||
+        config.isAliyunCosyVoiceTtsModel) {
+      if (!config.hasAliyunWorkspaceBaseUrl) {
+        throw const FormatException(
+          'Qwen-Audio/CosyVoice 需要百炼 Workspace Base URL：'
+          'https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api/v1',
+        );
+      }
+      if (voice.isEmpty) {
+        throw FormatException(
+          config.isAliyunCosyVoiceTtsModel
+              ? 'CosyVoice v3.5 没有系统音色，请填写在百炼创建的复刻/设计 Voice ID。'
+              : '请为 Qwen-Audio-TTS 选择或填写 Voice ID。',
+        );
+      }
+      endpoint = _endpoint(
+        config.baseUrl,
+        'services/audio/tts/SpeechSynthesizer',
+      );
+      if (config.isAliyunCosyVoiceTtsModel && instruction.isNotEmpty) {
+        instruction = _truncateAliyunInstruction(instruction, 100);
+      }
+      input = {
+        'text': text.trim(),
+        'voice': voice,
+        'format': 'mp3',
+        'sample_rate': 24000,
+        'rate': normalizedSpeed,
+        if (instruction.isNotEmpty) 'instruction': instruction,
+      };
+    } else {
+      throw FormatException('暂不支持该百炼 TTS 模型：$model');
+    }
+
+    final response = await _postJson(
+      endpoint,
+      apiKey: apiKey,
+      body: {'model': model, 'input': input},
+      cancelToken: cancelToken,
+      action: '百炼语音合成',
+    );
+    final statusCode = response['status_code'];
+    if (statusCode is num && statusCode.toInt() != 200) {
+      final detail = response['message']?.toString().trim();
+      throw FormatException(
+        detail == null || detail.isEmpty
+            ? '百炼语音合成失败（${statusCode.toInt()}）。'
+            : '百炼语音合成失败：$detail',
+      );
+    }
+
+    final output = response['output'];
+    final audio = output is Map ? output['audio'] : null;
+    if (audio is! Map) {
+      throw const FormatException('百炼语音合成接口没有返回音频数据。');
+    }
+
+    final rawUrl = audio['url'];
+    if (rawUrl is String && rawUrl.trim().isNotEmpty) {
+      return _downloadSynthesizedSpeech(
+        rawUrl.trim(),
+        cancelToken: cancelToken,
+        fallbackExtension: config.isAliyunQwen3TtsModel ? 'wav' : 'mp3',
+      );
+    }
+
+    final rawData = audio['data'];
+    if (rawData is String && rawData.trim().isNotEmpty) {
+      final extension = config.isAliyunQwen3TtsModel ? 'wav' : 'mp3';
+      return SynthesizedSpeech(
+        bytes: _decodeBase64Audio(rawData, '百炼语音合成'),
+        fileExtension: extension,
+        mimeType: extension == 'wav' ? 'audio/wav' : 'audio/mpeg',
+      );
+    }
+    throw const FormatException('百炼语音合成接口返回了空音频。');
+  }
+
+  Future<SynthesizedSpeech> _downloadSynthesizedSpeech(
+    String rawUrl, {
+    CancelToken? cancelToken,
+    required String fallbackExtension,
+  }) async {
+    final uri = Uri.tryParse(rawUrl);
+    if (uri == null ||
+        uri.host.isEmpty ||
+        (uri.scheme != 'https' && uri.scheme != 'http')) {
+      throw const FormatException('百炼语音合成接口返回了无效的音频地址。');
+    }
+    try {
+      final response = await _dio.get<List<int>>(
+        uri.toString(),
+        options: Options(
+          responseType: ResponseType.bytes,
+          followRedirects: true,
+          validateStatus: (status) =>
+              status != null && status >= 200 && status < 400,
+        ),
+        cancelToken: cancelToken,
+        onReceiveProgress: (received, total) {
+          if (received > _maxAudioBytes) {
+            cancelToken?.cancel(ttsSizeLimitCancelReason);
+          }
+        },
+      );
+      final bytes = response.data ?? const <int>[];
+      if (bytes.isEmpty) {
+        throw const FormatException('百炼生成成功，但下载到的音频为空。');
+      }
+      if (bytes.length > _maxAudioBytes) {
+        throw const FormatException('TTS 音频超过 25 MB 限制。');
+      }
+      final contentType = response.headers.value(Headers.contentTypeHeader);
+      final format = _speechFormat(
+        uri: uri,
+        contentType: contentType,
+        bytes: bytes,
+        fallbackExtension: fallbackExtension,
+      );
+      return SynthesizedSpeech(
+        bytes: Uint8List.fromList(bytes),
+        fileExtension: format.$1,
+        mimeType: format.$2,
+      );
+    } on FormatException {
+      rethrow;
+    } on DioException catch (e) {
+      if (CancelToken.isCancel(e)) rethrow;
+      throw await _humanizeError(e, '百炼音频下载');
+    }
+  }
+
+  (String, String) _speechFormat({
+    required Uri uri,
+    required String? contentType,
+    required List<int> bytes,
+    required String fallbackExtension,
+  }) {
+    final mime = contentType?.split(';').first.trim().toLowerCase();
+    if (mime == 'audio/wav' || mime == 'audio/x-wav') {
+      return ('wav', 'audio/wav');
+    }
+    if (mime == 'audio/ogg' || mime == 'audio/opus') {
+      return ('opus', 'audio/opus');
+    }
+    if (mime == 'audio/mpeg' || mime == 'audio/mp3') {
+      return ('mp3', 'audio/mpeg');
+    }
+    final path = uri.path.toLowerCase();
+    if (path.endsWith('.wav') ||
+        (bytes.length >= 4 &&
+            bytes[0] == 0x52 &&
+            bytes[1] == 0x49 &&
+            bytes[2] == 0x46 &&
+            bytes[3] == 0x46)) {
+      return ('wav', 'audio/wav');
+    }
+    if (path.endsWith('.opus') || path.endsWith('.ogg')) {
+      return ('opus', 'audio/opus');
+    }
+    final fallback = fallbackExtension == 'wav' ? 'wav' : 'mp3';
+    return fallback == 'wav' ? ('wav', 'audio/wav') : ('mp3', 'audio/mpeg');
+  }
+
+  String _aliyunLanguageType(String text) {
+    final hasChinese = RegExp(r'[\u3400-\u9fff]').hasMatch(text);
+    final hasLatin = RegExp(r'[A-Za-z]').hasMatch(text);
+    if (hasChinese && hasLatin) return 'Auto';
+    if (hasChinese) return 'Chinese';
+    if (hasLatin) return 'English';
+    return 'Auto';
+  }
+
+  /// CosyVoice instructions are limited to 100 weighted characters: CJK
+  /// ideographs count as two, all other code points as one.
+  String _truncateAliyunInstruction(String input, int maxWeight) {
+    final buffer = StringBuffer();
+    var weight = 0;
+    for (final grapheme in input.characters) {
+      final codePoint = grapheme.runes.first;
+      final nextWeight = codePoint >= 0x3400 && codePoint <= 0x9FFF ? 2 : 1;
+      if (weight + nextWeight > maxWeight) break;
+      buffer.write(grapheme);
+      weight += nextWeight;
+    }
+    return buffer.toString().trim();
+  }
+
+  Future<SynthesizedSpeech> _synthesizeMimoSpeech({
+    required MediaApiConfig config,
+    required String apiKey,
+    required String text,
+    double? speed,
+    CancelToken? cancelToken,
+    Uint8List? voiceSampleBytes,
+    String voiceSampleMimeType = 'audio/wav',
+  }) async {
+    // Official MiMo V2.5 TTS series:
+    // https://mimo.mi.com/docs/en-US/quick-start/usage-guide/audio/speech-synthesis-v2.5
+    // - builtin (`mimo-v2.5-tts`): audio.voice = preset id
+    // - design (`…-voicedesign`): user content = voice description (required)
+    // - clone (`…-voiceclone`): audio.voice = data:{mime};base64,…
+    final mode = config.mimoTtsMode;
+    final designPrompt = config.voiceDesignPrompt.trim();
+    final userContent = switch (mode) {
+      MimoTtsMode.design => () {
+        if (designPrompt.isEmpty) {
+          throw const FormatException('请先在设置 → 能力 → 云端语音合成中填写「音色描述」。');
+        }
+        return designPrompt;
+      }(),
+      MimoTtsMode.builtin || MimoTtsMode.clone =>
+        designPrompt.isNotEmpty ? designPrompt : _mimoTtsInstruction(speed),
+    };
+
+    final audio = <String, dynamic>{'format': 'wav'};
+    switch (mode) {
+      case MimoTtsMode.builtin:
+        final voice = config.voice.trim();
+        audio['voice'] = voice.isEmpty
+            ? MediaApiConfig.mimoDefaultVoice
+            : voice;
+      case MimoTtsMode.design:
+        // No preset voice; description already sits in the user message.
+        // Keep optimize_text_preview off so assistant text is spoken as-is.
+        audio['optimize_text_preview'] = false;
+      case MimoTtsMode.clone:
+        audio['voice'] = _mimoCloneVoiceDataUri(
+          config: config,
+          voiceSampleBytes: voiceSampleBytes,
+          voiceSampleMimeType: voiceSampleMimeType,
+        );
+    }
+
     final response = await _postJson(
       _endpoint(config.baseUrl, 'chat/completions'),
       apiKey: apiKey,
       body: {
-        'model': config.model.trim(),
+        'model': config.model.trim().isEmpty
+            ? MediaApiConfig.modelForMimoTtsMode(mode, config.model)
+            : config.model.trim(),
         'messages': [
-          {'role': 'user', 'content': _mimoTtsInstruction(speed)},
+          {'role': 'user', 'content': userContent},
           {'role': 'assistant', 'content': text.trim()},
         ],
-        'audio': {
-          'format': 'wav',
-          'voice': config.voice.trim().isEmpty
-              ? MediaApiConfig.mimoDefaultVoice
-              : config.voice.trim(),
-        },
+        'audio': audio,
       },
       cancelToken: cancelToken,
       action: '语音合成',
     );
     final message = _firstChatMessage(response, '语音合成');
-    final audio = message['audio'];
-    if (audio is! Map) {
+    final resultAudio = message['audio'];
+    if (resultAudio is! Map) {
       throw const FormatException('语音合成接口没有返回音频数据。');
     }
-    final rawData = audio['data'];
+    final rawData = resultAudio['data'];
     if (rawData is! String || rawData.trim().isEmpty) {
       throw const FormatException('语音合成接口没有返回音频数据。');
     }
@@ -406,6 +726,34 @@ class OpenAiCompatibleMediaProvider {
       fileExtension: 'wav',
       mimeType: 'audio/wav',
     );
+  }
+
+  /// Builds the `audio.voice` data URI for voice cloning.
+  ///
+  /// Official limit: Base64 payload must stay under 10 MB; only mp3/wav.
+  String _mimoCloneVoiceDataUri({
+    required MediaApiConfig config,
+    Uint8List? voiceSampleBytes,
+    String voiceSampleMimeType = 'audio/wav',
+  }) {
+    final existing = config.voice.trim();
+    if (existing.startsWith('data:')) return existing;
+
+    final bytes = voiceSampleBytes;
+    if (bytes == null || bytes.isEmpty) {
+      throw const FormatException('请先在设置 → 能力 → 云端语音合成中上传用户音色样本（mp3/wav）。');
+    }
+    // 10 MB base64 ≈ 7.5 MB raw; keep a hard raw cap of 7 MB for safety.
+    const maxRawBytes = 7 * 1024 * 1024;
+    if (bytes.length > maxRawBytes) {
+      throw const FormatException('用户音色样本过大，请使用不超过约 7 MB 的 mp3/wav。');
+    }
+    final mime = _audioMimeType(voiceSampleMimeType);
+    if (mime != 'audio/wav' && mime != 'audio/mpeg' && mime != 'audio/mp3') {
+      throw const FormatException('用户音色仅支持 mp3 或 wav 样本。');
+    }
+    final normalizedMime = mime == 'audio/mp3' ? 'audio/mpeg' : mime;
+    return 'data:$normalizedMime;base64,${base64Encode(bytes)}';
   }
 
   /// Sends a recorded WAV (or another supported audio MIME type) to MiMo ASR
@@ -460,14 +808,20 @@ class OpenAiCompatibleMediaProvider {
     return content.trim();
   }
 
+  /// Default style instruction when the user left [MediaApiConfig.voiceDesignPrompt]
+  /// empty on builtin/clone models. Pace is derived from the UI rate slider.
+  /// Fallback style when auto-emotion is off and the user left no prompt.
+  /// Still asks for warmth so plain builtin TTS is less "播音腔".
   String _mimoTtsInstruction(double? speed) {
     final normalized = speed?.clamp(0.25, 4.0).toDouble() ?? 1;
     final pace = normalized < 0.9
-        ? '语速稍慢'
+        ? '语速稍慢，从容'
         : normalized > 1.1
-        ? '语速稍快'
-        : '语速自然';
-    return '请用自然、清晰、适合连续阅读的普通话朗读下面内容，$pace。';
+        ? '语速稍快，利落'
+        : '语速自然，有呼吸感';
+    return '请用富有感情、生动自然的普通话朗读下面内容，'
+        '像在对朋友说话而不是念稿，$pace。'
+        '在标点处自然停顿，关键词可轻微加重，避免机械播音腔。';
   }
 
   Map<String, dynamic> _firstChatMessage(

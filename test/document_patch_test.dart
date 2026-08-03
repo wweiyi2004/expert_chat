@@ -103,6 +103,54 @@ void main() {
       expect(pptx.ops.single, isA<SetShapeTextOp>());
     });
 
+    test('accepts txt/md/csv/tsv replace_text and set_text', () {
+      for (final format in ['txt', 'md', 'csv', 'tsv']) {
+        final replace = DocumentPatch.parse({
+          'schema_version': 1,
+          'format': format,
+          'ops': [
+            {'op': 'replace_text', 'find': 'a', 'replace': 'b'},
+          ],
+        });
+        expect(replace.ops.single, isA<ReplaceTextOp>());
+        final setText = DocumentPatch.parse({
+          'schema_version': 1,
+          'format': format,
+          'ops': [
+            {'op': 'set_text', 'text': 'hello\nworld'},
+          ],
+        });
+        expect(setText.ops.single, isA<SetTextOp>());
+        expect((setText.ops.single as SetTextOp).text, 'hello\nworld');
+      }
+    });
+
+    test('rejects xlsx ops on txt and set_text on docx', () {
+      expect(
+        () => DocumentPatch.parse({
+          'schema_version': 1,
+          'format': 'txt',
+          'ops': [
+            {
+              'op': 'set_cells',
+              'cells': {'A1': 1},
+            },
+          ],
+        }),
+        throwsA(isA<DocumentPatchException>()),
+      );
+      expect(
+        () => DocumentPatch.parse({
+          'schema_version': 1,
+          'format': 'docx',
+          'ops': [
+            {'op': 'set_text', 'text': 'x'},
+          ],
+        }),
+        throwsA(isA<DocumentPatchException>()),
+      );
+    });
+
     test('enforces max ops', () {
       expect(
         () => DocumentPatch.parse({

@@ -18,7 +18,32 @@ class DocumentPatch {
   static const maxOutputFilenameLength = 180;
 
   /// Formats the App + Linux service implement.
-  static const supportedFormats = {'xlsx', 'docx', 'pptx'};
+  static const supportedFormats = {
+    'xlsx',
+    'docx',
+    'pptx',
+    'txt',
+    'md',
+    'csv',
+    'tsv',
+  };
+
+  /// Plain-text family: whole-file rewrite / find-replace.
+  static const textFormats = {'txt', 'md', 'csv', 'tsv'};
+
+  /// Ops allowed per format (App + server must agree).
+  static const allowedOpsByFormat = <String, Set<String>>{
+    'xlsx': {'set_cells', 'set_range', 'add_sheet', 'ensure_sheet'},
+    'docx': {'replace_text'},
+    'pptx': {'set_shape_text'},
+    'txt': {'replace_text', 'set_text'},
+    'md': {'replace_text', 'set_text'},
+    'csv': {'replace_text', 'set_text'},
+    'tsv': {'replace_text', 'set_text'},
+  };
+
+  /// Max characters for a single [SetTextOp] body.
+  static const maxSetTextChars = 2 * 1024 * 1024;
 
   /// @Deprecated Keep alias for older call sites / tests.
   static const p0Formats = supportedFormats;
@@ -44,8 +69,8 @@ class DocumentPatch {
 
   /// Parses and validates. Throws [DocumentPatchException] on any violation.
   ///
-  /// [p0Only] is ignored (kept for API stability); xlsx/docx/pptx are all
-  /// accepted when listed in [supportedFormats].
+  /// [p0Only] is ignored (kept for API stability); all [supportedFormats]
+  /// are accepted.
   factory DocumentPatch.parse(Object? raw, {bool p0Only = true}) {
     final map = _asObject(raw, path: r'$');
     final version = _asInt(map['schema_version'], path: 'schema_version');
@@ -155,6 +180,13 @@ sealed class DocumentOp {
   }) {
     final map = _asObject(raw, path: path);
     final kind = _asString(map['op'], path: '$path.op').toLowerCase();
+    final allowed = DocumentPatch.allowedOpsByFormat[format];
+    if (allowed != null && !allowed.contains(kind)) {
+      throw DocumentPatchException(
+        'format=$format 不支持 op="$kind"（$path）',
+        code: 'patch_invalid',
+      );
+    }
     switch (kind) {
       case 'set_cells':
         return SetCellsOp.parse(map, path: path);
@@ -166,6 +198,8 @@ sealed class DocumentOp {
         return AddSheetOp.parse(map, path: path, ensureOnly: true);
       case 'replace_text':
         return ReplaceTextOp.parse(map, path: path);
+      case 'set_text':
+        return SetTextOp.parse(map, path: path);
       case 'set_shape_text':
         return SetShapeTextOp.parse(map, path: path);
       default:
@@ -174,6 +208,40 @@ sealed class DocumentOp {
           code: 'patch_invalid',
         );
     }
+  }
+}
+
+/// Plain text / markdown / csv / tsv: replace the entire file body.
+class SetTextOp extends DocumentOp {
+  const SetTextOp({required this.text});
+
+  final String text;
+
+  @override
+  String get op => 'set_text';
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'op': op,
+    'text': text,
+  };
+
+  factory SetTextOp.parse(Map<String, dynamic> map, {required String path}) {
+    final raw = map['text'];
+    if (raw == null) {
+      throw DocumentPatchException(
+        '$path.text 不能为 null（整文件覆写请传字符串，可为空串）',
+        code: 'patch_invalid',
+      );
+    }
+    final text = raw is String ? raw : raw.toString();
+    if (text.length > DocumentPatch.maxSetTextChars) {
+      throw DocumentPatchException(
+        '$path.text 过长（>${DocumentPatch.maxSetTextChars} 字符）',
+        code: 'patch_invalid',
+      );
+    }
+    return SetTextOp(text: text);
   }
 }
 

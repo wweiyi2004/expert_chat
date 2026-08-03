@@ -35,7 +35,11 @@ class FileParser {
   static const int _maxZipEntries = 2000;
   static const int _maxZipEntryBytes = 20 * 1024 * 1024;
   static const int _maxZipExpandedBytes = 50 * 1024 * 1024;
-  static const int _maxZipCompressionRatio = 100;
+  /// Only applied when compressed size is small — real Word/XML parts often
+  /// compress 50–200× when full of styles/whitespace; absolute expanded-size
+  /// caps above already bound memory.
+  static const int _maxZipCompressionRatio = 1000;
+  static const int _zipBombCompressedThreshold = 64 * 1024;
 
   /// Largest image we retain for vision models. Bigger images are rejected with
   /// a note (base64 in the prompt + DB would balloon for little benefit).
@@ -104,6 +108,20 @@ class FileParser {
       return base.copyWith(imageBase64: base64Encode(bytes));
     }
 
+    final isEditableForService = lower.endsWith('.xlsx') ||
+        lower.endsWith('.docx') ||
+        lower.endsWith('.pptx') ||
+        lower.endsWith('.txt') ||
+        lower.endsWith('.md') ||
+        lower.endsWith('.csv') ||
+        lower.endsWith('.tsv');
+    // Keep original bytes so document-edit can round-trip even when local text
+    // extraction is partial/empty. Cap retention to avoid huge DB rows.
+    final retainBinary = isEditableForService &&
+        bytes.lengthInBytes <= maxFileBytes &&
+        bytes.lengthInBytes <= 10 * 1024 * 1024;
+    final retainedB64 = retainBinary ? base64Encode(bytes) : null;
+
     try {
       String text;
       if (lower.endsWith('.pdf')) {
@@ -117,6 +135,7 @@ class FileParser {
       } else if (lower.endsWith('.txt') ||
           lower.endsWith('.md') ||
           lower.endsWith('.csv') ||
+          lower.endsWith('.tsv') ||
           lower.endsWith('.json') ||
           mimeType.startsWith('text/')) {
         text = _decodeText(bytes);
@@ -126,23 +145,34 @@ class FileParser {
 
       text = text.trim();
       if (text.isEmpty) {
-        return base.copyWith(parseError: '未能从文件中提取到文本（可能是扫描件/图片型文档）。');
+        // Editable files may still be patched remotely. Keep binary + soft note.
+        if (retainedB64 != null) {
+          return base.copyWith(
+            text: '（未能从文件中提取到文本，已保留原文件供改文档）',
+            imageBase64: retainedB64,
+            parseError: null,
+          );
+        }
+        return base.copyWith(
+          parseError: '未能从文件中提取到文本（可能是扫描件/图片型文档）。',
+        );
       }
       final truncated = text.length > maxChars;
-      // Keep original Office bytes so document-edit can round-trip to a Linux
-      // service. Cap retention to avoid huge DB rows.
-      final retainBinary =
-          (lower.endsWith('.xlsx') ||
-              lower.endsWith('.docx') ||
-              lower.endsWith('.pptx')) &&
-          bytes.lengthInBytes <= maxFileBytes &&
-          bytes.lengthInBytes <= 10 * 1024 * 1024;
       return base.copyWith(
         text: truncated ? text.substring(0, maxChars) : text,
         truncated: truncated,
-        imageBase64: retainBinary ? base64Encode(bytes) : null,
+        imageBase64: retainedB64,
       );
     } catch (e) {
+      // Prefer keeping the original bytes so「改文档」still works when only the
+      // local text extractor failed (zip guard false-positive, exotic XML…).
+      if (retainedB64 != null) {
+        return base.copyWith(
+          text: '（本地文本解析失败，已保留原文件供改文档）\n原因：$e',
+          imageBase64: retainedB64,
+          parseError: null,
+        );
+      }
       return base.copyWith(parseError: '解析失败：$e');
     }
   }
@@ -157,8 +187,48 @@ class FileParser {
   }
 
   String _parseDocx(Uint8List bytes) {
-    _decodeSafeZip(bytes);
-    return docxToText(bytes);
+    final archive = _decodeSafeZip(bytes);
+    // Prefer our paragraph extractor: docx_to_text ships with a debug
+    // `print(document)` and is picky about some Word/WPS XML.
+    final local = _extractDocxTextFromArchive(archive).trim();
+    if (local.isNotEmpty) return local;
+    try {
+      return docxToText(bytes).trim();
+    } catch (_) {
+      return local;
+    }
+  }
+
+  /// Lightweight fallback: paragraph-wise `w:t` extraction from document.xml.
+  String _extractDocxTextFromArchive(Archive archive) {
+    final out = StringBuffer();
+    for (final file in archive.files) {
+      if (!file.isFile) continue;
+      final name = file.name.replaceAll('\\', '/');
+      if (name != 'word/document.xml' && !name.endsWith('/document.xml')) {
+        continue;
+      }
+      try {
+        final content = file.content as List<int>;
+        final doc = XmlDocument.parse(
+          utf8.decode(content, allowMalformed: true),
+        );
+        for (final p in doc.findAllElements('w:p')) {
+          final line =
+              p.findAllElements('w:t').map((e) => e.innerText).join();
+          if (line.trim().isNotEmpty) out.writeln(line);
+        }
+        if (out.isEmpty) {
+          for (final t in doc.findAllElements('w:t')) {
+            final s = t.innerText;
+            if (s.isNotEmpty) out.write(s);
+          }
+        }
+      } catch (_) {
+        continue;
+      }
+    }
+    return out.toString();
   }
 
   String _parseXlsx(Uint8List bytes) {
@@ -217,7 +287,15 @@ class FileParser {
   }
 
   Archive _decodeSafeZip(Uint8List bytes) {
-    final archive = ZipDecoder().decodeBytes(bytes);
+    Archive archive;
+    try {
+      archive = ZipDecoder().decodeBytes(bytes);
+    } catch (e) {
+      throw FormatException(
+        '不是有效的 Office 压缩包（.docx/.xlsx/.pptx）。'
+        '若是旧版 .doc/.xls/.ppt，请先另存为新格式。原始错误：$e',
+      );
+    }
     if (archive.files.length > _maxZipEntries) {
       throw const FormatException('压缩文档包含过多条目，已拒绝解析。');
     }
@@ -226,7 +304,9 @@ class FileParser {
     for (final file in archive.files) {
       if (!file.isFile) continue;
       final declaredSize = file.size;
-      if (declaredSize < 0 || declaredSize > _maxZipEntryBytes) {
+      // Directory markers and zero-byte parts are normal in OOXML packages.
+      if (declaredSize <= 0) continue;
+      if (declaredSize > _maxZipEntryBytes) {
         throw const FormatException('压缩文档含有过大的文件条目，已拒绝解析。');
       }
       expandedBytes += declaredSize;
@@ -234,11 +314,11 @@ class FileParser {
         throw const FormatException('压缩文档解压后内容过大，已拒绝解析。');
       }
 
+      // rawContent may be absent after some archive versions finish decoding;
+      // prefer content length when available rather than hard-failing.
       final compressedSize = file.rawContent?.length ?? 0;
-      if (declaredSize > 0 && compressedSize == 0) {
-        throw const FormatException('压缩文档包含无效条目，已拒绝解析。');
-      }
       if (compressedSize > 0 &&
+          compressedSize < _zipBombCompressedThreshold &&
           declaredSize / compressedSize > _maxZipCompressionRatio) {
         throw const FormatException('压缩文档压缩比异常，已拒绝解析。');
       }

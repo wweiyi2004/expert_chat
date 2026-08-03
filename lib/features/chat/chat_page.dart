@@ -601,7 +601,9 @@ class _ChatPageState extends ConsumerState<ChatPage>
         return;
       }
       if (!_attachments.any((a) => a.isEditableDocument)) {
-        _showAttachmentNotice('请先上传可编辑的 .xlsx / .docx / .pptx');
+        _showAttachmentNotice(
+          '请先上传可编辑的 .xlsx / .docx / .pptx / .txt / .md / .csv / .tsv',
+        );
         return;
       }
       if (_imageMode) {
@@ -664,6 +666,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
     'txt',
     'md',
     'csv',
+    'tsv',
     'json',
   ];
   static const _imageExtensions = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'];
@@ -1033,8 +1036,10 @@ class _ChatPageState extends ConsumerState<ChatPage>
     'pptx' =>
       'application/vnd.openxmlformats-officedocument.presentationml.presentation',
     'csv' => 'text/csv',
+    'tsv' => 'text/tab-separated-values',
     'json' => 'application/json',
     'md' => 'text/markdown',
+    'txt' => 'text/plain',
     _ => 'text/plain',
   };
 
@@ -2344,7 +2349,7 @@ class _ComposerState extends State<_Composer> {
                             label: '改文档',
                             tooltip:
                                 '强制调用文档服务：根据你的说明修改已上传的 '
-                                '.xlsx / .docx / .pptx 并回传下载',
+                                '.xlsx / .docx / .pptx / .txt / .md / .csv / .tsv 并回传下载',
                             onSelected: () {
                               _closePlus();
                               widget.onDocumentEdit?.call();

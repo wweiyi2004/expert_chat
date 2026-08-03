@@ -1992,7 +1992,7 @@ class ChatController extends AsyncNotifier<ChatState> {
     final imageGenConfigured = settings.imageGenerationConfigured;
     final imageGenWanted =
         imageGenMode != ImageGenMode.off && imageGenConfigured;
-    // Document edit: Linux service + Office file with retained bytes + tools.
+    // Document edit: Linux service + editable file with retained bytes + tools.
     final turnUserAttachments = _userAttachmentsForTurn(working, assistantId);
     final editableDocuments = [
       for (final a in turnUserAttachments)
@@ -2373,10 +2373,12 @@ class ChatController extends AsyncNotifier<ChatState> {
           hint.write(
             forceDocTool
                 ? '用户点击了「改文档」。你必须调用 edit_document，'
-                    '给出完整 DocumentPatch（schema_version=1；format 为 xlsx/docx/pptx 之一；ops）。'
+                    '给出完整 DocumentPatch（schema_version=1；format 为 '
+                    'xlsx/docx/pptx/txt/md/csv/tsv 之一；ops）。'
                     'xlsx 用 set_cells/set_range/add_sheet/ensure_sheet；'
-                    'docx 用 replace_text；pptx 用 set_shape_text。'
-                : '用户上传了可编辑的 Office 文件（.xlsx/.docx/.pptx）。'
+                    'docx 用 replace_text；pptx 用 set_shape_text；'
+                    'txt/md/csv/tsv 用 replace_text 或 set_text（整文件覆写）。'
+                : '用户上传了可编辑文件（.xlsx/.docx/.pptx/.txt/.md/.csv/.tsv）。'
                     '若要求改文件/导出/回传，调用 edit_document 并给出完整 DocumentPatch。',
           );
           hint.write('不要编造未上传的附件名。');
@@ -2433,10 +2435,12 @@ class ChatController extends AsyncNotifier<ChatState> {
           hint.write(
             forceDocTool
                 ? '用户点击了「改文档」。你必须调用 edit_document，'
-                    '给出完整 DocumentPatch（schema_version=1；format 为 xlsx/docx/pptx 之一；ops）。'
+                    '给出完整 DocumentPatch（schema_version=1；format 为 '
+                    'xlsx/docx/pptx/txt/md/csv/tsv 之一；ops）。'
                     'xlsx 用 set_cells/set_range/add_sheet/ensure_sheet；'
-                    'docx 用 replace_text；pptx 用 set_shape_text。'
-                : '用户上传了可编辑的 Office 文件（.xlsx/.docx/.pptx）。'
+                    'docx 用 replace_text；pptx 用 set_shape_text；'
+                    'txt/md/csv/tsv 用 replace_text 或 set_text（整文件覆写）。'
+                : '用户上传了可编辑文件（.xlsx/.docx/.pptx/.txt/.md/.csv/.tsv）。'
                     '若要求改文件/导出/回传，调用 edit_document 并给出完整 DocumentPatch。',
           );
           hint.write('不要编造未上传的附件名。');
@@ -3262,11 +3266,15 @@ class ChatController extends AsyncNotifier<ChatState> {
             if (a.isEditableDocument ||
                 a.name.toLowerCase().endsWith('.xlsx') ||
                 a.name.toLowerCase().endsWith('.docx') ||
-                a.name.toLowerCase().endsWith('.pptx'))
+                a.name.toLowerCase().endsWith('.pptx') ||
+                a.name.toLowerCase().endsWith('.txt') ||
+                a.name.toLowerCase().endsWith('.md') ||
+                a.name.toLowerCase().endsWith('.csv') ||
+                a.name.toLowerCase().endsWith('.tsv'))
               a.name,
         ];
         return names.isEmpty
-            ? '本轮没有可编辑的 Office 附件（.xlsx/.docx/.pptx，需重新上传并保留原文件）。'
+            ? '本轮没有可编辑附件（.xlsx/.docx/.pptx/.txt/.md/.csv/.tsv，需重新上传并保留原文件）。'
             : '找不到附件「${args.attachmentName}」。本轮可用：${names.join("、")}';
       }
       if (!source.hasDownloadableBytes) {
@@ -3326,9 +3334,14 @@ class ChatController extends AsyncNotifier<ChatState> {
   ) {
     final docs = [
       for (final a in sources)
-        if (a.name.toLowerCase().endsWith('.xlsx') ||
+        if (a.isEditableDocument ||
+            a.name.toLowerCase().endsWith('.xlsx') ||
             a.name.toLowerCase().endsWith('.docx') ||
-            a.name.toLowerCase().endsWith('.pptx'))
+            a.name.toLowerCase().endsWith('.pptx') ||
+            a.name.toLowerCase().endsWith('.txt') ||
+            a.name.toLowerCase().endsWith('.md') ||
+            a.name.toLowerCase().endsWith('.csv') ||
+            a.name.toLowerCase().endsWith('.tsv'))
           a,
     ];
     if (docs.isEmpty) return null;

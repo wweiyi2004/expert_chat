@@ -78,12 +78,17 @@ class Attachment {
     return n.endsWith('.xlsx') && hasDownloadableBytes;
   }
 
-  /// Office file retained for document-service round-trip (xlsx/docx/pptx).
+  /// File retained for document-service round-trip
+  /// (xlsx/docx/pptx/txt/md/csv/tsv).
   bool get isEditableDocument {
     final n = name.toLowerCase();
     return (n.endsWith('.xlsx') ||
             n.endsWith('.docx') ||
-            n.endsWith('.pptx')) &&
+            n.endsWith('.pptx') ||
+            n.endsWith('.txt') ||
+            n.endsWith('.md') ||
+            n.endsWith('.csv') ||
+            n.endsWith('.tsv')) &&
         hasDownloadableBytes;
   }
 
@@ -93,6 +98,10 @@ class Attachment {
     if (n.endsWith('.xlsx')) return 'xlsx';
     if (n.endsWith('.docx')) return 'docx';
     if (n.endsWith('.pptx')) return 'pptx';
+    if (n.endsWith('.txt')) return 'txt';
+    if (n.endsWith('.md')) return 'md';
+    if (n.endsWith('.csv')) return 'csv';
+    if (n.endsWith('.tsv')) return 'tsv';
     return null;
   }
 

@@ -13,13 +13,15 @@ class DocumentEditTools {
   static const editDocumentTool = ToolSpec(
     name: editDocumentToolName,
     description:
-        '按结构化补丁修改用户本轮上传的 Office 文件（.xlsx / .docx / .pptx），'
+        '按结构化补丁修改用户本轮上传的可编辑文件，'
         '由客户端提交到文档服务并回传可下载的新文件。'
+        '支持：.xlsx / .docx / .pptx / .txt / .md / .csv / .tsv。'
         '仅在用户明确要求改文件/导出/回传，或点击「改文档」时必须调用。'
         'patch 必须是完整 DocumentPatch（schema_version=1, format, ops）。'
         'xlsx：set_cells / set_range / add_sheet / ensure_sheet；'
         'docx：replace_text；'
-        'pptx：set_shape_text（slide 从 1 起，shape 从 0 起）。'
+        'pptx：set_shape_text（slide 从 1 起，shape 从 0 起）；'
+        'txt/md/csv/tsv：replace_text（查找替换）或 set_text（整文件覆写，text 为完整新内容）。'
         '不要输出整文件 base64；不要编造未上传的附件。',
     parameters: {
       'type': 'object',
@@ -27,7 +29,7 @@ class DocumentEditTools {
         'attachment_name': {
           'type': 'string',
           'description':
-              '要修改的附件文件名（含扩展名）。本轮仅一个可编辑 Office 文件时可省略。',
+              '要修改的附件文件名（含扩展名）。本轮仅一个可编辑文件时可省略。',
         },
         'output_filename': {
           'type': 'string',
@@ -43,7 +45,7 @@ class DocumentEditTools {
             },
             'format': {
               'type': 'string',
-              'enum': ['xlsx', 'docx', 'pptx'],
+              'enum': ['xlsx', 'docx', 'pptx', 'txt', 'md', 'csv', 'tsv'],
             },
             'output_filename': {'type': 'string'},
             'ops': {
@@ -59,6 +61,7 @@ class DocumentEditTools {
                       'add_sheet',
                       'ensure_sheet',
                       'replace_text',
+                      'set_text',
                       'set_shape_text',
                     ],
                   },
@@ -90,7 +93,7 @@ class DocumentEditTools {
 
   static const inspectDocumentTool = ToolSpec(
     name: inspectDocumentToolName,
-    description: '查看本轮上传的 Office 附件结构提示，便于编写 edit_document 补丁。',
+    description: '查看本轮上传的可编辑附件结构提示，便于编写 edit_document 补丁。',
     parameters: {
       'type': 'object',
       'properties': {

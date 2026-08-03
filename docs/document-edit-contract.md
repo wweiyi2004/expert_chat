@@ -35,7 +35,8 @@ Tool 名：`edit_document`（见 `lib/domain/document/document_edit_tools.dart`�
 | 单 op 单元格映射数（`set_cells`） | 5000 |
 | 单 op 二维表单元格数（`set_range`） | 5000 |
 | `output_filename` 长度 | 180（禁止路径分隔符） |
-| `format` | `xlsx` / `docx` / `pptx` |
+| `format` | `xlsx` / `docx` / `pptx` / `txt` / `md` / `csv` / `tsv` |
+| 单 op `set_text` 字符数 | 2 097 152（2 MiB） |
 
 未知 `op`：**整单失败**（不半成功）。
 
@@ -103,12 +104,37 @@ Tool 名：`edit_document`（见 `lib/domain/document/document_edit_tools.dart`�
 - `slide`：从 1 起  
 - `shape`：该页带文本框的 shape 从 0 起  
 
+### 2.5 txt / md / csv / tsv ops
+
+纯文本族（UTF-8 读写；读入时兼容 BOM / 尽力 GB18030）。
+
+#### `replace_text`
+
+```json
+{ "op": "replace_text", "find": "旧文", "replace": "新文", "all": true }
+```
+
+- 对**整文件字符串**做查找替换（csv/tsv 也按纯文本处理，不做表格语义）
+
+#### `set_text`
+
+```json
+{ "op": "set_text", "text": "完整新内容…" }
+```
+
+- 用 `text` **整文件覆写**（适合重写 markdown / 整表 csv）
+- `text` 可为 `""`；不可为 JSON `null`
+
 ## 3. HTTP API
 
 ### `GET /v1/health`
 
 ```json
-{ "ok": true, "version": "0.1.0", "formats": ["xlsx"] }
+{
+  "ok": true,
+  "version": "0.3.0",
+  "formats": ["xlsx", "docx", "pptx", "txt", "md", "csv", "tsv"]
+}
 ```
 
 ### `POST /v1/documents/edit`

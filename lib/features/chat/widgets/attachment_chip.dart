@@ -242,6 +242,12 @@ class _AttachmentChipState extends State<AttachmentChip> {
     if (n.endsWith('.docx')) return Icons.description_outlined;
     if (n.endsWith('.xlsx')) return Icons.table_chart_outlined;
     if (n.endsWith('.pptx')) return Icons.slideshow_outlined;
+    if (n.endsWith('.csv') || n.endsWith('.tsv')) {
+      return Icons.grid_on_outlined;
+    }
+    if (n.endsWith('.md') || n.endsWith('.txt')) {
+      return Icons.article_outlined;
+    }
     return Icons.insert_drive_file_outlined;
   }
 }

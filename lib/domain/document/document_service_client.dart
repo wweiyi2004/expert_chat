@@ -139,12 +139,14 @@ class DocumentServiceClient {
   }
 
   static String _defaultEditedName(String raw) {
-    final name = raw.trim().isEmpty ? 'workbook.xlsx' : raw.trim();
-    if (name.toLowerCase().endsWith('.xlsx')) {
-      final stem = name.substring(0, name.length - 5);
-      return '${stem}_edited.xlsx';
+    final name = raw.trim().isEmpty ? 'file.txt' : raw.trim();
+    final dot = name.lastIndexOf('.');
+    if (dot > 0 && dot < name.length - 1) {
+      final stem = name.substring(0, dot);
+      final ext = name.substring(dot);
+      return '${stem}_edited$ext';
     }
-    return '${name}_edited.xlsx';
+    return '${name}_edited';
   }
 
   static String? _filenameFromDisposition(String? raw) {

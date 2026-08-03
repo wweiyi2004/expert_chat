@@ -1,4 +1,4 @@
-"""Document-edit service: xlsx / docx / pptx.
+"""Document-edit service: xlsx / docx / pptx / txt / md / csv / tsv.
 
 Contract: docs/document-edit-contract.md
 Env: DOC_API_TOKEN, MAX_UPLOAD_MB, TEMP_DIR
@@ -23,11 +23,13 @@ from openpyxl.utils import coordinate_to_tuple
 from pptx import Presentation
 from starlette.background import BackgroundTask
 
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.3.0"
 MAX_OPS = 200
 MAX_CELLS_PER_OP = 5000
+MAX_SET_TEXT_CHARS = 2 * 1024 * 1024
 A1_RE = re.compile(r"^[A-Z]{1,3}[1-9][0-9]{0,6}$")
-SUPPORTED = {".xlsx", ".docx", ".pptx"}
+SUPPORTED = {".xlsx", ".docx", ".pptx", ".txt", ".md", ".csv", ".tsv"}
+FORMATS = ["xlsx", "docx", "pptx", "txt", "md", "csv", "tsv"]
 
 app = FastAPI(title="Expert Chat Document Edit", version=APP_VERSION)
 
@@ -73,7 +75,7 @@ def _err(code: str, message: str, details: dict[str, Any] | None = None) -> dict
 
 @app.get("/v1/health")
 def health() -> dict[str, Any]:
-    return {"ok": True, "version": APP_VERSION, "formats": ["xlsx", "docx", "pptx"]}
+    return {"ok": True, "version": APP_VERSION, "formats": FORMATS}
 
 
 @app.post("/v1/documents/edit")
@@ -140,8 +142,10 @@ async def edit_document(
                 _apply_xlsx(in_path, out_path, validated)
             elif ext == ".docx":
                 _apply_docx(in_path, out_path, validated)
-            else:
+            elif ext == ".pptx":
                 _apply_pptx(in_path, out_path, validated)
+            else:
+                _apply_text(in_path, out_path, validated)
         except ValueError as e:
             raise HTTPException(
                 status_code=400,
@@ -158,6 +162,10 @@ async def edit_document(
             ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            ".txt": "text/plain; charset=utf-8",
+            ".md": "text/markdown; charset=utf-8",
+            ".csv": "text/csv; charset=utf-8",
+            ".tsv": "text/tab-separated-values; charset=utf-8",
         }[ext]
         return FileResponse(
             path=out_path,
@@ -188,7 +196,7 @@ def _validate_patch(obj: Any, file_ext: str) -> dict[str, Any]:
         raise ValueError(f"不支持的 schema_version={obj.get('schema_version')}（需要 1）")
     fmt = str(obj.get("format", "")).lower()
     expected = file_ext.lstrip(".")
-    if fmt not in {"xlsx", "docx", "pptx"}:
+    if fmt not in set(FORMATS):
         raise ValueError(f'不支持的 format="{fmt}"')
     if fmt != expected:
         raise ValueError(f'format="{fmt}" 与上传文件扩展名 {file_ext} 不一致')
@@ -207,10 +215,16 @@ def _validate_patch(obj: Any, file_ext: str) -> dict[str, Any]:
             raise ValueError("output_filename 过长")
         obj = {**obj, "output_filename": out_s}
 
-    xlsx_ops = {"set_cells", "set_range", "add_sheet", "ensure_sheet"}
-    docx_ops = {"replace_text"}
-    pptx_ops = {"set_shape_text"}
-    allowed = {"xlsx": xlsx_ops, "docx": docx_ops, "pptx": pptx_ops}[fmt]
+    text_ops = {"replace_text", "set_text"}
+    allowed = {
+        "xlsx": {"set_cells", "set_range", "add_sheet", "ensure_sheet"},
+        "docx": {"replace_text"},
+        "pptx": {"set_shape_text"},
+        "txt": text_ops,
+        "md": text_ops,
+        "csv": text_ops,
+        "tsv": text_ops,
+    }[fmt]
 
     for i, op in enumerate(ops):
         if not isinstance(op, dict):
@@ -247,6 +261,13 @@ def _validate_patch(obj: Any, file_ext: str) -> dict[str, Any]:
             find = str(op.get("find", ""))
             if not find:
                 raise ValueError(f"ops[{i}].find 不能为空")
+        elif kind == "set_text":
+            if "text" not in op or op.get("text") is None:
+                raise ValueError(f"ops[{i}].text 不能为 null")
+            text = op.get("text")
+            text_s = text if isinstance(text, str) else str(text)
+            if len(text_s) > MAX_SET_TEXT_CHARS:
+                raise ValueError(f"ops[{i}].text 过长（>{MAX_SET_TEXT_CHARS}）")
         elif kind == "set_shape_text":
             slide = int(op.get("slide", 1))
             if slide < 1:
@@ -333,6 +354,45 @@ def _docx_replace(doc: Document, find: str, replace: str, all_occ: bool) -> None
                         do_para(p)
                         if not all_occ and replaced:
                             return
+
+
+def _read_text_file(path: Path) -> str:
+    raw = path.read_bytes()
+    if not raw:
+        return ""
+    # Strip UTF-8 BOM if present.
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raw = raw[3:]
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        # Best-effort for Chinese Windows exports.
+        try:
+            return raw.decode("gb18030")
+        except UnicodeDecodeError:
+            return raw.decode("utf-8", errors="replace")
+
+
+def _write_text_file(path: Path, text: str) -> None:
+    path.write_bytes(text.encode("utf-8"))
+
+
+def _apply_text(in_path: Path, out_path: Path, patch: dict[str, Any]) -> None:
+    content = _read_text_file(in_path)
+    for op in patch["ops"]:
+        kind = str(op["op"]).lower()
+        if kind == "set_text":
+            text = op.get("text")
+            content = text if isinstance(text, str) else str(text)
+        elif kind == "replace_text":
+            find = str(op["find"])
+            replace = str(op.get("replace", ""))
+            all_occ = bool(op.get("all", True))
+            if all_occ:
+                content = content.replace(find, replace)
+            else:
+                content = content.replace(find, replace, 1)
+    _write_text_file(out_path, content)
 
 
 def _apply_pptx(in_path: Path, out_path: Path, patch: dict[str, Any]) -> None:

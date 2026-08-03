@@ -27,10 +27,14 @@ from openpyxl.utils import coordinate_to_tuple
 from pptx import Presentation
 from starlette.background import BackgroundTask
 
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.4.1"
 MAX_OPS = 200
 MAX_CELLS_PER_OP = 5000
 MAX_SET_TEXT_CHARS = 2 * 1024 * 1024
+# Cap JSON patch body before json.loads (set_text can be large; avoid multi-op bombs).
+MAX_PATCH_JSON_BYTES = 4 * 1024 * 1024
+# Cap final text after replace_text / set_text so expand-via-replace cannot OOM.
+MAX_TEXT_OUTPUT_CHARS = 2 * 1024 * 1024
 A1_RE = re.compile(r"^[A-Z]{1,3}[1-9][0-9]{0,6}$")
 SUPPORTED = {".xlsx", ".docx", ".pptx", ".txt", ".md", ".csv", ".tsv"}
 FORMATS = ["xlsx", "docx", "pptx", "txt", "md", "csv", "tsv"]
@@ -143,6 +147,16 @@ async def edit_document(
             raise HTTPException(
                 status_code=400,
                 detail=_err("patch_invalid", "上传文件为空"),
+            )
+
+        patch_bytes = len(patch.encode("utf-8")) if isinstance(patch, str) else 0
+        if patch_bytes > MAX_PATCH_JSON_BYTES:
+            raise HTTPException(
+                status_code=400,
+                detail=_err(
+                    "patch_invalid",
+                    f"patch 过大（{patch_bytes} 字节，上限 {MAX_PATCH_JSON_BYTES}）",
+                ),
             )
 
         try:
@@ -527,9 +541,22 @@ def _apply_text(in_path: Path, out_path: Path, patch: dict[str, Any]) -> None:
             replace = str(op.get("replace", ""))
             all_occ = bool(op.get("all", True))
             if all_occ:
+                # Guard expansion before full replace when possible.
+                if find and len(replace) > len(find):
+                    occ = content.count(find)
+                    if occ:
+                        projected = len(content) + occ * (len(replace) - len(find))
+                        if projected > MAX_TEXT_OUTPUT_CHARS:
+                            raise ValueError(
+                                f"replace_text 结果将超过 {MAX_TEXT_OUTPUT_CHARS} 字符上限"
+                            )
                 content = content.replace(find, replace)
             else:
                 content = content.replace(find, replace, 1)
+        if len(content) > MAX_TEXT_OUTPUT_CHARS:
+            raise ValueError(
+                f"文本结果超过 {MAX_TEXT_OUTPUT_CHARS} 字符上限（op={kind}）"
+            )
     _write_text_file(out_path, content)
 
 

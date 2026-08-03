@@ -3300,6 +3300,13 @@ class ChatController extends AsyncNotifier<ChatState> {
         return '补丁 format="${args.patch.format}" 与附件「${source.name}」'
             '（$expectedFormat）不一致，请修正后重试。';
       }
+      // Truncated attachments only expose a prefix to the model; set_text would
+      // rewrite the full server-side file from that partial view and drop the tail.
+      if (source.truncated && args.patch.hasSetTextOp) {
+        return '附件「${source.name}」内容已截断（仅前缀进入模型上下文），'
+            '禁止使用 set_text 整文件覆写，否则会丢失未展示部分。'
+            '请改用 replace_text，或上传更短的文件后重试。';
+      }
       late final Uint8List fileBytes;
       try {
         fileBytes = Uint8List.fromList(base64Decode(source.imageBase64!));

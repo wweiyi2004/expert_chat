@@ -178,6 +178,27 @@ void main() {
     });
   });
 
+  group('truncated set_text guard helpers', () {
+    test('hasSetTextOp detects whole-file rewrite', () {
+      final withSet = DocumentPatch.parse({
+        'schema_version': 1,
+        'format': 'txt',
+        'ops': [
+          {'op': 'set_text', 'text': 'only prefix'},
+        ],
+      });
+      expect(withSet.hasSetTextOp, isTrue);
+      final withReplace = DocumentPatch.parse({
+        'schema_version': 1,
+        'format': 'txt',
+        'ops': [
+          {'op': 'replace_text', 'find': 'a', 'replace': 'b'},
+        ],
+      });
+      expect(withReplace.hasSetTextOp, isFalse);
+    });
+  });
+
   group('DocumentEditTools', () {
     test('edit_document tool has stable name', () {
       expect(DocumentEditTools.editDocumentTool.name, 'edit_document');

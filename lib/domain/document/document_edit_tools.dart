@@ -24,6 +24,7 @@ class DocumentEditTools {
         'docx：replace_text；'
         'pptx：set_shape_text（slide 从 1 起，shape 从 0 起）；'
         'txt/md/csv/tsv：replace_text（查找替换）或 set_text（整文件覆写，text 为完整新内容）。'
+        '若附件标注「内容过长，已截断」，禁止 set_text（会丢失未展示部分），只能 replace_text。'
         '不要输出整文件 base64；不要编造未上传的附件。',
     parameters: {
       'type': 'object',

@@ -37,6 +37,9 @@ Tool 名：`edit_document`（见 `lib/domain/document/document_edit_tools.dart`�
 | `output_filename` 长度 | 180（禁止路径分隔符） |
 | `format` | `xlsx` / `docx` / `pptx` / `txt` / `md` / `csv` / `tsv` |
 | 单 op `set_text` 字符数 | 2 097 152（2 MiB） |
+| patch JSON 体积 | 4 MiB（服务端在 `json.loads` 前拒绝） |
+| 文本结果总长（`replace_text` / `set_text` 后） | 2 MiB 字符 |
+| 客户端附件抽文本 | 前 60 000 字；截断时**禁止** `set_text` |
 
 未知 `op`：**整单失败**（不半成功）。
 

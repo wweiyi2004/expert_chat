@@ -45,6 +45,12 @@ class DocumentPatch {
   /// Max characters for a single [SetTextOp] body.
   static const maxSetTextChars = 2 * 1024 * 1024;
 
+  /// Soft client-side mirror of server MAX_PATCH_JSON_BYTES (4 MiB).
+  static const maxPatchJsonBytes = 4 * 1024 * 1024;
+
+  /// True when any op would rewrite the entire text body.
+  bool get hasSetTextOp => ops.any((op) => op is SetTextOp);
+
   /// @Deprecated Keep alias for older call sites / tests.
   static const p0Formats = supportedFormats;
 

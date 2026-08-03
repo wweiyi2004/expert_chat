@@ -67,13 +67,21 @@ class DocumentServiceClient {
     required DocumentPatch patch,
     CancelToken? cancelToken,
   }) async {
-    final body = patch.toJson();
+    final patchJson = jsonEncode(patch.toJson());
+    // Mirror server MAX_PATCH_JSON_BYTES so we fail fast without uploading.
+    if (utf8.encode(patchJson).length > DocumentPatch.maxPatchJsonBytes) {
+      throw DocumentServiceException(
+        '补丁过大（上限 ${DocumentPatch.maxPatchJsonBytes} 字节），'
+        '请减少 set_text 内容或 ops 条数',
+        code: 'patch_invalid',
+      );
+    }
     final form = FormData.fromMap({
       'file': MultipartFile.fromBytes(
         fileBytes,
         filename: filename.trim().isEmpty ? 'input.xlsx' : filename.trim(),
       ),
-      'patch': jsonEncode(body),
+      'patch': patchJson,
       'filename': filename.trim().isEmpty ? 'input.xlsx' : filename.trim(),
     });
     return _postFile(

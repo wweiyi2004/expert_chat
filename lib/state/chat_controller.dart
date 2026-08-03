@@ -464,6 +464,12 @@ class ChatController extends AsyncNotifier<ChatState> {
   }
 
   void newConversation() {
+    // Chat / story / ensemble are separate: only reuse an unused *chat*.
+    final existing = _findUnusedSession(ConversationMode.chat);
+    if (existing != null) {
+      _selectExistingSession(existing);
+      return;
+    }
     final fresh = Conversation();
     _set(
       _s.copyWith(
@@ -473,6 +479,45 @@ class ChatController extends AsyncNotifier<ChatState> {
       ),
     );
     _persistSoon(_persist());
+  }
+
+  /// Prefer [current] when it already matches; otherwise first unused of [mode]
+  /// (unless [currentOnly] is true).
+  ///
+  /// [characterId] limits single-character stories. [requireLocalCast] /
+  /// [forbidLocalCast] distinguish director stories (local cast) from library
+  /// single-character stories.
+  Conversation? _findUnusedSession(
+    ConversationMode mode, {
+    String? characterId,
+    bool? requireLocalCast,
+    bool? forbidLocalCast,
+    bool currentOnly = false,
+  }) {
+    bool matches(Conversation c) {
+      if (c.mode != mode || !c.isUnusedSession) return false;
+      if (characterId != null && c.characterId != characterId) return false;
+      if (requireLocalCast == true && c.localCast.isEmpty) return false;
+      if (forbidLocalCast == true && c.localCast.isNotEmpty) return false;
+      return true;
+    }
+
+    final current = _s.current;
+    if (current != null && matches(current)) return current;
+    if (currentOnly) return null;
+    for (final c in _s.conversations) {
+      if (matches(c)) return c;
+    }
+    return null;
+  }
+
+  void _selectExistingSession(Conversation existing) {
+    if (_s.currentId == existing.id) {
+      // Already focused on this blank session — no-op aside from clearing error.
+      if (_s.error != null) _set(_s.copyWith(error: null));
+      return;
+    }
+    _set(_s.copyWith(currentId: existing.id, error: null));
   }
 
   Future<List<String>> _defaultWorldInfoIds() async {
@@ -489,6 +534,17 @@ class ChatController extends AsyncNotifier<ChatState> {
     CharacterCard card, {
     List<String>? worldInfoIds,
   }) async {
+    // Reuse blank single-character story for the same card (not director cast).
+    final existing = _findUnusedSession(
+      ConversationMode.story,
+      characterId: card.id,
+      forbidLocalCast: true,
+    );
+    if (existing != null) {
+      _selectExistingSession(existing);
+      return;
+    }
+
     final ids = worldInfoIds ?? await _defaultWorldInfoIds();
 
     final messages = <ChatMessage>[];
@@ -549,6 +605,19 @@ class ChatController extends AsyncNotifier<ChatState> {
       return;
     }
 
+    // Only skip when *current* is already an unused director story (avoid
+    // blocking a brand-new setup while an old abandoned director draft sits
+    // elsewhere in the list).
+    final existing = _findUnusedSession(
+      ConversationMode.story,
+      requireLocalCast: true,
+      currentOnly: true,
+    );
+    if (existing != null) {
+      _selectExistingSession(existing);
+      return;
+    }
+
     final ids = worldInfoIds ?? await _defaultWorldInfoIds();
     final premiseText = premise.trim();
     final noteText = authorNote.trim();
@@ -597,6 +666,15 @@ class ChatController extends AsyncNotifier<ChatState> {
   }) async {
     if (cast.length < 2) {
       _set(_s.copyWith(error: '角色大乱斗至少需要 2 名角色。'));
+      return;
+    }
+    // Only when current is already an unused ensemble (same rationale as director).
+    final existing = _findUnusedSession(
+      ConversationMode.ensemble,
+      currentOnly: true,
+    );
+    if (existing != null) {
+      _selectExistingSession(existing);
       return;
     }
     final ids = worldInfoIds ?? await _defaultWorldInfoIds();
@@ -726,12 +804,24 @@ class ChatController extends AsyncNotifier<ChatState> {
                 m.role == MessageRole.assistant &&
                 m.content.trim().isNotEmpty,
           );
+      final beats = convo.outlineBeats;
+      final beatIndex = convo.plotCursor.clamp(
+        0,
+        beats.isEmpty ? 0 : beats.length - 1,
+      );
+      final beatLine = beats.isEmpty
+          ? ''
+          : '\n当前节拍 ${beatIndex + 1}/${beats.length}：${beats[beatIndex]}';
       final directorCue = firstSectionPending
-          ? '（导演：开始第一节）'
-          : '（导演：继续下一节）';
+          ? '（导演：开始第一节）$beatLine\n'
+                '请按轻小说「一场戏」写：对白为主、对白用「」、收束留小钩子；'
+                '直接输出正文，不要复述大纲。'
+          : '（导演：继续下一节）$beatLine\n'
+                '请按轻小说「一场戏」写：对白为主、对白用「」、收束留小钩子；'
+                '直接输出正文，不要复述大纲。';
       final userMsg = ChatMessage(
         role: MessageRole.user,
-        content: convo.localCast.isNotEmpty ? directorCue : '（推进情节）',
+        content: convo.localCast.isNotEmpty ? directorCue : '（推进情节）$beatLine',
         parentId: parentId,
       );
       final assistantMsg = ChatMessage(
@@ -769,7 +859,15 @@ class ChatController extends AsyncNotifier<ChatState> {
   /// User bubbles that mean "advance the outline", including director cues.
   static bool isPlotAdvanceUserContent(String content) {
     final c = content.trim();
-    return c == '（推进情节）' || c == '（导演：继续下一节）' || c == '（导演：开始第一节）';
+    if (c == '（推进情节）' ||
+        c == '（导演：继续下一节）' ||
+        c == '（导演：开始第一节）') {
+      return true;
+    }
+    // Newer cues append the current beat text under the same markers.
+    return c.startsWith('（推进情节）') ||
+        c.startsWith('（导演：继续下一节）') ||
+        c.startsWith('（导演：开始第一节）');
   }
 
   /// One AI line from the next cast member (round-robin).
@@ -3791,6 +3889,8 @@ class ChatController extends AsyncNotifier<ChatState> {
             inputBudgetTokens: report.inputBudgetTokens,
             droppedMessages: previous.droppedMessages + report.droppedMessages,
             truncated: previous.truncated || report.truncated,
+            summaryInjected:
+                previous.summaryInjected || report.summaryInjected,
           );
     _set(
       _s.copyWith(contextReports: {..._s.contextReports, convoId: combined}),

@@ -119,6 +119,26 @@ void main() {
     expect(result.messages.last.content, contains('LATEST QUESTION'));
     expect(result.report.droppedMessages, greaterThan(0));
     expect(result.report.sentTokens, lessThanOrEqualTo(1024));
+    // Rolling summary of dropped turns should be injected.
+    expect(result.report.summaryInjected, isTrue);
+    expect(
+      result.messages.any((m) => m.content.contains('历史摘要')),
+      isTrue,
+    );
+  });
+
+  test('summary is not injected when nothing is dropped', () {
+    final result = manager.manage(
+      const [
+        LlmRequestMessage(role: MessageRole.system, content: 'persona'),
+        LlmRequestMessage(role: MessageRole.user, content: 'hi'),
+        LlmRequestMessage(role: MessageRole.assistant, content: 'hello'),
+      ],
+      const ContextPrefs(),
+    );
+    expect(result.report.droppedMessages, 0);
+    expect(result.report.summaryInjected, isFalse);
+    expect(result.report.managed, isFalse);
   });
 
   test('clips an oversized latest user message from the front', () {
@@ -184,10 +204,15 @@ void main() {
       const ContextPrefs(contextWindowTokens: 4096, reservedOutputTokens: 3072),
     );
 
-    expect(result.messages, hasLength(2));
-    expect(result.messages.first.toolCalls.single.id, 'call-1');
+    // May include a rolling summary system note if older turns were dropped.
     expect(result.messages.last.role, MessageRole.tool);
     expect(result.messages.last.toolCallId, 'call-1');
+    final toolUnitStart = result.messages.indexWhere(
+      (m) => m.toolCalls.isNotEmpty,
+    );
+    expect(toolUnitStart, greaterThanOrEqualTo(0));
+    expect(result.messages[toolUnitStart].toolCalls.single.id, 'call-1');
+    expect(result.messages[toolUnitStart + 1].role, MessageRole.tool);
     expect(result.report.truncated, isTrue);
   });
 

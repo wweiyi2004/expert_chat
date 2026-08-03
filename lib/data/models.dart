@@ -518,6 +518,14 @@ class Conversation {
   bool get isEnsemble => mode == ConversationMode.ensemble;
   bool get isStoryLike => isStory || isEnsemble;
 
+  /// User has sent at least one message (branch-wide, not only active path).
+  bool get hasUserActivity =>
+      messages.any((m) => m.role == MessageRole.user);
+
+  /// Fresh session of this mode with no user turns yet (may still have an
+  /// opener / system-style assistant line, e.g. story firstMes).
+  bool get isUnusedSession => !hasUserActivity;
+
   List<String> get outlineBeats => parseOutlineBeats(outline);
 
   List<String> get castIds {

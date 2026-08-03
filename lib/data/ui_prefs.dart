@@ -101,6 +101,10 @@ enum ContentWidthPref {
 }
 
 /// Curated app color palettes (seed + accent personality).
+///
+/// Sources of inspiration (not 1:1 brand copies):
+/// Material 3 tonal systems, Apple HIG system colors, Nord, GitHub Primer,
+/// Stripe indigo, Solarized (Ethan Schoonover), warm editorial clay.
 enum ColorThemePref {
   inkTeal,
   ocean,
@@ -108,7 +112,13 @@ enum ColorThemePref {
   rose,
   violet,
   amber,
-  slate;
+  slate,
+  nord,
+  primer,
+  stripe,
+  graphite,
+  clay,
+  solar;
 
   String get label => switch (this) {
     ColorThemePref.inkTeal => '墨青',
@@ -118,16 +128,28 @@ enum ColorThemePref {
     ColorThemePref.violet => '暮紫',
     ColorThemePref.amber => '琥珀',
     ColorThemePref.slate => '石板',
+    ColorThemePref.nord => '极光',
+    ColorThemePref.primer => 'Primer',
+    ColorThemePref.stripe => '靛紫',
+    ColorThemePref.graphite => '石墨',
+    ColorThemePref.clay => '陶土',
+    ColorThemePref.solar => '日辉',
   };
 
   String get description => switch (this) {
-    ColorThemePref.inkTeal => '默认 · 冷静编辑台',
-    ColorThemePref.ocean => '清爽偏蓝',
-    ColorThemePref.forest => '沉稳自然',
+    ColorThemePref.inkTeal => '冷静编辑台',
+    ColorThemePref.ocean => '清爽信息蓝',
+    ColorThemePref.forest => '自然阅读绿',
     ColorThemePref.rose => '柔和暖粉',
-    ColorThemePref.violet => '文艺偏紫',
-    ColorThemePref.amber => '暖意工作感',
+    ColorThemePref.violet => '文艺创作紫',
+    ColorThemePref.amber => '暖意专注',
     ColorThemePref.slate => '低饱和中性',
+    ColorThemePref.nord => '北极冷灰蓝',
+    ColorThemePref.primer => '专业工程蓝',
+    ColorThemePref.stripe => '现代靛紫',
+    ColorThemePref.graphite => '系统石墨蓝',
+    ColorThemePref.clay => '人文陶土',
+    ColorThemePref.solar => '护眼日辉',
   };
 
   /// Preview swatch for settings chips (light-mode primary-ish).
@@ -139,6 +161,29 @@ enum ColorThemePref {
     ColorThemePref.violet => 0xFF6B5B95,
     ColorThemePref.amber => 0xFFB7791F,
     ColorThemePref.slate => 0xFF4A5568,
+    ColorThemePref.nord => 0xFF5E81AC,
+    ColorThemePref.primer => 0xFF0969DA,
+    ColorThemePref.stripe => 0xFF635BFF,
+    ColorThemePref.graphite => 0xFF007AFF,
+    ColorThemePref.clay => 0xFFC15F3C,
+    ColorThemePref.solar => 0xFF268BD2,
+  };
+
+  /// Secondary preview (accent) for dual-tone swatches.
+  int get accentPreviewArgb => switch (this) {
+    ColorThemePref.inkTeal => 0xFFC45C26,
+    ColorThemePref.ocean => 0xFF0D9488,
+    ColorThemePref.forest => 0xFFB45309,
+    ColorThemePref.rose => 0xFF7C3AED,
+    ColorThemePref.violet => 0xFFDB2777,
+    ColorThemePref.amber => 0xFF0F766E,
+    ColorThemePref.slate => 0xFF64748B,
+    ColorThemePref.nord => 0xFF88C0D0,
+    ColorThemePref.primer => 0xFF1A7F37,
+    ColorThemePref.stripe => 0xFF0A2540,
+    ColorThemePref.graphite => 0xFF5856D6,
+    ColorThemePref.clay => 0xFF5C4033,
+    ColorThemePref.solar => 0xFFB58900,
   };
 
   String get wire => name;

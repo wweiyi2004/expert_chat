@@ -11,6 +11,7 @@ class ContextWindowReport {
     required this.inputBudgetTokens,
     this.droppedMessages = 0,
     this.truncated = false,
+    this.summaryInjected = false,
   });
 
   final int originalTokens;
@@ -19,9 +20,34 @@ class ContextWindowReport {
   final int droppedMessages;
   final bool truncated;
 
-  bool get managed => droppedMessages > 0 || truncated;
+  /// True when an extractive rolling summary of dropped history was injected.
+  final bool summaryInjected;
+
+  bool get managed =>
+      droppedMessages > 0 || truncated || summaryInjected;
+
   double get fraction =>
       inputBudgetTokens <= 0 ? 0 : sentTokens / inputBudgetTokens;
+
+  /// Short Chinese note for tooltips / accessibility.
+  String get userFacingNote {
+    if (!managed) {
+      return '上下文约 $sentTokens / $inputBudgetTokens tokens';
+    }
+    final parts = <String>[
+      '上下文约 $sentTokens / $inputBudgetTokens tokens',
+    ];
+    if (droppedMessages > 0) {
+      parts.add('省略较早 $droppedMessages 条');
+    }
+    if (summaryInjected) {
+      parts.add('已生成历史摘要');
+    }
+    if (truncated) {
+      parts.add('部分内容已裁剪');
+    }
+    return parts.join(' · ');
+  }
 }
 
 class ContextWindowResult {
@@ -36,11 +62,21 @@ class ContextWindowResult {
 /// Exact tokenizers differ between model families, so requests use a
 /// deliberately conservative estimate. Stored conversations are never changed;
 /// only the transient request list is compacted.
+///
+/// When older turns are dropped, an **extractive rolling summary** is injected
+/// as a system note so the model retains key facts without reloading full
+/// history (chat-app oriented: free, local, no extra LLM call).
 class ContextWindowManager {
   const ContextWindowManager();
 
   static const int _messageOverheadTokens = 6;
   static const int _imageEstimateTokens = 1200;
+
+  /// Cap for the injected history summary (tokens, estimate).
+  static const int maxSummaryTokens = 700;
+
+  /// Soft per-line excerpt length in grapheme clusters.
+  static const int _summaryLineGraphemes = 100;
 
   int estimateTextTokens(String text) {
     var asciiRun = 0;
@@ -115,41 +151,36 @@ class ContextWindowManager {
     final system = messages.take(leadingSystemEnd).toList();
     final conversation = messages.skip(leadingSystemEnd).toList();
     final units = _groupProtocolUnits(conversation);
-    final reversedUnits = units.reversed.toList();
-    final boundedUnitsReversed = <List<LlmRequestMessage>>[];
+
+    // --- Phase 1: history-count bound (newest first) ---
+    final selectedByCount = <int>[]; // indices into [units], newest first
     var boundedMessageCount = 0;
     var hasUserMessage = false;
-    var index = 0;
-    for (; index < reversedUnits.length; index++) {
-      final unit = reversedUnits[index];
-      if (boundedUnitsReversed.isNotEmpty &&
+    var index = units.length - 1;
+    for (; index >= 0; index--) {
+      final unit = units[index];
+      if (selectedByCount.isNotEmpty &&
           boundedMessageCount + unit.length > prefs.maxHistoryMessages) {
         break;
       }
-      boundedUnitsReversed.add(unit);
+      selectedByCount.add(index);
       boundedMessageCount += unit.length;
       hasUserMessage =
           hasUserMessage || unit.any((m) => m.role == MessageRole.user);
     }
-    // In tool follow-up turns the newest units are tool-call protocol, so a
-    // small cap can fill up before reaching the user question currently being
-    // answered. That question must stay in the request even over the cap.
+    // Tool follow-up: ensure a user question stays even if cap filled with tools.
     if (!hasUserMessage) {
-      for (; index < reversedUnits.length; index++) {
-        final unit = reversedUnits[index];
-        if (unit.any((m) => m.role == MessageRole.user)) {
-          boundedUnitsReversed.add(unit);
-          boundedMessageCount += unit.length;
+      for (var j = index; j >= 0; j--) {
+        if (units[j].any((m) => m.role == MessageRole.user)) {
+          selectedByCount.add(j);
+          boundedMessageCount += units[j].length;
           break;
         }
       }
     }
-    final boundedUnits = boundedUnitsReversed.reversed.toList();
-    var dropped = conversation.length - boundedMessageCount;
-    var truncated = false;
 
-    // Keep both the opening instructions and the latest injected context when
-    // system material itself is too large.
+    // --- Phase 2: system packing ---
+    var truncated = false;
     final systemText = system.map((m) => m.content).join('\n\n');
     final maxSystemTokens = (budget * 0.45).floor().clamp(256, budget);
     final managedSystemText = estimateTextTokens(systemText) > maxSystemTokens
@@ -165,37 +196,103 @@ class ContextWindowManager {
             ),
           ];
 
+    // --- Phase 3: token-pack selected units (newest first) ---
     var remaining = budget - estimateMessagesTokens(managedSystem);
-    final selectedUnitsReversed = <List<LlmRequestMessage>>[];
-    for (var i = boundedUnits.length - 1; i >= 0; i--) {
-      final unit = boundedUnits[i];
+    // Reserve a slice for optional summary so we don't fill 100% then fail inject.
+    final summaryReserve = (remaining * 0.12).floor().clamp(0, maxSummaryTokens);
+    var packRemaining = remaining - summaryReserve;
+
+    final keptNewestFirst = <int>[];
+    for (final unitIndex in selectedByCount) {
+      final unit = units[unitIndex];
       final cost = estimateMessagesTokens(unit);
-      if (cost <= remaining) {
-        selectedUnitsReversed.add(unit);
-        remaining -= cost;
+      if (cost <= packRemaining) {
+        keptNewestFirst.add(unitIndex);
+        packRemaining -= cost;
         continue;
       }
-
-      // The newest message is the user's current request. It must remain in the
-      // request even if an enormous attachment consumed its budget; retain its
-      // tail because the actual question is appended after attachment text.
-      if (selectedUnitsReversed.isEmpty &&
-          remaining > _messageOverheadTokens + 32) {
-        final clipped = _clipUnit(unit, remaining);
-        selectedUnitsReversed.add(clipped);
+      // Newest unit must stay even if huge; clip it.
+      if (keptNewestFirst.isEmpty &&
+          packRemaining > _messageOverheadTokens + 32) {
+        keptNewestFirst.add(unitIndex);
         truncated = true;
-        remaining = 0;
-      } else {
-        dropped += boundedUnits
-            .take(i + 1)
-            .fold<int>(0, (sum, older) => sum + older.length);
+        packRemaining = 0;
         break;
+      }
+      break;
+    }
+
+    final keptSet = keptNewestFirst.toSet();
+    final droppedUnits = <List<LlmRequestMessage>>[
+      for (var i = 0; i < units.length; i++)
+        if (!keptSet.contains(i)) units[i],
+    ];
+    var dropped = droppedUnits.fold<int>(0, (n, u) => n + u.length);
+
+    // --- Phase 4: extractive rolling summary of dropped history ---
+    var summaryInjected = false;
+    LlmRequestMessage? summaryMessage;
+    if (droppedUnits.isNotEmpty) {
+      final summaryBudget = (summaryReserve + packRemaining)
+          .clamp(48, maxSummaryTokens);
+      final summaryText = _buildDroppedSummary(droppedUnits, summaryBudget);
+      if (summaryText.isNotEmpty) {
+        summaryMessage = LlmRequestMessage(
+          role: MessageRole.system,
+          content: summaryText,
+        );
+        final summaryCost = estimateMessageTokens(summaryMessage);
+        // If summary still doesn't fit, clip further.
+        if (summaryCost > summaryReserve + packRemaining) {
+          final clipped = _clipStart(
+            summaryText,
+            (summaryReserve + packRemaining - _messageOverheadTokens)
+                .clamp(32, maxSummaryTokens),
+          );
+          summaryMessage = LlmRequestMessage(
+            role: MessageRole.system,
+            content: clipped,
+          );
+        }
+        summaryInjected = true;
+      }
+    }
+
+    // Rebuild kept units oldest→newest; clip newest if needed.
+    final keptOldestFirst = keptNewestFirst.reversed.toList();
+    final packedConversation = <LlmRequestMessage>[];
+    var usedAfterSystem = summaryInjected
+        ? estimateMessageTokens(summaryMessage!)
+        : 0;
+    var room = budget - estimateMessagesTokens(managedSystem) - usedAfterSystem;
+
+    for (var k = 0; k < keptOldestFirst.length; k++) {
+      final unitIndex = keptOldestFirst[k];
+      final unit = units[unitIndex];
+      final isNewest = k == keptOldestFirst.length - 1;
+      final cost = estimateMessagesTokens(unit);
+      if (cost <= room) {
+        packedConversation.addAll(unit);
+        room -= cost;
+        continue;
+      }
+      if (isNewest && room > _messageOverheadTokens + 32) {
+        packedConversation.addAll(_clipUnit(unit, room));
+        truncated = true;
+        room = 0;
+      }
+      // Older units that no longer fit should not happen often (we packed
+      // newest-first); if they do, count as dropped.
+      if (!isNewest) {
+        dropped += unit.length;
+        // Remove from summary? Already summarized if was outside kept set.
       }
     }
 
     final managed = <LlmRequestMessage>[
       ...managedSystem,
-      for (final unit in selectedUnitsReversed.reversed) ...unit,
+      if (summaryMessage != null) summaryMessage,
+      ...packedConversation,
     ];
     final sentTokens = estimateMessagesTokens(managed);
     return ContextWindowResult(
@@ -206,8 +303,57 @@ class ContextWindowManager {
         inputBudgetTokens: budget,
         droppedMessages: dropped,
         truncated: truncated,
+        summaryInjected: summaryInjected,
       ),
     );
+  }
+
+  /// Extractive multi-line summary of dropped protocol units (no LLM call).
+  String _buildDroppedSummary(
+    List<List<LlmRequestMessage>> droppedUnits,
+    int tokenBudget,
+  ) {
+    if (droppedUnits.isEmpty || tokenBudget < 40) return '';
+
+    final lines = <String>[
+      '【历史摘要 · 系统自动生成】',
+      '较早对话因上下文限制未完整发送。以下为摘录要点（非全文，仅供连贯）：',
+    ];
+
+    for (final unit in droppedUnits) {
+      for (final m in unit) {
+        final label = switch (m.role) {
+          MessageRole.user => '用户',
+          MessageRole.assistant => '助手',
+          MessageRole.system => '系统',
+          MessageRole.tool => '工具',
+        };
+        var text = m.content.trim().replaceAll(RegExp(r'\s+'), ' ');
+        if (text.isEmpty && m.toolCalls.isNotEmpty) {
+          final names = [
+            for (final c in m.toolCalls)
+              if ((c.name ?? '').isNotEmpty) c.name!,
+          ];
+          text = names.isEmpty ? '（工具调用）' : '（调用工具：${names.join('、')}）';
+        }
+        if (text.isEmpty) continue;
+        // Skip very long raw tool dumps — keep a short head only.
+        if (m.role == MessageRole.tool && text.characters.length > 80) {
+          text = '${text.characters.take(80)}…';
+        } else if (text.characters.length > _summaryLineGraphemes) {
+          text = '${text.characters.take(_summaryLineGraphemes)}…';
+        }
+        lines.add('- $label：$text');
+      }
+    }
+
+    if (lines.length <= 2) return '';
+
+    var joined = lines.join('\n');
+    if (estimateTextTokens(joined) > tokenBudget) {
+      joined = _clipStart(joined, tokenBudget);
+    }
+    return joined;
   }
 
   List<List<LlmRequestMessage>> _groupProtocolUnits(

@@ -173,8 +173,10 @@ void main() {
       expect(joined, contains('硬性导演说明'));
       expect(joined, contains('沈砚'));
       expect(joined, contains('零号'));
-      expect(joined, contains('不得让导演成为故事角色'));
+      expect(joined, contains('不得让导演入戏'));
       expect(joined, contains('当前必须演绎的节拍'));
+      expect(joined, contains('轻小说场景公式'));
+      expect(joined, contains('对白为主'));
     });
 
     test(

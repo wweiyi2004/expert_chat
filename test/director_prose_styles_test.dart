@@ -49,4 +49,11 @@ void main() {
     final labels = DirectorProseStyle.presets.map((p) => p.label).toSet();
     expect(labels, containsAll(['日本轻小说', '古典章回', '文言文']));
   });
+
+  test('jp_ln constraint encodes light-novel scene rules', () {
+    final style = DirectorProseStyle.byId('jp_ln')!;
+    expect(style.constraint, contains('「」'));
+    expect(style.constraint, contains('对白'));
+    expect(style.constraint, contains('一场戏'));
+  });
 }

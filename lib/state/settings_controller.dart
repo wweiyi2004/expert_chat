@@ -52,6 +52,7 @@ class SettingsState {
     this.documentServiceToken = '',
     this.memoryEnabled = false,
     this.researchModeEnabled = false,
+    this.creationModeEnabled = true,
   });
 
   final List<ProviderProfile> profiles;
@@ -105,6 +106,9 @@ class SettingsState {
 
   /// M7: hidden research mode (SSH / tmux / AI command approval). Default off.
   final bool researchModeEnabled;
+
+  /// Creation hub tab (角色 / 世界书 / 导演故事). Default on; can hide for a cleaner nav.
+  final bool creationModeEnabled;
 
   bool get searchConfigured => searchApiKey.trim().isNotEmpty;
   bool get documentServiceConfigured =>
@@ -182,6 +186,7 @@ class SettingsState {
     String? documentServiceToken,
     bool? memoryEnabled,
     bool? researchModeEnabled,
+    bool? creationModeEnabled,
   }) => SettingsState(
     profiles: profiles ?? this.profiles,
     activeProfileId: activeProfileId ?? this.activeProfileId,
@@ -212,6 +217,7 @@ class SettingsState {
     documentServiceToken: documentServiceToken ?? this.documentServiceToken,
     memoryEnabled: memoryEnabled ?? this.memoryEnabled,
     researchModeEnabled: researchModeEnabled ?? this.researchModeEnabled,
+    creationModeEnabled: creationModeEnabled ?? this.creationModeEnabled,
   );
 
   static const _sentinel = Object();
@@ -241,6 +247,7 @@ const _kDocumentService = 'documentService';
 const _kDocumentServiceTokenSecure = 'document_service_token';
 const _kMemoryEnabled = 'memoryEnabled';
 const _kResearchModeEnabled = 'researchModeEnabled';
+const _kCreationModeEnabled = 'creationModeEnabled';
 
 // Legacy M1 keys (single-config) — read once for migration.
 const _kLegacyBaseUrl = 'baseUrl';
@@ -424,6 +431,8 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       documentServiceToken: documentServiceToken,
       memoryEnabled: prefs.getBool(_kMemoryEnabled) ?? false,
       researchModeEnabled: prefs.getBool(_kResearchModeEnabled) ?? false,
+      // Default on: existing installs keep the 创作 tab unless user hides it.
+      creationModeEnabled: prefs.getBool(_kCreationModeEnabled) ?? true,
     );
   }
 
@@ -438,6 +447,13 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     final next = _current.copyWith(researchModeEnabled: enabled);
     state = AsyncData(next);
     await ref.read(sharedPrefsProvider).setBool(_kResearchModeEnabled, enabled);
+  }
+
+  /// Show/hide the 创作 hub tab. Does not delete characters or drafts.
+  Future<void> setCreationModeEnabled(bool enabled) async {
+    final next = _current.copyWith(creationModeEnabled: enabled);
+    state = AsyncData(next);
+    await ref.read(sharedPrefsProvider).setBool(_kCreationModeEnabled, enabled);
   }
 
   /// A stored theme index from a corrupt/older store may fall outside the
@@ -834,6 +850,7 @@ class SettingsController extends AsyncNotifier<SettingsState> {
           documentServiceToken: _current.documentServiceToken,
           memoryEnabled: _current.memoryEnabled,
           researchModeEnabled: _current.researchModeEnabled,
+          creationModeEnabled: _current.creationModeEnabled,
         ),
       );
       await _writeProfiles(prefs, [fresh]);

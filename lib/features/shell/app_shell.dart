@@ -16,11 +16,11 @@ import '../settings/settings_page.dart';
 import '../story/studio_page.dart';
 import 'shell_tab.dart';
 
-/// Root chrome: 会话 / [终端] / 创作 / 设置.
+/// Root chrome: 会话 / [终端] / [创作] / 设置.
 ///
 /// Phone: bottom [NavigationBar]. Wide: [NavigationRail].
 /// [IndexedStack] preserves scroll position and draft input across switches.
-/// Terminal tab is only present when research mode is enabled.
+/// Terminal / 创作 tabs are only present when their mode flags are enabled.
 class AppShell extends ConsumerStatefulWidget {
   const AppShell({super.key});
 
@@ -79,13 +79,19 @@ class _AppShellState extends ConsumerState<AppShell>
     ShellTab.settings,
   ];
 
-  Widget _pageFor(ShellTab tab, {required bool researchOn}) => switch (tab) {
+  Widget _pageFor(
+    ShellTab tab, {
+    required bool researchOn,
+    required bool creationOn,
+  }) => switch (tab) {
     ShellTab.chat => const ChatPage(),
-    // Only mount the heavy terminal when research is on; other tabs stay put.
+    // Only mount heavy tabs when their mode is on; other stack slots stay put.
     ShellTab.terminal => researchOn
         ? const ResearchTerminalPage()
         : const SizedBox.shrink(),
-    ShellTab.studio => const StudioPage(),
+    ShellTab.studio => creationOn
+        ? const StudioPage()
+        : const SizedBox.shrink(),
     ShellTab.settings => const SettingsPage(asRootTab: true),
   };
 
@@ -93,14 +99,22 @@ class _AppShellState extends ConsumerState<AppShell>
   Widget build(BuildContext context) {
     final settings = ref.watch(settingsControllerProvider).value;
     final researchOn = settings?.researchModeEnabled ?? false;
-    final visible = ShellTab.visible(researchModeEnabled: researchOn);
+    final creationOn = settings?.creationModeEnabled ?? true;
+    final visible = ShellTab.visible(
+      researchModeEnabled: researchOn,
+      creationModeEnabled: creationOn,
+    );
     final selected = ref.watch(shellTabProvider);
     final scheme = Theme.of(context).colorScheme;
 
-    // Keep selection valid when research mode toggles destinations.
+    // Keep selection valid when mode flags hide the current tab.
     ref.listen(settingsControllerProvider, (prev, next) {
-      final on = next.value?.researchModeEnabled ?? false;
-      final tabs = ShellTab.visible(researchModeEnabled: on);
+      final research = next.value?.researchModeEnabled ?? false;
+      final creation = next.value?.creationModeEnabled ?? true;
+      final tabs = ShellTab.visible(
+        researchModeEnabled: research,
+        creationModeEnabled: creation,
+      );
       ref.read(shellTabProvider.notifier).ensureVisible(tabs);
     });
 
@@ -127,7 +141,11 @@ class _AppShellState extends ConsumerState<AppShell>
         for (final tab in _stackOrder)
           KeyedSubtree(
             key: ValueKey(tab),
-            child: _pageFor(tab, researchOn: researchOn),
+            child: _pageFor(
+              tab,
+              researchOn: researchOn,
+              creationOn: creationOn,
+            ),
           ),
       ],
     );

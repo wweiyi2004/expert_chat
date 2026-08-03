@@ -1006,6 +1006,35 @@ void main() {
       ]);
     });
 
+    test('hides studio unless creation mode on', () {
+      expect(
+        ShellTab.visible(
+          researchModeEnabled: false,
+          creationModeEnabled: false,
+        ),
+        [ShellTab.chat, ShellTab.settings],
+      );
+      expect(
+        ShellTab.visible(
+          researchModeEnabled: true,
+          creationModeEnabled: false,
+        ),
+        [ShellTab.chat, ShellTab.terminal, ShellTab.settings],
+      );
+      expect(
+        ShellTab.visible(
+          researchModeEnabled: true,
+          creationModeEnabled: true,
+        ),
+        [
+          ShellTab.chat,
+          ShellTab.terminal,
+          ShellTab.studio,
+          ShellTab.settings,
+        ],
+      );
+    });
+
     test('ensureVisible falls back from terminal to settings', () {
       final container = ProviderContainer();
       addTearDown(container.dispose);
@@ -1015,6 +1044,48 @@ void main() {
           .read(shellTabProvider.notifier)
           .ensureVisible(ShellTab.visible(researchModeEnabled: false));
       expect(container.read(shellTabProvider), ShellTab.settings);
+    });
+
+    test('ensureVisible falls back from studio when creation off', () {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      container.read(shellTabProvider.notifier).set(ShellTab.studio);
+      container.read(shellTabProvider.notifier).ensureVisible(
+        ShellTab.visible(
+          researchModeEnabled: false,
+          creationModeEnabled: false,
+        ),
+      );
+      expect(container.read(shellTabProvider), ShellTab.settings);
+    });
+  });
+
+  group('settings creationMode default', () {
+    test('defaults true and persists toggle', () async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final container = _baseContainer(prefs: prefs);
+      addTearDown(container.dispose);
+
+      final state = await container.read(settingsControllerProvider.future);
+      expect(state.creationModeEnabled, isTrue);
+
+      await container
+          .read(settingsControllerProvider.notifier)
+          .setCreationModeEnabled(false);
+      expect(
+        container.read(settingsControllerProvider).value!.creationModeEnabled,
+        isFalse,
+      );
+      expect(prefs.getBool('creationModeEnabled'), isFalse);
+
+      await container
+          .read(settingsControllerProvider.notifier)
+          .setCreationModeEnabled(true);
+      expect(
+        container.read(settingsControllerProvider).value!.creationModeEnabled,
+        isTrue,
+      );
     });
   });
 

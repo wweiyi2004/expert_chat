@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 /// Semantic shell destinations. Order in [ShellTab.visible] depends on
-/// whether research mode is enabled — never hard-code 0/1/2/3 elsewhere.
+/// research / creation mode flags — never hard-code 0/1/2/3 elsewhere.
 enum ShellTab {
   chat,
   terminal,
@@ -30,16 +30,18 @@ enum ShellTab {
     ShellTab.settings => Icons.settings,
   };
 
-  /// Visible tabs for the given research-mode flag.
-  static List<ShellTab> visible({required bool researchModeEnabled}) =>
-      researchModeEnabled
-      ? const [
-          ShellTab.chat,
-          ShellTab.terminal,
-          ShellTab.studio,
-          ShellTab.settings,
-        ]
-      : const [ShellTab.chat, ShellTab.studio, ShellTab.settings];
+  /// Visible tabs for the current mode flags.
+  ///
+  /// Order is always: 会话 → [终端] → [创作] → 设置.
+  static List<ShellTab> visible({
+    required bool researchModeEnabled,
+    bool creationModeEnabled = true,
+  }) => [
+    ShellTab.chat,
+    if (researchModeEnabled) ShellTab.terminal,
+    if (creationModeEnabled) ShellTab.studio,
+    ShellTab.settings,
+  ];
 }
 
 /// Currently selected shell tab (semantic, not a raw index).

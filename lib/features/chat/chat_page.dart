@@ -2259,7 +2259,7 @@ class _ComposerState extends State<_Composer> {
               ? '描述如何修改参考图（图生图）…'
               : '描述要生成的图片；可点 + 上传参考图…')
         : widget.directorMode
-        ? '输入导演指令，或点击“继续下一节”…'
+        ? '发导演指令，或点「写下一节」（日轻·一场戏）…'
         : widget.storyLike
         ? '续写反应，或输入旁白…'
         : '写下你的想法…';
@@ -2865,23 +2865,36 @@ class _ContextUsageChip extends StatelessWidget {
     final budget = report?.inputBudgetTokens ?? inputBudget;
     final fraction = budget <= 0 ? 0.0 : (current / budget).clamp(0.0, 1.0);
     final managed = report?.managed ?? false;
+    final pct = (fraction * 100).round();
     final color = fraction >= 0.9
         ? scheme.error
         : fraction >= 0.7
         ? scheme.tertiary
         : scheme.primary;
+
     final detail = report == null
-        ? '上下文预算 ${_compactTokens(budget)}'
-        : '上下文约 ${_compactTokens(current)} / ${_compactTokens(budget)}'
-              '${managed ? ' · 已自动压缩' : ''}';
-    final label = report == null
-        ? _compactTokens(budget)
-        : '${_compactTokens(current)} / ${_compactTokens(budget)}'
-              '${managed ? ' · 已压缩' : ''}';
+        ? '上下文预算 ${_compactTokens(budget)}（发送后显示本轮用量）'
+        : report!.userFacingNote;
+
+    // Compact label for the app bar.
+    String label;
+    if (report == null) {
+      label = _compactTokens(budget);
+    } else if (managed) {
+      final bits = <String>[
+        '$pct%',
+        if (report!.droppedMessages > 0) '−${report!.droppedMessages}',
+        if (report!.summaryInjected) '摘要',
+      ];
+      label = bits.join(' · ');
+    } else {
+      label = '$pct%';
+    }
+
     return Semantics(
       key: const ValueKey('chat-context-usage'),
       label: detail,
-      value: '${(fraction * 100).round()}%',
+      value: '$pct%',
       excludeSemantics: true,
       child: Tooltip(
         message: detail,
@@ -2893,6 +2906,9 @@ class _ContextUsageChip extends StatelessWidget {
                 ? color.withValues(alpha: 0.12)
                 : scheme.surfaceContainerHighest,
             borderRadius: BorderRadius.circular(999),
+            border: managed
+                ? Border.all(color: color.withValues(alpha: 0.28))
+                : null,
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -2901,7 +2917,7 @@ class _ContextUsageChip extends StatelessWidget {
                 dimension: 16,
                 child: CircularProgressIndicator(
                   semanticsLabel: detail,
-                  semanticsValue: '${(fraction * 100).round()}%',
+                  semanticsValue: '$pct%',
                   value: fraction,
                   strokeWidth: 2,
                   color: color,
@@ -3873,7 +3889,7 @@ class _StorySessionBar extends StatelessWidget {
               icon: const Icon(Icons.chevron_left, size: 22),
             ),
             _SessionMiniButton(
-              label: conversation.localCast.isNotEmpty ? '继续下一节' : '推进情节',
+              label: conversation.localCast.isNotEmpty ? '写下一节' : '推进情节',
               filled: true,
               color: accent,
               onPressed: onAdvance,

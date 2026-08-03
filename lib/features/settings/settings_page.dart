@@ -574,29 +574,118 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                           ],
                           if (_category == _SettingsCategory.appearance) ...[
                             const _SectionTitle('外观'),
+                            Text(
+                              '明暗模式',
+                              style: Theme.of(context).textTheme.labelLarge
+                                  ?.copyWith(
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.onSurfaceVariant,
+                                  ),
+                            ),
+                            const SizedBox(height: 8),
                             SegmentedButton<ThemeMode>(
                               segments: const [
                                 ButtonSegment(
                                   value: ThemeMode.system,
                                   label: Text('跟随'),
-                                  icon: Icon(Icons.brightness_auto),
+                                  icon: Icon(Icons.brightness_auto, size: 18),
                                 ),
                                 ButtonSegment(
                                   value: ThemeMode.light,
                                   label: Text('浅色'),
-                                  icon: Icon(Icons.light_mode),
+                                  icon: Icon(Icons.light_mode, size: 18),
                                 ),
                                 ButtonSegment(
                                   value: ThemeMode.dark,
                                   label: Text('深色'),
-                                  icon: Icon(Icons.dark_mode),
+                                  icon: Icon(Icons.dark_mode, size: 18),
                                 ),
                               ],
                               selected: {s.themeMode},
                               onSelectionChanged: (set) =>
                                   controller.apply(themeMode: set.first),
                             ),
-                            const SizedBox(height: 16),
+                            const SizedBox(height: 22),
+                            Text(
+                              '配色方案',
+                              style: Theme.of(context).textTheme.labelLarge
+                                  ?.copyWith(
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.onSurfaceVariant,
+                                  ),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              '点选即时生效 · 已选「${s.ui.colorTheme.label}」',
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                            const SizedBox(height: 12),
+                            _ColorThemeLivePreview(
+                              theme: s.ui.colorTheme,
+                              themeMode: s.themeMode,
+                            ),
+                            const SizedBox(height: 14),
+                            _ColorThemePicker(
+                              selected: s.ui.colorTheme,
+                              onSelected: (theme) => controller.setUiPrefs(
+                                s.ui.copyWith(colorTheme: theme),
+                              ),
+                            ),
+                            const SizedBox(height: 22),
+                            _PrefRow(
+                              label: '圆角风格',
+                              child: SegmentedButton<CornerStylePref>(
+                                segments: [
+                                  for (final v in CornerStylePref.values)
+                                    ButtonSegment(
+                                      value: v,
+                                      label: Text(v.label),
+                                    ),
+                                ],
+                                selected: {s.ui.cornerStyle},
+                                onSelectionChanged: (set) =>
+                                    controller.setUiPrefs(
+                                      s.ui.copyWith(cornerStyle: set.first),
+                                    ),
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            _PrefRow(
+                              label: '聊天背景',
+                              child: SegmentedButton<ChatSurfacePref>(
+                                segments: [
+                                  for (final v in ChatSurfacePref.values)
+                                    ButtonSegment(
+                                      value: v,
+                                      label: Text(v.label),
+                                      tooltip: v.description,
+                                    ),
+                                ],
+                                selected: {s.ui.chatSurface},
+                                onSelectionChanged: (set) =>
+                                    controller.setUiPrefs(
+                                      s.ui.copyWith(chatSurface: set.first),
+                                    ),
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              s.ui.chatSurface.description,
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                            const SizedBox(height: 22),
+                            Text(
+                              '阅读与布局',
+                              style: Theme.of(context).textTheme.labelLarge
+                                  ?.copyWith(
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.onSurfaceVariant,
+                                  ),
+                            ),
+                            const SizedBox(height: 12),
                             _PrefRow(
                               label: '文字大小',
                               child: SegmentedButton<TextScalePref>(
@@ -977,6 +1066,14 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                             ],
                             const SizedBox(height: 32),
                             const _SectionTitle('实验功能'),
+                            _CreationModeCard(
+                              enabled: s.creationModeEnabled,
+                              onChanged: _setCreationModeEnabled,
+                              onOpenStudio: s.creationModeEnabled
+                                  ? () => openShellTab(ref, ShellTab.studio)
+                                  : null,
+                            ),
+                            const SizedBox(height: 16),
                             _ResearchModeCard(
                               enabled: s.researchModeEnabled,
                               onChanged: (v, origin) => _setResearchModeEnabled(
@@ -1091,6 +1188,18 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         context,
       ).showSnackBar(const SnackBar(content: Text('删除服务商失败，请重试。')));
     }
+  }
+
+  Future<void> _setCreationModeEnabled(bool enabled) async {
+    final controller = ref.read(settingsControllerProvider.notifier);
+    if (enabled) {
+      await controller.setCreationModeEnabled(true);
+      return;
+    }
+    if (ref.read(shellTabProvider) == ShellTab.studio) {
+      ref.read(shellTabProvider.notifier).set(ShellTab.settings);
+    }
+    await controller.setCreationModeEnabled(false);
   }
 
   Future<void> _setResearchModeEnabled(
@@ -1335,6 +1444,8 @@ class _ContextSettingsCard extends StatelessWidget {
             ),
             Text(
               '当前输入预算约为 ${_formatTokens(prefs.inputBudgetTokens)}。'
+              '开启后：优先保留最近对话；装不下时会自动省略较早消息并生成简短历史摘要，'
+              '顶栏可查看用量与是否已压缩。'
               'Token 为跨模型保守估算，实际计费以服务商返回值为准。',
               style: Theme.of(
                 context,
@@ -2576,6 +2687,423 @@ class _ProfileEditPageState extends State<_ProfileEditPage> {
   }
 }
 
+/// Mini chat mock using the selected palette (independent of applied ThemeData
+/// timing so the card always previews the chosen seed/accent).
+class _ColorThemeLivePreview extends StatelessWidget {
+  const _ColorThemeLivePreview({
+    required this.theme,
+    required this.themeMode,
+  });
+
+  final ColorThemePref theme;
+  final ThemeMode themeMode;
+
+  bool _preferDark(BuildContext context) {
+    return switch (themeMode) {
+      ThemeMode.dark => true,
+      ThemeMode.light => false,
+      ThemeMode.system =>
+        MediaQuery.platformBrightnessOf(context) == Brightness.dark,
+    };
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final seed = Color(theme.previewArgb);
+    final accent = Color(theme.accentPreviewArgb);
+    final dark = _preferDark(context);
+    final surface = dark
+        ? Color.lerp(const Color(0xFF121418), seed, 0.18)!
+        : Color.lerp(const Color(0xFFF7F5F1), seed, 0.08)!;
+    final panel = dark
+        ? Color.lerp(surface, Colors.white, 0.06)!
+        : Color.lerp(surface, Colors.white, 0.55)!;
+    final ink = dark ? const Color(0xFFE8EEF5) : const Color(0xFF1C2430);
+    final muted = ink.withValues(alpha: 0.55);
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOutCubic,
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+      decoration: BoxDecoration(
+        color: surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: seed.withValues(alpha: dark ? 0.35 : 0.22),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: seed.withValues(alpha: 0.12),
+            blurRadius: 18,
+            offset: const Offset(0, 6),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 10,
+                height: 10,
+                decoration: BoxDecoration(
+                  color: seed,
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Container(
+                width: 10,
+                height: 10,
+                decoration: BoxDecoration(
+                  color: accent,
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  '预览 · ${theme.label}',
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w700,
+                    color: ink,
+                  ),
+                ),
+              ),
+              Text(
+                dark ? '深色' : '浅色',
+                style: TextStyle(fontSize: 11, color: muted),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Container(
+              constraints: const BoxConstraints(maxWidth: 260),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+              decoration: BoxDecoration(
+                color: panel,
+                borderRadius: const BorderRadius.only(
+                  topLeft: Radius.circular(6),
+                  topRight: Radius.circular(14),
+                  bottomLeft: Radius.circular(14),
+                  bottomRight: Radius.circular(14),
+                ),
+                border: Border.all(color: seed.withValues(alpha: 0.12)),
+              ),
+              child: Text(
+                '你好，我是助手。这是「${theme.label}」配色下的气泡样式。',
+                style: TextStyle(fontSize: 12.5, height: 1.4, color: ink),
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerRight,
+            child: Container(
+              constraints: const BoxConstraints(maxWidth: 200),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+              decoration: BoxDecoration(
+                color: seed,
+                borderRadius: const BorderRadius.only(
+                  topLeft: Radius.circular(14),
+                  topRight: Radius.circular(14),
+                  bottomLeft: Radius.circular(14),
+                  bottomRight: Radius.circular(6),
+                ),
+              ),
+              child: const Text(
+                '看起来不错，就用这套。',
+                style: TextStyle(
+                  fontSize: 12.5,
+                  height: 1.4,
+                  color: Colors.white,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              _PreviewChip(color: seed, label: '主色'),
+              const SizedBox(width: 8),
+              _PreviewChip(color: accent, label: '强调'),
+              const Spacer(),
+              Text(
+                theme.description,
+                style: TextStyle(fontSize: 11, color: muted),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PreviewChip extends StatelessWidget {
+  const _PreviewChip({required this.color, required this.label});
+
+  final Color color;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withValues(alpha: 0.28)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 5),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: color,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Visual grid of curated color themes.
+class _ColorThemePicker extends StatelessWidget {
+  const _ColorThemePicker({
+    required this.selected,
+    required this.onSelected,
+  });
+
+  final ColorThemePref selected;
+  final ValueChanged<ColorThemePref> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final width = constraints.maxWidth;
+        final cross = width >= 900
+            ? 5
+            : width >= 680
+            ? 4
+            : width >= 420
+            ? 3
+            : 2;
+        return GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          itemCount: ColorThemePref.values.length,
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: cross,
+            mainAxisSpacing: 10,
+            crossAxisSpacing: 10,
+            childAspectRatio: 0.92,
+          ),
+          itemBuilder: (context, index) {
+            final theme = ColorThemePref.values[index];
+            final isOn = theme == selected;
+            final seed = Color(theme.previewArgb);
+            final accent = Color(theme.accentPreviewArgb);
+            return Material(
+              color: Colors.transparent,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(16),
+                onTap: () => onSelected(theme),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  curve: Curves.easeOutCubic,
+                  decoration: BoxDecoration(
+                    color: scheme.surfaceContainer,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(
+                      color: isOn
+                          ? seed
+                          : scheme.outlineVariant.withValues(alpha: 0.85),
+                      width: isOn ? 2 : 1,
+                    ),
+                    boxShadow: isOn
+                        ? [
+                            BoxShadow(
+                              color: seed.withValues(alpha: 0.22),
+                              blurRadius: 14,
+                              offset: const Offset(0, 4),
+                            ),
+                          ]
+                        : null,
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Expanded(
+                        flex: 5,
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            DecoratedBox(
+                              decoration: BoxDecoration(
+                                gradient: LinearGradient(
+                                  begin: Alignment.topLeft,
+                                  end: Alignment.bottomRight,
+                                  colors: [
+                                    seed,
+                                    Color.lerp(seed, accent, 0.55)!,
+                                    accent,
+                                  ],
+                                  stops: const [0, 0.55, 1],
+                                ),
+                              ),
+                            ),
+                            // Soft paper wash so labels stay legible on neon seeds.
+                            Align(
+                              alignment: Alignment.bottomCenter,
+                              child: Container(
+                                height: 28,
+                                decoration: BoxDecoration(
+                                  gradient: LinearGradient(
+                                    begin: Alignment.topCenter,
+                                    end: Alignment.bottomCenter,
+                                    colors: [
+                                      Colors.black.withValues(alpha: 0),
+                                      Colors.black.withValues(alpha: 0.18),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                            if (isOn)
+                              const Positioned(
+                                top: 8,
+                                right: 8,
+                                child: _SelectedBadge(),
+                              ),
+                          ],
+                        ),
+                      ),
+                      Expanded(
+                        flex: 4,
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                theme.label,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: Theme.of(context).textTheme.labelLarge
+                                    ?.copyWith(
+                                      fontWeight: FontWeight.w800,
+                                      color: isOn
+                                          ? seed
+                                          : scheme.onSurface,
+                                    ),
+                              ),
+                              const SizedBox(height: 2),
+                              Expanded(
+                                child: Text(
+                                  theme.description,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: Theme.of(context).textTheme.labelSmall
+                                      ?.copyWith(
+                                        color: scheme.onSurfaceVariant,
+                                        height: 1.2,
+                                      ),
+                                ),
+                              ),
+                              Row(
+                                children: [
+                                  _Dot(color: seed),
+                                  const SizedBox(width: 4),
+                                  _Dot(color: accent),
+                                  const Spacer(),
+                                  if (theme == ColorThemePref.inkTeal)
+                                    Text(
+                                      '默认',
+                                      style: TextStyle(
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w700,
+                                        color: scheme.onSurfaceVariant,
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+}
+
+class _SelectedBadge extends StatelessWidget {
+  const _SelectedBadge();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 22,
+      height: 22,
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.95),
+        shape: BoxShape.circle,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.18),
+            blurRadius: 6,
+            offset: const Offset(0, 1),
+          ),
+        ],
+      ),
+      child: const Icon(Icons.check_rounded, size: 14, color: Color(0xFF1C2430)),
+    );
+  }
+}
+
+class _Dot extends StatelessWidget {
+  const _Dot({required this.color});
+
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 9,
+      height: 9,
+      decoration: BoxDecoration(
+        color: color,
+        shape: BoxShape.circle,
+        border: Border.all(color: Colors.white.withValues(alpha: 0.7), width: 0.8),
+      ),
+    );
+  }
+}
+
 class _PrefRow extends StatelessWidget {
   const _PrefRow({required this.label, required this.child});
 
@@ -2723,6 +3251,90 @@ class _MemorySettingsCard extends ConsumerWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Creation hub toggle under 能力 → 实验功能 (mirrors research mode hide/show).
+class _CreationModeCard extends StatelessWidget {
+  const _CreationModeCard({
+    required this.enabled,
+    required this.onChanged,
+    this.onOpenStudio,
+  });
+
+  final bool enabled;
+  final ValueChanged<bool> onChanged;
+  final VoidCallback? onOpenStudio;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: scheme.primaryContainer,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Icon(
+                    Icons.menu_book_rounded,
+                    color: scheme.onPrimaryContainer,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '创作模式',
+                        style: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        '启用底部「创作」入口：导演故事、角色库、世界书。',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+                Switch.adaptive(
+                  value: enabled,
+                  onChanged: onChanged,
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          '关闭后导航更干净；角色与草稿仍保留。聊天里仍可直接开导演故事。',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        if (enabled && onOpenStudio != null) ...[
+          const SizedBox(height: 12),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: OutlinedButton.icon(
+              onPressed: onOpenStudio,
+              icon: const Icon(Icons.menu_book_outlined, size: 18),
+              label: const Text('进入创作中心'),
+            ),
+          ),
+        ],
+      ],
     );
   }
 }

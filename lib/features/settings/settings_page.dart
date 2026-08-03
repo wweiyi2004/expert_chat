@@ -847,8 +847,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                             Text(
                               '可选。在 Linux 上部署文档服务后，可对上传的 '
                               '.xlsx / .docx / .pptx / .txt / .md / .csv / .tsv '
-                              '按补丁改写并回传。'
-                              '聊天输入区会出现「改文档」按钮（强制执行）。'
+                              '按补丁改写、跨格式转换（如 txt→docx、csv→xlsx）并回传。'
+                              '聊天输入区会出现「改文档」按钮（强制改内容）。'
                               '未配置时附件仍仅本地抽文本。',
                               style: Theme.of(context).textTheme.bodySmall,
                             ),

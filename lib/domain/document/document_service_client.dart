@@ -67,15 +67,6 @@ class DocumentServiceClient {
     required DocumentPatch patch,
     CancelToken? cancelToken,
   }) async {
-    if (!config.isConfiguredWith(apiToken)) {
-      throw const DocumentServiceException(
-        '文档服务未完整配置（需启用、Base URL 与 Token）',
-      );
-    }
-    if (fileBytes.isEmpty) {
-      throw const DocumentServiceException('文件为空', code: 'patch_invalid');
-    }
-    // Client-side validate again before upload.
     final body = patch.toJson();
     final form = FormData.fromMap({
       'file': MultipartFile.fromBytes(
@@ -85,10 +76,74 @@ class DocumentServiceClient {
       'patch': jsonEncode(body),
       'filename': filename.trim().isEmpty ? 'input.xlsx' : filename.trim(),
     });
+    return _postFile(
+      config: config,
+      apiToken: apiToken,
+      fileBytes: fileBytes,
+      path: '/v1/documents/edit',
+      form: form,
+      fallbackName: patch.outputFilename ?? _defaultEditedName(filename),
+      errorVerb: '编辑',
+      cancelToken: cancelToken,
+    );
+  }
 
+  Future<DocumentEditResult> convert({
+    required DocumentServiceConfig config,
+    required String apiToken,
+    required Uint8List fileBytes,
+    required String filename,
+    required String targetFormat,
+    String? outputFilename,
+    CancelToken? cancelToken,
+  }) async {
+    final tgt = targetFormat.trim().toLowerCase().replaceFirst(RegExp(r'^\.'), '');
+    final form = FormData.fromMap({
+      'file': MultipartFile.fromBytes(
+        fileBytes,
+        filename: filename.trim().isEmpty ? 'input.bin' : filename.trim(),
+      ),
+      'target_format': tgt,
+      'filename': filename.trim().isEmpty ? 'input.bin' : filename.trim(),
+      if (outputFilename != null && outputFilename.trim().isNotEmpty)
+        'output_filename': outputFilename.trim(),
+    });
+    return _postFile(
+      config: config,
+      apiToken: apiToken,
+      fileBytes: fileBytes,
+      path: '/v1/documents/convert',
+      form: form,
+      fallbackName:
+          outputFilename?.trim().isNotEmpty == true
+          ? outputFilename!.trim()
+          : _defaultConvertedName(filename, tgt),
+      errorVerb: '转换',
+      cancelToken: cancelToken,
+    );
+  }
+
+  Future<DocumentEditResult> _postFile({
+    required DocumentServiceConfig config,
+    required String apiToken,
+    required Uint8List fileBytes,
+    required String path,
+    required FormData form,
+    required String fallbackName,
+    required String errorVerb,
+    CancelToken? cancelToken,
+  }) async {
+    if (!config.isConfiguredWith(apiToken)) {
+      throw const DocumentServiceException(
+        '文档服务未完整配置（需启用、Base URL 与 Token）',
+      );
+    }
+    if (fileBytes.isEmpty) {
+      throw const DocumentServiceException('文件为空', code: 'patch_invalid');
+    }
     try {
       final r = await _dio.post<List<int>>(
-        '${config.normalizedBaseUrl}/v1/documents/edit',
+        '${config.normalizedBaseUrl}$path',
         data: form,
         options: Options(
           headers: {
@@ -112,7 +167,7 @@ class DocumentServiceClient {
       }
       if (status >= 400) {
         throw DocumentServiceException(
-          _messageFromErrorBody(r.data) ?? '文档编辑失败（$status）',
+          _messageFromErrorBody(r.data) ?? '文档$errorVerb失败（$status）',
           code: _codeFromErrorBody(r.data) ?? 'internal',
         );
       }
@@ -123,14 +178,13 @@ class DocumentServiceClient {
       }
       final outName =
           _filenameFromDisposition(r.headers.value('content-disposition')) ??
-          patch.outputFilename ??
-          _defaultEditedName(filename);
+          fallbackName;
       return DocumentEditResult(
         bytes: Uint8List.fromList(bytes),
         filename: outName,
         contentType:
             r.headers.value(Headers.contentTypeHeader) ??
-            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'application/octet-stream',
       );
     } on DioException catch (e) {
       if (CancelToken.isCancel(e)) rethrow;
@@ -147,6 +201,14 @@ class DocumentServiceClient {
       return '${stem}_edited$ext';
     }
     return '${name}_edited';
+  }
+
+  static String _defaultConvertedName(String raw, String targetFormat) {
+    final name = raw.trim().isEmpty ? 'file' : raw.trim();
+    final dot = name.lastIndexOf('.');
+    final stem = (dot > 0) ? name.substring(0, dot) : name;
+    final ext = targetFormat.startsWith('.') ? targetFormat : '.$targetFormat';
+    return '$stem$ext';
   }
 
   static String? _filenameFromDisposition(String? raw) {

@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import '../llm/llm_provider.dart';
+import 'document_convert.dart';
 import 'document_patch.dart';
 
 /// LLM tools for document edit-and-return (Linux document service).
@@ -8,6 +9,7 @@ class DocumentEditTools {
   DocumentEditTools._();
 
   static const editDocumentToolName = 'edit_document';
+  static const convertDocumentToolName = 'convert_document';
   static const inspectDocumentToolName = 'inspect_document';
 
   static const editDocumentTool = ToolSpec(
@@ -91,6 +93,36 @@ class DocumentEditTools {
     },
   );
 
+  static final convertDocumentTool = ToolSpec(
+    name: convertDocumentToolName,
+    description:
+        '将用户本轮上传的可编辑文件转换为另一种格式，由客户端提交到文档服务并回传下载。'
+        '在用户要求「转成 / 导出为 / 转换格式」时调用（例如 txt→docx、csv→xlsx、docx→md）。'
+        '不要用 edit_document 做跨格式转换。'
+        '支持矩阵：${DocumentConvert.matrixSummary()}。'
+        '不要输出整文件 base64；不要编造未上传的附件。',
+    parameters: {
+      'type': 'object',
+      'properties': {
+        'attachment_name': {
+          'type': 'string',
+          'description':
+              '源附件文件名（含扩展名）。本轮仅一个可编辑文件时可省略。',
+        },
+        'target_format': {
+          'type': 'string',
+          'enum': ['xlsx', 'docx', 'pptx', 'txt', 'md', 'csv', 'tsv'],
+          'description': '目标格式（不含点号）',
+        },
+        'output_filename': {
+          'type': 'string',
+          'description': '可选下载文件名（禁止路径分隔符）',
+        },
+      },
+      'required': ['target_format'],
+    },
+  );
+
   static const inspectDocumentTool = ToolSpec(
     name: inspectDocumentToolName,
     description: '查看本轮上传的可编辑附件结构提示，便于编写 edit_document 补丁。',
@@ -102,7 +134,11 @@ class DocumentEditTools {
     },
   );
 
-  static const all = <ToolSpec>[editDocumentTool, inspectDocumentTool];
+  static final all = <ToolSpec>[
+    editDocumentTool,
+    convertDocumentTool,
+    inspectDocumentTool,
+  ];
 
   static EditDocumentArgs parseEditDocumentArgs(String argumentsJson) {
     late final Object? decoded;
@@ -164,6 +200,71 @@ class DocumentEditTools {
       patch: patch,
     );
   }
+
+  static ConvertDocumentArgs parseConvertDocumentArgs(String argumentsJson) {
+    late final Object? decoded;
+    try {
+      final trimmed = argumentsJson.trim();
+      decoded = trimmed.isEmpty ? <String, dynamic>{} : jsonDecode(trimmed);
+    } on FormatException catch (e) {
+      throw DocumentPatchException(
+        'convert_document 参数不是合法 JSON：${e.message}',
+        code: 'patch_invalid',
+      );
+    }
+    if (decoded is! Map) {
+      throw const DocumentPatchException(
+        'convert_document 参数必须是对象',
+        code: 'patch_invalid',
+      );
+    }
+    final map = Map<String, dynamic>.from(decoded);
+    final attachmentName = map['attachment_name'] ?? map['attachmentName'];
+    final targetRaw = map['target_format'] ?? map['targetFormat'] ?? map['format'];
+    if (targetRaw is! String || targetRaw.trim().isEmpty) {
+      throw const DocumentPatchException(
+        '缺少 target_format',
+        code: 'patch_invalid',
+      );
+    }
+    var target = targetRaw.trim().toLowerCase();
+    if (target.startsWith('.')) target = target.substring(1);
+    if (!DocumentConvert.supportedFormats.contains(target)) {
+      throw DocumentPatchException(
+        '不支持的 target_format="$target"',
+        code: 'unsupported_format',
+      );
+    }
+    String? outputFilename;
+    final outRaw = map['output_filename'] ?? map['outputFilename'];
+    if (outRaw is String && outRaw.trim().isNotEmpty) {
+      final name = outRaw.trim();
+      if (name.contains('/') ||
+          name.contains('\\') ||
+          name.contains('..') ||
+          name.contains('\x00')) {
+        throw const DocumentPatchException(
+          'output_filename 含非法路径字符',
+          code: 'patch_invalid',
+        );
+      }
+      if (name.length > DocumentPatch.maxOutputFilenameLength) {
+        throw DocumentPatchException(
+          'output_filename 过长（>${DocumentPatch.maxOutputFilenameLength}）',
+          code: 'patch_invalid',
+        );
+      }
+      outputFilename = name;
+    }
+    return ConvertDocumentArgs(
+      attachmentName:
+          attachmentName is String && attachmentName.trim().isNotEmpty
+          ? attachmentName.trim()
+          : null,
+      targetFormat: target,
+      outputFilename: outputFilename,
+    );
+  }
 }
 
 class EditDocumentArgs {
@@ -171,4 +272,16 @@ class EditDocumentArgs {
 
   final String? attachmentName;
   final DocumentPatch patch;
+}
+
+class ConvertDocumentArgs {
+  const ConvertDocumentArgs({
+    required this.targetFormat,
+    this.attachmentName,
+    this.outputFilename,
+  });
+
+  final String? attachmentName;
+  final String targetFormat;
+  final String? outputFilename;
 }

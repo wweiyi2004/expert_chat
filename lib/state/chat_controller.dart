@@ -18,6 +18,7 @@ import '../domain/media/image_prompt_safety.dart';
 import '../domain/notify/generation_notify.dart';
 import '../domain/story/story_length_budget.dart';
 import '../domain/story/story_prompt_assembler.dart';
+import '../domain/document/document_convert.dart';
 import '../domain/document/document_edit_tools.dart';
 import '../domain/document/document_patch.dart';
 import '../domain/document/document_service_client.dart';
@@ -2008,6 +2009,8 @@ class ChatController extends AsyncNotifier<ChatState> {
       if (useWebSearchTool && !forceDocTool) ToolEngine.webSearchTool,
       if (useFetchUrlTool && !forceDocTool) ToolEngine.fetchUrlTool,
       if (useDocumentEditTool) DocumentEditTools.editDocumentTool,
+      // Conversion is never forced; available whenever document tools are on.
+      if (useDocumentEditTool) DocumentEditTools.convertDocumentTool,
     ];
     if (searchAllowed &&
         settings.searchBackend.isProviderHosted &&
@@ -2379,7 +2382,8 @@ class ChatController extends AsyncNotifier<ChatState> {
                     'docx 用 replace_text；pptx 用 set_shape_text；'
                     'txt/md/csv/tsv 用 replace_text 或 set_text（整文件覆写）。'
                 : '用户上传了可编辑文件（.xlsx/.docx/.pptx/.txt/.md/.csv/.tsv）。'
-                    '若要求改文件/导出/回传，调用 edit_document 并给出完整 DocumentPatch。',
+                    '若要求改文件内容/查找替换/回传，调用 edit_document；'
+                    '若要求格式转换（如 txt→docx、csv→xlsx、docx→md），调用 convert_document。',
           );
           hint.write('不要编造未上传的附件名。');
         }
@@ -2441,7 +2445,8 @@ class ChatController extends AsyncNotifier<ChatState> {
                     'docx 用 replace_text；pptx 用 set_shape_text；'
                     'txt/md/csv/tsv 用 replace_text 或 set_text（整文件覆写）。'
                 : '用户上传了可编辑文件（.xlsx/.docx/.pptx/.txt/.md/.csv/.tsv）。'
-                    '若要求改文件/导出/回传，调用 edit_document 并给出完整 DocumentPatch。',
+                    '若要求改文件内容/查找替换/回传，调用 edit_document；'
+                    '若要求格式转换（如 txt→docx、csv→xlsx、docx→md），调用 convert_document。',
           );
           hint.write('不要编造未上传的附件名。');
         }
@@ -2969,6 +2974,15 @@ class ChatController extends AsyncNotifier<ChatState> {
             sources: editableAttachments,
             cancelToken: cancelToken,
           );
+        } else if (call.name == DocumentEditTools.convertDocumentToolName) {
+          toolContent = await _runConvertDocumentTool(
+            call,
+            settings: settings,
+            convoId: convoId,
+            assistantId: assistantId,
+            sources: editableAttachments,
+            cancelToken: cancelToken,
+          );
         } else {
           toolContent = '不支持的工具：${call.name ?? 'unknown'}';
         }
@@ -3325,6 +3339,85 @@ class ChatController extends AsyncNotifier<ChatState> {
       if (_isCancel(e)) return '文档编辑已取消。';
       _setScopedError(_describeError(e), convoId: convoId);
       return '文档编辑失败：$e';
+    }
+  }
+
+  Future<String> _runConvertDocumentTool(
+    ToolCall call, {
+    required SettingsState settings,
+    required String convoId,
+    required String assistantId,
+    required List<Attachment> sources,
+    required CancelToken cancelToken,
+  }) async {
+    if (!settings.documentServiceConfigured) {
+      return '文档服务未配置：请在设置中启用并填写 Base URL 与 Token。';
+    }
+    try {
+      final args =
+          DocumentEditTools.parseConvertDocumentArgs(call.argumentsJson);
+      final source = _pickDocumentSource(sources, args.attachmentName);
+      if (source == null) {
+        final names = [
+          for (final a in sources)
+            if (a.isEditableDocument) a.name,
+        ];
+        return names.isEmpty
+            ? '本轮没有可转换附件（.xlsx/.docx/.pptx/.txt/.md/.csv/.tsv，需重新上传）。'
+            : '找不到附件「${args.attachmentName}」。本轮可用：${names.join("、")}';
+      }
+      if (!source.hasDownloadableBytes) {
+        return '附件「${source.name}」未保留原始文件字节，无法转换。请重新上传。';
+      }
+      final srcFmt = source.documentPatchFormat;
+      if (srcFmt == null) {
+        return '附件「${source.name}」不是可转换格式。';
+      }
+      if (!DocumentConvert.canConvert(srcFmt, args.targetFormat)) {
+        final targets = DocumentConvert.targetsFor(srcFmt).join(', ');
+        return '不支持 $srcFmt → ${args.targetFormat}。'
+            '「${source.name}」可转为：$targets';
+      }
+      late final Uint8List fileBytes;
+      try {
+        fileBytes = Uint8List.fromList(base64Decode(source.imageBase64!));
+      } catch (_) {
+        return '附件「${source.name}」数据损坏，无法转换。';
+      }
+
+      final client = ref.read(documentServiceClientProvider);
+      final result = await client.convert(
+        config: settings.documentService,
+        apiToken: settings.documentServiceToken,
+        fileBytes: fileBytes,
+        filename: source.name,
+        targetFormat: args.targetFormat,
+        outputFilename: args.outputFilename,
+        cancelToken: cancelToken,
+      );
+      if (!_s.isStreaming) return '文档转换已取消。';
+
+      final out = Attachment(
+        name: result.filename,
+        mimeType: result.contentType,
+        sizeBytes: result.bytes.length,
+        text: '（文档服务已转换，可下载）',
+        imageBase64: base64Encode(result.bytes),
+      );
+      _appendAssistantAttachment(convoId, assistantId, out);
+      final kb = (result.bytes.length / 1024).toStringAsFixed(1);
+      return '已将「${source.name}」转换为「${result.filename}」（$kb KB），'
+          '已附在本轮回复中，请点击附件右侧下载图标保存。';
+    } on DocumentPatchException catch (e) {
+      return '转换参数无效：${e.message}';
+    } on DocumentServiceException catch (e) {
+      if (_isCancel(e)) return '文档转换已取消。';
+      _setScopedError(e.message, convoId: convoId);
+      return '文档转换失败：${e.message}';
+    } catch (e) {
+      if (_isCancel(e)) return '文档转换已取消。';
+      _setScopedError(_describeError(e), convoId: convoId);
+      return '文档转换失败：$e';
     }
   }
 

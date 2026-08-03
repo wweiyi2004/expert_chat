@@ -1,11 +1,15 @@
 """Document-edit service: xlsx / docx / pptx / txt / md / csv / tsv.
 
+Also supports cross-format conversion via POST /v1/documents/convert.
+
 Contract: docs/document-edit-contract.md
 Env: DOC_API_TOKEN, MAX_UPLOAD_MB, TEMP_DIR
 """
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import os
 import re
@@ -23,13 +27,32 @@ from openpyxl.utils import coordinate_to_tuple
 from pptx import Presentation
 from starlette.background import BackgroundTask
 
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.4.0"
 MAX_OPS = 200
 MAX_CELLS_PER_OP = 5000
 MAX_SET_TEXT_CHARS = 2 * 1024 * 1024
 A1_RE = re.compile(r"^[A-Z]{1,3}[1-9][0-9]{0,6}$")
 SUPPORTED = {".xlsx", ".docx", ".pptx", ".txt", ".md", ".csv", ".tsv"}
 FORMATS = ["xlsx", "docx", "pptx", "txt", "md", "csv", "tsv"]
+# Source format → allowed target formats (same-format always allowed).
+CONVERSIONS: dict[str, set[str]] = {
+    "txt": {"txt", "md", "docx", "csv", "tsv"},
+    "md": {"md", "txt", "docx"},
+    "csv": {"csv", "tsv", "txt", "md", "xlsx"},
+    "tsv": {"tsv", "csv", "txt", "md", "xlsx"},
+    "xlsx": {"xlsx", "csv", "tsv", "txt", "md"},
+    "docx": {"docx", "txt", "md"},
+    "pptx": {"pptx", "txt", "md"},
+}
+MEDIA_TYPES = {
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".txt": "text/plain; charset=utf-8",
+    ".md": "text/markdown; charset=utf-8",
+    ".csv": "text/csv; charset=utf-8",
+    ".tsv": "text/tab-separated-values; charset=utf-8",
+}
 
 app = FastAPI(title="Expert Chat Document Edit", version=APP_VERSION)
 
@@ -75,7 +98,12 @@ def _err(code: str, message: str, details: dict[str, Any] | None = None) -> dict
 
 @app.get("/v1/health")
 def health() -> dict[str, Any]:
-    return {"ok": True, "version": APP_VERSION, "formats": FORMATS}
+    return {
+        "ok": True,
+        "version": APP_VERSION,
+        "formats": FORMATS,
+        "conversions": {k: sorted(v) for k, v in CONVERSIONS.items()},
+    }
 
 
 @app.post("/v1/documents/edit")
@@ -158,19 +186,109 @@ async def edit_document(
             ) from e
 
         out_name = validated.get("output_filename") or _default_out_name(raw_name, ext)
-        media = {
-            ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            ".txt": "text/plain; charset=utf-8",
-            ".md": "text/markdown; charset=utf-8",
-            ".csv": "text/csv; charset=utf-8",
-            ".tsv": "text/tab-separated-values; charset=utf-8",
-        }[ext]
         return FileResponse(
             path=out_path,
             filename=out_name,
-            media_type=media,
+            media_type=MEDIA_TYPES[ext],
+            background=BackgroundTask(cleanup),
+        )
+    except HTTPException:
+        cleanup()
+        raise
+    except Exception as e:  # noqa: BLE001
+        cleanup()
+        raise HTTPException(
+            status_code=500,
+            detail=_err("internal", f"内部错误：{e}"),
+        ) from e
+
+
+@app.post("/v1/documents/convert")
+async def convert_document(
+    file: UploadFile = File(...),
+    target_format: str = Form(...),
+    filename: str | None = Form(default=None),
+    output_filename: str | None = Form(default=None),
+    _: None = Depends(require_auth),
+) -> FileResponse:
+    """Convert an uploaded file to another supported format."""
+    job_id = uuid.uuid4().hex
+    job_dir = _temp_root() / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+
+    def cleanup() -> None:
+        shutil.rmtree(job_dir, ignore_errors=True)
+
+    try:
+        raw_name = filename or file.filename or "input.bin"
+        src_ext = Path(raw_name.lower()).suffix
+        if src_ext not in SUPPORTED:
+            raise HTTPException(
+                status_code=400,
+                detail=_err("unsupported_format", f"仅支持 {', '.join(sorted(SUPPORTED))}"),
+            )
+        src_fmt = src_ext.lstrip(".")
+        tgt_fmt = str(target_format or "").strip().lower().lstrip(".")
+        if tgt_fmt not in FORMATS:
+            raise HTTPException(
+                status_code=400,
+                detail=_err("unsupported_format", f'不支持的 target_format="{target_format}"'),
+            )
+        allowed = CONVERSIONS.get(src_fmt, set())
+        if tgt_fmt not in allowed:
+            raise HTTPException(
+                status_code=400,
+                detail=_err(
+                    "unsupported_format",
+                    f"不支持 {src_fmt} → {tgt_fmt}。"
+                    f"可选：{', '.join(sorted(allowed)) or '无'}",
+                ),
+            )
+
+        data = await file.read()
+        if len(data) > _max_upload_bytes():
+            raise HTTPException(
+                status_code=400,
+                detail=_err(
+                    "file_too_large",
+                    f"文件超过 {_max_upload_bytes() // (1024 * 1024)} MB 限制",
+                ),
+            )
+        if not data:
+            raise HTTPException(
+                status_code=400,
+                detail=_err("patch_invalid", "上传文件为空"),
+            )
+
+        out_name = _sanitize_output_filename(output_filename, raw_name, f".{tgt_fmt}")
+        in_path = job_dir / f"input{src_ext}"
+        out_path = job_dir / f"output.{tgt_fmt}"
+        in_path.write_bytes(data)
+
+        try:
+            if src_fmt == tgt_fmt:
+                if src_fmt in {"txt", "md", "csv", "tsv"}:
+                    # Normalize text encodings to UTF-8 on same-format pass-through.
+                    _write_text_file(out_path, _read_text_file(in_path))
+                else:
+                    out_path.write_bytes(data)
+            else:
+                _convert_file(in_path, src_fmt, out_path, tgt_fmt)
+        except ValueError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=_err("unsupported_format", str(e)),
+            ) from e
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(
+                status_code=500,
+                detail=_err("internal", f"转换失败：{e}"),
+            ) from e
+
+        return FileResponse(
+            path=out_path,
+            filename=out_name,
+            media_type=MEDIA_TYPES[f".{tgt_fmt}"],
             background=BackgroundTask(cleanup),
         )
     except HTTPException:
@@ -187,6 +305,26 @@ async def edit_document(
 def _default_out_name(raw: str, ext: str) -> str:
     base = Path(raw).stem or "edited"
     return f"{base}_edited{ext}"
+
+
+def _sanitize_output_filename(raw: Any, source_name: str, out_ext: str) -> str:
+    if raw is not None and str(raw).strip():
+        out_s = str(raw).strip()
+        if "/" in out_s or "\\" in out_s or ".." in out_s:
+            raise HTTPException(
+                status_code=400,
+                detail=_err("patch_invalid", "output_filename 非法"),
+            )
+        if len(out_s) > 180:
+            raise HTTPException(
+                status_code=400,
+                detail=_err("patch_invalid", "output_filename 过长"),
+            )
+        if not out_s.lower().endswith(out_ext.lower()):
+            out_s = f"{Path(out_s).stem}{out_ext}"
+        return out_s
+    base = Path(source_name).stem or "converted"
+    return f"{base}{out_ext}"
 
 
 def _validate_patch(obj: Any, file_ext: str) -> dict[str, Any]:
@@ -443,6 +581,149 @@ def _cell_py(value: Any) -> Any:
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
     raise ValueError("单元格值类型无效")
+
+
+def _convert_file(in_path: Path, src_fmt: str, out_path: Path, tgt_fmt: str) -> None:
+    """Dispatch cross-format conversion."""
+    if src_fmt in {"txt", "md"} and tgt_fmt in {"txt", "md"}:
+        _write_text_file(out_path, _read_text_file(in_path))
+        return
+    if src_fmt in {"txt", "md"} and tgt_fmt == "docx":
+        _text_to_docx(_read_text_file(in_path), out_path)
+        return
+    if src_fmt == "txt" and tgt_fmt in {"csv", "tsv"}:
+        _lines_to_delimited(_read_text_file(in_path), out_path, tgt_fmt)
+        return
+    if src_fmt in {"csv", "tsv"} and tgt_fmt in {"csv", "tsv", "txt", "md"}:
+        rows = _read_table(in_path, src_fmt)
+        if tgt_fmt in {"csv", "tsv"}:
+            _write_table(out_path, rows, tgt_fmt)
+        else:
+            _write_text_file(out_path, _table_to_plain(rows, markdown=tgt_fmt == "md"))
+        return
+    if src_fmt in {"csv", "tsv"} and tgt_fmt == "xlsx":
+        _table_to_xlsx(_read_table(in_path, src_fmt), out_path)
+        return
+    if src_fmt == "xlsx" and tgt_fmt in {"csv", "tsv", "txt", "md"}:
+        rows = _xlsx_to_rows(in_path)
+        if tgt_fmt in {"csv", "tsv"}:
+            _write_table(out_path, rows, tgt_fmt)
+        else:
+            _write_text_file(out_path, _table_to_plain(rows, markdown=tgt_fmt == "md"))
+        return
+    if src_fmt == "docx" and tgt_fmt in {"txt", "md"}:
+        _write_text_file(out_path, _docx_to_text(in_path))
+        return
+    if src_fmt == "pptx" and tgt_fmt in {"txt", "md"}:
+        _write_text_file(out_path, _pptx_to_text(in_path))
+        return
+    raise ValueError(f"未实现的转换：{src_fmt} → {tgt_fmt}")
+
+
+def _text_to_docx(text: str, out_path: Path) -> None:
+    doc = Document()
+    # Preserve blank lines as empty paragraphs.
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    if not lines:
+        doc.add_paragraph("")
+    else:
+        for line in lines:
+            doc.add_paragraph(line)
+    doc.save(str(out_path))
+
+
+def _lines_to_delimited(text: str, out_path: Path, fmt: str) -> None:
+    rows = [[line] for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    _write_table(out_path, rows, fmt)
+
+
+def _read_table(path: Path, fmt: str) -> list[list[str]]:
+    text = _read_text_file(path)
+    delim = "\t" if fmt == "tsv" else ","
+    reader = csv.reader(io.StringIO(text), delimiter=delim)
+    return [list(row) for row in reader]
+
+
+def _write_table(path: Path, rows: list[list[Any]], fmt: str) -> None:
+    delim = "\t" if fmt == "tsv" else ","
+    buf = io.StringIO()
+    writer = csv.writer(buf, delimiter=delim, lineterminator="\n")
+    for row in rows:
+        writer.writerow(["" if c is None else c for c in row])
+    _write_text_file(path, buf.getvalue())
+
+
+def _table_to_plain(rows: list[list[Any]], *, markdown: bool) -> str:
+    if not rows:
+        return ""
+    str_rows = [["" if c is None else str(c) for c in row] for row in rows]
+    if not markdown:
+        return "\n".join("\t".join(r) for r in str_rows)
+    # Simple GFM table: first row as header when ≥2 rows.
+    if len(str_rows) == 1:
+        return "| " + " | ".join(str_rows[0]) + " |"
+    header = str_rows[0]
+    width = max(len(r) for r in str_rows)
+    header = header + [""] * (width - len(header))
+    lines = [
+        "| " + " | ".join(header) + " |",
+        "| " + " | ".join(["---"] * width) + " |",
+    ]
+    for row in str_rows[1:]:
+        padded = row + [""] * (width - len(row))
+        lines.append("| " + " | ".join(padded) + " |")
+    return "\n".join(lines)
+
+
+def _table_to_xlsx(rows: list[list[Any]], out_path: Path) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    for r_i, row in enumerate(rows, start=1):
+        for c_i, value in enumerate(row, start=1):
+            ws.cell(row=r_i, column=c_i, value=value)
+    wb.save(out_path)
+
+
+def _xlsx_to_rows(path: Path) -> list[list[Any]]:
+    try:
+        wb = load_workbook(path, data_only=True)
+    except Exception as e:  # noqa: BLE001
+        raise ValueError(f"无法读取 xlsx：{e}") from e
+    ws = wb[wb.sheetnames[0]]
+    rows: list[list[Any]] = []
+    for row in ws.iter_rows(values_only=True):
+        # Drop fully empty trailing-style rows later; keep structure.
+        cells = list(row)
+        if all(c is None or str(c).strip() == "" for c in cells):
+            continue
+        rows.append(["" if c is None else c for c in cells])
+    return rows
+
+
+def _docx_to_text(path: Path) -> str:
+    doc = Document(str(path))
+    parts: list[str] = []
+    for p in doc.paragraphs:
+        parts.append(p.text)
+    for table in doc.tables:
+        for row in table.rows:
+            parts.append("\t".join(cell.text for cell in row.cells))
+    return "\n".join(parts)
+
+
+def _pptx_to_text(path: Path) -> str:
+    prs = Presentation(str(path))
+    parts: list[str] = []
+    for i, slide in enumerate(prs.slides, start=1):
+        parts.append(f"## Slide {i}")
+        for shape in slide.shapes:
+            if getattr(shape, "has_text_frame", False):
+                text = shape.text_frame.text.strip()
+                if text:
+                    parts.append(text)
+        parts.append("")
+    return "\n".join(parts).strip() + ("\n" if parts else "")
 
 
 @app.exception_handler(HTTPException)

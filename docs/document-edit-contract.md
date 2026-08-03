@@ -132,8 +132,9 @@ Tool 名：`edit_document`（见 `lib/domain/document/document_edit_tools.dart`�
 ```json
 {
   "ok": true,
-  "version": "0.3.0",
-  "formats": ["xlsx", "docx", "pptx", "txt", "md", "csv", "tsv"]
+  "version": "0.4.0",
+  "formats": ["xlsx", "docx", "pptx", "txt", "md", "csv", "tsv"],
+  "conversions": { "txt": ["csv", "docx", "md", "tsv", "txt"], "...": "..." }
 }
 ```
 
@@ -146,6 +147,31 @@ Tool 名：`edit_document`（见 `lib/domain/document/document_edit_tools.dart`�
   - `filename`：可选原名
 
 成功：`200` + 文件流 + `Content-Disposition: attachment`
+
+### `POST /v1/documents/convert`
+
+跨格式转换（**不**改内容语义，只换容器/导出）。
+
+- Header: `Authorization: Bearer <token>`
+- multipart:
+  - `file`：原文件
+  - `target_format`：`xlsx` / `docx` / `pptx` / `txt` / `md` / `csv` / `tsv`
+  - `filename`：可选原名
+  - `output_filename`：可选输出名
+
+支持矩阵（与 `lib/domain/document/document_convert.dart` 一致）：
+
+| 源 | 可转为 |
+|----|--------|
+| txt | txt, md, docx, csv, tsv |
+| md | md, txt, docx |
+| csv | csv, tsv, txt, md, xlsx |
+| tsv | tsv, csv, txt, md, xlsx |
+| xlsx | xlsx, csv, tsv, txt, md |
+| docx | docx, txt, md |
+| pptx | pptx, txt, md |
+
+LLM Tool：`convert_document`（`attachment_name?`, `target_format`, `output_filename?`）。
 
 失败 JSON：
 

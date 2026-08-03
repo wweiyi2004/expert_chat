@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:expert_chat/domain/document/document_convert.dart';
 import 'package:expert_chat/domain/document/document_edit_tools.dart';
 import 'package:expert_chat/domain/document/document_patch.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -169,10 +170,32 @@ void main() {
     });
   });
 
+  group('DocumentConvert', () {
+    test('allows txt to docx and rejects pptx to xlsx', () {
+      expect(DocumentConvert.canConvert('txt', 'docx'), isTrue);
+      expect(DocumentConvert.canConvert('csv', 'xlsx'), isTrue);
+      expect(DocumentConvert.canConvert('pptx', 'xlsx'), isFalse);
+    });
+  });
+
   group('DocumentEditTools', () {
     test('edit_document tool has stable name', () {
       expect(DocumentEditTools.editDocumentTool.name, 'edit_document');
+      expect(DocumentEditTools.convertDocumentTool.name, 'convert_document');
       expect(DocumentEditTools.inspectDocumentTool.name, 'inspect_document');
+    });
+
+    test('parseConvertDocumentArgs reads target_format', () {
+      final args = DocumentEditTools.parseConvertDocumentArgs(
+        jsonEncode({
+          'attachment_name': 'a.txt',
+          'target_format': 'docx',
+          'output_filename': 'a.docx',
+        }),
+      );
+      expect(args.attachmentName, 'a.txt');
+      expect(args.targetFormat, 'docx');
+      expect(args.outputFilename, 'a.docx');
     });
 
     test('parseEditDocumentArgs validates nested patch', () {

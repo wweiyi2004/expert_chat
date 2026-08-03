@@ -1,7 +1,9 @@
 # Document Edit Service (P0)
 
-Linux-side helper for Expert Chat: apply a `DocumentPatch` to
-`.xlsx` / `.docx` / `.pptx` / `.txt` / `.md` / `.csv` / `.tsv` and return the file.
+Linux-side helper for Expert Chat:
+
+- apply a `DocumentPatch` to `.xlsx` / `.docx` / `.pptx` / `.txt` / `.md` / `.csv` / `.tsv`
+- convert between supported formats (`POST /v1/documents/convert`, e.g. txt→docx)
 
 Contract: [`docs/document-edit-contract.md`](../../docs/document-edit-contract.md)
 

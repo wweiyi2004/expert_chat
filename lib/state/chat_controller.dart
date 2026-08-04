@@ -605,19 +605,6 @@ class ChatController extends AsyncNotifier<ChatState> {
       return;
     }
 
-    // Only skip when *current* is already an unused director story (avoid
-    // blocking a brand-new setup while an old abandoned director draft sits
-    // elsewhere in the list).
-    final existing = _findUnusedSession(
-      ConversationMode.story,
-      requireLocalCast: true,
-      currentOnly: true,
-    );
-    if (existing != null) {
-      _selectExistingSession(existing);
-      return;
-    }
-
     final ids = worldInfoIds ?? await _defaultWorldInfoIds();
     final premiseText = premise.trim();
     final noteText = authorNote.trim();
@@ -632,29 +619,64 @@ class ChatController extends AsyncNotifier<ChatState> {
         ? (premiseText.isEmpty ? '导演故事' : premiseText)
         : title.trim();
 
-    final fresh = Conversation(
-      title: resolvedTitle,
-      mode: ConversationMode.story,
-      participantIds: [for (final card in usableCast) card.id],
-      localCast: List.unmodifiable(usableCast),
-      worldInfoIds: ids,
-      outline: outline.trim(),
-      authorNote: combinedNote,
-      plotCursor: 0,
-      targetTotalChars: targetTotalChars < 0 ? 0 : targetTotalChars,
+    // Prefer reusing *current* if it is already an unused director shell
+    // (avoid stacking blank director sessions). Always apply the new plan —
+    // never return early with stale cast/outline.
+    final existing = _findUnusedSession(
+      ConversationMode.story,
+      requireLocalCast: true,
+      currentOnly: true,
     );
+    final fresh = existing == null
+        ? Conversation(
+            title: resolvedTitle,
+            mode: ConversationMode.story,
+            participantIds: [for (final card in usableCast) card.id],
+            localCast: List.unmodifiable(usableCast),
+            worldInfoIds: ids,
+            outline: outline.trim(),
+            authorNote: combinedNote,
+            plotCursor: 0,
+            targetTotalChars: targetTotalChars < 0 ? 0 : targetTotalChars,
+          )
+        : existing.copyWith(
+            title: resolvedTitle,
+            messages: const [],
+            activeChildren: const {},
+            participantIds: [for (final card in usableCast) card.id],
+            localCast: List.unmodifiable(usableCast),
+            worldInfoIds: ids,
+            outline: outline.trim(),
+            authorNote: combinedNote,
+            plotCursor: 0,
+            targetTotalChars: targetTotalChars < 0 ? 0 : targetTotalChars,
+          );
+
     // The setup draft is cleared immediately after this method succeeds.
     // Persist first so a failed/unfinished disk write cannot lose both copies.
     await _enqueueWrite(
       () => ref.read(conversationRepositoryProvider).saveConversation(fresh),
     );
-    _set(
-      _s.copyWith(
-        conversations: [fresh, ..._s.conversations],
-        currentId: fresh.id,
-        error: null,
-      ),
-    );
+    if (existing == null) {
+      _set(
+        _s.copyWith(
+          conversations: [fresh, ..._s.conversations],
+          currentId: fresh.id,
+          error: null,
+        ),
+      );
+    } else {
+      _set(
+        _s.copyWith(
+          conversations: [
+            for (final c in _s.conversations)
+              if (c.id == fresh.id) fresh else c,
+          ],
+          currentId: fresh.id,
+          error: null,
+        ),
+      );
+    }
   }
 
   /// Multi-character ensemble: cast in one [venue], taking turns.
@@ -666,15 +688,6 @@ class ChatController extends AsyncNotifier<ChatState> {
   }) async {
     if (cast.length < 2) {
       _set(_s.copyWith(error: '角色大乱斗至少需要 2 名角色。'));
-      return;
-    }
-    // Only when current is already an unused ensemble (same rationale as director).
-    final existing = _findUnusedSession(
-      ConversationMode.ensemble,
-      currentOnly: true,
-    );
-    if (existing != null) {
-      _selectExistingSession(existing);
       return;
     }
     final ids = worldInfoIds ?? await _defaultWorldInfoIds();
@@ -691,25 +704,55 @@ class ChatController extends AsyncNotifier<ChatState> {
       speakerName: '旁白',
     );
 
-    final fresh = Conversation(
-      title: cast.length <= 3 ? title : '$title…',
-      mode: ConversationMode.ensemble,
-      characterId: cast.first.id,
-      participantIds: [for (final c in cast) c.id],
-      worldInfoIds: ids,
-      venue: place,
-      authorNote: authorNote,
-      nextSpeakerIndex: 0,
-      messages: [systemIntro],
-      activeChildren: {kRootKey: systemIntro.id},
+    // Reuse current unused ensemble shell, but always apply the new cast/venue.
+    final existing = _findUnusedSession(
+      ConversationMode.ensemble,
+      currentOnly: true,
     );
-    _set(
-      _s.copyWith(
-        conversations: [fresh, ..._s.conversations],
-        currentId: fresh.id,
-        error: null,
-      ),
-    );
+    final fresh = existing == null
+        ? Conversation(
+            title: cast.length <= 3 ? title : '$title…',
+            mode: ConversationMode.ensemble,
+            characterId: cast.first.id,
+            participantIds: [for (final c in cast) c.id],
+            worldInfoIds: ids,
+            venue: place,
+            authorNote: authorNote,
+            nextSpeakerIndex: 0,
+            messages: [systemIntro],
+            activeChildren: {kRootKey: systemIntro.id},
+          )
+        : existing.copyWith(
+            title: cast.length <= 3 ? title : '$title…',
+            characterId: cast.first.id,
+            participantIds: [for (final c in cast) c.id],
+            worldInfoIds: ids,
+            venue: place,
+            authorNote: authorNote,
+            nextSpeakerIndex: 0,
+            messages: [systemIntro],
+            activeChildren: {kRootKey: systemIntro.id},
+          );
+    if (existing == null) {
+      _set(
+        _s.copyWith(
+          conversations: [fresh, ..._s.conversations],
+          currentId: fresh.id,
+          error: null,
+        ),
+      );
+    } else {
+      _set(
+        _s.copyWith(
+          conversations: [
+            for (final c in _s.conversations)
+              if (c.id == fresh.id) fresh else c,
+          ],
+          currentId: fresh.id,
+          error: null,
+        ),
+      );
+    }
     _persistSoon(_persist());
   }
 

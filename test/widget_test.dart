@@ -19,6 +19,7 @@ import 'package:expert_chat/data/story_models.dart';
 import 'package:expert_chat/data/world_info_repository.dart';
 import 'package:expert_chat/domain/export/conversation_export.dart';
 import 'package:expert_chat/domain/llm/llm_provider.dart';
+import 'package:expert_chat/domain/media/image_edit_reference.dart';
 import 'package:expert_chat/domain/media/openai_compatible_media_provider.dart';
 import 'package:expert_chat/domain/speech/mimo_speech_input_service.dart';
 import 'package:expert_chat/domain/speech/speech_input_service.dart';
@@ -172,10 +173,13 @@ class FakeMediaProvider extends OpenAiCompatibleMediaProvider {
     List<int>? referenceImageBytes,
     String referenceMimeType = 'image/png',
     String referenceFileName = 'reference.png',
+    List<ImageEditReference> referenceImages = const [],
   }) async {
     lastPrompt = prompt;
     prompts.add(prompt);
-    lastReferenceBytes = referenceImageBytes;
+    lastReferenceBytes = referenceImages.isNotEmpty
+        ? referenceImages.first.bytes
+        : referenceImageBytes;
     if (failuresRemaining > 0) {
       failuresRemaining--;
       throw Exception('simulated image failure');
@@ -1477,17 +1481,62 @@ void main() {
 
       convo = c.read(chatControllerProvider).value!.current!;
       expect(convo.plotCursor, 1);
-      expect(convo.activePath.first.content, '（导演：开始第一节）');
+      expect(
+        convo.activePath.first.content,
+        startsWith('（导演：开始第一节）'),
+      );
       expect(convo.activePath.last.content, contains('零号'));
       final request = llm.calls.single
           .map((message) => message.content)
           .join('\n');
       expect(request, contains('用户是导演'));
       expect(request, contains('服从优先级'));
-      expect(request, contains('旁白和所有登场角色'));
+      expect(request, contains('轻小说场景公式'));
       expect(request, contains('沈砚'));
       expect(request, contains('零号'));
       expect(request, contains('第三人称有限视角'));
+    },
+  );
+
+  test(
+    'reusing unused director session applies the new plan instead of keeping stale cast',
+    () async {
+      final c = _container(FakeLlmProvider(const []), InMemoryRepo());
+      addTearDown(c.dispose);
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
+
+      await ctrl.newDirectorStoryConversation(
+        title: '旧故事',
+        premise: '旧前提',
+        cast: [CharacterCard(name: '旧角色')],
+        outline: '- 旧节拍',
+        worldInfoIds: const [],
+      );
+      final firstId = c.read(chatControllerProvider).value!.current!.id;
+
+      // Still unused (no user turns). Starting another plan must overwrite.
+      await ctrl.newDirectorStoryConversation(
+        title: '新故事',
+        premise: '新前提必须保留',
+        cast: [
+          CharacterCard(name: '新角色甲'),
+          CharacterCard(name: '新角色乙'),
+        ],
+        outline: '- 新开场\n- 新高潮',
+        authorNote: '服从导演',
+        requirements: '禁止穿越',
+        worldInfoIds: const [],
+      );
+
+      final convo = c.read(chatControllerProvider).value!.current!;
+      expect(convo.id, firstId, reason: '应复用当前空导演会话壳');
+      expect(convo.title, '新故事');
+      expect(convo.localCast.map((e) => e.name), ['新角色甲', '新角色乙']);
+      expect(convo.outline, contains('新开场'));
+      expect(convo.authorNote, contains('新前提必须保留'));
+      expect(convo.authorNote, contains('禁止穿越'));
+      expect(convo.authorNote, isNot(contains('旧前提')));
     },
   );
 

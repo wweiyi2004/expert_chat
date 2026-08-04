@@ -268,6 +268,7 @@ class _DirectorStorySetupPageState
     _suppressDraftSave = true;
     _premise.text = saved.premise;
     _requirements.text = saved.requirements;
+    final hadNoSavedStyles = saved.styleIds.isEmpty;
     _styleIds
       ..clear()
       ..addAll(
@@ -289,9 +290,23 @@ class _DirectorStorySetupPageState
     final generated = saved.generatedDraft;
     if (generated != null && !generated.isEmpty) {
       _draft = generated;
-      _draftInputFingerprint = saved.generationFingerprint.trim().isEmpty
+      var fingerprint = saved.generationFingerprint.trim().isEmpty
           ? _generationFingerprint()
           : saved.generationFingerprint;
+      // Injecting default jp_ln changes merged requirements. Realign when the
+      // stored fingerprint had empty requirements so upgrades are not blocked.
+      if (hadNoSavedStyles) {
+        try {
+          final map = jsonDecode(fingerprint) as Map<String, dynamic>;
+          final storedReq = (map['requirements'] as String?)?.trim() ?? '';
+          if (storedReq.isEmpty) {
+            fingerprint = _generationFingerprint();
+          }
+        } catch (_) {
+          fingerprint = _generationFingerprint();
+        }
+      }
+      _draftInputFingerprint = fingerprint;
       _title.text = generated.title;
       _outline.text = generated.outline;
       _authorNote.text = generated.authorNote.trim().isEmpty
@@ -562,9 +577,15 @@ class _DirectorStorySetupPageState
     setState(() => _strictReview = false);
     await _generateDraft();
     if (!mounted) return;
-    setState(() => _strictReview = wasStrict);
-    if (_draft == null || _error != null) return;
-    await _startStory(skipFingerprintCheck: false);
+    if (_draft == null || _error != null) {
+      setState(() => _strictReview = wasStrict);
+      return;
+    }
+    // Draft fingerprint was recorded with strictReview=false. Restore the UI
+    // preference only after start, and skip the guard so restoring true cannot
+    // falsely block「一句话开书」.
+    await _startStory(skipFingerprintCheck: true);
+    if (mounted) setState(() => _strictReview = wasStrict);
   }
 
   Future<void> _startStory({bool skipFingerprintCheck = false}) async {

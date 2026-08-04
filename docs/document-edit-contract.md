@@ -43,6 +43,10 @@ Tool 名：`edit_document`（见 `lib/domain/document/document_edit_tools.dart`�
 
 未知 `op`：**整单失败**（不半成功）。
 
+损坏/不可解析的源文件（如伪 `.xlsx`）：服务端返回 400，**禁止**静默新建空工作簿后“成功”改稿。
+
+客户端对响应 `Content-Disposition` 文件名做 basename 消毒（拒绝路径分隔、控制字符、`..`），非法时回退到本地推导名。
+
 ### 2.2 xlsx ops（P0）
 
 #### `set_cells`

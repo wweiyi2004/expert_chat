@@ -433,8 +433,10 @@ def _validate_patch(obj: Any, file_ext: str) -> dict[str, Any]:
 def _apply_xlsx(in_path: Path, out_path: Path, patch: dict[str, Any]) -> None:
     try:
         wb = load_workbook(in_path)
-    except Exception:
-        wb = Workbook()
+    except Exception as e:  # noqa: BLE001
+        # Never fall back to an empty Workbook: that would silently drop the
+        # user's original sheet data and still return HTTP 200.
+        raise ValueError(f"无法读取 xlsx：{e}") from e
 
     for op in patch["ops"]:
         kind = str(op["op"]).lower()

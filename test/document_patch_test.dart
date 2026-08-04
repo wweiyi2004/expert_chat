@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:expert_chat/domain/document/document_convert.dart';
 import 'package:expert_chat/domain/document/document_edit_tools.dart';
 import 'package:expert_chat/domain/document/document_patch.dart';
+import 'package:expert_chat/domain/document/document_service_client.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -175,6 +176,76 @@ void main() {
       expect(DocumentConvert.canConvert('txt', 'docx'), isTrue);
       expect(DocumentConvert.canConvert('csv', 'xlsx'), isTrue);
       expect(DocumentConvert.canConvert('pptx', 'xlsx'), isFalse);
+    });
+  });
+
+  group('DocumentServiceClient.sanitizeDownloadFilename', () {
+    test('accepts plain basenames', () {
+      expect(
+        DocumentServiceClient.sanitizeDownloadFilename(
+          'report_edited.xlsx',
+          fallback: 'fallback.xlsx',
+        ),
+        'report_edited.xlsx',
+      );
+    });
+
+    test('strips path traversal and falls back when empty after strip', () {
+      expect(
+        DocumentServiceClient.sanitizeDownloadFilename(
+          '../evil.xlsx',
+          fallback: 'safe.xlsx',
+        ),
+        'evil.xlsx',
+      );
+      expect(
+        DocumentServiceClient.sanitizeDownloadFilename(
+          '..\\..\\secret.csv',
+          fallback: 'safe.csv',
+        ),
+        'secret.csv',
+      );
+      expect(
+        DocumentServiceClient.sanitizeDownloadFilename(
+          '../..',
+          fallback: 'safe.bin',
+        ),
+        'safe.bin',
+      );
+    });
+
+    test('rejects control characters and null bytes', () {
+      expect(
+        DocumentServiceClient.sanitizeDownloadFilename(
+          'a\r\nb.xlsx',
+          fallback: 'safe.xlsx',
+        ),
+        'safe.xlsx',
+      );
+      expect(
+        DocumentServiceClient.sanitizeDownloadFilename(
+          'a\x00b.xlsx',
+          fallback: 'safe.xlsx',
+        ),
+        'safe.xlsx',
+      );
+    });
+
+    test('uses fallback when raw is null or empty', () {
+      expect(
+        DocumentServiceClient.sanitizeDownloadFilename(
+          null,
+          fallback: 'out.md',
+        ),
+        'out.md',
+      );
+      expect(
+        DocumentServiceClient.sanitizeDownloadFilename(
+          '   ',
+          fallback: 'out.md',
+        ),
+        'out.md',
+      );
     });
   });
 

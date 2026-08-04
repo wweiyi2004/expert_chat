@@ -184,9 +184,12 @@ class DocumentServiceClient {
       if (bytes == null || bytes.isEmpty) {
         throw const DocumentServiceException('文档服务返回空文件');
       }
-      final outName =
-          _filenameFromDisposition(r.headers.value('content-disposition')) ??
-          fallbackName;
+      // Never trust Content-Disposition blindly (path traversal / control
+      // chars). Fall back to the client-side name when the header is hostile.
+      final outName = sanitizeDownloadFilename(
+        _filenameFromDisposition(r.headers.value('content-disposition')),
+        fallback: fallbackName,
+      );
       return DocumentEditResult(
         bytes: Uint8List.fromList(bytes),
         filename: outName,
@@ -219,6 +222,42 @@ class DocumentServiceClient {
     return '$stem$ext';
   }
 
+  /// Sanitize a download filename from the document service (or any untrusted
+  /// header). Rejects path segments, `..`, NULs and control characters.
+  ///
+  /// Returns [fallback] (also sanitized) when [raw] is null/empty/hostile.
+  static String sanitizeDownloadFilename(
+    String? raw, {
+    required String fallback,
+  }) {
+    final safeFallback = _sanitizeFilenamePart(fallback) ?? 'download.bin';
+    final candidate = _sanitizeFilenamePart(raw);
+    return candidate ?? safeFallback;
+  }
+
+  /// Basename-only sanitize. Returns null when the name is unusable.
+  static String? _sanitizeFilenamePart(String? raw) {
+    if (raw == null) return null;
+    var name = raw.trim();
+    if (name.isEmpty) return null;
+
+    // Take the last path segment if a hostile header smuggles separators.
+    final slash = name.lastIndexOf('/');
+    final backslash = name.lastIndexOf('\\');
+    final cut = slash > backslash ? slash : backslash;
+    if (cut >= 0) {
+      name = name.substring(cut + 1).trim();
+    }
+    if (name.isEmpty || name == '.' || name == '..') return null;
+    if (name.contains('..') || name.contains('\x00')) return null;
+    // Strip C0 controls + DEL (headers can embed \r\n for response splitting).
+    if (RegExp(r'[\x00-\x1f\x7f]').hasMatch(name)) return null;
+    if (name.length > DocumentPatch.maxOutputFilenameLength) {
+      name = name.substring(0, DocumentPatch.maxOutputFilenameLength);
+    }
+    return name;
+  }
+
   static String? _filenameFromDisposition(String? raw) {
     if (raw == null || raw.isEmpty) return null;
     final star = RegExp(
@@ -226,7 +265,11 @@ class DocumentServiceClient {
       caseSensitive: false,
     ).firstMatch(raw);
     if (star != null) {
-      return Uri.decodeComponent(star.group(1)!.trim());
+      try {
+        return Uri.decodeComponent(star.group(1)!.trim());
+      } on FormatException {
+        return null;
+      }
     }
     final plain = RegExp(
       r'filename="([^"]+)"|filename=([^;]+)',

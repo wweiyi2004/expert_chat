@@ -16,7 +16,9 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 3.0.1+16
+# build-number must stay > any prior split-per-abi code (abi*1000 + old build).
+# v3.0.0 arm64 was 2015, x86_64 was 4015 — use 4100+ for clean upgrades.
+version: 3.0.1+4100
 
 environment:
   sdk: ^3.12.0

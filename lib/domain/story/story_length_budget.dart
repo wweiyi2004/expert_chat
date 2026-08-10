@@ -2,7 +2,7 @@ import 'package:characters/characters.dart';
 
 import '../../data/models.dart';
 
-/// Computes written length and per-turn quotas for director / story sessions.
+/// Computes written length and soft pacing guidance for story sessions.
 ///
 /// [Conversation.targetTotalChars] is the novel target (Unicode graphemes).
 /// When it is `0`, no budget is applied.
@@ -53,9 +53,8 @@ class StoryLengthBudget {
 
   bool get targetReached => hasTarget && written >= targetTotal;
 
-  /// Whether a successful generation has supplied enough body text to commit
-  /// the current outline beat. Without this guard, every click advanced a whole
-  /// beat even though the per-turn quota intentionally wrote only part of it.
+  /// Progress signal retained for UI compatibility. Scene advancement must not
+  /// depend on this estimate; a beat ends when its dramatic objective ends.
   bool get currentBeatTargetReached =>
       beatCount > 0 &&
       plotCursor < beatCount &&
@@ -110,9 +109,8 @@ class StoryLengthBudget {
     }
     final perBeat = currentBeatRemaining;
 
-    // One "继续下一节" is a section within the current outline beat. Aim for
-    // roughly half of what the beat still needs, then commit the beat only after
-    // its cumulative threshold has actually been reached.
+    // Offer a comfortable per-turn range. It is planning guidance only: models
+    // cannot reliably count exact characters, and scene integrity comes first.
     //
     // Dart's num.clamp(lower, upper) requires lower <= upper. Near the end of a
     // long novel, remaining can be < 200; never pass a lower bound above it.
@@ -173,7 +171,7 @@ class StoryLengthBudget {
     }
     final parts = <String>['已写 $w/$t'];
     if (beatCount > 0) {
-      parts.add('本拍剩余约${formatChars(perBeatSuggest)}');
+      parts.add('本拍参考余量${formatChars(perBeatSuggest)}');
     }
     if (turnMax > 0) {
       parts.add('本回合${formatChars(turnMin)}–${formatChars(turnMax)}');
@@ -181,10 +179,10 @@ class StoryLengthBudget {
     return parts.join(' · ');
   }
 
-  /// Hard-constraint block injected into the story system prompt.
+  /// Soft pacing block injected into the story system prompt.
   String promptBlock({required bool advancePlot}) {
     final b = StringBuffer()
-      ..writeln('【篇幅约束·不可违背】')
+      ..writeln('【篇幅与节奏参考 · 软目标】')
       ..writeln(
         '全书目标约 ${formatChars(targetTotal)}字；'
         '目前已写约 ${formatChars(written)}字'
@@ -194,14 +192,12 @@ class StoryLengthBudget {
 
     if (beatCount > 0) {
       final beatNo = plotCursor < beatCount ? plotCursor + 1 : beatCount;
-      final leftPhrase = beatsLeft == 0
-          ? '已无剩余节拍；'
-          : '剩余约 $beatsLeft 拍（含当前）；';
+      final leftPhrase = beatsLeft == 0 ? '已无剩余节拍；' : '剩余约 $beatsLeft 拍（含当前）；';
       b.writeln(
         '大纲共 $beatCount 拍，当前第 $beatNo 拍；'
         '$leftPhrase'
-        '本拍计划约 ${formatChars(currentBeatTarget)}字，'
-        '按全书累计进度估算还需约 ${formatChars(currentBeatRemaining)}字。',
+        '若按平均分配，本拍约 ${formatChars(currentBeatTarget)}字，'
+        '按全书累计进度参考尚余 ${formatChars(currentBeatRemaining)}字。',
       );
     }
 
@@ -213,17 +209,15 @@ class StoryLengthBudget {
     } else if (turnMax > 0) {
       b.writeln(
         advancePlot
-            ? '本回合（推进情节）输出控制在约 ${formatChars(turnMin)}–${formatChars(turnMax)}字：'
-                  '${currentBeatRemaining <= turnMax ? '写完并自然收束当前节拍；' : '只推进当前节拍的一部分，保留自然衔接点；'}'
-                  '达到本拍累计篇幅前不进入下一拍，不要提前写后续未解锁节拍；'
-                  '该区间是硬边界，输出前必须估算正文字符数；宁可在完整句号处提前收住，'
-                  '也不得以“场景完整”为由远超上限。'
-            : '本回合输出控制在约 ${formatChars(turnMin)}–${formatChars(turnMax)}字：'
-                  '执行导演指令并推进必要情节，禁止注水与无目的的风景/回忆堆砌。',
+            ? '本回合建议约 ${formatChars(turnMin)}–${formatChars(turnMax)}字。'
+                  '以完成当前场景目标和自然收束为准，可合理短于或超过该范围；'
+                  '不要为了接近字数而重复情节、堆砌描写或拆断完整场景。'
+            : '本回合建议约 ${formatChars(turnMin)}–${formatChars(turnMax)}字。'
+                  '执行导演指令并推进必要情节；场景完整性优先，不为凑字数注水。',
       );
     }
 
-    b.write('篇幅服从硬性禁忌与当前大纲节拍；冲突时以禁忌与节拍为准，篇幅次之。');
+    b.write('篇幅仅用于全书节奏校准，不决定节拍是否完成。');
     return b.toString();
   }
 

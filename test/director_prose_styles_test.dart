@@ -3,14 +3,14 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   test('mergeRequirements combines compatible styles and freeform', () {
-    // jp_ln (perspective) + wuxia (ungrouped) + freeform are compatible.
+    // jp_ln (register) + wuxia (tone) + freeform are compatible.
     final text = DirectorProseStyle.mergeRequirements(
       styleIds: const ['jp_ln', 'wuxia'],
       freeform: '禁止早恋结局',
     );
-    expect(text, contains('强制文风·日本轻小说'));
-    expect(text, contains('强制文风·武侠'));
-    expect(text, contains('其它硬性要求'));
+    expect(text, contains('文风偏好·日本轻小说'));
+    expect(text, contains('文风偏好·武侠'));
+    expect(text, contains('全书硬约束'));
     expect(text, contains('禁止早恋结局'));
   });
 
@@ -18,8 +18,12 @@ void main() {
     var selected = <String>{};
     selected = DirectorProseStyle.toggleSelection(selected, 'jp_ln');
     selected = DirectorProseStyle.toggleSelection(selected, 'first_person');
-    expect(selected, equals({'first_person'})); // drops jp_ln (same perspective)
+    expect(
+      selected,
+      equals({'jp_ln', 'first_person'}),
+    ); // register + perspective
     selected = DirectorProseStyle.toggleSelection(selected, 'wenyan');
+    expect(selected.contains('jp_ln'), isFalse); // same register
     selected = DirectorProseStyle.toggleSelection(selected, 'web_novel');
     expect(selected.contains('wenyan'), isFalse);
     expect(selected, containsAll(['first_person', 'web_novel']));
@@ -42,7 +46,7 @@ void main() {
       freeform: '只要这句',
     );
     expect(text, contains('只要这句'));
-    expect(text, isNot(contains('强制文风')));
+    expect(text, isNot(contains('文风偏好')));
   });
 
   test('presets cover requested families', () {

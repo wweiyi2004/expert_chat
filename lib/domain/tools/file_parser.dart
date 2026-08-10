@@ -16,6 +16,18 @@ class FileReadLimitExceeded implements Exception {
   final int maxBytes;
 }
 
+/// A malformed or suspicious OOXML container must not be softened into an
+/// editable attachment. Keeping it would bypass the local ZIP guard and hand
+/// the same hostile archive to the remote document service later.
+class _OfficeArchiveRejected implements Exception {
+  const _OfficeArchiveRejected(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
 /// Parses uploaded files to plain text locally (no backend). Supports digital
 /// (text-layer) PDF, Word .docx, Excel .xlsx and PowerPoint .pptx. Scanned/image
 /// PDFs and images yield no text (would need OCR / a vision model — M6).
@@ -35,6 +47,7 @@ class FileParser {
   static const int _maxZipEntries = 2000;
   static const int _maxZipEntryBytes = 20 * 1024 * 1024;
   static const int _maxZipExpandedBytes = 50 * 1024 * 1024;
+
   /// Only applied when compressed size is small — real Word/XML parts often
   /// compress 50–200× when full of styles/whitespace; absolute expanded-size
   /// caps above already bound memory.
@@ -108,7 +121,8 @@ class FileParser {
       return base.copyWith(imageBase64: base64Encode(bytes));
     }
 
-    final isEditableForService = lower.endsWith('.xlsx') ||
+    final isEditableForService =
+        lower.endsWith('.xlsx') ||
         lower.endsWith('.docx') ||
         lower.endsWith('.pptx') ||
         lower.endsWith('.txt') ||
@@ -117,7 +131,8 @@ class FileParser {
         lower.endsWith('.tsv');
     // Keep original bytes so document-edit can round-trip even when local text
     // extraction is partial/empty. Cap retention to avoid huge DB rows.
-    final retainBinary = isEditableForService &&
+    final retainBinary =
+        isEditableForService &&
         bytes.lengthInBytes <= maxFileBytes &&
         bytes.lengthInBytes <= 10 * 1024 * 1024;
     final retainedB64 = retainBinary ? base64Encode(bytes) : null;
@@ -153,9 +168,7 @@ class FileParser {
             parseError: null,
           );
         }
-        return base.copyWith(
-          parseError: '未能从文件中提取到文本（可能是扫描件/图片型文档）。',
-        );
+        return base.copyWith(parseError: '未能从文件中提取到文本（可能是扫描件/图片型文档）。');
       }
       final truncated = text.length > maxChars;
       return base.copyWith(
@@ -163,6 +176,8 @@ class FileParser {
         truncated: truncated,
         imageBase64: retainedB64,
       );
+    } on _OfficeArchiveRejected catch (e) {
+      return base.copyWith(parseError: '解析失败：$e');
     } catch (e) {
       // Prefer keeping the original bytes so「改文档」still works when only the
       // local text extractor failed (zip guard false-positive, exotic XML…).
@@ -214,8 +229,7 @@ class FileParser {
           utf8.decode(content, allowMalformed: true),
         );
         for (final p in doc.findAllElements('w:p')) {
-          final line =
-              p.findAllElements('w:t').map((e) => e.innerText).join();
+          final line = p.findAllElements('w:t').map((e) => e.innerText).join();
           if (line.trim().isNotEmpty) out.writeln(line);
         }
         if (out.isEmpty) {
@@ -291,13 +305,13 @@ class FileParser {
     try {
       archive = ZipDecoder().decodeBytes(bytes);
     } catch (e) {
-      throw FormatException(
+      throw _OfficeArchiveRejected(
         '不是有效的 Office 压缩包（.docx/.xlsx/.pptx）。'
         '若是旧版 .doc/.xls/.ppt，请先另存为新格式。原始错误：$e',
       );
     }
     if (archive.files.length > _maxZipEntries) {
-      throw const FormatException('压缩文档包含过多条目，已拒绝解析。');
+      throw const _OfficeArchiveRejected('压缩文档包含过多条目，已拒绝解析。');
     }
 
     var expandedBytes = 0;
@@ -307,11 +321,11 @@ class FileParser {
       // Directory markers and zero-byte parts are normal in OOXML packages.
       if (declaredSize <= 0) continue;
       if (declaredSize > _maxZipEntryBytes) {
-        throw const FormatException('压缩文档含有过大的文件条目，已拒绝解析。');
+        throw const _OfficeArchiveRejected('压缩文档含有过大的文件条目，已拒绝解析。');
       }
       expandedBytes += declaredSize;
       if (expandedBytes > _maxZipExpandedBytes) {
-        throw const FormatException('压缩文档解压后内容过大，已拒绝解析。');
+        throw const _OfficeArchiveRejected('压缩文档解压后内容过大，已拒绝解析。');
       }
 
       // rawContent may be absent after some archive versions finish decoding;
@@ -320,7 +334,7 @@ class FileParser {
       if (compressedSize > 0 &&
           compressedSize < _zipBombCompressedThreshold &&
           declaredSize / compressedSize > _maxZipCompressionRatio) {
-        throw const FormatException('压缩文档压缩比异常，已拒绝解析。');
+        throw const _OfficeArchiveRejected('压缩文档压缩比异常，已拒绝解析。');
       }
     }
     return archive;

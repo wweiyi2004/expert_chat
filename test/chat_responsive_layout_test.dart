@@ -69,11 +69,8 @@ void main() {
         find.byKey(const ValueKey('chat-empty-state-scroll')),
         findsOneWidget,
       );
-      expect(
-        find.byKey(const ValueKey('chat-context-usage')),
-        findsOneWidget,
-      );
-      expect(find.byTooltip('上下文预算 251.9K'), findsOneWidget);
+      expect(find.byKey(const ValueKey('chat-context-usage')), findsOneWidget);
+      expect(find.byTooltip('上下文预算 251.9K（发送后显示本轮用量）'), findsOneWidget);
 
       final composerHeight = tester
           .getSize(find.byKey(const ValueKey('chat-composer')))
@@ -92,7 +89,10 @@ void main() {
       // Model chips stay visible; media actions hide behind the “+” tray.
       expect(find.text('深度思考'), findsOneWidget);
       expect(find.text('联网'), findsOneWidget);
-      expect(find.byKey(const ValueKey('composer-plus-button')), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('composer-plus-button')),
+        findsOneWidget,
+      );
       expect(find.byKey(const ValueKey('composer-plus-tray')), findsNothing);
       expect(find.byTooltip('语音输入'), findsOneWidget);
       expect(find.byTooltip('发送'), findsOneWidget);

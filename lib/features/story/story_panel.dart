@@ -5,11 +5,17 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/models.dart';
 import '../../data/story_models.dart';
+import '../../domain/story/story_generation_intent.dart';
 import '../../domain/story/story_length_budget.dart';
+import '../../domain/story/story_prompt_assembler.dart';
 import '../../state/character_controller.dart';
 import '../../state/chat_controller.dart';
 import '../../state/world_info_controller.dart';
 import 'studio_page.dart';
+
+final protectedStoryAuthorNoteHeader = RegExp(
+  r'【(?:全书硬约束|故事基准|创作约束|硬性[^】]*|故事原始情节)】',
+);
 
 /// Preserve structured setup constraints when the free-form editor is cleared.
 ///
@@ -22,10 +28,9 @@ String protectStoryAuthorNote({
   final prev = previous.trim();
   final next = edited.trim();
   if (prev.isEmpty) return edited;
-  final protectedHeader = RegExp(r'【(?:硬性[^】]*|故事原始情节)】');
-  if (!protectedHeader.hasMatch(prev)) return edited;
+  if (!protectedStoryAuthorNoteHeader.hasMatch(prev)) return edited;
   if (next.isEmpty) return prev;
-  if (!protectedHeader.hasMatch(next)) {
+  if (!protectedStoryAuthorNoteHeader.hasMatch(next)) {
     return '$prev\n\n【情节面板补充】\n$next';
   }
 
@@ -38,7 +43,10 @@ String protectStoryAuthorNote({
   for (var i = 0; i < allHeaders.length; i++) {
     final match = allHeaders[i];
     final header = match.group(0)!;
-    if (!protectedHeader.hasMatch(header) || next.contains(header)) continue;
+    if (!protectedStoryAuthorNoteHeader.hasMatch(header) ||
+        next.contains(header)) {
+      continue;
+    }
     final end = i + 1 < allHeaders.length
         ? allHeaders[i + 1].start
         : prev.length;
@@ -244,7 +252,7 @@ class _StoryPanelBodyState extends ConsumerState<StoryPanelBody> {
       );
       _authorNote.addListener(_scheduleSave);
       _baselineAuthorNote = note;
-    } else if (note.trim().contains('【硬性')) {
+    } else if (protectedStoryAuthorNoteHeader.hasMatch(note)) {
       _baselineAuthorNote = note;
     }
     _chatNotifier?.updateStoryMeta(
@@ -339,6 +347,18 @@ class _StoryPanelBodyState extends ConsumerState<StoryPanelBody> {
         : convo.plotCursor < beats.length
         ? '当前：${beats[convo.plotCursor.clamp(0, beats.length - 1)]}'
         : '大纲已走完，可自由续写';
+    final promptPreview = convo.isStory && convo.localCast.isNotEmpty
+        ? const StoryPromptAssembler().buildSystemPrefix(
+            globalSystemPrompt: '',
+            cast: convo.localCast,
+            worldInfoPool: const [],
+            conversation: convo,
+            historyPath: convo.activePath,
+            advancePlot: true,
+            directorMode: true,
+            intent: StoryGenerationIntent.nextScene,
+          )
+        : null;
 
     final content = ListView(
       controller: widget.scrollController,
@@ -374,7 +394,7 @@ class _StoryPanelBodyState extends ConsumerState<StoryPanelBody> {
         const SizedBox(height: 4),
         Text(
           convo.localCast.isNotEmpty
-              ? '大纲、导演指令与世界书修改会自动保存，并在下一轮生成时生效；点「继续下一节」按当前节拍演绎。'
+              ? '大纲、导演指令与世界书修改会自动保存，并在下一轮生成时生效；「写下一场」完成当前节拍，旁边按钮可续写刚才的场景。'
               : '大纲、导演指令与世界书修改会自动保存，并在下一轮生成时生效；点「推进情节」按当前节拍续写。',
           style: Theme.of(
             context,
@@ -428,7 +448,7 @@ class _StoryPanelBodyState extends ConsumerState<StoryPanelBody> {
           Text('小说总字数', style: Theme.of(context).textTheme.titleSmall),
           const SizedBox(height: 4),
           Text(
-            '0 表示不限。有目标时，下一轮生成会注入动态篇幅约束。',
+            '0 表示不限。有目标时，下一轮生成会注入动态篇幅参考，但不会用字数强制拖延场景。',
             style: Theme.of(
               context,
             ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
@@ -464,6 +484,58 @@ class _StoryPanelBodyState extends ConsumerState<StoryPanelBody> {
               ),
             ),
           ],
+        ],
+        if (promptPreview != null) ...[
+          const SizedBox(height: 14),
+          Card(
+            margin: EdgeInsets.zero,
+            child: ExpansionTile(
+              key: const ValueKey('story-prompt-preview'),
+              leading: const Icon(Icons.rule_folder_outlined),
+              title: const Text('本轮约束预览'),
+              subtitle: Text(
+                '${promptPreview.messages.length} 个稳定上下文块 + '
+                '${promptPreview.postHistoryMessages.length} 个仅本轮动作',
+              ),
+              childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              children: [
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    '预览按“写下一场”生成；世界书命中和全局系统提示会在发送时动态加入。',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Container(
+                  width: double.infinity,
+                  constraints: const BoxConstraints(maxHeight: 320),
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: scheme.surfaceContainerHighest.withValues(
+                      alpha: 0.45,
+                    ),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: SingleChildScrollView(
+                    child: SelectableText(
+                      [
+                        ...promptPreview.messages.map(
+                          (message) => message.content,
+                        ),
+                        ...promptPreview.postHistoryMessages.map(
+                          (message) => message.content,
+                        ),
+                      ].join('\n\n——\n\n'),
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
         ],
         const SizedBox(height: 18),
         if (convo.localCast.isNotEmpty) ...[
@@ -550,7 +622,8 @@ class _StoryPanelBodyState extends ConsumerState<StoryPanelBody> {
           minLines: 2,
           maxLines: 5,
           decoration: const InputDecoration(
-            hintText: '节奏、禁忌、文风…（每次发送/推进都会注入）',
+            hintText: '长期备注会持续生效；临时要求直接在聊天里发送。',
+            helperText: '快捷前缀：/重写、/改大纲、/改设定、/咨询',
             border: OutlineInputBorder(),
           ),
         ),

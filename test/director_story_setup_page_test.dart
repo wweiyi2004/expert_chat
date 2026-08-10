@@ -198,20 +198,15 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('导演故事'), findsOneWidget);
-    expect(find.byKey(const ValueKey('director-plot-interview')), findsOneWidget);
     expect(
-      tester.takeException(),
-      isNull,
-      reason: '访谈首屏在 320px 宽窗口不应出现布局溢出',
+      find.byKey(const ValueKey('director-plot-interview')),
+      findsOneWidget,
     );
+    expect(tester.takeException(), isNull, reason: '访谈首屏在 320px 宽窗口不应出现布局溢出');
     await tester.tap(find.byKey(const ValueKey('director-skip-interview')));
     await tester.pumpAndSettle();
     expect(find.text('仅生成方案（先预览再开写）'), findsOneWidget);
-    expect(
-      tester.takeException(),
-      isNull,
-      reason: '跳过访谈后在 320px 宽窗口不应出现布局溢出',
-    );
+    expect(tester.takeException(), isNull, reason: '跳过访谈后在 320px 宽窗口不应出现布局溢出');
   });
 
   Future<void> skipInterview(WidgetTester tester) async {
@@ -235,8 +230,13 @@ void main() {
     await tester.pumpWidget(buildSubject());
     await tester.pumpAndSettle();
 
-    expect(find.byKey(const ValueKey('director-plot-interview')), findsOneWidget);
-    await tester.ensureVisible(find.byKey(const ValueKey('interview-genre-mystery')));
+    expect(
+      find.byKey(const ValueKey('director-plot-interview')),
+      findsOneWidget,
+    );
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('interview-genre-mystery')),
+    );
     await tester.tap(find.byKey(const ValueKey('interview-genre-mystery')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('interview-next')));
@@ -269,11 +269,35 @@ void main() {
         ?.text;
     expect(seed, contains('夜车永远到不了站'));
     expect(seed, contains('悬疑推理'));
-    // Interview still keeps 日本轻小说 as default style alongside 克制悬疑.
-    await tester.ensureVisible(find.byKey(const ValueKey('director-advanced-settings')));
+    expect(seed, isNot(contains('慢热')));
+    // The selected genre contributes its own style without silently adding
+    // the Japanese-light-novel preset.
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('director-advanced-settings')),
+    );
     await tester.tap(find.byKey(const ValueKey('director-advanced-settings')));
     await tester.pumpAndSettle();
-    expect(find.text('日本轻小说'), findsWidgets);
+    expect(
+      tester
+          .widget<FilterChip>(
+            find.byKey(const ValueKey('director-style-jp_ln')),
+          )
+          .selected,
+      isFalse,
+    );
+    expect(
+      tester
+          .widget<FilterChip>(
+            find.byKey(const ValueKey('director-style-mystery_cool')),
+          )
+          .selected,
+      isTrue,
+    );
+    final requirements = tester
+        .widget<TextField>(fieldWithLabel('其它创作要求 / 硬性约束（可选）'))
+        .controller
+        ?.text;
+    expect(requirements, contains('慢热；禁止提前揭晓真相'));
   });
 
   testWidgets('AI creates local cast and editable outline from a premise', (
@@ -393,7 +417,7 @@ void main() {
       tester.widget<TextField>(fieldWithLabel('故事情节 *')).controller?.text,
       '一列夜车驶入雾港。',
     );
-    expect(find.text('进入聊天 · 写第一节'), findsOneWidget);
+    expect(find.text('进入聊天 · 写第一场'), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('director-advanced-settings')));
     await tester.pumpAndSettle();
     expect(
@@ -440,7 +464,10 @@ void main() {
     await tester.pumpAndSettle();
 
     // Clear returns to the plot interview.
-    expect(find.byKey(const ValueKey('director-plot-interview')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('director-plot-interview')),
+      findsOneWidget,
+    );
     expect(DirectorStorySetupDraftStore(prefs).read(), isNull);
     expect(find.text('草稿已清空，可以重新开始。'), findsOneWidget);
   });
@@ -469,7 +496,7 @@ void main() {
       reason: '开始故事前，AI 方案应已进入本地草稿',
     );
 
-    await tester.tap(find.text('进入聊天 · 写第一节'));
+    await tester.tap(find.text('进入聊天 · 写第一场'));
     await tester.pump();
     await tester.pumpAndSettle();
 
@@ -486,7 +513,7 @@ void main() {
     expect(conversation.localCast.map((card) => card.name), ['林澈', '顾舟']);
     expect(conversation.outline, contains('夜车驶入被雾封锁的港口'));
     expect(conversation.authorNote, contains('用户只负责导演'));
-    expect(conversation.authorNote, contains('【故事原始情节】'));
+    expect(conversation.authorNote, contains('【故事基准】'));
     expect(conversation.authorNote, contains(premise));
     expect(conversation.plotCursor, anyOf(0, 1));
     // Generate (1) + first section stream (1); strict review off by default.
@@ -520,7 +547,7 @@ void main() {
     expect(saved?.generationFingerprint, isNotEmpty);
 
     await tester.enterText(fieldWithLabel('故事情节 *'), '改成一座时间会倒流的海边小城。');
-    final startButton = find.widgetWithText(FilledButton, '进入聊天 · 写第一节');
+    final startButton = find.widgetWithText(FilledButton, '进入聊天 · 写第一场');
     await tester.ensureVisible(startButton);
     await tester.tap(startButton);
     await tester.pumpAndSettle();
@@ -555,7 +582,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 600));
     conversations.saveError = StateError('disk full');
 
-    await tester.tap(find.text('进入聊天 · 写第一节'));
+    await tester.tap(find.text('进入聊天 · 写第一场'));
     await tester.pumpAndSettle();
 
     expect(conversations.saveCalls, greaterThan(0));
@@ -605,7 +632,7 @@ void main() {
     await tester.tap(find.text('仅生成方案（先预览再开写）'));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('进入聊天 · 写第一节'));
+    await tester.tap(find.text('进入聊天 · 写第一场'));
     await tester.pump();
     await tester.pumpAndSettle();
 
@@ -620,11 +647,9 @@ void main() {
   testWidgets(
     'non-preset beat count and length restore without tripping the input guard',
     (tester) async {
-      llm = _ScriptedLlmProvider(const [
-        '雾气贴着车窗缓慢流动。林澈醒来时，顾舟已经站在车厢尽头。',
-      ]);
+      llm = _ScriptedLlmProvider(const ['雾气贴着车窗缓慢流动。林澈醒来时，顾舟已经站在车厢尽头。']);
       // 节拍数 7 与总字数 9万 都不在页面预设选项中；生成指纹按这两个值计算。
-      // styleIds 含默认日轻，与恢复后注入的 jp_ln 一致。
+      // Explicitly selected style remains part of the generation fingerprint.
       final jpLnRequirements = DirectorProseStyle.mergeRequirements(
         styleIds: const ['jp_ln'],
       );
@@ -659,7 +684,9 @@ void main() {
       await tester.pumpAndSettle();
 
       // Expand advanced settings so non-preset controls are on-screen.
-      await tester.tap(find.byKey(const ValueKey('director-advanced-settings')));
+      await tester.tap(
+        find.byKey(const ValueKey('director-advanced-settings')),
+      );
       await tester.pumpAndSettle();
       // 非预设的节拍数/字数也必须被恢复，而不是静默回落到默认 8 / 80000。
       await tester.scrollUntilVisible(
@@ -684,24 +711,17 @@ void main() {
         scrollable: find.byType(Scrollable).first,
       );
       await tester.pumpAndSettle();
-      await tester.drag(
-        find.byType(Scrollable).first,
-        const Offset(0, -100),
-      );
+      await tester.drag(find.byType(Scrollable).first, const Offset(0, -100));
       await tester.pumpAndSettle();
       expect(find.textContaining('目标约 9万'), findsOneWidget);
 
       // 恢复后的值与生成时一致：开始演绎不应误报「输入已变化」。
-      await tester.tap(find.widgetWithText(FilledButton, '进入聊天 · 写第一节'));
+      await tester.tap(find.widgetWithText(FilledButton, '进入聊天 · 写第一场'));
       await tester.pump();
       await tester.pumpAndSettle();
 
       expect(find.textContaining('已变化'), findsNothing);
-      expect(
-        llm.calls,
-        isNotEmpty,
-        reason: '指纹与恢复后的实际值一致时，不应被「输入已变化」拦截',
-      );
+      expect(llm.calls, isNotEmpty, reason: '指纹与恢复后的实际值一致时，不应被「输入已变化」拦截');
       expect(tester.takeException(), isNull);
     },
   );

@@ -188,6 +188,13 @@ void main() {
         ),
         'report_edited.xlsx',
       );
+      expect(
+        DocumentServiceClient.sanitizeDownloadFilename(
+          'report..v2.xlsx',
+          fallback: 'fallback.xlsx',
+        ),
+        'report..v2.xlsx',
+      );
     });
 
     test('strips path traversal and falls back when empty after strip', () {
@@ -312,7 +319,9 @@ void main() {
 
     test('parseEditDocumentArgs rejects missing patch', () {
       expect(
-        () => DocumentEditTools.parseEditDocumentArgs('{"attachment_name":"a.xlsx"}'),
+        () => DocumentEditTools.parseEditDocumentArgs(
+          '{"attachment_name":"a.xlsx"}',
+        ),
         throwsA(isA<DocumentPatchException>()),
       );
     });

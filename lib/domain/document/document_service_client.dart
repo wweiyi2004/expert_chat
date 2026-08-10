@@ -105,7 +105,10 @@ class DocumentServiceClient {
     String? outputFilename,
     CancelToken? cancelToken,
   }) async {
-    final tgt = targetFormat.trim().toLowerCase().replaceFirst(RegExp(r'^\.'), '');
+    final tgt = targetFormat.trim().toLowerCase().replaceFirst(
+      RegExp(r'^\.'),
+      '',
+    );
     final form = FormData.fromMap({
       'file': MultipartFile.fromBytes(
         fileBytes,
@@ -122,8 +125,7 @@ class DocumentServiceClient {
       fileBytes: fileBytes,
       path: '/v1/documents/convert',
       form: form,
-      fallbackName:
-          outputFilename?.trim().isNotEmpty == true
+      fallbackName: outputFilename?.trim().isNotEmpty == true
           ? outputFilename!.trim()
           : _defaultConvertedName(filename, tgt),
       errorVerb: '转换',
@@ -142,9 +144,7 @@ class DocumentServiceClient {
     CancelToken? cancelToken,
   }) async {
     if (!config.isConfiguredWith(apiToken)) {
-      throw const DocumentServiceException(
-        '文档服务未完整配置（需启用、Base URL 与 Token）',
-      );
+      throw const DocumentServiceException('文档服务未完整配置（需启用、Base URL 与 Token）');
     }
     if (fileBytes.isEmpty) {
       throw const DocumentServiceException('文件为空', code: 'patch_invalid');
@@ -223,7 +223,7 @@ class DocumentServiceClient {
   }
 
   /// Sanitize a download filename from the document service (or any untrusted
-  /// header). Rejects path segments, `..`, NULs and control characters.
+  /// header). Removes path segments and rejects NULs and control characters.
   ///
   /// Returns [fallback] (also sanitized) when [raw] is null/empty/hostile.
   static String sanitizeDownloadFilename(
@@ -249,7 +249,7 @@ class DocumentServiceClient {
       name = name.substring(cut + 1).trim();
     }
     if (name.isEmpty || name == '.' || name == '..') return null;
-    if (name.contains('..') || name.contains('\x00')) return null;
+    if (name.contains('\x00')) return null;
     // Strip C0 controls + DEL (headers can embed \r\n for response splitting).
     if (RegExp(r'[\x00-\x1f\x7f]').hasMatch(name)) return null;
     if (name.length > DocumentPatch.maxOutputFilenameLength) {

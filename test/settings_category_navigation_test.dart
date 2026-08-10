@@ -203,7 +203,7 @@ void main() {
     );
 
     expect(find.text('多媒体能力（可选）'), findsNothing);
-    expect(find.text('流式实时 Markdown'), findsOneWidget);
+    expect(find.text('明暗模式'), findsOneWidget);
 
     await tester.tap(find.text('数据'));
     await tester.pumpAndSettle();

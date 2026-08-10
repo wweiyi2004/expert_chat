@@ -23,8 +23,7 @@ class ContextWindowReport {
   /// True when an extractive rolling summary of dropped history was injected.
   final bool summaryInjected;
 
-  bool get managed =>
-      droppedMessages > 0 || truncated || summaryInjected;
+  bool get managed => droppedMessages > 0 || truncated || summaryInjected;
 
   double get fraction =>
       inputBudgetTokens <= 0 ? 0 : sentTokens / inputBudgetTokens;
@@ -34,9 +33,7 @@ class ContextWindowReport {
     if (!managed) {
       return '上下文约 $sentTokens / $inputBudgetTokens tokens';
     }
-    final parts = <String>[
-      '上下文约 $sentTokens / $inputBudgetTokens tokens',
-    ];
+    final parts = <String>['上下文约 $sentTokens / $inputBudgetTokens tokens'];
     if (droppedMessages > 0) {
       parts.add('省略较早 $droppedMessages 条');
     }
@@ -199,7 +196,10 @@ class ContextWindowManager {
     // --- Phase 3: token-pack selected units (newest first) ---
     var remaining = budget - estimateMessagesTokens(managedSystem);
     // Reserve a slice for optional summary so we don't fill 100% then fail inject.
-    final summaryReserve = (remaining * 0.12).floor().clamp(0, maxSummaryTokens);
+    final summaryReserve = (remaining * 0.12).floor().clamp(
+      0,
+      maxSummaryTokens,
+    );
     var packRemaining = remaining - summaryReserve;
 
     final keptNewestFirst = <int>[];
@@ -233,8 +233,10 @@ class ContextWindowManager {
     var summaryInjected = false;
     LlmRequestMessage? summaryMessage;
     if (droppedUnits.isNotEmpty) {
-      final summaryBudget = (summaryReserve + packRemaining)
-          .clamp(48, maxSummaryTokens);
+      final summaryBudget = (summaryReserve + packRemaining).clamp(
+        48,
+        maxSummaryTokens,
+      );
       final summaryText = _buildDroppedSummary(droppedUnits, summaryBudget);
       if (summaryText.isNotEmpty) {
         summaryMessage = LlmRequestMessage(
@@ -246,8 +248,10 @@ class ContextWindowManager {
         if (summaryCost > summaryReserve + packRemaining) {
           final clipped = _clipStart(
             summaryText,
-            (summaryReserve + packRemaining - _messageOverheadTokens)
-                .clamp(32, maxSummaryTokens),
+            (summaryReserve + packRemaining - _messageOverheadTokens).clamp(
+              32,
+              maxSummaryTokens,
+            ),
           );
           summaryMessage = LlmRequestMessage(
             role: MessageRole.system,
@@ -291,7 +295,7 @@ class ContextWindowManager {
 
     final managed = <LlmRequestMessage>[
       ...managedSystem,
-      if (summaryMessage != null) summaryMessage,
+      ?summaryMessage,
       ...packedConversation,
     ];
     final sentTokens = estimateMessagesTokens(managed);

@@ -35,7 +35,8 @@ class _DirectorStorySetupPageState
     extends ConsumerState<DirectorStorySetupPage> {
   static const _beatOptions = <int>[4, 6, 8, 10, 12, 16, 20];
 
-  /// Light-novel oriented genre chips (default prose style is jp_ln).
+  /// Genre chips may suggest a prose style, but an unspecified genre no longer
+  /// silently forces the whole story into light-novel prose.
   static const _genreOptions = <({String id, String label, String? styleId})>[
     (id: 'school', label: '学园日常', styleId: 'jp_ln'),
     (id: 'isekai', label: '异世界', styleId: 'jp_ln'),
@@ -77,8 +78,10 @@ class _DirectorStorySetupPageState
 
   /// Novel target length in characters; 0 = unlimited.
   var _targetTotalChars = 80000;
+
   /// Default off: faster first draft; power users can enable in 更多设置.
   var _strictReview = false;
+
   /// Collapse styles / beats / length so the happy path is one premise field.
   var _showAdvanced = false;
   var _generating = false;
@@ -90,8 +93,8 @@ class _DirectorStorySetupPageState
   String? _error;
   String? _notice;
 
-  /// Multi-select hard prose styles. Default: 日本轻小说.
-  final Set<String> _styleIds = {'jp_ln'};
+  /// Multi-select prose preferences. Empty means the model follows the premise.
+  final Set<String> _styleIds = {};
 
   /// Opening interview before the freeform editor.
   var _phase = _SetupPhase.interview;
@@ -151,16 +154,12 @@ class _DirectorStorySetupPageState
         if (_interviewGenres.contains(g.id)) g.label,
     ];
     final hook = _interviewHook.text.trim();
-    final extra = _interviewConstraint.text.trim();
     final buf = StringBuffer();
     if (genres.isNotEmpty) {
       buf.writeln('【想要的类型】${genres.join('、')}');
     }
     if (hook.isNotEmpty) {
       buf.writeln('【主线剧情】$hook');
-    }
-    if (extra.isNotEmpty) {
-      buf.writeln('【必须做到 / 不要出现】$extra');
     }
     return buf.toString().trim();
   }
@@ -175,19 +174,13 @@ class _DirectorStorySetupPageState
     final premise = composed.isEmpty ? hook : composed;
     final constraint = _interviewConstraint.text.trim();
 
-    // Map genres → prose styles, always keep 日本轻小说 unless a conflicting
-    // perspective style is already forced by a genre chip.
+    // Map only explicit genre choices to prose styles. The premise and the
+    // constraint field stay separate so the same rule is not stored twice.
     var nextStyles = <String>{};
     for (final g in _genreOptions) {
       if (_interviewGenres.contains(g.id) && g.styleId != null) {
         nextStyles = DirectorProseStyle.toggleSelection(nextStyles, g.styleId!);
       }
-    }
-    final hasPerspective = nextStyles.any(
-      (id) => DirectorProseStyle.byId(id)?.exclusiveGroup == 'perspective',
-    );
-    if (!hasPerspective) {
-      nextStyles = DirectorProseStyle.toggleSelection(nextStyles, 'jp_ln');
     }
     _styleIds
       ..clear()
@@ -218,8 +211,9 @@ class _DirectorStorySetupPageState
       0 => true, // genre optional
       1 => _interviewHook.text.trim().isNotEmpty,
       2 => true,
-      3 => _interviewHook.text.trim().isNotEmpty ||
-          _composePremiseFromInterview().isNotEmpty,
+      3 =>
+        _interviewHook.text.trim().isNotEmpty ||
+            _composePremiseFromInterview().isNotEmpty,
       _ => false,
     };
   }
@@ -268,16 +262,11 @@ class _DirectorStorySetupPageState
     _suppressDraftSave = true;
     _premise.text = saved.premise;
     _requirements.text = saved.requirements;
-    final hadNoSavedStyles = saved.styleIds.isEmpty;
     _styleIds
       ..clear()
       ..addAll(
         saved.styleIds.where((id) => DirectorProseStyle.byId(id) != null),
       );
-    // Old drafts may have no style chip; default to 日本轻小说.
-    if (_styleIds.isEmpty) {
-      _styleIds.add('jp_ln');
-    }
     // Restore the saved values even when they are not in the current preset
     // options; otherwise the draft silently falls back to 8 / 80000 and the
     // generation fingerprint no longer matches the restored input.
@@ -293,19 +282,6 @@ class _DirectorStorySetupPageState
       var fingerprint = saved.generationFingerprint.trim().isEmpty
           ? _generationFingerprint()
           : saved.generationFingerprint;
-      // Injecting default jp_ln changes merged requirements. Realign when the
-      // stored fingerprint had empty requirements so upgrades are not blocked.
-      if (hadNoSavedStyles) {
-        try {
-          final map = jsonDecode(fingerprint) as Map<String, dynamic>;
-          final storedReq = (map['requirements'] as String?)?.trim() ?? '';
-          if (storedReq.isEmpty) {
-            fingerprint = _generationFingerprint();
-          }
-        } catch (_) {
-          fingerprint = _generationFingerprint();
-        }
-      }
       _draftInputFingerprint = fingerprint;
       _title.text = generated.title;
       _outline.text = generated.outline;
@@ -405,9 +381,7 @@ class _DirectorStorySetupPageState
     _interviewHook.clear();
     _interviewConstraint.clear();
     setState(() {
-      _styleIds
-        ..clear()
-        ..add('jp_ln');
+      _styleIds.clear();
       _interviewGenres.clear();
       _interviewStep = 0;
       _phase = _SetupPhase.interview;
@@ -528,7 +502,7 @@ class _DirectorStorySetupPageState
       final generated = await ready.assist.generateDirectorStory(
         config: ready.config,
         premise: premise,
-        // Hard creative constraints — styles + freeform, not mere flavor.
+        // Typed prose preferences plus the separate full-book constraints.
         requirements: requirements.isEmpty ? null : requirements,
         length: lengthParts.join('；'),
         expectedBeatCount: beatCount,
@@ -567,28 +541,18 @@ class _DirectorStorySetupPageState
     setState(() => _notice = '正在取消生成…');
   }
 
-  /// One-tap path: generate cast+outline (no strict review) then open chat.
+  /// One-tap path: generate cast+outline, respecting the current review option,
+  /// then open chat.
   Future<void> _quickStart() async {
     if (_busy) return;
     if (!(_formKey.currentState?.validate() ?? false)) return;
-    // Prefer speed for the happy path; advanced strict review still available
-    // via「仅生成方案」when expanded.
-    final wasStrict = _strictReview;
-    setState(() => _strictReview = false);
     await _generateDraft();
     if (!mounted) return;
-    if (_draft == null || _error != null) {
-      setState(() => _strictReview = wasStrict);
-      return;
-    }
-    // Draft fingerprint was recorded with strictReview=false. Restore the UI
-    // preference only after start, and skip the guard so restoring true cannot
-    // falsely block「一句话开书」.
-    await _startStory(skipFingerprintCheck: true);
-    if (mounted) setState(() => _strictReview = wasStrict);
+    if (_draft == null || _error != null) return;
+    await _startStory();
   }
 
-  Future<void> _startStory({bool skipFingerprintCheck = false}) async {
+  Future<void> _startStory() async {
     if (_busy) return;
     final draft = _draft;
     if (draft == null) {
@@ -596,8 +560,7 @@ class _DirectorStorySetupPageState
       return;
     }
     if (!(_formKey.currentState?.validate() ?? false)) return;
-    if (!skipFingerprintCheck &&
-        _draftInputFingerprint != _generationFingerprint()) {
+    if (_draftInputFingerprint != _generationFingerprint()) {
       setState(
         () => _error =
             '故事情节、文风、创作要求、节拍、篇幅或审稿设置已变化，请先重新生成方案。'
@@ -703,227 +666,224 @@ class _DirectorStorySetupPageState
                 if (_phase == _SetupPhase.interview)
                   _buildInterview(context, scheme)
                 else ...[
-                _IntroCard(scheme: scheme),
-                if (_restoredDraftNotice) ...[
+                  _IntroCard(scheme: scheme),
+                  if (_restoredDraftNotice) ...[
+                    const SizedBox(height: 12),
+                    _InlineStatus(
+                      icon: Icons.restore_rounded,
+                      message: '已恢复上次未完成的故事草稿。',
+                      color: scheme.primary,
+                      onDismiss: () =>
+                          setState(() => _restoredDraftNotice = false),
+                    ),
+                  ],
+                  if (modelConfigured == false) ...[
+                    const SizedBox(height: 12),
+                    const _ApiSetupWarning(),
+                  ],
                   const SizedBox(height: 12),
-                  _InlineStatus(
-                    icon: Icons.restore_rounded,
-                    message: '已恢复上次未完成的故事草稿。',
-                    color: scheme.primary,
-                    onDismiss: () =>
-                        setState(() => _restoredDraftNotice = false),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      key: const ValueKey('director-restart-interview'),
+                      onPressed: _busy ? null : _restartInterview,
+                      icon: const Icon(Icons.chat_bubble_outline, size: 18),
+                      label: const Text('重新问我想写什么'),
+                    ),
                   ),
-                ],
-                if (modelConfigured == false) ...[
+                  const SizedBox(height: 8),
+                  Text('故事种子', style: Theme.of(context).textTheme.titleLarge),
+                  const SizedBox(height: 6),
+                  Text(
+                    '由访谈生成，可直接改。点下方开书即可进聊天。',
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
                   const SizedBox(height: 12),
-                  const _ApiSetupWarning(),
-                ],
-                const SizedBox(height: 12),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: TextButton.icon(
-                    key: const ValueKey('director-restart-interview'),
-                    onPressed: _busy ? null : _restartInterview,
-                    icon: const Icon(Icons.chat_bubble_outline, size: 18),
-                    label: const Text('重新问我想写什么'),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text('故事种子', style: Theme.of(context).textTheme.titleLarge),
-                const SizedBox(height: 6),
-                Text(
-                  '由访谈生成，可直接改。点下方开书即可进聊天。',
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: scheme.onSurfaceVariant,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                TextFormField(
-                  controller: _premise,
-                  enabled: !_busy,
-                  minLines: 4,
-                  maxLines: 9,
-                  textInputAction: TextInputAction.newline,
-                  decoration: const InputDecoration(
-                    labelText: '故事情节 *',
-                    alignLabelWithHint: true,
-                    hintText: '例如：一列永远到不了终点的夜车上，失忆的乘客逐渐发现，每个人都曾在同一天见过彼此。',
-                  ),
-                  validator: (value) =>
-                      value == null || value.trim().isEmpty ? '请先输入故事情节' : null,
-                ),
-                const SizedBox(height: 8),
-                ExpansionTile(
-                  key: const ValueKey('director-advanced-settings'),
-                  initiallyExpanded: _showAdvanced,
-                  tilePadding: EdgeInsets.zero,
-                  childrenPadding: const EdgeInsets.only(bottom: 8),
-                  title: Text(
-                    '更多设置（文风 / 节拍 / 字数 / 审稿）',
-                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.w700,
+                  TextFormField(
+                    controller: _premise,
+                    enabled: !_busy,
+                    minLines: 4,
+                    maxLines: 9,
+                    textInputAction: TextInputAction.newline,
+                    decoration: const InputDecoration(
+                      labelText: '故事情节 *',
+                      alignLabelWithHint: true,
+                      hintText: '例如：一列永远到不了终点的夜车上，失忆的乘客逐渐发现，每个人都曾在同一天见过彼此。',
                     ),
+                    validator: (value) => value == null || value.trim().isEmpty
+                        ? '请先输入故事情节'
+                        : null,
                   ),
-                  subtitle: Text(
-                    _showAdvanced
-                        ? '收起后仍会记住你的选择'
-                        : '可选 · 不展开也能直接开书',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                  onExpansionChanged: (open) =>
-                      setState(() => _showAdvanced = open),
-                  children: [
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: Text(
-                        '强制文风',
-                        style: Theme.of(context).textTheme.titleSmall,
+                  const SizedBox(height: 8),
+                  ExpansionTile(
+                    key: const ValueKey('director-advanced-settings'),
+                    initiallyExpanded: _showAdvanced,
+                    tilePadding: EdgeInsets.zero,
+                    childrenPadding: const EdgeInsets.only(bottom: 8),
+                    title: Text(
+                      '更多设置（文风 / 节拍 / 字数 / 审稿）',
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w700,
                       ),
                     ),
-                    const SizedBox(height: 8),
-                    Wrap(
-                      key: const ValueKey('director-prose-style-chips'),
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: [
-                        for (final style in DirectorProseStyle.presets)
-                          FilterChip(
-                            key: ValueKey('director-style-${style.id}'),
-                            selected: _styleIds.contains(style.id),
-                            label: Text(style.label),
-                            tooltip: style.constraint,
-                            onSelected: _busy
-                                ? null
-                                : (_) => _toggleStyle(style.id),
-                          ),
-                      ],
+                    subtitle: Text(
+                      _showAdvanced ? '收起后仍会记住你的选择' : '可选 · 不展开也能直接开书',
+                      style: Theme.of(context).textTheme.bodySmall,
                     ),
-                    const SizedBox(height: 12),
-                    TextFormField(
-                      controller: _requirements,
-                      enabled: !_busy,
-                      minLines: 2,
-                      maxLines: 5,
-                      decoration: const InputDecoration(
-                        labelText: '其它创作要求 / 硬性约束（可选）',
-                        alignLabelWithHint: true,
-                        hintText: '例如：慢热；禁止提前揭晓真相；不要加入超自然元素',
-                        helperText: '与文风一并写入导演说明，每一节演绎强制遵守',
-                        helperMaxLines: 2,
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    DropdownButtonFormField<int>(
-                      initialValue: _beatCount,
-                      isExpanded: true,
-                      decoration: const InputDecoration(
-                        labelText: '大纲节拍数',
-                        helperText: '节拍越多故事越长；生成后仍可改大纲。',
-                        helperMaxLines: 2,
-                      ),
-                      items: [
-                        for (final count in _effectiveBeatOptions)
-                          DropdownMenuItem(
-                            value: count,
-                            child: Text('$count 个节拍'),
-                          ),
-                      ],
-                      onChanged: _busy
-                          ? null
-                          : (value) {
-                              if (value != null) {
-                                setState(() => _beatCount = value);
-                                _scheduleDraftSave();
-                              }
-                            },
-                    ),
-                    const SizedBox(height: 12),
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: Text(
-                        '小说总字数',
-                        style: Theme.of(context).textTheme.titleSmall,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: [
-                        for (final preset in StoryLengthBudget.presets)
-                          ChoiceChip(
-                            key: ValueKey('director-len-${preset.chars}'),
-                            label: Text(preset.label),
-                            selected: _targetTotalChars == preset.chars,
-                            onSelected: _busy
-                                ? null
-                                : (_) {
-                                    setState(
-                                      () => _targetTotalChars = preset.chars,
-                                    );
-                                    _scheduleDraftSave();
-                                  },
-                          ),
-                      ],
-                    ),
-                    if (_targetTotalChars > 0) ...[
-                      const SizedBox(height: 6),
+                    onExpansionChanged: (open) =>
+                        setState(() => _showAdvanced = open),
+                    children: [
                       Align(
                         alignment: Alignment.centerLeft,
                         child: Text(
-                          '目标约 ${StoryLengthBudget.formatChars(_targetTotalChars)}字'
-                          '（按 $_beatCount 拍均分）',
-                          style: Theme.of(context).textTheme.labelMedium
-                              ?.copyWith(
-                                color: scheme.primary,
-                                fontWeight: FontWeight.w600,
-                              ),
+                          '文风偏好',
+                          style: Theme.of(context).textTheme.titleSmall,
                         ),
                       ),
-                    ],
-                    SwitchListTile(
-                      key: const ValueKey('director-strict-review'),
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text('严格审稿'),
-                      subtitle: const Text(
-                        '生成后再检查情节与禁忌；会多一次模型调用，更慢。',
+                      const SizedBox(height: 8),
+                      Wrap(
+                        key: const ValueKey('director-prose-style-chips'),
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          for (final style in DirectorProseStyle.presets)
+                            FilterChip(
+                              key: ValueKey('director-style-${style.id}'),
+                              selected: _styleIds.contains(style.id),
+                              label: Text(style.label),
+                              tooltip: style.constraint,
+                              onSelected: _busy
+                                  ? null
+                                  : (_) => _toggleStyle(style.id),
+                            ),
+                        ],
                       ),
-                      value: _strictReview,
-                      onChanged: _busy
-                          ? null
-                          : (value) {
-                              setState(() => _strictReview = value);
-                              _scheduleDraftSave();
-                            },
+                      const SizedBox(height: 12),
+                      TextFormField(
+                        controller: _requirements,
+                        enabled: !_busy,
+                        minLines: 2,
+                        maxLines: 5,
+                        decoration: const InputDecoration(
+                          labelText: '其它创作要求 / 硬性约束（可选）',
+                          alignLabelWithHint: true,
+                          hintText: '例如：慢热；禁止提前揭晓真相；不要加入超自然元素',
+                          helperText: '作为全书硬约束单独保存；不会重复写入故事情节。',
+                          helperMaxLines: 2,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<int>(
+                        initialValue: _beatCount,
+                        isExpanded: true,
+                        decoration: const InputDecoration(
+                          labelText: '大纲节拍数',
+                          helperText: '节拍越多故事越长；生成后仍可改大纲。',
+                          helperMaxLines: 2,
+                        ),
+                        items: [
+                          for (final count in _effectiveBeatOptions)
+                            DropdownMenuItem(
+                              value: count,
+                              child: Text('$count 个节拍'),
+                            ),
+                        ],
+                        onChanged: _busy
+                            ? null
+                            : (value) {
+                                if (value != null) {
+                                  setState(() => _beatCount = value);
+                                  _scheduleDraftSave();
+                                }
+                              },
+                      ),
+                      const SizedBox(height: 12),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          '小说总字数',
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          for (final preset in StoryLengthBudget.presets)
+                            ChoiceChip(
+                              key: ValueKey('director-len-${preset.chars}'),
+                              label: Text(preset.label),
+                              selected: _targetTotalChars == preset.chars,
+                              onSelected: _busy
+                                  ? null
+                                  : (_) {
+                                      setState(
+                                        () => _targetTotalChars = preset.chars,
+                                      );
+                                      _scheduleDraftSave();
+                                    },
+                            ),
+                        ],
+                      ),
+                      if (_targetTotalChars > 0) ...[
+                        const SizedBox(height: 6),
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            '目标约 ${StoryLengthBudget.formatChars(_targetTotalChars)}字'
+                            '（按 $_beatCount 拍均分）',
+                            style: Theme.of(context).textTheme.labelMedium
+                                ?.copyWith(
+                                  color: scheme.primary,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                          ),
+                        ),
+                      ],
+                      SwitchListTile(
+                        key: const ValueKey('director-strict-review'),
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('严格审稿'),
+                        subtitle: const Text('生成后再检查情节与禁忌；会多一次模型调用，更慢。'),
+                        value: _strictReview,
+                        onChanged: _busy
+                            ? null
+                            : (value) {
+                                setState(() => _strictReview = value);
+                                _scheduleDraftSave();
+                              },
+                      ),
+                    ],
+                  ),
+                  if (_generating) ...[
+                    const SizedBox(height: 18),
+                    const _GeneratingCard(),
+                  ],
+                  if (_error != null) ...[
+                    const SizedBox(height: 14),
+                    _InlineStatus(
+                      icon: Icons.error_outline,
+                      message: _error!,
+                      color: scheme.error,
+                      onDismiss: () => setState(() => _error = null),
                     ),
                   ],
-                ),
-                if (_generating) ...[
-                  const SizedBox(height: 18),
-                  const _GeneratingCard(),
-                ],
-                if (_error != null) ...[
-                  const SizedBox(height: 14),
-                  _InlineStatus(
-                    icon: Icons.error_outline,
-                    message: _error!,
-                    color: scheme.error,
-                    onDismiss: () => setState(() => _error = null),
-                  ),
-                ],
-                if (_notice != null) ...[
-                  const SizedBox(height: 14),
-                  _InlineStatus(
-                    icon: Icons.info_outline,
-                    message: _notice!,
-                    color: scheme.primary,
-                    onDismiss: () => setState(() => _notice = null),
-                  ),
-                ],
-                if (_draft != null) ...[
-                  const SizedBox(height: 28),
-                  _buildDraftEditor(context, _draft!),
-                ],
+                  if (_notice != null) ...[
+                    const SizedBox(height: 14),
+                    _InlineStatus(
+                      icon: Icons.info_outline,
+                      message: _notice!,
+                      color: scheme.primary,
+                      onDismiss: () => setState(() => _notice = null),
+                    ),
+                  ],
+                  if (_draft != null) ...[
+                    const SizedBox(height: 28),
+                    _buildDraftEditor(context, _draft!),
+                  ],
                 ], // end editor phase
               ],
             ),
@@ -937,17 +897,12 @@ class _DirectorStorySetupPageState
   Widget _buildInterview(BuildContext context, ColorScheme scheme) {
     const totalSteps = 4;
     final step = _interviewStep.clamp(0, totalSteps - 1);
-    final titles = [
-      '你想写什么类型的轻小说？',
-      '主线剧情是什么？',
-      '有没有必须遵守的点？',
-      '确认一下，是这个意思吗？',
-    ];
+    final titles = ['你想写什么类型的故事？', '主线剧情是什么？', '有没有必须遵守的点？', '确认一下，是这个意思吗？'];
     final subtitles = [
-      '可多选。默认日轻文风（对白驱动），没有想法也可以跳过。',
+      '可多选。类型只提供适合的文风建议；没有想法也可以跳过。',
       '谁、在哪、发生了什么；可顺带写主角与 1～2 个关键配角的关系。',
       '可选。例如：HE、慢热、禁止后宫、不要系统面板、第一人称…',
-      '确认后可直接开书；默认按日本轻小说「一场戏」节奏写第一节。',
+      '确认后可直接开书；每次围绕一个明确场景目标写作。',
     ];
 
     return Column(
@@ -988,9 +943,9 @@ class _DirectorStorySetupPageState
         const SizedBox(height: 4),
         Text(
           subtitles[step],
-          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-            color: scheme.onSurfaceVariant,
-          ),
+          style: Theme.of(
+            context,
+          ).textTheme.bodyMedium?.copyWith(color: scheme.onSurfaceVariant),
         ),
         const SizedBox(height: 12),
         if (step == 0)
@@ -1016,8 +971,7 @@ class _DirectorStorySetupPageState
             decoration: const InputDecoration(
               labelText: '主线剧情 *',
               alignLabelWithHint: true,
-              hintText:
-                  '例如：失忆少女在永远到不了站的夜车上醒来，发现每位乘客的车票日期都是自己的忌日…',
+              hintText: '例如：失忆少女在永远到不了站的夜车上醒来，发现每位乘客的车票日期都是自己的忌日…',
             ),
             onChanged: (_) => setState(() {}),
           ),
@@ -1046,17 +1000,17 @@ class _DirectorStorySetupPageState
               _composePremiseFromInterview().isEmpty
                   ? '（还没有主线，请返回上一步填写）'
                   : _composePremiseFromInterview(),
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                height: 1.45,
-              ),
+              style: Theme.of(
+                context,
+              ).textTheme.bodyMedium?.copyWith(height: 1.45),
             ),
           ),
           const SizedBox(height: 10),
           Text(
             '确认无误可直接「按此开书」；若想再改字句，选「填入后自己改」。',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: scheme.onSurfaceVariant,
-            ),
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
           ),
         ],
         if (_error != null) ...[
@@ -1255,9 +1209,7 @@ class _DirectorStorySetupPageState
                                 ),
                               )
                             : const Icon(Icons.chat_rounded),
-                        label: Text(
-                          _starting ? '正在进入聊天…' : '进入聊天 · 写第一节',
-                        ),
+                        label: Text(_starting ? '正在进入聊天…' : '进入聊天 · 写第一场'),
                       );
 
                       if (constraints.maxWidth < 520) {
@@ -1322,9 +1274,9 @@ class _DirectorStorySetupPageState
             onPressed: _busy
                 ? null
                 : () => setState(() {
-                      _interviewStep = 1;
-                      _error = null;
-                    }),
+                    _interviewStep = 1;
+                    _error = null;
+                  }),
             child: const Text('返回改主线'),
           ),
           skipButton,
@@ -1344,9 +1296,9 @@ class _DirectorStorySetupPageState
                   onPressed: _busy
                       ? null
                       : () => setState(() {
-                            _interviewStep -= 1;
-                            _error = null;
-                          }),
+                          _interviewStep -= 1;
+                          _error = null;
+                        }),
                   child: const Text('上一步'),
                 ),
               ),
@@ -1413,15 +1365,15 @@ class _IntroCard extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    compact ? '先聊聊你想写什么轻小说' : '像聊天一样写轻小说',
+                    compact ? '先聊聊你想写什么故事' : '像聊天一样写故事',
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
                   const SizedBox(height: 4),
                   Text(
                     compact
-                        ? '类型 → 主线 → 禁忌 → 开书。默认日轻：对白为主、一场戏一推进。'
-                        : '写清情节 → 点「一句话开书」→ 进聊天写第一节（日轻场景公式）。'
-                            '之后在聊天里发导演指令或点「写下一节」即可。',
+                        ? '类型 → 主线 → 约束 → 开书。文风只在你选择后生效。'
+                        : '写清情节 → 点「一句话开书」→ 进聊天写第一场。'
+                              '之后可发导演指令、写下一场或续写当前场。',
                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                       color: scheme.onSurfaceVariant,
                     ),
@@ -1429,7 +1381,7 @@ class _IntroCard extends StatelessWidget {
                   if (!compact) ...[
                     const SizedBox(height: 6),
                     Text(
-                      '默认文风为「日本轻小说」；其它文风可在「更多设置」里改。草稿会自动保存在本机。',
+                      '没有默认强制文风；可在「更多设置」中组合文体、类型语气与叙事视角。草稿会自动保存在本机。',
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         color: scheme.primary,
                         fontWeight: FontWeight.w600,

@@ -16,7 +16,8 @@ import '../domain/media/image_codec_util.dart';
 import '../domain/media/image_edit_reference.dart';
 import '../domain/media/image_prompt_safety.dart';
 import '../domain/notify/generation_notify.dart';
-import '../domain/story/story_length_budget.dart';
+import '../domain/story/story_constraint_compiler.dart';
+import '../domain/story/story_generation_intent.dart';
 import '../domain/story/story_prompt_assembler.dart';
 import '../domain/document/document_convert.dart';
 import '../domain/document/document_edit_tools.dart';
@@ -82,6 +83,7 @@ class ChatRetryOperation {
     required this.assistantMessageId,
     this.promptPlotCursor,
     this.commitPlotAdvance = false,
+    this.storyIntent,
     this.ensembleSpeakerId,
   });
 
@@ -94,6 +96,9 @@ class ChatRetryOperation {
 
   /// Whether a successful retry should commit one plot beat.
   final bool commitPlotAdvance;
+
+  /// Director-story action used to rebuild the same scoped prompt on retry.
+  final StoryGenerationIntent? storyIntent;
 
   /// Speaker to preserve when retrying an ensemble turn.
   final String? ensembleSpeakerId;
@@ -465,7 +470,13 @@ class ChatController extends AsyncNotifier<ChatState> {
 
   void newConversation() {
     // Chat / story / ensemble are separate: only reuse an unused *chat*.
-    final existing = _findUnusedSession(ConversationMode.chat);
+    // Once a turn has entered preflight, its origin session is reserved even
+    // though the user message has not been appended yet. Reusing that blank
+    // session here would make “new conversation” keep the same id and let the
+    // pending turn appear in the view the user tried to leave.
+    final existing = _starting
+        ? null
+        : _findUnusedSession(ConversationMode.chat);
     if (existing != null) {
       _selectExistingSession(existing);
       return;
@@ -609,12 +620,11 @@ class ChatController extends AsyncNotifier<ChatState> {
     final premiseText = premise.trim();
     final noteText = authorNote.trim();
     final reqText = requirements.trim();
-    // Constraints first so later clipping keeps the hard rules.
-    final combinedNote = [
-      if (reqText.isNotEmpty) '【硬性创作约束】（不可违背）\n$reqText',
-      if (noteText.isNotEmpty) noteText,
-      if (premiseText.isNotEmpty) '【故事原始情节】（核心基调与事件不可擅自改写）\n$premiseText',
-    ].join('\n\n');
+    final combinedNote = StoryConstraintCompiler.compile(
+      premise: premiseText,
+      requirements: reqText,
+      persistentNote: noteText,
+    );
     final resolvedTitle = title.trim().isEmpty
         ? (premiseText.isEmpty ? '导演故事' : premiseText)
         : title.trim();
@@ -822,11 +832,22 @@ class ChatController extends AsyncNotifier<ChatState> {
     updateStoryMeta(plotCursor: next);
   }
 
-  /// Generate the next plot beat (visible user turn "（推进情节）").
-  Future<void> advancePlot() async {
+  /// Write the next unwritten outline beat as one scene.
+  Future<void> advancePlot() =>
+      _runStorySceneTurn(StoryGenerationIntent.nextScene);
+
+  /// Continue the most recently written scene without moving the outline.
+  Future<void> continueCurrentScene() =>
+      _runStorySceneTurn(StoryGenerationIntent.continueScene);
+
+  Future<void> _runStorySceneTurn(StoryGenerationIntent intent) async {
     if (_s.isStreaming || _starting) return;
     final convo = _s.current;
     if (convo == null || !convo.isStory) return;
+    if (intent != StoryGenerationIntent.nextScene &&
+        intent != StoryGenerationIntent.continueScene) {
+      return;
+    }
 
     _starting = true;
     _cancelStart = false;
@@ -839,29 +860,33 @@ class ChatController extends AsyncNotifier<ChatState> {
           ? null
           : convo.activePath.last.id;
       // A failed first attempt leaves an empty assistant placeholder on the
-      // path; until a director reply actually landed, keep cueing 开始第一节.
+      // path; until a director reply actually landed, keep cueing 开始第一场.
       final firstSectionPending =
           convo.plotCursor == 0 &&
           !convo.activePath.any(
             (m) =>
-                m.role == MessageRole.assistant &&
-                m.content.trim().isNotEmpty,
+                m.role == MessageRole.assistant && m.content.trim().isNotEmpty,
           );
       final beats = convo.outlineBeats;
-      final beatIndex = convo.plotCursor.clamp(
+      final promptCursor =
+          intent == StoryGenerationIntent.continueScene &&
+              !firstSectionPending &&
+              convo.plotCursor > 0
+          ? convo.plotCursor - 1
+          : convo.plotCursor;
+      final beatIndex = promptCursor.clamp(
         0,
         beats.isEmpty ? 0 : beats.length - 1,
       );
       final beatLine = beats.isEmpty
           ? ''
           : '\n当前节拍 ${beatIndex + 1}/${beats.length}：${beats[beatIndex]}';
-      final directorCue = firstSectionPending
-          ? '（导演：开始第一节）$beatLine\n'
-                '请按轻小说「一场戏」写：对白为主、对白用「」、收束留小钩子；'
-                '直接输出正文，不要复述大纲。'
-          : '（导演：继续下一节）$beatLine\n'
-                '请按轻小说「一场戏」写：对白为主、对白用「」、收束留小钩子；'
-                '直接输出正文，不要复述大纲。';
+      final directorCue = switch (intent) {
+        StoryGenerationIntent.continueScene =>
+          '（导演：续写当前场）$beatLine\n从上一段停顿处继续，保持场景连续。',
+        _ when firstSectionPending => '（导演：开始第一场）$beatLine\n围绕当前目标写一场完整的戏。',
+        _ => '（导演：写下一场）$beatLine\n围绕当前目标写一场完整的戏。',
+      };
       final userMsg = ChatMessage(
         role: MessageRole.user,
         content: convo.localCast.isNotEmpty ? directorCue : '（推进情节）$beatLine',
@@ -892,7 +917,9 @@ class ChatController extends AsyncNotifier<ChatState> {
         searchQuery: '',
         thinking: _s.deepThink,
         advancePlot: true,
-        commitPlotAdvance: true,
+        promptPlotCursor: promptCursor,
+        commitPlotAdvance: intent.advancesOutline,
+        storyIntent: intent,
       );
     } finally {
       _finishStarting();
@@ -901,16 +928,8 @@ class ChatController extends AsyncNotifier<ChatState> {
 
   /// User bubbles that mean "advance the outline", including director cues.
   static bool isPlotAdvanceUserContent(String content) {
-    final c = content.trim();
-    if (c == '（推进情节）' ||
-        c == '（导演：继续下一节）' ||
-        c == '（导演：开始第一节）') {
-      return true;
-    }
-    // Newer cues append the current beat text under the same markers.
-    return c.startsWith('（推进情节）') ||
-        c.startsWith('（导演：继续下一节）') ||
-        c.startsWith('（导演：开始第一节）');
+    return StoryGenerationIntentResolver.fromUserText(content) ==
+        StoryGenerationIntent.nextScene;
   }
 
   /// One AI line from the next cast member (round-robin).
@@ -1182,6 +1201,7 @@ class ChatController extends AsyncNotifier<ChatState> {
   Future<bool> sendMessage(
     String text, {
     List<Attachment> attachments = const [],
+
     /// When true, force the model to call [edit_document] (manual「改文档」).
     bool forceDocumentEdit = false,
   }) async {
@@ -1275,6 +1295,9 @@ class ChatController extends AsyncNotifier<ChatState> {
         settings: settings,
         searchQuery: userContent,
         thinking: _s.deepThink,
+        storyIntent: convo.isStory && convo.localCast.isNotEmpty
+            ? StoryGenerationIntentResolver.fromUserText(userContent)
+            : null,
         forceDocumentEdit: forceDocumentEdit,
       );
       return true;
@@ -1365,6 +1388,9 @@ class ChatController extends AsyncNotifier<ChatState> {
         settings: turnSettings,
         searchQuery: trimmed,
         thinking: _s.deepThink,
+        storyIntent: convo.isStory && convo.localCast.isNotEmpty
+            ? StoryGenerationIntentResolver.fromUserText(trimmed)
+            : null,
       );
     } finally {
       _finishStarting();
@@ -1417,6 +1443,11 @@ class ChatController extends AsyncNotifier<ChatState> {
     // the cursor used to assemble this prompt. Mutating the conversation itself
     // here made a successful rewrite permanently roll progress back one beat.
     final advanceCue = isPlotAdvanceUserContent(userMsg.content);
+    final storyIntent =
+        retryOperation?.storyIntent ??
+        (convo.isStory && convo.localCast.isNotEmpty
+            ? StoryGenerationIntentResolver.fromUserText(userMsg.content)
+            : null);
     int? promptPlotCursor = retryOperation?.promptPlotCursor;
     var commitAdvance = retryOperation?.commitPlotAdvance ?? false;
     final priorSucceeded =
@@ -1473,6 +1504,7 @@ class ChatController extends AsyncNotifier<ChatState> {
         advancePlot: advanceCue,
         promptPlotCursor: promptPlotCursor,
         commitPlotAdvance: commitAdvance,
+        storyIntent: storyIntent,
       );
     } finally {
       _finishStarting();
@@ -2100,6 +2132,7 @@ class ChatController extends AsyncNotifier<ChatState> {
     bool advancePlot = false,
     int? promptPlotCursor,
     bool commitPlotAdvance = false,
+    StoryGenerationIntent? storyIntent,
     CharacterCard? ensembleSpeaker,
     bool forceDocumentEdit = false,
   }) async {
@@ -2144,8 +2177,7 @@ class ChatController extends AsyncNotifier<ChatState> {
         settings.documentServiceConfigured &&
         config.capabilities.supportsTools &&
         editableDocuments.isNotEmpty;
-    final forceDocTool =
-        forceDocumentEdit && useDocumentEditTool;
+    final forceDocTool = forceDocumentEdit && useDocumentEditTool;
     final toolSpecs = <ToolSpec>[
       if (useWebSearchTool && !forceDocTool) ToolEngine.webSearchTool,
       if (useFetchUrlTool && !forceDocTool) ToolEngine.fetchUrlTool,
@@ -2173,6 +2205,7 @@ class ChatController extends AsyncNotifier<ChatState> {
       assistantMessageId: assistantId,
       promptPlotCursor: promptPlotCursor,
       commitPlotAdvance: commitPlotAdvance,
+      storyIntent: storyIntent,
       ensembleSpeakerId: ensembleSpeaker?.id,
     );
 
@@ -2474,13 +2507,13 @@ class ChatController extends AsyncNotifier<ChatState> {
         advancePlot: advancePlot,
         ensembleTurn: ensemble,
         directorMode: directorStory,
+        intent: storyIntent,
       );
       if (prefix.worldInfoHits.isNotEmpty) {
         _setAppliedWorldInfo(working.id, assistantId, prefix.worldInfoHits);
       }
-      // System order: story/director hard blocks first, then lower-priority
-      // notes (force-image, tools). Never insert tools at index 0 ahead of
-      // 【硬性导演说明】.
+      // Stable story context stays ahead of generic memory/tool hints. The
+      // assembler's turn-local action is appended after ordinary history.
       final systemPrefix = <LlmRequestMessage>[...prefix.messages];
       if (memoryPrompt.isNotEmpty) {
         systemPrefix.add(
@@ -2517,14 +2550,14 @@ class ChatController extends AsyncNotifier<ChatState> {
           hint.write(
             forceDocTool
                 ? '用户点击了「改文档」。你必须调用 edit_document，'
-                    '给出完整 DocumentPatch（schema_version=1；format 为 '
-                    'xlsx/docx/pptx/txt/md/csv/tsv 之一；ops）。'
-                    'xlsx 用 set_cells/set_range/add_sheet/ensure_sheet；'
-                    'docx 用 replace_text；pptx 用 set_shape_text；'
-                    'txt/md/csv/tsv 用 replace_text 或 set_text（整文件覆写）。'
+                      '给出完整 DocumentPatch（schema_version=1；format 为 '
+                      'xlsx/docx/pptx/txt/md/csv/tsv 之一；ops）。'
+                      'xlsx 用 set_cells/set_range/add_sheet/ensure_sheet；'
+                      'docx 用 replace_text；pptx 用 set_shape_text；'
+                      'txt/md/csv/tsv 用 replace_text 或 set_text（整文件覆写）。'
                 : '用户上传了可编辑文件（.xlsx/.docx/.pptx/.txt/.md/.csv/.tsv）。'
-                    '若要求改文件内容/查找替换/回传，调用 edit_document；'
-                    '若要求格式转换（如 txt→docx、csv→xlsx、docx→md），调用 convert_document。',
+                      '若要求改文件内容/查找替换/回传，调用 edit_document；'
+                      '若要求格式转换（如 txt→docx、csv→xlsx、docx→md），调用 convert_document。',
           );
           hint.write('不要编造未上传的附件名。');
         }
@@ -2533,6 +2566,7 @@ class ChatController extends AsyncNotifier<ChatState> {
         );
       }
       history.insertAll(0, systemPrefix);
+      history.addAll(prefix.postHistoryMessages);
     } else {
       if (memoryPrompt.isNotEmpty) {
         history.insert(
@@ -2580,14 +2614,14 @@ class ChatController extends AsyncNotifier<ChatState> {
           hint.write(
             forceDocTool
                 ? '用户点击了「改文档」。你必须调用 edit_document，'
-                    '给出完整 DocumentPatch（schema_version=1；format 为 '
-                    'xlsx/docx/pptx/txt/md/csv/tsv 之一；ops）。'
-                    'xlsx 用 set_cells/set_range/add_sheet/ensure_sheet；'
-                    'docx 用 replace_text；pptx 用 set_shape_text；'
-                    'txt/md/csv/tsv 用 replace_text 或 set_text（整文件覆写）。'
+                      '给出完整 DocumentPatch（schema_version=1；format 为 '
+                      'xlsx/docx/pptx/txt/md/csv/tsv 之一；ops）。'
+                      'xlsx 用 set_cells/set_range/add_sheet/ensure_sheet；'
+                      'docx 用 replace_text；pptx 用 set_shape_text；'
+                      'txt/md/csv/tsv 用 replace_text 或 set_text（整文件覆写）。'
                 : '用户上传了可编辑文件（.xlsx/.docx/.pptx/.txt/.md/.csv/.tsv）。'
-                    '若要求改文件内容/查找替换/回传，调用 edit_document；'
-                    '若要求格式转换（如 txt→docx、csv→xlsx、docx→md），调用 convert_document。',
+                      '若要求改文件内容/查找替换/回传，调用 edit_document；'
+                      '若要求格式转换（如 txt→docx、csv→xlsx、docx→md），调用 convert_document。',
           );
           hint.write('不要编造未上传的附件名。');
         }
@@ -2668,10 +2702,9 @@ class ChatController extends AsyncNotifier<ChatState> {
       ),
     );
 
-    // Auto-advance only after a successful first advance (not regenerate of an
-    // already-committed beat). With a total-length target, one generated
-    // section is intentionally only part of a beat, so keep the cursor on the
-    // same beat until its cumulative character threshold is reached.
+    // A successful "write next scene" action advances exactly one beat.
+    // Length is pacing guidance only; it must never keep a dramatically
+    // complete scene open just to satisfy an estimated character quota.
     if (succeeded && commitPlotAdvance && cur.isStory) {
       final latest = _s.conversations.firstWhere(
         (c) => c.id == working.id,
@@ -2679,16 +2712,9 @@ class ChatController extends AsyncNotifier<ChatState> {
       );
       if (latest.isStory) {
         final beats = latest.outlineBeats;
-        final lengthBudget = StoryLengthBudget.forConversation(latest);
-        final shouldAdvance =
-            lengthBudget == null ||
-            beats.isEmpty ||
-            lengthBudget.currentBeatTargetReached;
-        final next = shouldAdvance
-            ? (beats.isEmpty
-                  ? latest.plotCursor + 1
-                  : (latest.plotCursor + 1).clamp(0, beats.length))
-            : latest.plotCursor;
+        final next = beats.isEmpty
+            ? latest.plotCursor + 1
+            : (latest.plotCursor + 1).clamp(0, beats.length);
         final updated = latest.copyWith(plotCursor: next);
         _set(_s.copyWith(conversations: _replace(updated)));
         await _persistSafely(working.id);
@@ -2858,9 +2884,7 @@ class ChatController extends AsyncNotifier<ChatState> {
               if (chunk.serverSearchActivity!.status ==
                       SearchActivityStatus.running &&
                   _s.isStreaming) {
-                _set(
-                  _s.copyWith(isSearching: true, isGeneratingImage: false),
-                );
+                _set(_s.copyWith(isSearching: true, isGeneratingImage: false));
               } else if (chunk.serverSearchActivity!.status ==
                       SearchActivityStatus.done &&
                   _s.isStreaming) {
@@ -3502,8 +3526,9 @@ class ChatController extends AsyncNotifier<ChatState> {
       return '文档服务未配置：请在设置中启用并填写 Base URL 与 Token。';
     }
     try {
-      final args =
-          DocumentEditTools.parseConvertDocumentArgs(call.argumentsJson);
+      final args = DocumentEditTools.parseConvertDocumentArgs(
+        call.argumentsJson,
+      );
       final source = _pickDocumentSource(sources, args.attachmentName);
       if (source == null) {
         final names = [
@@ -3932,8 +3957,7 @@ class ChatController extends AsyncNotifier<ChatState> {
             inputBudgetTokens: report.inputBudgetTokens,
             droppedMessages: previous.droppedMessages + report.droppedMessages,
             truncated: previous.truncated || report.truncated,
-            summaryInjected:
-                previous.summaryInjected || report.summaryInjected,
+            summaryInjected: previous.summaryInjected || report.summaryInjected,
           );
     _set(
       _s.copyWith(contextReports: {..._s.contextReports, convoId: combined}),

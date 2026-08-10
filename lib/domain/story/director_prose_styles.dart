@@ -1,4 +1,4 @@
-/// Selectable hard prose-style constraints for director mode.
+/// Selectable prose-style preferences for director mode.
 ///
 /// Each preset expands into enforceable instruction text that is merged into
 /// generation prompts and the session author-note.
@@ -16,7 +16,7 @@ class DirectorProseStyle {
   /// Short hint under the chip.
   final String subtitle;
 
-  /// Full hard-constraint paragraph injected into the story.
+  /// Full style paragraph injected once into the story's persistent context.
   final String constraint;
 
   static const noneId = 'none';
@@ -33,7 +33,7 @@ class DirectorProseStyle {
           '3) 场景公式：开场 1–2 句定场 → 对白与互动推进 → 收束带小钩子；禁止大段世界观说明书开场。\n'
           '4) 角色：每人有可辨口癖/语气；可轻标签化（傲娇、天然、吐槽役等），但勿全员同一种腔。\n'
           '5) 节奏：先日常/气氛再卷入异常；每节只推进一场戏的一个冲突点，忌信息密网文连射与章末大总结。\n'
-          '6) 人称默认贴近主角的第三人称有限视角（除非导演另有要求）；禁止论文腔、文言堆砌与无节制网梗。',
+          '6) 未单独选择叙事视角时，默认贴近主角的第三人称有限视角；禁止论文腔、文言堆砌与无节制网梗。',
     ),
     DirectorProseStyle(
       id: 'classical_cn',
@@ -122,18 +122,19 @@ class DirectorProseStyle {
     return null;
   }
 
-  /// Mutual-exclusion group. Styles that share a group cannot all be forced
-  /// at once (e.g. 第一人称 vs 日本轻小说第三人称; 文言 vs 白话网文).
+  /// Mutual-exclusion group. Only presets controlling the same dimension are
+  /// exclusive. Point of view is independent from prose register, so a
+  /// first-person light novel remains a valid combination.
   /// Empty = combinable with anything.
   String get exclusiveGroup {
     switch (id) {
-      case 'first_person':
       case 'jp_ln':
-        return 'perspective';
       case 'wenyan':
       case 'web_novel':
       case 'classical_cn':
         return 'register';
+      case 'first_person':
+        return 'perspective';
       default:
         return '';
     }
@@ -173,18 +174,18 @@ class DirectorProseStyle {
     for (final id in resolved) {
       final style = byId(id);
       if (style == null) continue;
-      parts.add('【强制文风·${style.label}】\n${style.constraint}');
+      parts.add('【文风偏好·${style.label}】\n${style.constraint}');
     }
     final extra = freeform.trim();
     if (extra.isNotEmpty) {
-      parts.add('【其它硬性要求】\n$extra');
+      parts.add('【全书硬约束】\n$extra');
     }
     if (parts.length > 1) {
       parts.insert(
         0,
-        '【约束冲突规则】\n'
-        '用户填写的「其它硬性要求」高于文风预设；多个文风预设之间只融合可兼容部分，'
-        '冲突时以更具体的叙事人称、禁止事项和导演最新明确要求为准，不得自行折中到违背任一禁忌。',
+        '【约束解释】\n'
+        '全书硬约束高于文风偏好；叙事视角与文体分别执行。'
+        '兼容的文风可融合，若同一细节仍有冲突，以用户写得更具体的要求为准。',
       );
     }
     return parts.join('\n\n');

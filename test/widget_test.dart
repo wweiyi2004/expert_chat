@@ -285,8 +285,7 @@ class _DelayedChunkProvider implements LlmProvider {
     CancelToken? cancelToken,
   }) async* {
     final index = callCount++;
-    final script = scripts[
-        index < scripts.length ? index : scripts.length - 1];
+    final script = scripts[index < scripts.length ? index : scripts.length - 1];
     for (final chunk in script) {
       await Future<void>.delayed(const Duration(milliseconds: 120));
       yield chunk;
@@ -560,9 +559,7 @@ class FakeMimoSpeechInputService implements MimoSpeechInputService {
     String language = 'auto',
   }) async {
     await finishGate.future;
-    _resultCallback?.call(
-      const SpeechInputResult(text: '识别结果', isFinal: true),
-    );
+    _resultCallback?.call(const SpeechInputResult(text: '识别结果', isFinal: true));
     _statusCallback?.call(SpeechInputStatus.stopped);
   }
 
@@ -640,7 +637,9 @@ ProviderContainer _container(
       if (speechInputService != null)
         speechInputServiceProvider.overrideWithValue(speechInputService),
       if (mimoSpeechInputService != null)
-        mimoSpeechInputServiceProvider.overrideWithValue(mimoSpeechInputService),
+        mimoSpeechInputServiceProvider.overrideWithValue(
+          mimoSpeechInputService,
+        ),
       if (textToSpeechService != null)
         textToSpeechServiceProvider.overrideWithValue(textToSpeechService),
     ],
@@ -1073,59 +1072,56 @@ void main() {
     },
   );
 
-  test(
-    'thinking time accumulates across multiple tool rounds',
-    () async {
-      final llm = _DelayedChunkProvider([
-        const [
-          ChatChunk(reasoningDelta: 'r1'),
-          ChatChunk(
-            contentDelta: 'need to search',
-            toolCalls: [
-              ToolCall(
-                index: 0,
-                id: 'call_1',
-                name: 'web_search',
-                argumentsJson: '{"query":"q1"}',
-              ),
-            ],
-            finishReason: 'tool_calls',
-          ),
-        ],
-        const [
-          ChatChunk(reasoningDelta: 'r2'),
-          ChatChunk(contentDelta: 'final answer'),
-        ],
-      ]);
-      final search = _CountingSearch(const [
-        SearchResult(title: 'Result', url: 'https://example.com'),
-      ]);
-      final c = _container(
-        llm,
-        InMemoryRepo(),
-        settingsBuilder: FakeOneSearchRoundSettings.new,
-        toolEngineFactory: ({required backend, required apiKey}) =>
-            ToolEngine(search),
-      );
-      addTearDown(c.dispose);
+  test('thinking time accumulates across multiple tool rounds', () async {
+    final llm = _DelayedChunkProvider([
+      const [
+        ChatChunk(reasoningDelta: 'r1'),
+        ChatChunk(
+          contentDelta: 'need to search',
+          toolCalls: [
+            ToolCall(
+              index: 0,
+              id: 'call_1',
+              name: 'web_search',
+              argumentsJson: '{"query":"q1"}',
+            ),
+          ],
+          finishReason: 'tool_calls',
+        ),
+      ],
+      const [
+        ChatChunk(reasoningDelta: 'r2'),
+        ChatChunk(contentDelta: 'final answer'),
+      ],
+    ]);
+    final search = _CountingSearch(const [
+      SearchResult(title: 'Result', url: 'https://example.com'),
+    ]);
+    final c = _container(
+      llm,
+      InMemoryRepo(),
+      settingsBuilder: FakeOneSearchRoundSettings.new,
+      toolEngineFactory: ({required backend, required apiKey}) =>
+          ToolEngine(search),
+    );
+    addTearDown(c.dispose);
 
-      final ctrl = c.read(chatControllerProvider.notifier);
-      await c.read(chatControllerProvider.future);
-      ctrl.toggleSearch();
-      await ctrl.sendMessage('two rounds of thinking');
+    final ctrl = c.read(chatControllerProvider.notifier);
+    await c.read(chatControllerProvider.future);
+    ctrl.toggleSearch();
+    await ctrl.sendMessage('two rounds of thinking');
 
-      final assistant = c
-          .read(chatControllerProvider)
-          .value!
-          .current!
-          .activePath
-          .last;
-      expect(assistant.content, 'final answer');
-      // Both rounds' reasoning spans (~120ms each) must be counted, not just
-      // the first round's.
-      expect(assistant.thinkingMillis, greaterThanOrEqualTo(200));
-    },
-  );
+    final assistant = c
+        .read(chatControllerProvider)
+        .value!
+        .current!
+        .activePath
+        .last;
+    expect(assistant.content, 'final answer');
+    // Both rounds' reasoning spans (~120ms each) must be counted, not just
+    // the first round's.
+    expect(assistant.thinkingMillis, greaterThanOrEqualTo(200));
+  });
 
   test('ProviderProfile round-trips through JSON', () {
     final p = ProviderProfile(
@@ -1257,12 +1253,16 @@ void main() {
     });
 
     test('rejects an OOXML archive with an abnormal compression ratio', () {
-      final payload = Uint8List.fromList(utf8.encode('a' * (256 * 1024)));
+      // Keep the expanded part below the absolute 20 MiB entry cap so this
+      // specifically exercises the independent compression-ratio guard.
+      final payload = Uint8List.fromList(utf8.encode('a' * (4 * 1024 * 1024)));
       final archive = Archive()
         ..addFile(
           ArchiveFile('word/document.xml', payload.lengthInBytes, payload),
         );
-      final compressed = Uint8List.fromList(ZipEncoder().encode(archive)!);
+      final compressed = Uint8List.fromList(
+        ZipEncoder().encode(archive, level: 9)!,
+      );
 
       final a = parser.parse(
         name: 'suspicious.docx',
@@ -1474,24 +1474,21 @@ void main() {
       expect(convo.isStory, isTrue);
       expect(convo.characterId, isNull);
       expect(convo.localCast.map((card) => card.name), ['沈砚', '零号']);
-      expect(convo.authorNote, contains('故事原始情节'));
+      expect(convo.authorNote, contains('故事基准'));
       expect(convo.authorNote, contains('第三人称有限视角'));
 
       await ctrl.advancePlot();
 
       convo = c.read(chatControllerProvider).value!.current!;
       expect(convo.plotCursor, 1);
-      expect(
-        convo.activePath.first.content,
-        startsWith('（导演：开始第一节）'),
-      );
+      expect(convo.activePath.first.content, startsWith('（导演：开始第一场）'));
       expect(convo.activePath.last.content, contains('零号'));
       final request = llm.calls.single
           .map((message) => message.content)
           .join('\n');
       expect(request, contains('用户是导演'));
-      expect(request, contains('服从优先级'));
-      expect(request, contains('轻小说场景公式'));
+      expect(request, contains('冲突优先级'));
+      expect(request, contains('仅本轮：写下一场'));
       expect(request, contains('沈砚'));
       expect(request, contains('零号'));
       expect(request, contains('第三人称有限视角'));
@@ -1585,11 +1582,11 @@ void main() {
     final convo = c.read(chatControllerProvider).value!.current!;
     expect(convo.plotCursor, 1);
     expect(convo.activePath.last.content, '第二节正文');
-    expect(convo.activePath.any((m) => m.content == '（推进情节）'), isTrue);
+    expect(convo.activePath.any((m) => m.content.startsWith('（推进情节）')), isTrue);
   });
 
   test(
-    'a failed first director section still cues 开始第一节 on the next advance',
+    'a failed first director scene still cues 开始第一场 on the next advance',
     () async {
       final llm = _FailOnceLlm();
       final c = _container(llm, InMemoryRepo());
@@ -1615,17 +1612,17 @@ void main() {
         contains('simulated failure'),
       );
 
-      // Retrying the same first section must not turn the cue into 继续下一节.
+      // Retrying the same first scene must not turn the cue into 写下一场.
       await ctrl.advancePlot();
       convo = c.read(chatControllerProvider).value!.current!;
-      expect(convo.activePath[2].content, '（导演：开始第一节）');
+      expect(convo.activePath[2].content, startsWith('（导演：开始第一场）'));
       expect(convo.activePath.last.content, '第一节正文');
       expect(convo.plotCursor, 1);
     },
   );
 
   test(
-    'length-targeted story keeps a beat until its quota is reached',
+    'length target does not keep a completed scene on the same beat',
     () async {
       final llm = FakeLlmProvider(
         const [],
@@ -1650,12 +1647,53 @@ void main() {
       );
 
       await ctrl.advancePlot();
-      expect(c.read(chatControllerProvider).value!.current!.plotCursor, 0);
+      expect(c.read(chatControllerProvider).value!.current!.plotCursor, 1);
 
       await ctrl.advancePlot();
       final convo = c.read(chatControllerProvider).value!.current!;
       expect(StoryLengthBudget.countWrittenChars(convo), 50);
+      expect(convo.plotCursor, 2);
+    },
+  );
+
+  test(
+    'continueCurrentScene keeps the cursor and previous scene objective',
+    () async {
+      final llm = FakeLlmProvider(
+        const [],
+        scriptedChunks: const [
+          [ChatChunk(contentDelta: '第一场正文。')],
+          [ChatChunk(contentDelta: '第一场续写。')],
+        ],
+      );
+      final c = _container(llm, InMemoryRepo());
+      addTearDown(c.dispose);
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
+      await ctrl.newDirectorStoryConversation(
+        title: '场景测试',
+        premise: '两人在雨夜重逢。',
+        cast: [CharacterCard(name: '甲')],
+        outline: '- 第一场：雨夜重逢\n- 第二场：共同追查',
+        worldInfoIds: const [],
+      );
+
+      await ctrl.advancePlot();
+      expect(c.read(chatControllerProvider).value!.current!.plotCursor, 1);
+
+      await ctrl.continueCurrentScene();
+      final convo = c.read(chatControllerProvider).value!.current!;
       expect(convo.plotCursor, 1);
+      expect(convo.activePath.last.content, '第一场续写。');
+      expect(
+        convo.activePath[convo.activePath.length - 2].content,
+        startsWith('（导演：续写当前场）'),
+      );
+      final secondRequest = llm.calls.last
+          .map((message) => message.content)
+          .join('\n');
+      expect(secondRequest, contains('第一场：雨夜重逢'));
+      expect(secondRequest, isNot(contains('第二场：共同追查')));
     },
   );
 
@@ -1813,105 +1851,97 @@ void main() {
     );
   });
 
-  test(
-    'a send preflighted on one conversation does not yank focus when the '
-    'user switches during preflight',
-    () async {
-      final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'answer')]);
-      final delayed = DelayedReadySettings();
-      final c = _container(llm, InMemoryRepo(), settingsBuilder: () => delayed);
-      addTearDown(c.dispose);
-      final ctrl = c.read(chatControllerProvider.notifier);
-      await c.read(chatControllerProvider.future);
+  test('a send preflighted on one conversation does not yank focus when the '
+      'user switches during preflight', () async {
+    final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'answer')]);
+    final delayed = DelayedReadySettings();
+    final c = _container(llm, InMemoryRepo(), settingsBuilder: () => delayed);
+    addTearDown(c.dispose);
+    final ctrl = c.read(chatControllerProvider.notifier);
+    await c.read(chatControllerProvider.future);
 
-      final originId = c.read(chatControllerProvider).value!.currentId!;
-      final send = ctrl.sendMessage('stream into the background');
-      await delayed.entered.future;
-      // The user switches away while the turn is still preflighting.
-      ctrl.newConversation();
-      final otherId = c.read(chatControllerProvider).value!.currentId!;
-      expect(otherId, isNot(originId));
+    final originId = c.read(chatControllerProvider).value!.currentId!;
+    final send = ctrl.sendMessage('stream into the background');
+    await delayed.entered.future;
+    // The user switches away while the turn is still preflighting.
+    ctrl.newConversation();
+    final otherId = c.read(chatControllerProvider).value!.currentId!;
+    expect(otherId, isNot(originId));
 
-      delayed.gate.complete();
-      expect(await send, isTrue);
+    delayed.gate.complete();
+    expect(await send, isTrue);
 
-      final state = c.read(chatControllerProvider).value!;
-      // Focus stays on the conversation the user chose...
-      expect(state.currentId, otherId);
-      expect(state.isStreaming, isFalse);
-      // ...while the stream still wrote into the origin conversation.
-      final origin = state.conversations.firstWhere((c) => c.id == originId);
-      expect(origin.activePath.last.content, 'answer');
-      expect(state.current!.messages, isEmpty);
-      expect(state.error, isNull);
-    },
-  );
+    final state = c.read(chatControllerProvider).value!;
+    // Focus stays on the conversation the user chose...
+    expect(state.currentId, otherId);
+    expect(state.isStreaming, isFalse);
+    // ...while the stream still wrote into the origin conversation.
+    final origin = state.conversations.firstWhere((c) => c.id == originId);
+    expect(origin.activePath.last.content, 'answer');
+    expect(state.current!.messages, isEmpty);
+    expect(state.error, isNull);
+  });
 
-  test(
-    'an image turn preflighted on one conversation does not yank focus when '
-    'the user switches during preflight',
-    () async {
-      final delayed = DelayedImageSettings();
-      final c = _container(
-        FakeLlmProvider(const []),
-        InMemoryRepo(),
-        settingsBuilder: () => delayed,
-        mediaProvider: FakeMediaProvider(),
-      );
-      addTearDown(c.dispose);
-      final ctrl = c.read(chatControllerProvider.notifier);
-      await c.read(chatControllerProvider.future);
+  test('an image turn preflighted on one conversation does not yank focus when '
+      'the user switches during preflight', () async {
+    final delayed = DelayedImageSettings();
+    final c = _container(
+      FakeLlmProvider(const []),
+      InMemoryRepo(),
+      settingsBuilder: () => delayed,
+      mediaProvider: FakeMediaProvider(),
+    );
+    addTearDown(c.dispose);
+    final ctrl = c.read(chatControllerProvider.notifier);
+    await c.read(chatControllerProvider.future);
 
-      final originId = c.read(chatControllerProvider).value!.currentId!;
-      final send = ctrl.generateImage('draw a cat');
-      await delayed.entered.future;
-      // The user switches away while the turn is still preflighting.
-      ctrl.newConversation();
-      final otherId = c.read(chatControllerProvider).value!.currentId!;
-      expect(otherId, isNot(originId));
+    final originId = c.read(chatControllerProvider).value!.currentId!;
+    final send = ctrl.generateImage('draw a cat');
+    await delayed.entered.future;
+    // The user switches away while the turn is still preflighting.
+    ctrl.newConversation();
+    final otherId = c.read(chatControllerProvider).value!.currentId!;
+    expect(otherId, isNot(originId));
 
-      delayed.gate.complete();
-      expect(await send, isTrue);
+    delayed.gate.complete();
+    expect(await send, isTrue);
 
-      final state = c.read(chatControllerProvider).value!;
-      // Focus stays on the conversation the user chose...
-      expect(state.currentId, otherId);
-      expect(state.isStreaming, isFalse);
-      // ...while the image turn still wrote into the origin conversation.
-      final origin = state.conversations.firstWhere((c) => c.id == originId);
-      expect(
-        origin.messages.where((m) => m.kind == MessageKind.generatedImage),
-        isNotEmpty,
-      );
-      expect(
-        state.current!.messages
-            .where((m) => m.kind == MessageKind.generatedImage),
-        isEmpty,
-      );
-      expect(state.error, isNull);
-    },
-  );
+    final state = c.read(chatControllerProvider).value!;
+    // Focus stays on the conversation the user chose...
+    expect(state.currentId, otherId);
+    expect(state.isStreaming, isFalse);
+    // ...while the image turn still wrote into the origin conversation.
+    final origin = state.conversations.firstWhere((c) => c.id == originId);
+    expect(
+      origin.messages.where((m) => m.kind == MessageKind.generatedImage),
+      isNotEmpty,
+    );
+    expect(
+      state.current!.messages.where(
+        (m) => m.kind == MessageKind.generatedImage,
+      ),
+      isEmpty,
+    );
+    expect(state.error, isNull);
+  });
 
-  test(
-    'disposing the container mid-stream completes teardown without a '
-    'dispose-time state write',
-    () async {
-      final llm = _DisposeMidStreamLlm();
-      final c = _container(llm, InMemoryRepo());
-      // No addTearDown(c.dispose): dispose is exercised explicitly.
-      final ctrl = c.read(chatControllerProvider.notifier);
-      await c.read(chatControllerProvider.future);
+  test('disposing the container mid-stream completes teardown without a '
+      'dispose-time state write', () async {
+    final llm = _DisposeMidStreamLlm();
+    final c = _container(llm, InMemoryRepo());
+    // No addTearDown(c.dispose): dispose is exercised explicitly.
+    final ctrl = c.read(chatControllerProvider.notifier);
+    await c.read(chatControllerProvider.future);
 
-      unawaited(ctrl.sendMessage('dispose me'));
-      await llm.delivered.future; // chunk queued by the provider
-      // Let the stream listener process the chunk (so a UI flush is pending),
-      // but stay well inside the 50ms coalescing window.
-      await Future<void>.delayed(const Duration(milliseconds: 1));
-      // Must not throw / report an uncaught state-write error on dispose.
-      c.dispose();
-      expect(llm.delivered.isCompleted, isTrue);
-    },
-  );
+    unawaited(ctrl.sendMessage('dispose me'));
+    await llm.delivered.future; // chunk queued by the provider
+    // Let the stream listener process the chunk (so a UI flush is pending),
+    // but stay well inside the 50ms coalescing window.
+    await Future<void>.delayed(const Duration(milliseconds: 1));
+    // Must not throw / report an uncaught state-write error on dispose.
+    c.dispose();
+    expect(llm.delivered.isCompleted, isTrue);
+  });
 
   test(
     'a background conversation keeps its scoped error when revisited',
@@ -1984,9 +2014,9 @@ void main() {
   test(
     'a failed pre-search does not leave its error banner after the model answers',
     () async {
-      final llm = FakeLlmProvider(
-        [const ChatChunk(contentDelta: 'still answers')],
-      );
+      final llm = FakeLlmProvider([
+        const ChatChunk(contentDelta: 'still answers'),
+      ]);
       final c = _container(
         llm,
         InMemoryRepo(),
@@ -2009,49 +2039,46 @@ void main() {
     },
   );
 
-  test(
-    'a failed web_search tool call does not leave its error banner after '
-    'the model answers',
-    () async {
-      final llm = FakeLlmProvider(
-        const [],
-        scriptedChunks: const [
-          [
-            ChatChunk(
-              toolCalls: [
-                ToolCall(
-                  index: 0,
-                  id: 'call_1',
-                  name: 'web_search',
-                  argumentsJson: '{"query":"weather"}',
-                ),
-              ],
-              finishReason: 'tool_calls',
-            ),
-          ],
-          [ChatChunk(contentDelta: 'final answer')],
+  test('a failed web_search tool call does not leave its error banner after '
+      'the model answers', () async {
+    final llm = FakeLlmProvider(
+      const [],
+      scriptedChunks: const [
+        [
+          ChatChunk(
+            toolCalls: [
+              ToolCall(
+                index: 0,
+                id: 'call_1',
+                name: 'web_search',
+                argumentsJson: '{"query":"weather"}',
+              ),
+            ],
+            finishReason: 'tool_calls',
+          ),
         ],
-      );
-      final c = _container(
-        llm,
-        InMemoryRepo(),
-        toolEngineFactory: ({required backend, required apiKey}) =>
-            ToolEngine(_ThrowingSearch()),
-      );
-      addTearDown(c.dispose);
+        [ChatChunk(contentDelta: 'final answer')],
+      ],
+    );
+    final c = _container(
+      llm,
+      InMemoryRepo(),
+      toolEngineFactory: ({required backend, required apiKey}) =>
+          ToolEngine(_ThrowingSearch()),
+    );
+    addTearDown(c.dispose);
 
-      final ctrl = c.read(chatControllerProvider.notifier);
-      await c.read(chatControllerProvider.future);
+    final ctrl = c.read(chatControllerProvider.notifier);
+    await c.read(chatControllerProvider.future);
 
-      ctrl.toggleSearch(); // auto: the model decides whether to search
-      await ctrl.sendMessage('what is the weather?');
+    ctrl.toggleSearch(); // auto: the model decides whether to search
+    await ctrl.sendMessage('what is the weather?');
 
-      final state = c.read(chatControllerProvider).value!;
-      expect(state.error, isNull);
-      expect(state.retryOperation, isNull);
-      expect(state.current!.activePath.last.content, 'final answer');
-    },
-  );
+    final state = c.read(chatControllerProvider).value!;
+    expect(state.error, isNull);
+    expect(state.retryOperation, isNull);
+    expect(state.current!.activePath.last.content, 'final answer');
+  });
 
   test(
     'a failed final persist surfaces 本地保存失败 instead of escaping the stream',
@@ -2073,55 +2100,44 @@ void main() {
     },
   );
 
-  test(
-    'context-budget overflow ends the turn without reaching the model and '
-    'the next generation flows cleanly',
-    () async {
-      final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'never')]);
-      final c = _container(
-        llm,
-        InMemoryRepo(),
-        settingsBuilder: FakeSmallContextVisionSettings.new,
-      );
-      addTearDown(c.dispose);
-      final ctrl = c.read(chatControllerProvider.notifier);
-      await c.read(chatControllerProvider.future);
+  test('context-budget overflow ends the turn without reaching the model and '
+      'the next generation flows cleanly', () async {
+    final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'never')]);
+    final c = _container(
+      llm,
+      InMemoryRepo(),
+      settingsBuilder: FakeSmallContextVisionSettings.new,
+    );
+    addTearDown(c.dispose);
+    final ctrl = c.read(chatControllerProvider.notifier);
+    await c.read(chatControllerProvider.future);
 
-      final accepted = await ctrl.sendMessage(
-        '看图',
-        attachments: [
-          Attachment(
-            name: 'pic.png',
-            mimeType: 'image/png',
-            imageBase64: 'AAAA',
-          ),
-        ],
-      );
-      expect(accepted, isTrue);
-      expect(llm.callCount, 0); // the model was never reached
+    final accepted = await ctrl.sendMessage(
+      '看图',
+      attachments: [
+        Attachment(name: 'pic.png', mimeType: 'image/png', imageBase64: 'AAAA'),
+      ],
+    );
+    expect(accepted, isTrue);
+    expect(llm.callCount, 0); // the model was never reached
 
-      var state = c.read(chatControllerProvider).value!;
-      expect(state.isStreaming, isFalse);
-      expect(state.error, contains('上下文预算'));
-      expect(state.retryOperation, isNotNull);
+    var state = c.read(chatControllerProvider).value!;
+    expect(state.isStreaming, isFalse);
+    expect(state.error, contains('上下文预算'));
+    expect(state.retryOperation, isNotNull);
 
-      // A later generation through the same pipeline works normally.
-      llm.chunks
-        ..clear()
-        ..add(const ChatChunk(contentDelta: 'ok'));
-      final userMsg = state.current!.activePath.first;
-      await ctrl.editMessage(
-        userMsg.id,
-        '简短的问题',
-        attachments: const [],
-      );
-      state = c.read(chatControllerProvider).value!;
-      expect(state.error, isNull);
-      expect(state.isStreaming, isFalse);
-      expect(state.current!.activePath.last.content, 'ok');
-      expect(llm.callCount, 1);
-    },
-  );
+    // A later generation through the same pipeline works normally.
+    llm.chunks
+      ..clear()
+      ..add(const ChatChunk(contentDelta: 'ok'));
+    final userMsg = state.current!.activePath.first;
+    await ctrl.editMessage(userMsg.id, '简短的问题', attachments: const []);
+    state = c.read(chatControllerProvider).value!;
+    expect(state.error, isNull);
+    expect(state.isStreaming, isFalse);
+    expect(state.current!.activePath.last.content, 'ok');
+    expect(llm.callCount, 1);
+  });
 
   test(
     'deleteProfile keeps search and system prompt when last profile is removed',
@@ -3255,44 +3271,45 @@ void main() {
       expect(speech.startCount, 0);
     });
 
-    testWidgets('MiMo upload keeps edits made to the composer while recognizing', (
-      tester,
-    ) async {
-      final mimo = FakeMimoSpeechInputService();
-      final c = _container(
-        FakeLlmProvider(const []),
-        InMemoryRepo(),
-        settingsBuilder: FakeMimoSettings.new,
-        mimoSpeechInputService: mimo,
-      );
-      addTearDown(c.dispose);
-      await _pumpChat(tester, c);
+    testWidgets(
+      'MiMo upload keeps edits made to the composer while recognizing',
+      (tester) async {
+        final mimo = FakeMimoSpeechInputService();
+        final c = _container(
+          FakeLlmProvider(const []),
+          InMemoryRepo(),
+          settingsBuilder: FakeMimoSettings.new,
+          mimoSpeechInputService: mimo,
+        );
+        addTearDown(c.dispose);
+        await _pumpChat(tester, c);
 
-      await tester.tap(find.byTooltip('语音输入'));
-      await tester.pump();
-      expect(find.byTooltip('结束录音并识别'), findsOneWidget);
+        await tester.tap(find.byTooltip('语音输入'));
+        await tester.pump();
+        expect(find.byTooltip('结束录音并识别'), findsOneWidget);
 
-      // Finish the recording; the upload is now gated.
-      await tester.tap(find.byTooltip('结束录音并识别'));
-      await tester.pump();
-      expect(find.byTooltip('正在上传语音；点按取消'), findsOneWidget);
+        // Finish the recording; the upload is now gated.
+        await tester.tap(find.byTooltip('结束录音并识别'));
+        await tester.pump();
+        expect(find.byTooltip('正在上传语音；点按取消'), findsOneWidget);
 
-      // The composer stays editable while the upload runs.
-      await tester.enterText(
-        find.byKey(const ValueKey('composer-text-field')),
-        '上传期间打的字',
-      );
-      await tester.pump();
+        // The composer stays editable while the upload runs.
+        await tester.enterText(
+          find.byKey(const ValueKey('composer-text-field')),
+          '上传期间打的字',
+        );
+        await tester.pump();
 
-      mimo.finishGate.complete();
-      await _drain(tester);
+        mimo.finishGate.complete();
+        await _drain(tester);
 
-      final field = tester.widget<TextField>(
-        find.byKey(const ValueKey('composer-text-field')),
-      );
-      expect(field.controller?.text, contains('上传期间打的字'));
-      expect(field.controller?.text, contains('识别结果'));
-    });
+        final field = tester.widget<TextField>(
+          find.byKey(const ValueKey('composer-text-field')),
+        );
+        expect(field.controller?.text, contains('上传期间打的字'));
+        expect(field.controller?.text, contains('识别结果'));
+      },
+    );
 
     testWidgets('tapping send dispatches the message and renders the reply', (
       tester,

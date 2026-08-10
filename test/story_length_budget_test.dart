@@ -49,7 +49,7 @@ void main() {
     expect(budget.turnMax, greaterThanOrEqualTo(budget.turnMin));
     expect(budget.turnMax, lessThanOrEqualTo(budget.remaining));
     expect(budget.sessionLabel(), contains('已写'));
-    expect(budget.promptBlock(advancePlot: true), contains('篇幅约束'));
+    expect(budget.promptBlock(advancePlot: true), contains('篇幅与节奏参考'));
   });
 
   test('a length-targeted beat stays active until its cumulative quota', () {
@@ -72,7 +72,10 @@ void main() {
     expect(partial.currentBeatTarget, 10000);
     expect(partial.currentBeatRemaining, 6000);
     expect(partial.currentBeatTargetReached, isFalse);
-    expect(partial.promptBlock(advancePlot: true), contains('只推进当前节拍的一部分'));
+    final guidance = partial.promptBlock(advancePlot: true);
+    expect(guidance, contains('软目标'));
+    expect(guidance, contains('以完成当前场景目标和自然收束为准'));
+    expect(guidance, isNot(contains('硬边界')));
 
     final complete = StoryLengthBudget.forConversation(storyWithBody(10000))!;
     expect(complete.currentBeatRemaining, 0);
@@ -97,9 +100,9 @@ void main() {
       cast: [CharacterCard(name: '甲')],
     );
     final joined = build.messages.map((m) => m.content).join('\n');
-    expect(joined, contains('篇幅约束'));
+    expect(joined, contains('篇幅与节奏参考'));
     expect(joined, contains('5万'));
-    expect(joined, contains('服从优先级'));
+    expect(joined, contains('冲突优先级'));
   });
 
   test('no length block when target is zero', () {
@@ -119,7 +122,7 @@ void main() {
     );
     final joined = build.messages.map((m) => m.content).join('\n');
     // Priority list still mentions 篇幅; the hard block only appears with a target.
-    expect(joined, isNot(contains('【篇幅约束')));
+    expect(joined, isNot(contains('【篇幅与节奏参考')));
   });
 
   test('formatChars uses 万 / 千', () {
@@ -168,7 +171,7 @@ void main() {
       expect(budget.turnMin, greaterThanOrEqualTo(0));
       // sessionLabel / promptBlock must also be safe (they use turnMin/Max).
       expect(budget.sessionLabel(), isNotEmpty);
-      expect(budget.promptBlock(advancePlot: true), contains('篇幅约束'));
+      expect(budget.promptBlock(advancePlot: true), contains('篇幅与节奏参考'));
     }
   });
 }

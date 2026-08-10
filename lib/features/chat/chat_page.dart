@@ -476,7 +476,8 @@ class _ChatPageState extends ConsumerState<ChatPage>
         final current = _input.value;
         final text = current.text;
         final selection = current.selection;
-        final valid = selection.isValid &&
+        final valid =
+            selection.isValid &&
             selection.start >= 0 &&
             selection.end <= text.length;
         final start = valid ? selection.start : text.length;
@@ -519,9 +520,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
     // session. System dictation emits one finalResult per phrase while the
     // platform session is still open (pauseFor/listenFor); treating those as
     // session-end hid the listening indicator and left the mic orphaned.
-    if (result.isFinal &&
-        _usingMimoAsr &&
-        (_speechListening || _speechBusy)) {
+    if (result.isFinal && _usingMimoAsr && (_speechListening || _speechBusy)) {
       setState(() {
         _speechListening = false;
         _speechBusy = false;
@@ -723,10 +722,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
           );
           return;
         }
-        final album = await showRecentPhotoPicker(
-          context,
-          maxCount: remaining,
-        );
+        final album = await showRecentPhotoPicker(context, maxCount: remaining);
         if (!mounted) return;
         if (album == null) return;
         if (!album.fromFiles) {
@@ -1073,11 +1069,11 @@ class _ChatPageState extends ConsumerState<ChatPage>
     final singleRefReplace =
         forGen &&
         (ref
-                .read(settingsControllerProvider)
-                .value
-                ?.imageGenerationApi
-                .maxImageEditReferences ??
-            1) <=
+                    .read(settingsControllerProvider)
+                    .value
+                    ?.imageGenerationApi
+                    .maxImageEditReferences ??
+                1) <=
             1;
     setState(() {
       if (singleRefReplace) {
@@ -1102,8 +1098,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
     }
     // Entering 生图: drop non-images; cap refs by model capability.
     final settings = ref.read(settingsControllerProvider).value;
-    final maxRefs =
-        settings?.imageGenerationApi.maxImageEditReferences ?? 1;
+    final maxRefs = settings?.imageGenerationApi.maxImageEditReferences ?? 1;
     final images = [
       for (final a in _attachments)
         if (a.isImage && a.hasImageData) a,
@@ -1920,6 +1915,9 @@ class _ChatPageState extends ConsumerState<ChatPage>
                 : speakerName,
             onOpenPlot: () => _openPlot(convo, canPinTools: canPinTools),
             onAdvance: state.isStreaming ? null : controller.advancePlot,
+            onContinue: state.isStreaming || convo.localCast.isEmpty
+                ? null
+                : controller.continueCurrentScene,
             onNudgeBack: () => controller.adjustPlotCursor(-1),
             onNudgeForward: () => controller.adjustPlotCursor(1),
           ),
@@ -2259,7 +2257,7 @@ class _ComposerState extends State<_Composer> {
               ? '描述如何修改参考图（图生图）…'
               : '描述要生成的图片；可点 + 上传参考图…')
         : widget.directorMode
-        ? '发导演指令，或点「写下一节」（日轻·一场戏）…'
+        ? '发导演指令，或使用“写下一场 / 续写当前场”…'
         : widget.storyLike
         ? '续写反应，或输入旁白…'
         : '写下你的想法…';
@@ -3791,6 +3789,7 @@ class _StorySessionBar extends StatelessWidget {
     required this.characterName,
     required this.onOpenPlot,
     required this.onAdvance,
+    required this.onContinue,
     required this.onNudgeBack,
     required this.onNudgeForward,
   });
@@ -3799,6 +3798,7 @@ class _StorySessionBar extends StatelessWidget {
   final String? characterName;
   final VoidCallback onOpenPlot;
   final VoidCallback? onAdvance;
+  final VoidCallback? onContinue;
   final VoidCallback onNudgeBack;
   final VoidCallback onNudgeForward;
 
@@ -3889,11 +3889,18 @@ class _StorySessionBar extends StatelessWidget {
               icon: const Icon(Icons.chevron_left, size: 22),
             ),
             _SessionMiniButton(
-              label: conversation.localCast.isNotEmpty ? '写下一节' : '推进情节',
+              label: conversation.localCast.isNotEmpty ? '写下一场' : '推进情节',
               filled: true,
               color: accent,
               onPressed: onAdvance,
             ),
+            if (conversation.localCast.isNotEmpty)
+              IconButton(
+                tooltip: '续写刚才的场景（不推进大纲）',
+                visualDensity: VisualDensity.compact,
+                onPressed: onContinue,
+                icon: const Icon(Icons.subdirectory_arrow_left, size: 20),
+              ),
             IconButton(
               tooltip: '前进一拍',
               visualDensity: VisualDensity.compact,

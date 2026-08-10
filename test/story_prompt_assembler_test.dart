@@ -169,14 +169,16 @@ void main() {
 
       final joined = build.messages.map((m) => m.content).join('\n');
       expect(joined, contains('用户是导演'));
-      expect(joined, contains('服从优先级'));
-      expect(joined, contains('硬性导演说明'));
+      expect(joined, contains('冲突优先级'));
+      expect(joined, contains('当前场景卡'));
       expect(joined, contains('沈砚'));
       expect(joined, contains('零号'));
-      expect(joined, contains('不得让导演入戏'));
-      expect(joined, contains('当前必须演绎的节拍'));
-      expect(joined, contains('轻小说场景公式'));
-      expect(joined, contains('对白为主'));
+      expect(joined, contains('不得把导演写进故事'));
+      expect(joined, contains('当前目标'));
+      expect(joined, isNot(contains('零号现身')));
+      final tail = build.postHistoryMessages.map((m) => m.content).join('\n');
+      expect(tail, contains('仅本轮：写下一场'));
+      expect(tail, isNot(contains('对白为主')));
     });
 
     test(
@@ -202,11 +204,11 @@ void main() {
         final texts = build.messages.map((m) => m.content).toList();
         final joined = texts.join('\n---\n');
         expect(joined, contains('禁止超自然'));
-        expect(joined, contains('不可违背'));
-        expect(joined, contains('以导演说明为准'));
+        expect(joined, contains('全书硬约束、故事基准与明确禁区'));
+        expect(joined, contains('全书约束与故事基准'));
         // Constraint block should appear before character cards.
-        final constraintIdx = texts.indexWhere((t) => t.contains('硬性导演说明'));
-        final castIdx = texts.indexWhere((t) => t.contains('本故事角色卡'));
+        final constraintIdx = texts.indexWhere((t) => t.contains('全书约束与故事基准'));
+        final castIdx = texts.indexWhere((t) => t.contains('角色上下文'));
         expect(constraintIdx, greaterThanOrEqualTo(0));
         expect(castIdx, greaterThanOrEqualTo(0));
         expect(constraintIdx, lessThan(castIdx));
@@ -233,8 +235,8 @@ void main() {
           directorMode: true,
         );
         final texts = build.messages.map((m) => m.content).toList();
-        final hardIdx = texts.indexWhere((t) => t.contains('硬性导演说明'));
-        final globalIdx = texts.indexWhere((t) => t.contains('全局人设'));
+        final hardIdx = texts.indexWhere((t) => t.contains('全书约束与故事基准'));
+        final globalIdx = texts.indexWhere((t) => t.contains('全局系统提示'));
         expect(hardIdx, greaterThanOrEqualTo(0));
         expect(globalIdx, greaterThanOrEqualTo(0));
         expect(hardIdx, lessThan(globalIdx));

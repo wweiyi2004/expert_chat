@@ -1,39 +1,21 @@
-# Document Edit Service (P0)
+# Document capability module
 
-Linux-side helper for Expert Chat:
+这里保留 Expert Chat Gateway 的文档编辑与格式转换实现。正式部署请运行统一的 [`server/gateway`](../gateway)，不要再为 App 配置第二套地址或 Token。
 
-- apply a `DocumentPatch` to `.xlsx` / `.docx` / `.pptx` / `.txt` / `.md` / `.csv` / `.tsv`
-- convert between supported formats (`POST /v1/documents/convert`, e.g. txt→docx)
+模块仍可独立启动，主要用于兼容旧部署和开发调试：
 
-Contract: [`docs/document-edit-contract.md`](../../docs/document-edit-contract.md)
-
-## Run
-
-```bash
+```powershell
 cd server/doc_edit
-python3 -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
+python -m venv .venv
+.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-
-export DOC_API_TOKEN='change-me'
+$env:GATEWAY_API_TOKEN = 'change-me'
 uvicorn app.main:app --host 0.0.0.0 --port 8787
 ```
 
-## Smoke
+正式 Gateway 会直接挂载本模块导出的 `APIRouter`：
 
-```bash
-curl -s http://127.0.0.1:8787/v1/health
+- `POST /v1/documents/edit`
+- `POST /v1/documents/convert`
 
-curl -s -X POST http://127.0.0.1:8787/v1/documents/edit \
-  -H "Authorization: Bearer change-me" \
-  -F "file=@/path/to/in.xlsx" \
-  -F 'patch={"schema_version":1,"format":"xlsx","ops":[{"op":"set_cells","cells":{"A1":"hi"}}]}' \
-  -o out.xlsx
-```
-
-## Docker (optional)
-
-```bash
-docker build -t expert-chat-doc-edit .
-docker run --rm -e DOC_API_TOKEN=change-me -p 8787:8787 expert-chat-doc-edit
-```
+协议见 [`docs/document-edit-contract.md`](../../docs/document-edit-contract.md)，模块扩展规范见 [`docs/gateway-architecture.md`](../../docs/gateway-architecture.md)。

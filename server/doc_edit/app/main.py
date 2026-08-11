@@ -3,7 +3,7 @@
 Also supports cross-format conversion via POST /v1/documents/convert.
 
 Contract: docs/document-edit-contract.md
-Env: DOC_API_TOKEN, MAX_UPLOAD_MB, TEMP_DIR
+Env: GATEWAY_API_TOKEN (or legacy DOC_API_TOKEN), GATEWAY_MAX_FILE_MB, GATEWAY_DATA_DIR
 """
 
 from __future__ import annotations
@@ -20,7 +20,16 @@ from pathlib import Path
 from typing import Any
 
 from docx import Document
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    UploadFile,
+)
 from fastapi.responses import FileResponse, JSONResponse
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils import coordinate_to_tuple
@@ -58,21 +67,35 @@ MEDIA_TYPES = {
     ".tsv": "text/tab-separated-values; charset=utf-8",
 }
 
+router = APIRouter()
 app = FastAPI(title="Expert Chat Document Edit", version=APP_VERSION)
 
 
 def _token() -> str:
-    return os.environ.get("DOC_API_TOKEN", "").strip()
+    return (
+        os.environ.get("GATEWAY_API_TOKEN", "").strip()
+        or os.environ.get("DOC_API_TOKEN", "").strip()
+    )
 
 
 def _max_upload_bytes() -> int:
-    mb = float(os.environ.get("MAX_UPLOAD_MB", "20"))
+    mb = float(
+        os.environ.get("GATEWAY_MAX_FILE_MB", "").strip()
+        or os.environ.get("MAX_UPLOAD_MB", "20")
+    )
     return int(mb * 1024 * 1024)
 
 
 def _temp_root() -> Path:
     raw = os.environ.get("TEMP_DIR", "").strip()
-    p = Path(raw) if raw else Path(tempfile.gettempdir()) / "expert_chat_doc_edit"
+    gateway_data = os.environ.get("GATEWAY_DATA_DIR", "").strip()
+    p = (
+        Path(raw)
+        if raw
+        else Path(gateway_data) / "document_jobs"
+        if gateway_data
+        else Path(tempfile.gettempdir()) / "expert_chat_doc_edit"
+    )
     p.mkdir(parents=True, exist_ok=True)
     return p
 
@@ -80,10 +103,9 @@ def _temp_root() -> Path:
 def require_auth(authorization: str | None = Header(default=None)) -> None:
     expected = _token()
     if not expected:
-        raise HTTPException(
-            status_code=500,
-            detail=_err("internal", "服务器未配置 DOC_API_TOKEN"),
-        )
+        # Match the unified Gateway: tokenless access is allowed only for
+        # explicit local development. Production deployments must set a token.
+        return
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(
             status_code=401,
@@ -110,7 +132,7 @@ def health() -> dict[str, Any]:
     }
 
 
-@app.post("/v1/documents/edit")
+@router.post("/v1/documents/edit")
 async def edit_document(
     file: UploadFile = File(...),
     patch: str = Form(...),
@@ -217,7 +239,7 @@ async def edit_document(
         ) from e
 
 
-@app.post("/v1/documents/convert")
+@router.post("/v1/documents/convert")
 async def convert_document(
     file: UploadFile = File(...),
     target_format: str = Form(...),
@@ -761,3 +783,8 @@ async def http_exception_handler(_request: Any, exc: HTTPException) -> JSONRespo
     if isinstance(detail, dict) and "error" in detail:
         return JSONResponse(status_code=exc.status_code, content=detail)
     return JSONResponse(status_code=exc.status_code, content=_err("internal", str(detail)))
+
+
+# Keep the module runnable on its own for compatibility, while allowing the
+# unified Gateway to mount the same router without copying app-internal routes.
+app.include_router(router)

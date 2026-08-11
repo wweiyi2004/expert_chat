@@ -7,7 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/providers.dart';
 import '../data/context_prefs.dart';
-import '../data/document_service_config.dart';
+import '../data/gateway_config.dart';
 import '../data/media_api_config.dart';
 import '../data/provider_profile.dart';
 import '../data/ui_prefs.dart';
@@ -48,10 +48,11 @@ class SettingsState {
     this.asrApi = const MediaApiConfig(),
     this.asrApiKey = '',
     this.context = const ContextPrefs(),
-    this.documentService = const DocumentServiceConfig(),
-    this.documentServiceToken = '',
+    this.gateway = const GatewayConfig(),
+    this.gatewayToken = '',
     this.memoryEnabled = false,
     this.researchModeEnabled = false,
+    this.studyModeEnabled = true,
     this.creationModeEnabled = true,
   });
 
@@ -97,9 +98,9 @@ class SettingsState {
   final String asrApiKey;
   final ContextPrefs context;
 
-  /// Optional Linux document-edit service (xlsx patch → download).
-  final DocumentServiceConfig documentService;
-  final String documentServiceToken;
+  /// One connection for every server-side Expert Chat capability.
+  final GatewayConfig gateway;
+  final String gatewayToken;
 
   /// Local Markdown long-term memory. Off by default until the user opts in.
   final bool memoryEnabled;
@@ -107,12 +108,22 @@ class SettingsState {
   /// M7: hidden research mode (SSH / tmux / AI command approval). Default off.
   final bool researchModeEnabled;
 
+  /// Study hub tab (导师 / 课程 / 刷题 / 复习). Default on.
+  final bool studyModeEnabled;
+
   /// Creation hub tab (角色 / 世界书 / 导演故事). Default on; can hide for a cleaner nav.
   final bool creationModeEnabled;
 
   bool get searchConfigured => searchApiKey.trim().isNotEmpty;
-  bool get documentServiceConfigured =>
-      documentService.isConfiguredWith(documentServiceToken);
+  bool get gatewayConfigured => gateway.isConfigured;
+  bool get supportsLongTasks =>
+      gateway.supports(GatewayCapabilityIds.longTasks);
+  bool get supportsDocumentEdit =>
+      gateway.supports(GatewayCapabilityIds.documentEdit);
+  bool get supportsDocumentConvert =>
+      gateway.supports(GatewayCapabilityIds.documentConvert);
+  GatewayConnection get gatewayConnection =>
+      GatewayConnection(config: gateway, apiToken: gatewayToken);
   bool get visionConfigured => visionApi.isConfiguredWith(visionApiKey);
   bool get imageGenerationConfigured =>
       imageGenerationApi.isConfiguredWith(imageGenerationApiKey);
@@ -182,10 +193,11 @@ class SettingsState {
     MediaApiConfig? asrApi,
     String? asrApiKey,
     ContextPrefs? context,
-    DocumentServiceConfig? documentService,
-    String? documentServiceToken,
+    GatewayConfig? gateway,
+    String? gatewayToken,
     bool? memoryEnabled,
     bool? researchModeEnabled,
+    bool? studyModeEnabled,
     bool? creationModeEnabled,
   }) => SettingsState(
     profiles: profiles ?? this.profiles,
@@ -213,10 +225,11 @@ class SettingsState {
     asrApi: asrApi ?? this.asrApi,
     asrApiKey: asrApiKey ?? this.asrApiKey,
     context: context ?? this.context,
-    documentService: documentService ?? this.documentService,
-    documentServiceToken: documentServiceToken ?? this.documentServiceToken,
+    gateway: gateway ?? this.gateway,
+    gatewayToken: gatewayToken ?? this.gatewayToken,
     memoryEnabled: memoryEnabled ?? this.memoryEnabled,
     researchModeEnabled: researchModeEnabled ?? this.researchModeEnabled,
+    studyModeEnabled: studyModeEnabled ?? this.studyModeEnabled,
     creationModeEnabled: creationModeEnabled ?? this.creationModeEnabled,
   );
 
@@ -243,10 +256,16 @@ const _kTtsApiKeySecure = 'tts_api_key';
 const _kAsrApi = 'asrApi';
 const _kAsrApiKeySecure = 'asr_api_key';
 const _kContextPrefs = 'contextPrefs';
-const _kDocumentService = 'documentService';
-const _kDocumentServiceTokenSecure = 'document_service_token';
+const _kGateway = 'expertChatGateway';
+const _kGatewayTokenSecure = 'expert_chat_gateway_token';
+// Legacy split-service keys retained for a lossless one-time migration.
+const _kLegacyDocumentService = 'documentService';
+const _kLegacyDocumentServiceTokenSecure = 'document_service_token';
+const _kLegacyLongTaskGateway = 'longTaskGateway';
+const _kLegacyLongTaskGatewayTokenSecure = 'long_task_gateway_token';
 const _kMemoryEnabled = 'memoryEnabled';
 const _kResearchModeEnabled = 'researchModeEnabled';
+const _kStudyModeEnabled = 'studyModeEnabled';
 const _kCreationModeEnabled = 'creationModeEnabled';
 
 // Legacy M1 keys (single-config) — read once for migration.
@@ -255,7 +274,9 @@ const _kLegacyModel = 'model';
 const _kLegacyApiKeySecure = 'llm_api_key';
 const _kProfilesCorruptBackup = 'providerProfiles.corrupt';
 
-String _secureKeyForProfile(String profileId) => 'apikey_$profileId';
+/// Stable secure-storage key used by provider-scoped background jobs as well as
+/// the settings controller. A job may outlive a change of active provider.
+String providerApiKeyStorageKey(String profileId) => 'apikey_$profileId';
 
 /// TTS providers keep independent endpoint/model/voice profiles. The legacy
 /// keys above continue to mirror whichever profile is active so old releases
@@ -295,7 +316,7 @@ class SettingsController extends AsyncNotifier<SettingsState> {
         profiles = [migrated];
         if (legacyKey != null && legacyKey.isNotEmpty) {
           await secure.write(
-            key: _secureKeyForProfile(migrated.id),
+            key: providerApiKeyStorageKey(migrated.id),
             value: legacyKey,
           );
         }
@@ -335,7 +356,7 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       var copied = false;
       for (final profile in profiles) {
         final profileKey = await secure.read(
-          key: _secureKeyForProfile(profile.id),
+          key: providerApiKeyStorageKey(profile.id),
         );
         if (profileKey == legacyKey) {
           copied = true;
@@ -348,7 +369,8 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     }
 
     activeId ??= profiles.first.id;
-    final apiKey = await secure.read(key: _secureKeyForProfile(activeId)) ?? '';
+    final apiKey =
+        await secure.read(key: providerApiKeyStorageKey(activeId)) ?? '';
     final searchApiKey = await secure.read(key: _kSearchApiKeySecure) ?? '';
     final visionApiKey = await secure.read(key: _kVisionApiKeySecure) ?? '';
     final imageGenerationApiKey =
@@ -377,8 +399,23 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       await secure.write(key: activeTtsProfileSecureKey, value: ttsApiKey);
     }
     final asrApiKey = await secure.read(key: _kAsrApiKeySecure) ?? '';
-    final documentServiceToken =
-        await secure.read(key: _kDocumentServiceTokenSecure) ?? '';
+    var gateway = _readGateway(prefs);
+    if (gateway == null) {
+      gateway = _migrateLegacyGateway(prefs);
+      await prefs.setString(_kGateway, jsonEncode(gateway.toJson()));
+    }
+    var gatewayToken = await secure.read(key: _kGatewayTokenSecure) ?? '';
+    if (gatewayToken.isEmpty) {
+      gatewayToken =
+          await secure.read(key: _kLegacyLongTaskGatewayTokenSecure) ?? '';
+      if (gatewayToken.isEmpty) {
+        gatewayToken =
+            await secure.read(key: _kLegacyDocumentServiceTokenSecure) ?? '';
+      }
+      if (gatewayToken.isNotEmpty) {
+        await secure.write(key: _kGatewayTokenSecure, value: gatewayToken);
+      }
+    }
 
     // Drop a stored model override that no longer exists in the active
     // profile's model list (e.g. the profile was edited since), so requests
@@ -427,10 +464,12 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       asrApi: _readMediaApi(prefs, _kAsrApi),
       asrApiKey: asrApiKey,
       context: _readContextPrefs(prefs),
-      documentService: _readDocumentService(prefs),
-      documentServiceToken: documentServiceToken,
+      gateway: gateway,
+      gatewayToken: gatewayToken,
       memoryEnabled: prefs.getBool(_kMemoryEnabled) ?? false,
       researchModeEnabled: prefs.getBool(_kResearchModeEnabled) ?? false,
+      // Default on: learning hub is part of the main product surface.
+      studyModeEnabled: prefs.getBool(_kStudyModeEnabled) ?? true,
       // Default on: existing installs keep the 创作 tab unless user hides it.
       creationModeEnabled: prefs.getBool(_kCreationModeEnabled) ?? true,
     );
@@ -447,6 +486,13 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     final next = _current.copyWith(researchModeEnabled: enabled);
     state = AsyncData(next);
     await ref.read(sharedPrefsProvider).setBool(_kResearchModeEnabled, enabled);
+  }
+
+  /// Show/hide the 学习 hub tab. Does not delete courses or cards.
+  Future<void> setStudyModeEnabled(bool enabled) async {
+    final next = _current.copyWith(studyModeEnabled: enabled);
+    state = AsyncData(next);
+    await ref.read(sharedPrefsProvider).setBool(_kStudyModeEnabled, enabled);
   }
 
   /// Show/hide the 创作 hub tab. Does not delete characters or drafts.
@@ -493,19 +539,59 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     }
   }
 
-  static DocumentServiceConfig _readDocumentService(SharedPreferences prefs) {
-    final raw = prefs.getString(_kDocumentService);
-    if (raw == null || raw.isEmpty) return const DocumentServiceConfig();
+  static GatewayConfig? _readGateway(SharedPreferences prefs) {
+    final raw = prefs.getString(_kGateway);
+    if (raw == null || raw.isEmpty) return null;
     try {
       final decoded = jsonDecode(raw);
       if (decoded is Map<String, dynamic>) {
-        return DocumentServiceConfig.fromJson(decoded);
+        return GatewayConfig.fromJson(decoded);
       }
       if (decoded is Map) {
-        return DocumentServiceConfig.fromJson(Map<String, dynamic>.from(decoded));
+        return GatewayConfig.fromJson(Map<String, dynamic>.from(decoded));
       }
     } catch (_) {}
-    return const DocumentServiceConfig();
+    return null;
+  }
+
+  static GatewayConfig _migrateLegacyGateway(SharedPreferences prefs) {
+    Map<String, dynamic> readLegacy(String key) {
+      final raw = prefs.getString(key);
+      if (raw == null || raw.isEmpty) return const {};
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is Map) return Map<String, dynamic>.from(decoded);
+      } catch (_) {}
+      return const {};
+    }
+
+    final longTask = readLegacy(_kLegacyLongTaskGateway);
+    final document = readLegacy(_kLegacyDocumentService);
+    final longUrl = longTask['baseUrl']?.toString().trim() ?? '';
+    final documentUrl = document['baseUrl']?.toString().trim() ?? '';
+    final longEnabled = longTask['enabled'] == true && longUrl.isNotEmpty;
+    final documentEnabled =
+        document['enabled'] == true && documentUrl.isNotEmpty;
+    final baseUrl = longEnabled
+        ? longUrl
+        : documentEnabled
+        ? documentUrl
+        : longUrl.isNotEmpty
+        ? longUrl
+        : documentUrl.isNotEmpty
+        ? documentUrl
+        : 'http://127.0.0.1:8790';
+    return GatewayConfig(
+      enabled: longEnabled || documentEnabled,
+      baseUrl: baseUrl,
+      taskModel: longTask['model']?.toString() ?? '',
+      taskPollSeconds: (longTask['pollSeconds'] as num?)?.toInt() ?? 2,
+      requestTimeoutSeconds:
+          (document['timeoutSeconds'] as num?)?.toInt() ?? 120,
+      // The legacy servers did not expose a common manifest. Stay optimistic
+      // until the user runs capability discovery against the unified server.
+      capabilitiesDiscovered: false,
+    );
   }
 
   static ContextPrefs _readContextPrefs(SharedPreferences prefs) {
@@ -597,7 +683,7 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     state = AsyncData(_current.copyWith(apiKey: apiKey));
     await ref
         .read(secureStorageProvider)
-        .write(key: _secureKeyForProfile(active.id), value: apiKey);
+        .write(key: providerApiKeyStorageKey(active.id), value: apiKey);
   }
 
   /// Set the web-search backend.
@@ -640,19 +726,34 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     await ref.read(sharedPrefsProvider).setInt(_kSearchMaxResults, bounded);
   }
 
-  Future<void> setDocumentServiceConfig(DocumentServiceConfig config) async {
-    state = AsyncData(_current.copyWith(documentService: config));
+  Future<void> setGatewayConfig(GatewayConfig config) async {
+    final current = _current.gateway;
+    final next = config.normalizedBaseUrl != current.normalizedBaseUrl
+        ? config.clearDiscovery()
+        : config;
+    state = AsyncData(_current.copyWith(gateway: next));
     await ref
         .read(sharedPrefsProvider)
-        .setString(_kDocumentService, jsonEncode(config.toJson()));
+        .setString(_kGateway, jsonEncode(next.toJson()));
   }
 
-  Future<void> setDocumentServiceToken(String token) async {
-    state = AsyncData(_current.copyWith(documentServiceToken: token));
+  Future<void> setGatewayToken(String token) async {
+    state = AsyncData(_current.copyWith(gatewayToken: token));
     await ref
         .read(secureStorageProvider)
-        .write(key: _kDocumentServiceTokenSecure, value: token);
+        .write(key: _kGatewayTokenSecure, value: token);
   }
+
+  Future<void> setGatewayCapabilities({
+    required List<String> capabilities,
+    required String serverVersion,
+  }) => setGatewayConfig(
+    _current.gateway.copyWith(
+      capabilitiesDiscovered: true,
+      capabilities: capabilities.toSet().toList()..sort(),
+      serverVersion: serverVersion,
+    ),
+  );
 
   /// Set the global preset/system prompt (persisted in shared preferences).
   Future<void> setSystemPrompt(String prompt) async {
@@ -763,7 +864,7 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     final key =
         await ref
             .read(secureStorageProvider)
-            .read(key: _secureKeyForProfile(id)) ??
+            .read(key: providerApiKeyStorageKey(id)) ??
         '';
     state = AsyncData(
       _current.copyWith(activeProfileId: id, apiKey: key, selectedModel: null),
@@ -816,7 +917,7 @@ class SettingsController extends AsyncNotifier<SettingsState> {
   Future<void> deleteProfile(String id) async {
     final remaining = _current.profiles.where((p) => p.id != id).toList();
     final secure = ref.read(secureStorageProvider);
-    await secure.delete(key: _secureKeyForProfile(id));
+    await secure.delete(key: providerApiKeyStorageKey(id));
 
     final prefs = ref.read(sharedPrefsProvider);
     if (remaining.isEmpty) {
@@ -846,10 +947,11 @@ class SettingsController extends AsyncNotifier<SettingsState> {
           asrApi: _current.asrApi,
           asrApiKey: _current.asrApiKey,
           context: _current.context,
-          documentService: _current.documentService,
-          documentServiceToken: _current.documentServiceToken,
+          gateway: _current.gateway,
+          gatewayToken: _current.gatewayToken,
           memoryEnabled: _current.memoryEnabled,
           researchModeEnabled: _current.researchModeEnabled,
+          studyModeEnabled: _current.studyModeEnabled,
           creationModeEnabled: _current.creationModeEnabled,
         ),
       );
@@ -863,7 +965,7 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     var apiKey = _current.apiKey;
     if (activeId == id) {
       activeId = remaining.first.id;
-      apiKey = await secure.read(key: _secureKeyForProfile(activeId)) ?? '';
+      apiKey = await secure.read(key: providerApiKeyStorageKey(activeId)) ?? '';
     }
     state = AsyncData(
       _current.copyWith(

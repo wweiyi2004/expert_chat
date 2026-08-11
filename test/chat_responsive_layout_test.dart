@@ -107,8 +107,6 @@ void main() {
       const filterKeys = [
         ValueKey('conversation-mode-filter-all'),
         ValueKey('conversation-mode-filter-chat'),
-        ValueKey('conversation-mode-filter-story'),
-        ValueKey('conversation-mode-filter-ensemble'),
       ];
       expect(
         find.byKey(const ValueKey('conversation-mode-filter')),
@@ -120,15 +118,27 @@ void main() {
       expect(
         filterRects.map((rect) => rect.top).toSet(),
         hasLength(1),
-        reason: '四个会话筛选项应保持在同一行',
+        reason: '两个会话筛选项应保持在同一行',
       );
       for (final rect in filterRects.skip(1)) {
         expect(
           rect.width,
           closeTo(filterRects.first.width, 0.01),
-          reason: '四个会话筛选项应等宽',
+          reason: '两个会话筛选项应等宽',
         );
       }
+      expect(
+        find.byKey(const ValueKey('conversation-mode-filter-story')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const ValueKey('conversation-mode-filter-ensemble')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const ValueKey('conversation-mode-filter-study')),
+        findsNothing,
+      );
     },
   );
 

@@ -12,12 +12,14 @@ import 'package:expert_chat/data/conversation_repository.dart';
 import 'package:expert_chat/data/context_prefs.dart';
 import 'package:expert_chat/data/db/app_database.dart' show AppDatabase;
 import 'package:expert_chat/data/drift_conversation_repository.dart';
+import 'package:expert_chat/data/gateway_config.dart';
 import 'package:expert_chat/data/media_api_config.dart';
 import 'package:expert_chat/data/models.dart';
 import 'package:expert_chat/data/provider_profile.dart';
 import 'package:expert_chat/data/story_models.dart';
 import 'package:expert_chat/data/world_info_repository.dart';
 import 'package:expert_chat/domain/export/conversation_export.dart';
+import 'package:expert_chat/domain/llm/long_task_gateway_client.dart';
 import 'package:expert_chat/domain/llm/llm_provider.dart';
 import 'package:expert_chat/domain/media/image_edit_reference.dart';
 import 'package:expert_chat/domain/media/openai_compatible_media_provider.dart';
@@ -188,6 +190,47 @@ class FakeMediaProvider extends OpenAiCompatibleMediaProvider {
   }
 }
 
+class FakeLongTaskGatewayClient extends LongTaskGatewayClient {
+  final uploadedNames = <String>[];
+  var createCount = 0;
+  final deletedFileIds = <String>[];
+
+  @override
+  Future<String> uploadFile({
+    required GatewayConnection connection,
+    required Attachment attachment,
+    required CancelToken cancelToken,
+  }) async {
+    uploadedNames.add(attachment.name);
+    return 'file_${uploadedNames.length}';
+  }
+
+  @override
+  Future<LongTaskSnapshot> create({
+    required GatewayConnection connection,
+    required List<LongTaskInputMessage> messages,
+    required List<String> fileIds,
+    required CancelToken cancelToken,
+    required String clientRequestId,
+    String? instructions,
+  }) async {
+    createCount++;
+    return const LongTaskSnapshot(
+      id: 'task_test',
+      status: 'completed',
+      outputText: '长任务最终结果',
+    );
+  }
+
+  @override
+  Future<void> deleteFile({
+    required GatewayConnection connection,
+    required String fileId,
+  }) async {
+    deletedFileIds.add(fileId);
+  }
+}
+
 /// Settings controller that returns a ready config without touching storage.
 class FakeSettings extends SettingsController {
   @override
@@ -204,6 +247,11 @@ class FakeSettings extends SettingsController {
       activeProfileId: profile.id,
       apiKey: 'sk-test',
       searchApiKey: 'search-key',
+      gateway: const GatewayConfig(
+        enabled: true,
+        baseUrl: 'https://gateway.example.com',
+      ),
+      gatewayToken: 'gateway-token',
     );
   }
 }
@@ -618,6 +666,7 @@ ProviderContainer _container(
   SpeechInputService? speechInputService,
   MimoSpeechInputService? mimoSpeechInputService,
   TextToSpeechService? textToSpeechService,
+  LongTaskGatewayClient? longTaskGatewayClient,
 }) {
   final db = AppDatabase(NativeDatabase.memory());
   final characters = CharacterRepository(db);
@@ -642,6 +691,8 @@ ProviderContainer _container(
         ),
       if (textToSpeechService != null)
         textToSpeechServiceProvider.overrideWithValue(textToSpeechService),
+      if (longTaskGatewayClient != null)
+        longTaskGatewayClientProvider.overrideWithValue(longTaskGatewayClient),
     ],
   );
   // Memory DB is not opened via path_provider; close it when the test ends.
@@ -716,6 +767,62 @@ void main() {
       await ctrl.sendMessage('hi');
       expect(llm.lastConfig?.model, KnownModels.chat);
       expect(llm.lastThinking, isFalse); // normal mode disables thinking
+    },
+  );
+
+  test(
+    'long document task bypasses ordinary streaming and fills its card',
+    () async {
+      final llm = FakeLlmProvider([const ChatChunk(contentDelta: '不应调用')]);
+      final gateway = FakeLongTaskGatewayClient();
+      final repo = InMemoryRepo();
+      final c = _container(
+        llm,
+        repo,
+        settingsBuilder: FakeSettings.new,
+        longTaskGatewayClient: gateway,
+      );
+      addTearDown(c.dispose);
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
+      final raw = utf8.encode('完整文件内容');
+      final attachment = Attachment(
+        name: 'report.txt',
+        mimeType: 'text/plain',
+        sizeBytes: raw.length,
+        text: '完整文件内容',
+        imageBase64: base64Encode(raw),
+      );
+
+      final accepted = await ctrl.sendLongDocumentTask(
+        '深入分析这份报告',
+        attachments: [attachment],
+      );
+      expect(accepted, isTrue);
+      for (var i = 0; i < 20; i++) {
+        final task = c
+            .read(chatControllerProvider)
+            .value
+            ?.current
+            ?.activePath
+            .last
+            .longTask;
+        if (task?.status == LongTaskStatus.completed) break;
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+
+      final assistant = c
+          .read(chatControllerProvider)
+          .value!
+          .current!
+          .activePath
+          .last;
+      expect(llm.callCount, 0);
+      expect(gateway.uploadedNames, ['report.txt']);
+      expect(gateway.createCount, 1);
+      expect(assistant.longTask?.status, LongTaskStatus.completed);
+      expect(assistant.content, '长任务最终结果');
+      expect(repo.store.single.messages.last.longTask?.taskId, 'task_test');
     },
   );
 
@@ -1200,6 +1307,7 @@ void main() {
       expect(a.parseError, isNull);
       expect(a.text, 'hello world');
       expect(a.truncated, isFalse);
+      expect(a.hasDownloadableBytes, isTrue);
     });
 
     test('truncates text past maxChars', () {
@@ -1213,6 +1321,8 @@ void main() {
       );
       expect(a.truncated, isTrue);
       expect(a.text.length, FileParser.maxChars);
+      // Long-task upload uses the original bytes, not the truncated prefix.
+      expect(a.hasDownloadableBytes, isTrue);
     });
 
     test('retains small images as base64 for vision models', () {

@@ -2,13 +2,16 @@ import 'package:uuid/uuid.dart';
 
 const _uuid = Uuid();
 
-/// Chat vs story (character / novel) vs multi-character ensemble session.
+/// Chat vs story (character / novel) vs multi-character ensemble vs study.
 enum ConversationMode {
   chat,
   story,
 
   /// Multiple character cards in one venue, taking turns.
-  ensemble;
+  ensemble,
+
+  /// Learning / tutor / course-linked study session.
+  study;
 
   String get wire => name;
 
@@ -17,6 +20,7 @@ enum ConversationMode {
     if (value == ConversationMode.ensemble.wire) {
       return ConversationMode.ensemble;
     }
+    if (value == ConversationMode.study.wire) return ConversationMode.study;
     return ConversationMode.chat;
   }
 }

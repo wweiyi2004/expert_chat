@@ -61,6 +61,8 @@ class Messages extends Table {
   TextColumn get searchActivitiesJson => text().nullable()();
   // World-info entries injected for this story turn (v8).
   TextColumn get appliedWorldInfoJson => text().nullable()();
+  // Durable server-side document-processing job metadata (v11).
+  TextColumn get longTaskJson => text().nullable()();
 
   @override
   Set<Column> get primaryKey => {id};
@@ -101,14 +103,53 @@ class WorldInfoEntries extends Table {
   Set<Column> get primaryKey => {id};
 }
 
+/// Granular study-domain entities (v10). Each course, node, card, and wrong
+/// item gets its own row so one small update no longer rewrites the complete
+/// study library blob.
+@DataClassName('StudyEntityRow')
+class StudyEntities extends Table {
+  TextColumn get kind => text()();
+  TextColumn get id => text()();
+  TextColumn get payloadJson => text()();
+  IntColumn get sortIndex => integer().withDefault(const Constant(0))();
+  DateTimeColumn get updatedAt => dateTime()();
+
+  @override
+  Set<Column> get primaryKey => {kind, id};
+}
+
+/// Canonical metadata for study conversations (v10). Conversation deletion
+/// cascades to the metadata row, avoiding orphan session records.
+@DataClassName('StudySessionRow')
+class StudySessions extends Table {
+  TextColumn get conversationId =>
+      text().references(Conversations, #id, onDelete: KeyAction.cascade)();
+  TextColumn get path => text()();
+  TextColumn get tutorStyle => text()();
+  TextColumn get topic => text().withDefault(const Constant(''))();
+  TextColumn get courseId => text().nullable()();
+  TextColumn get nodeId => text().nullable()();
+  DateTimeColumn get createdAt => dateTime()();
+
+  @override
+  Set<Column> get primaryKey => {conversationId};
+}
+
 @DriftDatabase(
-  tables: [Conversations, Messages, CharacterCards, WorldInfoEntries],
+  tables: [
+    Conversations,
+    Messages,
+    CharacterCards,
+    WorldInfoEntries,
+    StudyEntities,
+    StudySessions,
+  ],
 )
 class AppDatabase extends _$AppDatabase {
   AppDatabase([QueryExecutor? executor]) : super(executor ?? _open());
 
   @override
-  int get schemaVersion => 9;
+  int get schemaVersion => 11;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -161,6 +202,13 @@ class AppDatabase extends _$AppDatabase {
       if (from < 9) {
         await m.addColumn(conversations, conversations.targetTotalChars);
       }
+      if (from < 10) {
+        await m.createTable(studyEntities);
+        await m.createTable(studySessions);
+      }
+      if (from < 11) {
+        await m.addColumn(messages, messages.longTaskJson);
+      }
     },
     beforeOpen: (details) async {
       // SQLite has FK enforcement off by default; needed for cascade delete.
@@ -183,6 +231,14 @@ class AppDatabase extends _$AppDatabase {
       await customStatement(
         'CREATE INDEX IF NOT EXISTS idx_world_info_priority '
         'ON world_info_entries (priority DESC, updated_at DESC)',
+      );
+      await customStatement(
+        'CREATE INDEX IF NOT EXISTS idx_study_entities_kind_updated '
+        'ON study_entities (kind, updated_at DESC)',
+      );
+      await customStatement(
+        'CREATE INDEX IF NOT EXISTS idx_study_sessions_course_node '
+        'ON study_sessions (course_id, node_id)',
       );
     },
   );

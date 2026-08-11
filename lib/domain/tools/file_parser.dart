@@ -121,18 +121,22 @@ class FileParser {
       return base.copyWith(imageBase64: base64Encode(bytes));
     }
 
-    final isEditableForService =
+    final retainableDocument =
+        lower.endsWith('.pdf') ||
         lower.endsWith('.xlsx') ||
         lower.endsWith('.docx') ||
         lower.endsWith('.pptx') ||
         lower.endsWith('.txt') ||
         lower.endsWith('.md') ||
         lower.endsWith('.csv') ||
-        lower.endsWith('.tsv');
-    // Keep original bytes so document-edit can round-trip even when local text
-    // extraction is partial/empty. Cap retention to avoid huge DB rows.
+        lower.endsWith('.tsv') ||
+        lower.endsWith('.json');
+    // Keep original bytes so document-edit and server-side long tasks can use
+    // the actual file even when local extraction is partial or truncated. The
+    // chat picker already caps each attachment at 10 MB; repeat that bound here
+    // for non-UI callers and to avoid unexpectedly large SQLite rows.
     final retainBinary =
-        isEditableForService &&
+        retainableDocument &&
         bytes.lengthInBytes <= maxFileBytes &&
         bytes.lengthInBytes <= 10 * 1024 * 1024;
     final retainedB64 = retainBinary ? base64Encode(bytes) : null;

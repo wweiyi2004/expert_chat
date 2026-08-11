@@ -16,7 +16,7 @@ class DocumentEditTools {
     name: editDocumentToolName,
     description:
         '按结构化补丁修改用户本轮上传的可编辑文件，'
-        '由客户端提交到文档服务并回传可下载的新文件。'
+        '由客户端提交到 Expert Chat Gateway 并回传可下载的新文件。'
         '支持：.xlsx / .docx / .pptx / .txt / .md / .csv / .tsv。'
         '仅在用户明确要求改文件/导出/回传，或点击「改文档」时必须调用。'
         'patch 必须是完整 DocumentPatch（schema_version=1, format, ops）。'
@@ -31,8 +31,7 @@ class DocumentEditTools {
       'properties': {
         'attachment_name': {
           'type': 'string',
-          'description':
-              '要修改的附件文件名（含扩展名）。本轮仅一个可编辑文件时可省略。',
+          'description': '要修改的附件文件名（含扩展名）。本轮仅一个可编辑文件时可省略。',
         },
         'output_filename': {
           'type': 'string',
@@ -42,10 +41,7 @@ class DocumentEditTools {
           'type': 'object',
           'description': 'DocumentPatch v1',
           'properties': {
-            'schema_version': {
-              'type': 'integer',
-              'description': '固定为 1',
-            },
+            'schema_version': {'type': 'integer', 'description': '固定为 1'},
             'format': {
               'type': 'string',
               'enum': ['xlsx', 'docx', 'pptx', 'txt', 'md', 'csv', 'tsv'],
@@ -97,7 +93,7 @@ class DocumentEditTools {
   static final convertDocumentTool = ToolSpec(
     name: convertDocumentToolName,
     description:
-        '将用户本轮上传的可编辑文件转换为另一种格式，由客户端提交到文档服务并回传下载。'
+        '将用户本轮上传的可编辑文件转换为另一种格式，由客户端提交到 Expert Chat Gateway 并回传下载。'
         '在用户要求「转成 / 导出为 / 转换格式」时调用（例如 txt→docx、csv→xlsx、docx→md）。'
         '不要用 edit_document 做跨格式转换。'
         '支持矩阵：${DocumentConvert.matrixSummary()}。'
@@ -107,8 +103,7 @@ class DocumentEditTools {
       'properties': {
         'attachment_name': {
           'type': 'string',
-          'description':
-              '源附件文件名（含扩展名）。本轮仅一个可编辑文件时可省略。',
+          'description': '源附件文件名（含扩展名）。本轮仅一个可编辑文件时可省略。',
         },
         'target_format': {
           'type': 'string',
@@ -163,10 +158,7 @@ class DocumentEditTools {
     final outputOverride = map['output_filename'] ?? map['outputFilename'];
     final patchRaw = map['patch'];
     if (patchRaw == null) {
-      throw const DocumentPatchException(
-        '缺少 patch 字段',
-        code: 'patch_invalid',
-      );
+      throw const DocumentPatchException('缺少 patch 字段', code: 'patch_invalid');
     }
     var patch = DocumentPatch.parse(patchRaw);
     if (outputOverride is String && outputOverride.trim().isNotEmpty) {
@@ -221,7 +213,8 @@ class DocumentEditTools {
     }
     final map = Map<String, dynamic>.from(decoded);
     final attachmentName = map['attachment_name'] ?? map['attachmentName'];
-    final targetRaw = map['target_format'] ?? map['targetFormat'] ?? map['format'];
+    final targetRaw =
+        map['target_format'] ?? map['targetFormat'] ?? map['format'];
     if (targetRaw is! String || targetRaw.trim().isEmpty) {
       throw const DocumentPatchException(
         '缺少 target_format',

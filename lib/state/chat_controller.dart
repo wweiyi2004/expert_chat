@@ -8,9 +8,12 @@ import 'package:flutter/foundation.dart' show compute, kIsWeb;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/providers.dart';
+import '../data/gateway_config.dart';
 import '../data/models.dart';
 import '../data/story_models.dart';
+import '../data/study_models.dart';
 import '../domain/context/context_window_manager.dart';
+import '../domain/llm/long_task_gateway_client.dart';
 import '../domain/llm/llm_provider.dart';
 import '../domain/media/image_codec_util.dart';
 import '../domain/media/image_edit_reference.dart';
@@ -19,6 +22,8 @@ import '../domain/notify/generation_notify.dart';
 import '../domain/story/story_constraint_compiler.dart';
 import '../domain/story/story_generation_intent.dart';
 import '../domain/story/story_prompt_assembler.dart';
+import '../domain/study/study_prompt_assembler.dart';
+import '../domain/study/tutor_style.dart';
 import '../domain/document/document_convert.dart';
 import '../domain/document/document_edit_tools.dart';
 import '../domain/document/document_patch.dart';
@@ -29,6 +34,7 @@ import '../domain/tools/search_query.dart';
 import '../domain/tools/tool_engine.dart';
 import '../domain/tools/url_extract.dart';
 import 'settings_controller.dart';
+import 'study_controller.dart';
 
 /// Composer "联网" switch. [off] never searches; [auto] lets the model (or the
 /// planner, for tool-less models) decide per question; [always] guarantees at
@@ -300,6 +306,11 @@ class ChatController extends AsyncNotifier<ChatState> {
   /// overlapping best-effort checkpoint cannot lose the completed answer.
   final Set<String> _checkpointWritesInFlight = {};
 
+  /// Background document jobs are independent from the one ordinary chat SSE
+  /// stream. Several conversations may have one running at the same time.
+  final Set<String> _longTaskRuns = {};
+  final Map<String, CancelToken> _longTaskCancelTokens = {};
+
   @override
   Future<ChatState> build() async {
     ref.onDispose(() {
@@ -314,6 +325,12 @@ class ChatController extends AsyncNotifier<ChatState> {
       }
       _sub?.cancel();
       _cancelToken?.cancel();
+      for (final token in _longTaskCancelTokens.values) {
+        // Stops local upload/polling only. Once a Gateway task id exists, the
+        // durable server job intentionally keeps running.
+        token.cancel('app disposed');
+      }
+      _longTaskCancelTokens.clear();
       final idle = _idleCompleter;
       _idleCompleter = null;
       if (idle != null && !idle.isCompleted) idle.complete();
@@ -324,10 +341,18 @@ class ChatController extends AsyncNotifier<ChatState> {
       final fresh = Conversation();
       return ChatState(conversations: [fresh], currentId: fresh.id);
     }
-    return ChatState(
+    final initial = ChatState(
       conversations: conversations,
       currentId: conversations.first.id,
     );
+    // Let Riverpod publish [initial] before task runners begin mutating state.
+    unawaited(
+      Future<void>.delayed(
+        Duration.zero,
+        () => _resumeLongTasks(conversations),
+      ),
+    );
+    return initial;
   }
 
   ChatState get _s => state.value ?? const ChatState();
@@ -442,6 +467,64 @@ class ChatController extends AsyncNotifier<ChatState> {
     for (final c in _s.conversations) c.id == updated.id ? updated : c,
   ];
 
+  Future<String> _studySystemPrompt(Conversation convo) async {
+    final library = await ref.read(studyRepositoryProvider).load();
+    StudySessionMeta? session;
+    for (final candidate in library.sessions) {
+      if (candidate.conversationId != convo.id) continue;
+      session = candidate;
+      break;
+    }
+    // Compatibility fallback for a study conversation imported after the v10
+    // migration marker was written. New sessions never use authorNote.
+    if (session == null) {
+      final legacy = StudyPromptAssembler.decodeSessionNote(convo.authorNote);
+      if (legacy != null) {
+        session = StudySessionMeta.fromJson({
+          ...legacy,
+          'conversationId': convo.id,
+          'createdAt': convo.updatedAt.toIso8601String(),
+        });
+      }
+    }
+    final topic = session?.topic.trim().isNotEmpty == true
+        ? session!.topic.trim()
+        : convo.title.replaceFirst(RegExp(r'^学习[：:]'), '').trim();
+    final style = session?.tutorStyle ?? TutorStyle.mixed;
+    final courseId = session?.courseId;
+    final nodeId = session?.nodeId;
+    String? courseTitle;
+    String? nodeTitle;
+    var notes = '';
+    if ((courseId ?? '').isNotEmpty || (nodeId ?? '').isNotEmpty) {
+      if ((courseId ?? '').isNotEmpty) {
+        for (final course in library.courses) {
+          if (course.id != courseId) continue;
+          courseTitle = course.title;
+          notes = course.sourceSummary.trim();
+          break;
+        }
+      }
+      if ((nodeId ?? '').isNotEmpty) {
+        for (final node in library.nodes) {
+          if (node.id != nodeId) continue;
+          nodeTitle = node.title;
+          break;
+        }
+      }
+    }
+    if (notes.characters.length > 4000) {
+      notes = '${notes.characters.take(4000)}…';
+    }
+    return const StudyPromptAssembler().tutorSystem(
+      style: style,
+      topic: topic.isEmpty ? '通用学习' : topic,
+      courseTitle: courseTitle,
+      nodeTitle: nodeTitle,
+      notes: notes,
+    );
+  }
+
   /// Root-to-node path across any branch, used to retry the exact failed turn
   /// even if the user briefly switched branches before pressing retry.
   List<ChatMessage> _pathToMessage(Conversation convo, String messageId) {
@@ -466,6 +549,93 @@ class ChatController extends AsyncNotifier<ChatState> {
       next[message.parentId ?? kRootKey] = message.id;
     }
     return next;
+  }
+
+  /// Start or focus a study-mode conversation (tutor / course-linked).
+  Future<Conversation> newStudyConversation({
+    required String topic,
+    TutorStyle tutorStyle = TutorStyle.mixed,
+    StudyPath path = StudyPath.tutor,
+    String? courseId,
+    String? nodeId,
+    String? opener,
+  }) async {
+    final trimmed = topic.trim();
+    final title = trimmed.isEmpty
+        ? '学习会话'
+        : (trimmed.length <= 24
+              ? '学习：$trimmed'
+              : '学习：${trimmed.substring(0, 24)}…');
+    final sessionTopic = trimmed.isEmpty ? '通用学习' : trimmed;
+    final greeting = (opener ?? '').trim().isNotEmpty
+        ? opener!.trim()
+        : '你好。我们开始学习「${trimmed.isEmpty ? '这个主题' : trimmed}」。'
+              '你可以直接提问，或告诉我卡在哪里。需要提示时说「给提示」，需要答案时说「完整讲解」。';
+    final openerMsg = ChatMessage(
+      role: MessageRole.assistant,
+      content: greeting,
+      parentId: null,
+    );
+    final existing = _findUnusedSession(ConversationMode.study);
+    if (existing != null) {
+      // Reuse blank study shell but always reset opener + meta so a new topic
+      // never keeps the previous greeting / tutor style.
+      final updated = existing.copyWith(
+        title: title,
+        authorNote: '',
+        messages: [openerMsg],
+        activeChildren: {kRootKey: openerMsg.id},
+        updatedAt: DateTime.now(),
+      );
+      _set(
+        _s.copyWith(
+          conversations: _replace(updated),
+          currentId: updated.id,
+          error: null,
+        ),
+      );
+      await _persist();
+      await ref
+          .read(studyControllerProvider.notifier)
+          .upsertSession(
+            StudySessionMeta(
+              conversationId: updated.id,
+              path: path,
+              tutorStyle: tutorStyle,
+              topic: sessionTopic,
+              courseId: courseId,
+              nodeId: nodeId,
+            ),
+          );
+      return updated;
+    }
+    final fresh = Conversation(
+      title: title,
+      mode: ConversationMode.study,
+      messages: [openerMsg],
+      activeChildren: {kRootKey: openerMsg.id},
+    );
+    _set(
+      _s.copyWith(
+        conversations: [fresh, ..._s.conversations],
+        currentId: fresh.id,
+        error: null,
+      ),
+    );
+    await _persist();
+    await ref
+        .read(studyControllerProvider.notifier)
+        .upsertSession(
+          StudySessionMeta(
+            conversationId: fresh.id,
+            path: path,
+            tutorStyle: tutorStyle,
+            topic: sessionTopic,
+            courseId: courseId,
+            nodeId: nodeId,
+          ),
+        );
+    return fresh;
   }
 
   void newConversation() {
@@ -1234,8 +1404,8 @@ class ChatController extends AsyncNotifier<ChatState> {
         requireVision: requiresVision,
       );
       if (settings == null || _cancelStart) return false;
-      if (forceDocumentEdit && !settings.documentServiceConfigured) {
-        _set(_s.copyWith(error: '请先在设置中配置文档服务（Base URL + Token）。'));
+      if (forceDocumentEdit && !settings.supportsDocumentEdit) {
+        _set(_s.copyWith(error: '请先配置支持文档编辑能力的 Expert Chat Gateway。'));
         return false;
       }
       final config = _configFor(
@@ -1304,6 +1474,516 @@ class ChatController extends AsyncNotifier<ChatState> {
     } finally {
       _finishStarting();
     }
+  }
+
+  /// Starts a durable Gateway document job instead of an ordinary SSE
+  /// chat turn. The assistant placeholder is persisted before upload begins;
+  /// once the provider returns a response id, closing this app no longer stops
+  /// the remote work and the id is polled again on the next launch.
+  Future<bool> sendLongDocumentTask(
+    String text, {
+    required List<Attachment> attachments,
+  }) async {
+    final documents = [
+      for (final a in attachments)
+        if (!a.isImage) a,
+    ];
+    if (documents.isEmpty || _s.isStreaming || _starting) return false;
+    if (documents.any((a) => !a.hasDownloadableBytes)) {
+      _setScopedError('长任务需要上传原始文件；请移除旧附件并重新选择文件。');
+      return false;
+    }
+
+    _starting = true;
+    _cancelStart = false;
+    try {
+      final settings = await _readySettings();
+      if (settings == null || _cancelStart) return false;
+      if (!settings.supportsLongTasks) {
+        _setScopedError('请先在设置中启用并配置 Expert Chat Gateway（文件长任务能力）。');
+        return false;
+      }
+      final gateway = settings.gateway;
+      final gatewayModel = gateway.taskModel.trim();
+      final prompt = text.trim().isEmpty
+          ? '请完整阅读并深入分析上传文件，提炼关键信息、依据、风险和可执行结论。'
+          : text.trim();
+      final convo = _s.current ?? Conversation();
+      final parentId = convo.activePath.isEmpty
+          ? null
+          : convo.activePath.last.id;
+      final userMsg = ChatMessage(
+        role: MessageRole.user,
+        content: prompt,
+        attachments: documents,
+        parentId: parentId,
+      );
+      final assistantMsg = ChatMessage(
+        role: MessageRole.assistant,
+        content: '',
+        model: gatewayModel.isEmpty ? 'Gateway 默认模型' : gatewayModel,
+        parentId: userMsg.id,
+        longTask: LongTaskState(
+          status: LongTaskStatus.preparing,
+          providerProfileId: '',
+          providerName: 'Expert Chat Gateway',
+          baseUrl: gateway.baseUrl.trim(),
+          model: gatewayModel,
+          detail: '正在准备文件',
+        ),
+      );
+      final isFirst = convo.messages.isEmpty;
+      final working = convo.copyWith(
+        title: isFirst ? _truncateTitle(prompt) : convo.title,
+        messages: [...convo.messages, userMsg, assistantMsg],
+        activeChildren: {
+          ...convo.activeChildren,
+          parentId ?? kRootKey: userMsg.id,
+          userMsg.id: assistantMsg.id,
+        },
+      );
+      final holdsFocus = _s.currentId == working.id || _s.currentId == null;
+      _set(
+        _s.copyWith(
+          conversations: [
+            working,
+            ..._s.conversations.where((c) => c.id != working.id),
+          ],
+          currentId: holdsFocus ? working.id : _s.currentId,
+          error: null,
+        ),
+      );
+      try {
+        await _persistById(working.id);
+      } catch (e) {
+        _setScopedError('本地保存失败：$e', convoId: working.id);
+      }
+      unawaited(_runLongTask(working.id, assistantMsg.id));
+      return true;
+    } finally {
+      _finishStarting();
+    }
+  }
+
+  Future<void> _resumeLongTasks(List<Conversation> loaded) async {
+    if (!ref.mounted) return;
+    for (final conversation in loaded) {
+      for (final message in conversation.messages) {
+        if (message.longTask?.isActive != true) continue;
+        unawaited(_runLongTask(conversation.id, message.id));
+      }
+    }
+  }
+
+  Future<void> _runLongTask(String convoId, String assistantId) async {
+    final runKey = '$convoId/$assistantId';
+    if (!_longTaskRuns.add(runKey)) return;
+    final cancelToken = CancelToken();
+    _longTaskCancelTokens[runKey] = cancelToken;
+    try {
+      final initialTask = _findLongTask(convoId, assistantId);
+      if (initialTask == null || !initialTask.isActive) return;
+      var task = initialTask;
+      final connection = await _longTaskConnection(task);
+      if (connection == null) {
+        await _failLongTask(
+          convoId,
+          assistantId,
+          task,
+          '找不到 Gateway 地址或访问 Token。请恢复长任务 Gateway 配置后重试。',
+        );
+        return;
+      }
+      final client = ref.read(longTaskGatewayClientProvider);
+      final pollSeconds = (await ref.read(
+        settingsControllerProvider.future,
+      )).gateway.taskPollSeconds;
+
+      var taskId = task.taskId;
+      var remoteFileIds = List<String>.of(task.remoteFileIds);
+      if (taskId == null || taskId.isEmpty) {
+        final source = _longTaskSource(convoId, assistantId);
+        if (source == null || source.attachments.isEmpty) {
+          await _failLongTask(
+            convoId,
+            assistantId,
+            task,
+            '找不到原始附件，无法恢复上传。请重新发起长任务。',
+          );
+          return;
+        }
+        if (source.attachments.any((a) => !a.hasDownloadableBytes)) {
+          await _failLongTask(
+            convoId,
+            assistantId,
+            task,
+            '旧附件没有保留原始文件，无法恢复上传。请重新选择文件后发起任务。',
+          );
+          return;
+        }
+
+        task = task.copyWith(
+          status: LongTaskStatus.uploading,
+          detail: '正在上传文件',
+          error: null,
+        );
+        await _writeLongTask(convoId, assistantId, task);
+        for (
+          var index = remoteFileIds.length;
+          index < source.attachments.length;
+          index++
+        ) {
+          if (cancelToken.isCancelled ||
+              _findLongTask(convoId, assistantId)?.isActive != true) {
+            return;
+          }
+          task = task.copyWith(
+            detail:
+                '正在上传 ${index + 1}/${source.attachments.length}：'
+                '${source.attachments[index].name}',
+          );
+          await _writeLongTask(convoId, assistantId, task);
+          final fileId = await client.uploadFile(
+            connection: connection,
+            attachment: source.attachments[index],
+            cancelToken: cancelToken,
+          );
+          if (cancelToken.isCancelled ||
+              _findLongTask(convoId, assistantId)?.isActive != true) {
+            await client.deleteFile(connection: connection, fileId: fileId);
+            return;
+          }
+          remoteFileIds.add(fileId);
+          task = task.copyWith(remoteFileIds: List.of(remoteFileIds));
+          await _writeLongTask(convoId, assistantId, task);
+        }
+
+        task = task.copyWith(
+          status: LongTaskStatus.queued,
+          detail: '文件已上传，正在创建后台任务',
+        );
+        await _writeLongTask(convoId, assistantId, task);
+        final messages = _longTaskMessages(convoId, assistantId);
+        final settings = await ref.read(settingsControllerProvider.future);
+        final globalPrompt = settings.systemPrompt.trim();
+        final instructions = [
+          if (globalPrompt.isNotEmpty) globalPrompt,
+          '你正在执行一个长时间文档处理任务。请完整阅读所有上传文件，'
+              '严格依据文件内容完成用户目标；输出结构清晰、证据充分的最终结果。',
+        ].join('\n\n');
+        final created = await client.create(
+          connection: connection,
+          messages: messages,
+          fileIds: remoteFileIds,
+          cancelToken: cancelToken,
+          clientRequestId: assistantId,
+          instructions: instructions,
+        );
+        taskId = created.id;
+        task = task.copyWith(
+          taskId: taskId,
+          remoteFileIds: List.of(remoteFileIds),
+          status: _longStatus(created),
+          progress: created.progress,
+          lastEventId: created.lastEventId,
+          detail:
+              created.detail ??
+              (created.isPending ? '服务端正在处理，可离开此会话' : '正在整理结果'),
+        );
+        await _writeLongTask(
+          convoId,
+          assistantId,
+          task,
+          content: created.outputText.trim().isEmpty
+              ? null
+              : created.outputText,
+        );
+        if (!created.isPending) {
+          await _finishLongTaskSnapshot(
+            convoId,
+            assistantId,
+            task,
+            created,
+            connection,
+            client,
+          );
+          return;
+        }
+      }
+
+      var consecutivePollFailures = 0;
+      while (!cancelToken.isCancelled) {
+        final current = _findLongTask(convoId, assistantId);
+        if (current == null || !current.isActive) return;
+        await Future<void>.delayed(
+          Duration(seconds: consecutivePollFailures == 0 ? pollSeconds : 10),
+        );
+        if (cancelToken.isCancelled) return;
+        LongTaskSnapshot snapshot;
+        try {
+          snapshot = await client.retrieve(
+            connection: connection,
+            taskId: taskId,
+            cancelToken: cancelToken,
+          );
+          consecutivePollFailures = 0;
+        } catch (e) {
+          if (cancelToken.isCancelled || _isCancel(e)) return;
+          consecutivePollFailures++;
+          final reconnecting = current.copyWith(
+            status: LongTaskStatus.running,
+            detail: '连接暂时中断，任务仍在服务端运行；正在重连',
+            error: null,
+          );
+          await _writeLongTask(convoId, assistantId, reconnecting);
+          continue;
+        }
+
+        task = current.copyWith(
+          status: _longStatus(snapshot),
+          progress: snapshot.progress,
+          lastEventId: snapshot.lastEventId,
+          detail:
+              snapshot.detail ??
+              (snapshot.isPending ? '服务端正在处理，可离开此会话' : '正在整理结果'),
+          error: null,
+        );
+        await _writeLongTask(
+          convoId,
+          assistantId,
+          task,
+          content: snapshot.outputText.trim().isEmpty
+              ? null
+              : snapshot.outputText,
+        );
+        if (!snapshot.isPending) {
+          await _finishLongTaskSnapshot(
+            convoId,
+            assistantId,
+            task,
+            snapshot,
+            connection,
+            client,
+          );
+          return;
+        }
+      }
+    } catch (e) {
+      if (!cancelToken.isCancelled && !_isCancel(e)) {
+        final task = _findLongTask(convoId, assistantId);
+        if (task != null && task.isActive) {
+          await _failLongTask(convoId, assistantId, task, _describeError(e));
+        }
+      }
+    } finally {
+      _longTaskCancelTokens.remove(runKey);
+      _longTaskRuns.remove(runKey);
+    }
+  }
+
+  Future<void> _finishLongTaskSnapshot(
+    String convoId,
+    String assistantId,
+    LongTaskState task,
+    LongTaskSnapshot snapshot,
+    GatewayConnection connection,
+    LongTaskGatewayClient client,
+  ) async {
+    if (snapshot.isCompleted && snapshot.outputText.trim().isNotEmpty) {
+      final completed = task.copyWith(
+        status: LongTaskStatus.completed,
+        detail: '处理完成',
+        error: null,
+      );
+      await _writeLongTask(
+        convoId,
+        assistantId,
+        completed,
+        content: snapshot.outputText.trim(),
+      );
+    } else {
+      final message =
+          snapshot.error ??
+          (snapshot.isCompleted
+              ? '服务端已完成任务，但没有返回可显示的文本。'
+              : snapshot.isCancelled
+              ? '任务已取消。'
+              : '后台任务未能完成（${snapshot.status}）。');
+      final failed = task.copyWith(
+        status: snapshot.isCancelled
+            ? LongTaskStatus.cancelled
+            : LongTaskStatus.failed,
+        detail: snapshot.isCancelled ? '已取消' : '处理失败',
+        error: message,
+      );
+      await _writeLongTask(convoId, assistantId, failed);
+    }
+    for (final fileId in task.remoteFileIds) {
+      await client.deleteFile(connection: connection, fileId: fileId);
+    }
+  }
+
+  LongTaskStatus _longStatus(LongTaskSnapshot snapshot) {
+    if (snapshot.isCompleted) return LongTaskStatus.completed;
+    if (snapshot.isCancelled) return LongTaskStatus.cancelled;
+    if (snapshot.isFailed) return LongTaskStatus.failed;
+    return snapshot.status == 'queued'
+        ? LongTaskStatus.queued
+        : LongTaskStatus.running;
+  }
+
+  Future<GatewayConnection?> _longTaskConnection(LongTaskState task) async {
+    final settings = await ref.read(settingsControllerProvider.future);
+    if (task.baseUrl.trim().isEmpty) return null;
+    return GatewayConnection(
+      config: GatewayConfig(
+        enabled: true,
+        baseUrl: task.baseUrl,
+        taskModel: task.model,
+        taskPollSeconds: settings.gateway.taskPollSeconds,
+        requestTimeoutSeconds: settings.gateway.requestTimeoutSeconds,
+      ),
+      apiToken: settings.gatewayToken,
+    );
+  }
+
+  List<LongTaskInputMessage> _longTaskMessages(
+    String convoId,
+    String assistantId,
+  ) {
+    final convo = _s.conversations.where((c) => c.id == convoId).firstOrNull;
+    if (convo == null) return const [];
+    final assistant = convo.messages
+        .where((m) => m.id == assistantId)
+        .firstOrNull;
+    final userId = assistant?.parentId;
+    if (userId == null) return const [];
+    final path = _pathToMessage(convo, userId)
+        .where(
+          (m) =>
+              (m.role == MessageRole.user || m.role == MessageRole.assistant) &&
+              m.content.trim().isNotEmpty,
+        )
+        .toList();
+    final start = path.length > 12 ? path.length - 12 : 0;
+    return [
+      for (final message in path.skip(start))
+        LongTaskInputMessage(role: message.role, text: message.content),
+    ];
+  }
+
+  ({ChatMessage user, List<Attachment> attachments})? _longTaskSource(
+    String convoId,
+    String assistantId,
+  ) {
+    final convo = _s.conversations.where((c) => c.id == convoId).firstOrNull;
+    if (convo == null) return null;
+    final assistant = convo.messages
+        .where((m) => m.id == assistantId)
+        .firstOrNull;
+    if (assistant?.parentId == null) return null;
+    final user = convo.messages
+        .where((m) => m.id == assistant!.parentId)
+        .firstOrNull;
+    if (user == null) return null;
+    return (
+      user: user,
+      attachments: [
+        for (final a in user.attachments)
+          if (!a.isImage) a,
+      ],
+    );
+  }
+
+  LongTaskState? _findLongTask(String convoId, String assistantId) {
+    for (final convo in _s.conversations) {
+      if (convo.id != convoId) continue;
+      for (final message in convo.messages) {
+        if (message.id == assistantId) return message.longTask;
+      }
+    }
+    return null;
+  }
+
+  Future<void> _writeLongTask(
+    String convoId,
+    String assistantId,
+    LongTaskState task, {
+    String? content,
+  }) async {
+    final index = _s.conversations.indexWhere((c) => c.id == convoId);
+    if (index < 0) return;
+    final convo = _s.conversations[index];
+    final messages = [
+      for (final message in convo.messages)
+        if (message.id == assistantId)
+          message.copyWith(content: content ?? message.content, longTask: task)
+        else
+          message,
+    ];
+    _set(
+      _s.copyWith(conversations: _replace(convo.copyWith(messages: messages))),
+    );
+    await _persistSafely(convoId);
+  }
+
+  Future<void> _failLongTask(
+    String convoId,
+    String assistantId,
+    LongTaskState task,
+    String error,
+  ) => _writeLongTask(
+    convoId,
+    assistantId,
+    task.copyWith(status: LongTaskStatus.failed, detail: '处理失败', error: error),
+  );
+
+  Future<void> cancelLongTask(String convoId, String assistantId) async {
+    final task = _findLongTask(convoId, assistantId);
+    if (task == null || !task.isActive) return;
+    final runKey = '$convoId/$assistantId';
+    _longTaskCancelTokens[runKey]?.cancel('user cancelled');
+    final cancelled = task.copyWith(
+      status: LongTaskStatus.cancelled,
+      detail: '已取消',
+      error: null,
+    );
+    await _writeLongTask(convoId, assistantId, cancelled);
+    final connection = await _longTaskConnection(task);
+    if (connection == null) return;
+    final client = ref.read(longTaskGatewayClientProvider);
+    final taskId = task.taskId;
+    if (taskId != null && taskId.isNotEmpty) {
+      try {
+        await client.cancel(connection: connection, taskId: taskId);
+      } catch (e) {
+        _setScopedError(_describeError(e), convoId: convoId);
+      }
+    }
+    for (final fileId in task.remoteFileIds) {
+      await client.deleteFile(connection: connection, fileId: fileId);
+    }
+  }
+
+  Future<void> retryLongTask(String convoId, String assistantId) async {
+    final task = _findLongTask(convoId, assistantId);
+    if (task == null || !task.canRetry) return;
+    final runKey = '$convoId/$assistantId';
+    if (_longTaskRuns.contains(runKey)) {
+      // A cancelled poll normally unwinds immediately; retry on the next UI
+      // frame so the old runner cannot race the replacement state.
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      if (_longTaskRuns.contains(runKey)) return;
+    }
+    final reset = task.copyWith(
+      status: LongTaskStatus.preparing,
+      taskId: null,
+      remoteFileIds: const [],
+      detail: '正在重新准备',
+      error: null,
+    );
+    await _writeLongTask(convoId, assistantId, reset, content: '');
+    unawaited(_runLongTask(convoId, assistantId));
   }
 
   /// Grapheme-aware truncation so a 20-cut can't split an emoji/surrogate pair.
@@ -2174,7 +2854,7 @@ class ChatController extends AsyncNotifier<ChatState> {
         if (a.isEditableDocument) a,
     ];
     final useDocumentEditTool =
-        settings.documentServiceConfigured &&
+        settings.supportsDocumentEdit &&
         config.capabilities.supportsTools &&
         editableDocuments.isNotEmpty;
     final forceDocTool = forceDocumentEdit && useDocumentEditTool;
@@ -2568,6 +3248,15 @@ class ChatController extends AsyncNotifier<ChatState> {
       history.insertAll(0, systemPrefix);
       history.addAll(prefix.postHistoryMessages);
     } else {
+      if (cur.isStudy) {
+        final studySystem = await _studySystemPrompt(cur);
+        if (studySystem.isNotEmpty) {
+          history.insert(
+            0,
+            LlmRequestMessage(role: MessageRole.system, content: studySystem),
+          );
+        }
+      }
       if (memoryPrompt.isNotEmpty) {
         history.insert(
           0,
@@ -3433,8 +4122,8 @@ class ChatController extends AsyncNotifier<ChatState> {
     required List<Attachment> sources,
     required CancelToken cancelToken,
   }) async {
-    if (!settings.documentServiceConfigured) {
-      return '文档服务未配置：请在设置中启用并填写 Base URL 与 Token。';
+    if (!settings.supportsDocumentEdit) {
+      return 'Gateway 未配置或不支持文档编辑：请在设置中连接并发现能力。';
     }
     try {
       final args = DocumentEditTools.parseEditDocumentArgs(call.argumentsJson);
@@ -3457,7 +4146,7 @@ class ChatController extends AsyncNotifier<ChatState> {
             : '找不到附件「${args.attachmentName}」。本轮可用：${names.join("、")}';
       }
       if (!source.hasDownloadableBytes) {
-        return '附件「${source.name}」未保留原始文件字节，无法提交文档服务。请重新上传。';
+        return '附件「${source.name}」未保留原始文件字节，无法提交 Gateway 文档能力。请重新上传。';
       }
       final expectedFormat = source.documentPatchFormat;
       if (expectedFormat != null &&
@@ -3481,8 +4170,7 @@ class ChatController extends AsyncNotifier<ChatState> {
 
       final client = ref.read(documentServiceClientProvider);
       final result = await client.edit(
-        config: settings.documentService,
-        apiToken: settings.documentServiceToken,
+        connection: settings.gatewayConnection,
         fileBytes: fileBytes,
         filename: source.name,
         patch: args.patch,
@@ -3494,7 +4182,7 @@ class ChatController extends AsyncNotifier<ChatState> {
         name: result.filename,
         mimeType: result.contentType,
         sizeBytes: result.bytes.length,
-        text: '（文档服务已修改，可下载）',
+        text: '（Gateway 已完成文档修改，可下载）',
         imageBase64: base64Encode(result.bytes),
       );
       _appendAssistantAttachment(convoId, assistantId, out);
@@ -3522,8 +4210,8 @@ class ChatController extends AsyncNotifier<ChatState> {
     required List<Attachment> sources,
     required CancelToken cancelToken,
   }) async {
-    if (!settings.documentServiceConfigured) {
-      return '文档服务未配置：请在设置中启用并填写 Base URL 与 Token。';
+    if (!settings.supportsDocumentConvert) {
+      return 'Gateway 未配置或不支持格式转换：请在设置中连接并发现能力。';
     }
     try {
       final args = DocumentEditTools.parseConvertDocumentArgs(
@@ -3560,8 +4248,7 @@ class ChatController extends AsyncNotifier<ChatState> {
 
       final client = ref.read(documentServiceClientProvider);
       final result = await client.convert(
-        config: settings.documentService,
-        apiToken: settings.documentServiceToken,
+        connection: settings.gatewayConnection,
         fileBytes: fileBytes,
         filename: source.name,
         targetFormat: args.targetFormat,
@@ -3574,7 +4261,7 @@ class ChatController extends AsyncNotifier<ChatState> {
         name: result.filename,
         mimeType: result.contentType,
         sizeBytes: result.bytes.length,
-        text: '（文档服务已转换，可下载）',
+        text: '（Gateway 已完成格式转换，可下载）',
         imageBase64: base64Encode(result.bytes),
       );
       _appendAssistantAttachment(convoId, assistantId, out);
@@ -3968,3 +4655,10 @@ class ChatController extends AsyncNotifier<ChatState> {
 final chatControllerProvider = AsyncNotifierProvider<ChatController, ChatState>(
   ChatController.new,
 );
+
+extension _ChatIterableFirstOrNull<E> on Iterable<E> {
+  E? get firstOrNull {
+    final iterator = this.iterator;
+    return iterator.moveNext() ? iterator.current : null;
+  }
+}

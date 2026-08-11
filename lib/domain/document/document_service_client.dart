@@ -3,7 +3,7 @@ import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 
-import '../../data/document_service_config.dart';
+import '../../data/gateway_config.dart';
 import 'document_patch.dart';
 
 class DocumentEditResult {
@@ -29,39 +29,14 @@ class DocumentServiceException implements Exception {
   String toString() => message;
 }
 
-/// HTTP client for the Linux document-edit service.
+/// Document capability client hosted by the unified Expert Chat Gateway.
 class DocumentServiceClient {
   DocumentServiceClient({Dio? dio}) : _dio = dio ?? Dio();
 
   final Dio _dio;
 
-  Future<Map<String, dynamic>> health({
-    required DocumentServiceConfig config,
-    CancelToken? cancelToken,
-  }) async {
-    final base = config.normalizedBaseUrl;
-    if (base.isEmpty) {
-      throw const DocumentServiceException('未配置文档服务 Base URL');
-    }
-    try {
-      final r = await _dio.get<Map<String, dynamic>>(
-        '$base/v1/health',
-        options: Options(
-          receiveTimeout: config.timeout,
-          sendTimeout: config.timeout,
-          responseType: ResponseType.json,
-        ),
-        cancelToken: cancelToken,
-      );
-      return r.data ?? const {};
-    } on DioException catch (e) {
-      throw DocumentServiceException(_humanize(e));
-    }
-  }
-
   Future<DocumentEditResult> edit({
-    required DocumentServiceConfig config,
-    required String apiToken,
+    required GatewayConnection connection,
     required Uint8List fileBytes,
     required String filename,
     required DocumentPatch patch,
@@ -85,8 +60,8 @@ class DocumentServiceClient {
       'filename': filename.trim().isEmpty ? 'input.xlsx' : filename.trim(),
     });
     return _postFile(
-      config: config,
-      apiToken: apiToken,
+      connection: connection,
+      requiredCapability: GatewayCapabilityIds.documentEdit,
       fileBytes: fileBytes,
       path: '/v1/documents/edit',
       form: form,
@@ -97,8 +72,7 @@ class DocumentServiceClient {
   }
 
   Future<DocumentEditResult> convert({
-    required DocumentServiceConfig config,
-    required String apiToken,
+    required GatewayConnection connection,
     required Uint8List fileBytes,
     required String filename,
     required String targetFormat,
@@ -120,8 +94,8 @@ class DocumentServiceClient {
         'output_filename': outputFilename.trim(),
     });
     return _postFile(
-      config: config,
-      apiToken: apiToken,
+      connection: connection,
+      requiredCapability: GatewayCapabilityIds.documentConvert,
       fileBytes: fileBytes,
       path: '/v1/documents/convert',
       form: form,
@@ -134,8 +108,8 @@ class DocumentServiceClient {
   }
 
   Future<DocumentEditResult> _postFile({
-    required DocumentServiceConfig config,
-    required String apiToken,
+    required GatewayConnection connection,
+    required String requiredCapability,
     required Uint8List fileBytes,
     required String path,
     required FormData form,
@@ -143,8 +117,12 @@ class DocumentServiceClient {
     required String errorVerb,
     CancelToken? cancelToken,
   }) async {
-    if (!config.isConfiguredWith(apiToken)) {
-      throw const DocumentServiceException('文档服务未完整配置（需启用、Base URL 与 Token）');
+    final config = connection.config;
+    if (!config.isConfigured) {
+      throw const DocumentServiceException('Expert Chat Gateway 尚未启用或配置');
+    }
+    if (!config.supports(requiredCapability)) {
+      throw const DocumentServiceException('当前 Gateway 未提供所需文档能力');
     }
     if (fileBytes.isEmpty) {
       throw const DocumentServiceException('文件为空', code: 'patch_invalid');
@@ -155,12 +133,13 @@ class DocumentServiceClient {
         data: form,
         options: Options(
           headers: {
-            'Authorization': 'Bearer ${apiToken.trim()}',
+            if (connection.apiToken.trim().isNotEmpty)
+              'Authorization': 'Bearer ${connection.apiToken.trim()}',
             'Accept': '*/*',
           },
           responseType: ResponseType.bytes,
-          receiveTimeout: config.timeout,
-          sendTimeout: config.timeout,
+          receiveTimeout: config.requestTimeout,
+          sendTimeout: config.requestTimeout,
           validateStatus: (s) => s != null && s < 500,
         ),
         cancelToken: cancelToken,
@@ -169,7 +148,7 @@ class DocumentServiceClient {
       final status = r.statusCode ?? 0;
       if (status == 401 || status == 403) {
         throw const DocumentServiceException(
-          '文档服务鉴权失败：请检查 Token',
+          'Gateway 文档能力鉴权失败：请检查 Token',
           code: 'unauthorized',
         );
       }
@@ -182,7 +161,7 @@ class DocumentServiceClient {
 
       final bytes = r.data;
       if (bytes == null || bytes.isEmpty) {
-        throw const DocumentServiceException('文档服务返回空文件');
+        throw const DocumentServiceException('Gateway 文档能力返回空文件');
       }
       // Never trust Content-Disposition blindly (path traversal / control
       // chars). Fall back to the client-side name when the header is hostile.
@@ -319,15 +298,15 @@ class DocumentServiceClient {
     if (e.type == DioExceptionType.connectionTimeout ||
         e.type == DioExceptionType.receiveTimeout ||
         e.type == DioExceptionType.sendTimeout) {
-      return '文档服务超时：请检查网络或增大超时时间';
+      return 'Gateway 文档处理超时：请检查网络或增大超时时间';
     }
     if (e.type == DioExceptionType.connectionError) {
-      return '无法连接文档服务：请检查 Base URL 与网络';
+      return '无法连接 Gateway：请检查 Base URL 与网络';
     }
     final fromBody = _messageFromErrorBody(e.response?.data);
     if (fromBody != null) return fromBody;
     final status = e.response?.statusCode;
-    if (status != null) return '文档服务请求失败（$status）';
-    return '文档服务请求失败：${e.message ?? e.type.name}';
+    if (status != null) return 'Gateway 文档请求失败（$status）';
+    return 'Gateway 文档请求失败：${e.message ?? e.type.name}';
   }
 }

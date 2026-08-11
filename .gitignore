@@ -66,3 +66,8 @@ remote_lab_ui/dev.stdout.log
 
 # Per-machine dev helpers (hard-coded local drive paths)
 scripts/use_e_drive.ps1
+
+# Local research / generated publication artifacts
+/output/
+/tool/arxiv_context_landmarks.py
+/tool/arxiv_context_search.py

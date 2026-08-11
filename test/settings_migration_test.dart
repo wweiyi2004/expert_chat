@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:expert_chat/core/providers.dart';
+import 'package:expert_chat/data/gateway_config.dart';
 import 'package:expert_chat/data/media_api_config.dart';
 import 'package:expert_chat/data/provider_profile.dart';
 import 'package:expert_chat/data/ui_prefs.dart';
@@ -14,6 +15,57 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  test(
+    'split document and long-task settings migrate into one Gateway',
+    () async {
+      SharedPreferences.setMockInitialValues({
+        'longTaskGateway': jsonEncode({
+          'enabled': true,
+          'baseUrl': 'https://gateway.example.com',
+          'model': 'server-model',
+          'pollSeconds': 4,
+        }),
+        'documentService': jsonEncode({
+          'enabled': true,
+          'baseUrl': 'https://gateway.example.com',
+          'timeoutSeconds': 240,
+        }),
+      });
+      final secureData = <String, String>{
+        'long_task_gateway_token': 'unified-token',
+        'document_service_token': 'legacy-document-token',
+      };
+      FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
+        secureData,
+      );
+      addTearDown(() {
+        FlutterSecureStoragePlatform.instance =
+            TestFlutterSecureStoragePlatform({});
+      });
+
+      final prefs = await SharedPreferences.getInstance();
+      final container = ProviderContainer(
+        overrides: [
+          sharedPrefsProvider.overrideWithValue(prefs),
+          secureStorageProvider.overrideWithValue(const FlutterSecureStorage()),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      final state = await container.read(settingsControllerProvider.future);
+      expect(state.gateway.baseUrl, 'https://gateway.example.com');
+      expect(state.gateway.taskModel, 'server-model');
+      expect(state.gateway.taskPollSeconds, 4);
+      expect(state.gateway.requestTimeoutSeconds, 240);
+      expect(state.gatewayToken, 'unified-token');
+      expect(state.gateway.capabilitiesDiscovered, isFalse);
+      expect(state.gateway.supports(GatewayCapabilityIds.longTasks), isTrue);
+      expect(state.gateway.supports(GatewayCapabilityIds.documentEdit), isTrue);
+      expect(prefs.getString('expertChatGateway'), isNotNull);
+      expect(secureData['expert_chat_gateway_token'], 'unified-token');
+    },
+  );
+
   test('TTS provider profiles keep independent configs and keys', () async {
     const mimoConfig = MediaApiConfig(
       baseUrl: MediaApiConfig.mimoBaseUrl,

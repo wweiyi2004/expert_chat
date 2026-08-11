@@ -39,6 +39,7 @@ import '../memory/memory_candidate_review_sheet.dart';
 import '../story/director_story_setup_page.dart';
 import '../story/ensemble_setup_page.dart';
 import '../story/story_panel.dart';
+import '../study/study_session_actions.dart';
 import 'jump_to_message.dart';
 import 'widgets/attachment_chip.dart';
 import 'widgets/image_pick_confirm_bar.dart';
@@ -64,6 +65,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
   late TextToSpeechPlayback _ttsPlayback;
   bool _picking = false;
   bool _imageMode = false;
+  bool _longTaskMode = false;
 
   /// After system image pick: confirm strip (scroll + checkbox) before attach.
   List<PendingImagePick>? _pendingImagePicks;
@@ -595,8 +597,8 @@ class _ChatPageState extends ConsumerState<ChatPage>
     final text = _input.text;
     final settings = ref.read(settingsControllerProvider).value;
     if (forceDocumentEdit) {
-      if (settings == null || !settings.documentServiceConfigured) {
-        _showAttachmentNotice('请先在设置中配置文档服务（Base URL + Token）');
+      if (settings == null || !settings.supportsDocumentEdit) {
+        _showAttachmentNotice('请先配置支持文档编辑能力的 Expert Chat Gateway');
         return;
       }
       if (!_attachments.any((a) => a.isEditableDocument)) {
@@ -616,6 +618,20 @@ class _ChatPageState extends ConsumerState<ChatPage>
         !forceDocumentEdit &&
         _imageMode &&
         (settings?.imageGenerationConfigured ?? false);
+    final useLongTask =
+        !forceDocumentEdit &&
+        _longTaskMode &&
+        (settings?.supportsLongTasks ?? false) &&
+        attachmentsAreDocuments(_attachments) &&
+        !_imageMode;
+    if (_longTaskMode && !useLongTask && !forceDocumentEdit) {
+      _showAttachmentNotice(
+        (settings?.supportsLongTasks ?? false)
+            ? '长任务只支持文档附件，请移除图片后再发送。'
+            : '请先在设置中启用并配置 Expert Chat Gateway（文件长任务能力）。',
+      );
+      return;
+    }
     if (useImageGeneration) {
       if (text.trim().isEmpty) {
         _showAttachmentNotice(
@@ -631,7 +647,10 @@ class _ChatPageState extends ConsumerState<ChatPage>
     }
     final attachments = List<Attachment>.of(_attachments);
     _input.clear();
-    setState(_attachments.clear);
+    setState(() {
+      _attachments.clear();
+      _longTaskMode = false;
+    });
     _jumpToBottom();
     final chat = ref.read(chatControllerProvider.notifier);
     final accepted = useImageGeneration
@@ -642,6 +661,8 @@ class _ChatPageState extends ConsumerState<ChatPage>
                 if (a.isImage && a.hasImageData) a,
             ],
           )
+        : useLongTask
+        ? await chat.sendLongDocumentTask(text, attachments: attachments)
         : await chat.sendMessage(
             text,
             attachments: attachments,
@@ -653,9 +674,15 @@ class _ChatPageState extends ConsumerState<ChatPage>
     if (!accepted && mounted && _input.text.isEmpty) {
       _input.text = text;
       _input.selection = TextSelection.collapsed(offset: text.length);
-      setState(() => _attachments.addAll(attachments));
+      setState(() {
+        _attachments.addAll(attachments);
+        _longTaskMode = useLongTask;
+      });
     }
   }
+
+  static bool attachmentsAreDocuments(List<Attachment> attachments) =>
+      attachments.isNotEmpty && attachments.every((a) => !a.isImage);
 
   static const _documentExtensions = [
     'pdf',
@@ -899,7 +926,20 @@ class _ChatPageState extends ConsumerState<ChatPage>
             });
           }
         } else {
-          setState(() => _attachments.addAll(additions));
+          setState(() {
+            _attachments.addAll(additions);
+            // Local parsing marks a prefix-only attachment as truncated. Route
+            // it to the server-side file path by default, while still letting
+            // the user turn the chip off for a quick ordinary question.
+            if (additions.any((a) => a.truncated) &&
+                (ref
+                        .read(settingsControllerProvider)
+                        .value
+                        ?.supportsLongTasks ??
+                    false)) {
+              _longTaskMode = true;
+            }
+          });
           notices.insert(0, '已添加 ${additions.length} 个附件');
         }
       }
@@ -1040,7 +1080,10 @@ class _ChatPageState extends ConsumerState<ChatPage>
   };
 
   void _removeAttachment(String id) {
-    setState(() => _attachments.removeWhere((a) => a.id == id));
+    setState(() {
+      _attachments.removeWhere((a) => a.id == id);
+      if (!attachmentsAreDocuments(_attachments)) _longTaskMode = false;
+    });
   }
 
   void _cancelPendingImages() {
@@ -1110,6 +1153,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
         ..clear()
         ..addAll(kept);
       _imageMode = true;
+      _longTaskMode = false;
     });
     if (droppedDocs) {
       _showAttachmentNotice('生图模式仅保留图片作为参考，已移除非图片附件。');
@@ -1446,6 +1490,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
             _attachments.clear();
             _input.clear();
             _imageMode = false;
+            _longTaskMode = false;
             _pendingImagePicks = null;
             _pendingImageForGen = false;
           });
@@ -1969,8 +2014,27 @@ class _ChatPageState extends ConsumerState<ChatPage>
                                     (isLastAssistant &&
                                         !state.isStreaming &&
                                         !_selecting &&
-                                        m.kind != MessageKind.generatedImage)
+                                        m.kind != MessageKind.generatedImage &&
+                                        m.longTask == null)
                                     ? controller.regenerate
+                                    : null,
+                                onCancelLongTask:
+                                    m.longTask?.isActive == true && !_selecting
+                                    ? () => unawaited(
+                                        controller.cancelLongTask(
+                                          convo.id,
+                                          m.id,
+                                        ),
+                                      )
+                                    : null,
+                                onRetryLongTask:
+                                    m.longTask?.canRetry == true && !_selecting
+                                    ? () => unawaited(
+                                        controller.retryLongTask(
+                                          convo.id,
+                                          m.id,
+                                        ),
+                                      )
                                     : null,
                                 onEdit:
                                     (m.role == MessageRole.user &&
@@ -2052,6 +2116,8 @@ class _ChatPageState extends ConsumerState<ChatPage>
             onCancel: _cancelPendingImages,
             onConfirm: _confirmPendingImages,
           ),
+        if (!_selecting && convo != null && convo.isStudy)
+          StudySessionActions(conversation: convo),
         if (!_selecting)
           _Composer(
             controller: _input,
@@ -2070,10 +2136,15 @@ class _ChatPageState extends ConsumerState<ChatPage>
                 settings?.imageGenerationConfigured ?? false,
             imageMode:
                 _imageMode && (settings?.imageGenerationConfigured ?? false),
+            longTaskMode: _longTaskMode,
+            longTaskAvailable:
+                (settings?.supportsLongTasks ?? false) &&
+                attachmentsAreDocuments(_attachments) &&
+                !_imageMode,
             maxImageEditReferences:
                 settings?.imageGenerationApi.maxImageEditReferences ?? 1,
             documentEditAvailable:
-                (settings?.documentServiceConfigured ?? false) &&
+                (settings?.supportsDocumentEdit ?? false) &&
                 _attachments.any((a) => a.isEditableDocument) &&
                 !_imageMode,
             speechBusy: _speechBusy,
@@ -2083,6 +2154,8 @@ class _ChatPageState extends ConsumerState<ChatPage>
             onToggleSearch: controller.toggleSearch,
             onToggleImageGenMode: controller.toggleImageGenMode,
             onToggleImageMode: _toggleImageMode,
+            onToggleLongTask: () =>
+                setState(() => _longTaskMode = !_longTaskMode),
             onPickDocuments: _pickDocuments,
             onPickImages: _pickImages,
             onRemoveAttachment: _removeAttachment,
@@ -2167,6 +2240,8 @@ class _Composer extends StatefulWidget {
     required this.visionConfigured,
     required this.imageGenerationConfigured,
     required this.imageMode,
+    required this.longTaskMode,
+    required this.longTaskAvailable,
     this.maxImageEditReferences = 1,
     this.documentEditAvailable = false,
     required this.speechBusy,
@@ -2176,6 +2251,7 @@ class _Composer extends StatefulWidget {
     required this.onToggleSearch,
     required this.onToggleImageGenMode,
     required this.onToggleImageMode,
+    required this.onToggleLongTask,
     required this.onPickDocuments,
     required this.onPickImages,
     required this.onRemoveAttachment,
@@ -2199,6 +2275,8 @@ class _Composer extends StatefulWidget {
   final bool visionConfigured;
   final bool imageGenerationConfigured;
   final bool imageMode;
+  final bool longTaskMode;
+  final bool longTaskAvailable;
   final int maxImageEditReferences;
   final bool documentEditAvailable;
   final bool speechBusy;
@@ -2208,6 +2286,7 @@ class _Composer extends StatefulWidget {
   final VoidCallback onToggleSearch;
   final VoidCallback onToggleImageGenMode;
   final VoidCallback onToggleImageMode;
+  final VoidCallback onToggleLongTask;
   final VoidCallback onPickDocuments;
   final VoidCallback onPickImages;
   final ValueChanged<String> onRemoveAttachment;
@@ -2310,6 +2389,19 @@ class _ComposerState extends State<_Composer> {
                               '搜索服务可在「设置」配置',
                           onSelected: widget.onToggleSearch,
                         ),
+                        if (widget.longTaskAvailable) ...[
+                          const SizedBox(width: 6),
+                          _ComposerToggleChip(
+                            selected: widget.longTaskMode,
+                            icon: Icons.schedule_send_outlined,
+                            label: '长任务',
+                            tooltip:
+                                '把原始文件上传到当前提供商的 Files / Responses 后台接口。'
+                                '任务会保存 ID，可离开会话或关闭应用，重开后继续查询；'
+                                '需要提供商支持 background mode。',
+                            onSelected: widget.onToggleLongTask,
+                          ),
+                        ],
                         if (widget.imageGenerationConfigured &&
                             !widget.imageMode) ...[
                           const SizedBox(width: 6),
@@ -2346,7 +2438,7 @@ class _ComposerState extends State<_Composer> {
                             icon: Icons.edit_document,
                             label: '改文档',
                             tooltip:
-                                '强制调用文档服务：根据你的说明修改已上传的 '
+                                '强制调用 Gateway 文档能力：根据你的说明修改已上传的 '
                                 '.xlsx / .docx / .pptx / .txt / .md / .csv / .tsv 并回传下载',
                             onSelected: () {
                               _closePlus();
@@ -3558,13 +3650,12 @@ class _ModeFilterBar extends StatelessWidget {
     final options =
         <({String id, String label, IconData icon, ConversationMode? mode})>[
           (id: 'all', label: '全部', icon: Icons.apps_rounded, mode: null),
-          for (final mode in ConversationMode.values)
-            (
-              id: mode.name,
-              label: ModeStyle.label(mode),
-              icon: ModeStyle.icon(mode),
-              mode: mode,
-            ),
+          (
+            id: ConversationMode.chat.name,
+            label: ModeStyle.label(ConversationMode.chat),
+            icon: ModeStyle.icon(ConversationMode.chat),
+            mode: ConversationMode.chat,
+          ),
         ];
 
     return LayoutBuilder(

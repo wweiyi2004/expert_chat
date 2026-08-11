@@ -455,53 +455,60 @@ void main() {
     expect(underscore.map((c) => c.id).toSet(), {'underscore'});
   });
 
-  test('does not rewrite a row whose stored kind is unknown to this build', () async {
-    final db = AppDatabase(NativeDatabase.memory());
-    addTearDown(db.close);
-    final repo = DriftConversationRepository(db);
-    final timestamp = DateTime.utc(2026, 8, 1);
-    // 模拟未来版本写入的未知 kind 行:旧版本读到后会降级成 text。
-    await db.into(db.conversations).insert(
-      ConversationsCompanion.insert(
-        id: 'future-convo',
-        title: const Value('future'),
-        updatedAt: timestamp,
-      ),
-    );
-    await db.into(db.messages).insert(
-      MessagesCompanion.insert(
-        id: 'future-msg',
-        convoId: 'future-convo',
-        role: 'assistant',
-        content: '来自未来版本的消息',
-        createdAt: timestamp,
-        kind: const Value('futureKind'),
-      ),
-    );
-    await db.customStatement(
-      'CREATE TABLE message_audit (operation TEXT NOT NULL)',
-    );
-    await db.customStatement(
-      "CREATE TRIGGER messages_after_insert AFTER INSERT ON messages "
-      "BEGIN INSERT INTO message_audit VALUES ('insert'); END",
-    );
-    await db.customStatement(
-      "CREATE TRIGGER messages_after_update AFTER UPDATE ON messages "
-      "BEGIN INSERT INTO message_audit VALUES ('update'); END",
-    );
+  test(
+    'does not rewrite a row whose stored kind is unknown to this build',
+    () async {
+      final db = AppDatabase(NativeDatabase.memory());
+      addTearDown(db.close);
+      final repo = DriftConversationRepository(db);
+      final timestamp = DateTime.utc(2026, 8, 1);
+      // 模拟未来版本写入的未知 kind 行:旧版本读到后会降级成 text。
+      await db
+          .into(db.conversations)
+          .insert(
+            ConversationsCompanion.insert(
+              id: 'future-convo',
+              title: const Value('future'),
+              updatedAt: timestamp,
+            ),
+          );
+      await db
+          .into(db.messages)
+          .insert(
+            MessagesCompanion.insert(
+              id: 'future-msg',
+              convoId: 'future-convo',
+              role: 'assistant',
+              content: '来自未来版本的消息',
+              createdAt: timestamp,
+              kind: const Value('futureKind'),
+            ),
+          );
+      await db.customStatement(
+        'CREATE TABLE message_audit (operation TEXT NOT NULL)',
+      );
+      await db.customStatement(
+        "CREATE TRIGGER messages_after_insert AFTER INSERT ON messages "
+        "BEGIN INSERT INTO message_audit VALUES ('insert'); END",
+      );
+      await db.customStatement(
+        "CREATE TRIGGER messages_after_update AFTER UPDATE ON messages "
+        "BEGIN INSERT INTO message_audit VALUES ('update'); END",
+      );
 
-    final loaded = (await repo.loadAll()).single;
-    expect(loaded.messages.single.kind, MessageKind.text);
+      final loaded = (await repo.loadAll()).single;
+      expect(loaded.messages.single.kind, MessageKind.text);
 
-    // 整库回存不得重写未知 kind 的行,否则会把 kind 静默降级为 text 并持久化。
-    await repo.saveConversation(loaded);
-    expect(await _auditOperations(db), isEmpty);
+      // 整库回存不得重写未知 kind 的行,否则会把 kind 静默降级为 text 并持久化。
+      await repo.saveConversation(loaded);
+      expect(await _auditOperations(db), isEmpty);
 
-    final row = await (db.select(
-      db.messages,
-    )..where((m) => m.id.equals('future-msg'))).getSingle();
-    expect(row.kind, 'futureKind');
-  });
+      final row = await (db.select(
+        db.messages,
+      )..where((m) => m.id.equals('future-msg'))).getSingle();
+      expect(row.kind, 'futureKind');
+    },
+  );
 
   test('persists message kind across reload', () async {
     final db = AppDatabase(NativeDatabase.memory());
@@ -624,6 +631,49 @@ void main() {
     final loaded = (await DriftConversationRepository(db).loadAll()).single;
     expect(loaded.messages.single.kind, MessageKind.text);
   });
+
+  test(
+    'persists long-running document task metadata on assistant messages',
+    () async {
+      final db = AppDatabase(NativeDatabase.memory());
+      addTearDown(db.close);
+      final repo = DriftConversationRepository(db);
+      final user = ChatMessage(
+        id: 'long-user',
+        role: MessageRole.user,
+        content: '深入分析',
+      );
+      final assistant = ChatMessage(
+        id: 'long-assistant',
+        role: MessageRole.assistant,
+        parentId: user.id,
+        content: '',
+        longTask: LongTaskState(
+          status: LongTaskStatus.running,
+          providerProfileId: 'openai-profile',
+          providerName: 'OpenAI',
+          baseUrl: 'https://api.openai.com/v1',
+          model: 'gpt-5.6',
+          taskId: 'task_123',
+          remoteFileIds: const ['file_123'],
+          detail: '服务端正在处理',
+        ),
+      );
+      final conversation = Conversation(
+        id: 'long-conversation',
+        messages: [user, assistant],
+        activeChildren: {kRootKey: user.id, user.id: assistant.id},
+      );
+
+      await repo.saveConversation(conversation);
+      final restored = (await repo.loadAll()).single.messages.last.longTask;
+
+      expect(restored, isA<LongTaskState>());
+      expect(restored!.status, LongTaskStatus.running);
+      expect(restored.taskId, 'task_123');
+      expect(restored.remoteFileIds, ['file_123']);
+    },
+  );
 }
 
 Future<List<String>> _auditOperations(AppDatabase db) async {

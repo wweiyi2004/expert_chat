@@ -1,6 +1,6 @@
 # 文档编辑契约 v1
 
-App 与 Linux 文档服务共用。`schema_version` 必须为 `1`。
+App 与 Expert Chat Gateway 的文档能力共用。`schema_version` 必须为 `1`。
 
 ## 1. LLM Tool：`edit_document`
 
@@ -134,14 +134,19 @@ Tool 名：`edit_document`（见 `lib/domain/document/document_edit_tools.dart`�
 
 ## 3. HTTP API
 
-### `GET /v1/health`
+### `GET /v1/capabilities`
 
 ```json
 {
-  "ok": true,
-  "version": "0.4.0",
-  "formats": ["xlsx", "docx", "pptx", "txt", "md", "csv", "tsv"],
-  "conversions": { "txt": ["csv", "docx", "md", "tsv", "txt"], "...": "..." }
+  "protocol_version": 1,
+  "gateway_version": "0.2.0",
+  "capabilities": {
+    "document_edit": {
+      "version": 1,
+      "formats": ["xlsx", "docx", "pptx", "txt", "md", "csv", "tsv"]
+    },
+    "document_convert": {"version": 1, "conversions": {}}
+  }
 }
 ```
 
@@ -198,4 +203,5 @@ LLM Tool：`convert_document`（`attachment_name?`, `target_format`, `output_fil
 |------|------|
 | Patch 模型与校验 | `lib/domain/document/document_patch.dart` |
 | ToolSpec | `lib/domain/document/document_edit_tools.dart` |
-| Linux 服务（P0） | `server/doc_edit/` |
+| 统一 Gateway | `server/gateway/` |
+| 文档能力模块 | `server/doc_edit/` |

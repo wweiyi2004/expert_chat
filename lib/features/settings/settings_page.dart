@@ -13,11 +13,10 @@ import 'package:path_provider/path_provider.dart';
 import '../../core/providers.dart';
 import '../../data/context_prefs.dart';
 import '../../data/custom_tts_voices.dart';
-import '../../data/document_service_config.dart';
+import '../../data/gateway_config.dart';
 import '../../data/provider_profile.dart';
 import '../../data/media_api_config.dart';
 import '../../data/ui_prefs.dart';
-import '../../domain/document/document_service_client.dart';
 import '../../domain/llm/llm_provider.dart';
 import '../../domain/speech/custom_tts_voice_installer.dart';
 import '../../domain/tools/search_provider.dart';
@@ -42,6 +41,13 @@ enum _SettingsCategory {
   final String label;
   final IconData icon;
 }
+
+String _gatewayCapabilityLabel(String id) => switch (id) {
+  GatewayCapabilityIds.longTasks => '文件长任务',
+  GatewayCapabilityIds.documentEdit => '文档编辑',
+  GatewayCapabilityIds.documentConvert => '格式转换',
+  _ => id,
+};
 
 class _SettingsCategoryBar extends StatelessWidget {
   const _SettingsCategoryBar({
@@ -90,21 +96,22 @@ class SettingsPage extends ConsumerStatefulWidget {
 class _SettingsPageState extends ConsumerState<SettingsPage> {
   final _apiKey = TextEditingController();
   final _searchKey = TextEditingController();
-  final _docServiceUrl = TextEditingController();
-  final _docServiceToken = TextEditingController();
+  final _gatewayUrl = TextEditingController();
+  final _gatewayToken = TextEditingController();
+  final _gatewayTaskModel = TextEditingController();
   final _systemPrompt = TextEditingController();
   bool _obscure = true;
   bool _obscureSearch = true;
-  bool _obscureDocToken = true;
+  bool _obscureGatewayToken = true;
   String? _syncedForProfile; // profile id whose key is in the field
   bool _searchKeySynced = false;
-  bool _docServiceSynced = false;
+  bool _gatewaySynced = false;
   bool _systemPromptSynced = false;
   bool _clearingCache = false;
   bool _testingSearch = false;
-  bool _testingDocService = false;
+  bool _testingGateway = false;
   String? _searchTestResult;
-  String? _docServiceTestResult;
+  String? _gatewayTestResult;
   _SettingsCategory _category = _SettingsCategory.model;
 
   @override
@@ -130,10 +137,11 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       _searchKey.text = s.searchApiKey;
       _searchKeySynced = true;
     }
-    if (!_docServiceSynced) {
-      _docServiceUrl.text = s.documentService.baseUrl;
-      _docServiceToken.text = s.documentServiceToken;
-      _docServiceSynced = true;
+    if (!_gatewaySynced) {
+      _gatewayUrl.text = s.gateway.baseUrl;
+      _gatewayToken.text = s.gatewayToken;
+      _gatewayTaskModel.text = s.gateway.taskModel;
+      _gatewaySynced = true;
     }
     if (!_systemPromptSynced) {
       _systemPrompt.text = s.systemPrompt;
@@ -145,37 +153,42 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   void dispose() {
     _apiKey.dispose();
     _searchKey.dispose();
-    _docServiceUrl.dispose();
-    _docServiceToken.dispose();
+    _gatewayUrl.dispose();
+    _gatewayToken.dispose();
+    _gatewayTaskModel.dispose();
     _systemPrompt.dispose();
     super.dispose();
   }
 
-  Future<void> _testDocService() async {
+  Future<void> _testGateway() async {
     final s = ref.read(settingsControllerProvider).value;
-    if (s == null || _testingDocService) return;
+    if (s == null || _testingGateway) return;
     setState(() {
-      _testingDocService = true;
-      _docServiceTestResult = null;
+      _testingGateway = true;
+      _gatewayTestResult = null;
     });
     try {
-      final client = ref.read(documentServiceClientProvider);
-      final health = await client.health(config: s.documentService);
+      final capabilities = await ref
+          .read(gatewayClientProvider)
+          .discover(connection: s.gatewayConnection);
       if (!mounted) return;
-      final formats = health['formats'];
-      final version = health['version']?.toString() ?? '?';
+      await ref
+          .read(settingsControllerProvider.notifier)
+          .setGatewayCapabilities(
+            capabilities: capabilities.ids,
+            serverVersion: capabilities.gatewayVersion,
+          );
+      if (!mounted) return;
       setState(() {
-        _docServiceTestResult =
-            '连通正常：version=$version'
-            '${formats is List ? '，formats=${formats.join(",")}' : ''}。'
-            '${s.documentServiceConfigured ? '' : '（仍需填写 Token 并启用才能改文件）'}';
+        _gatewayTestResult =
+            '连通正常：Gateway ${capabilities.gatewayVersion}，'
+            '发现 ${capabilities.ids.length} 项能力。';
       });
     } catch (e) {
       if (!mounted) return;
-      final msg = e is DocumentServiceException ? e.message : '$e';
-      setState(() => _docServiceTestResult = '测试失败：$msg');
+      setState(() => _gatewayTestResult = '测试失败：$e');
     } finally {
-      if (mounted) setState(() => _testingDocService = false);
+      if (mounted) setState(() => _testingGateway = false);
     }
   }
 
@@ -194,9 +207,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       setState(() {
         _searchTestResult = ok
             ? '官方联网已就绪：当前模型「$model」支持 DeepSeek Responses web_search。'
-                '请在聊天中开启「联网」实测（此处不单独发起搜索请求）。'
+                  '请在聊天中开启「联网」实测（此处不单独发起搜索请求）。'
             : '当前模型「$model」尚不支持官方联网（需 deepseek-v4-flash）。'
-                '深度思考用 pro 时会自动回退到客户端搜索。';
+                  '深度思考用 pro 时会自动回退到客户端搜索。';
         _testingSearch = false;
       });
       return;
@@ -932,140 +945,178 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                               trailing: Text('${s.searchMaxResults} 条'),
                             ),
                             const SizedBox(height: 32),
-                            const _SectionTitle('文档处理服务'),
+                            const _SectionTitle('Expert Chat Gateway'),
                             Text(
-                              '可选。在 Linux 上部署文档服务后，可对上传的 '
-                              '.xlsx / .docx / .pptx / .txt / .md / .csv / .tsv '
-                              '按补丁改写、跨格式转换（如 txt→docx、csv→xlsx）并回传。'
-                              '聊天输入区会出现「改文档」按钮（强制改内容）。'
-                              '未配置时附件仍仅本地抽文本。',
+                              '统一承载文件长任务、文档编辑与格式转换。这里只配置一套地址和 '
+                              'Token；新增服务端能力会通过能力发现自动接入，不再重复增加 Gateway 设置。',
                               style: Theme.of(context).textTheme.bodySmall,
                             ),
                             const SizedBox(height: 12),
                             SwitchListTile(
                               contentPadding: EdgeInsets.zero,
-                              title: const Text('启用文档服务'),
-                              value: s.documentService.enabled,
-                              onChanged: (v) => controller
-                                  .setDocumentServiceConfig(
-                                    s.documentService.copyWith(enabled: v),
-                                  ),
+                              title: const Text('启用 Gateway'),
+                              value: s.gateway.enabled,
+                              onChanged: (v) => controller.setGatewayConfig(
+                                s.gateway.copyWith(enabled: v),
+                              ),
                             ),
                             TextField(
-                              controller: _docServiceUrl,
+                              controller: _gatewayUrl,
                               autocorrect: false,
                               enableSuggestions: false,
                               keyboardType: TextInputType.url,
                               decoration: const InputDecoration(
-                                labelText: '文档服务 Base URL',
-                                helperText: '例如 http://192.168.1.10:8787',
-                                helperMaxLines: 2,
+                                labelText: 'Gateway Base URL',
+                                helperText: '例如 http://192.168.1.10:8790',
                               ),
-                              onChanged: (v) => controller
-                                  .setDocumentServiceConfig(
-                                    s.documentService.copyWith(baseUrl: v),
-                                  ),
+                              onChanged: (v) => controller.setGatewayConfig(
+                                s.gateway.copyWith(baseUrl: v),
+                              ),
                             ),
                             const SizedBox(height: 12),
                             TextField(
-                              controller: _docServiceToken,
-                              obscureText: _obscureDocToken,
+                              controller: _gatewayToken,
+                              obscureText: _obscureGatewayToken,
                               autocorrect: false,
                               enableSuggestions: false,
                               decoration: InputDecoration(
-                                labelText: '文档服务 Token',
-                                helperText: '对应服务器环境变量 DOC_API_TOKEN',
+                                labelText: 'Gateway Token',
+                                helperText: '对应服务器 GATEWAY_API_TOKEN；本机开发可留空',
                                 suffixIcon: IconButton(
-                                  tooltip: _obscureDocToken
+                                  tooltip: _obscureGatewayToken
                                       ? '显示 Token'
                                       : '隐藏 Token',
                                   icon: Icon(
-                                    _obscureDocToken
+                                    _obscureGatewayToken
                                         ? Icons.visibility
                                         : Icons.visibility_off,
                                   ),
                                   onPressed: () => setState(
-                                    () => _obscureDocToken = !_obscureDocToken,
+                                    () => _obscureGatewayToken =
+                                        !_obscureGatewayToken,
                                   ),
                                 ),
                               ),
-                              onChanged: controller.setDocumentServiceToken,
+                              onChanged: controller.setGatewayToken,
                             ),
                             const SizedBox(height: 12),
+                            TextField(
+                              controller: _gatewayTaskModel,
+                              autocorrect: false,
+                              enableSuggestions: false,
+                              decoration: const InputDecoration(
+                                labelText: '长任务模型覆盖（可选）',
+                                helperText: '只影响长文档任务；留空使用服务器默认模型',
+                              ),
+                              onChanged: (v) => controller.setGatewayConfig(
+                                s.gateway.copyWith(taskModel: v),
+                              ),
+                            ),
+                            const SizedBox(height: 8),
                             ListTile(
                               contentPadding: EdgeInsets.zero,
-                              title: const Text('请求超时'),
+                              title: const Text('长任务状态同步间隔'),
                               subtitle: Slider(
-                                value: s.documentService.timeoutSeconds
-                                    .toDouble()
-                                    .clamp(
-                                      DocumentServiceConfig.minTimeoutSeconds
-                                          .toDouble(),
-                                      DocumentServiceConfig.maxTimeoutSeconds
-                                          .toDouble(),
-                                    ),
-                                min: DocumentServiceConfig.minTimeoutSeconds
+                                value: s.gateway.taskPollSeconds.toDouble(),
+                                min: GatewayConfig.minTaskPollSeconds
                                     .toDouble(),
-                                max: DocumentServiceConfig.maxTimeoutSeconds
+                                max: GatewayConfig.maxTaskPollSeconds
                                     .toDouble(),
                                 divisions:
-                                    (DocumentServiceConfig.maxTimeoutSeconds -
-                                        DocumentServiceConfig.minTimeoutSeconds) ~/
-                                    30,
-                                label: '${s.documentService.timeoutSeconds}s',
-                                onChanged: (v) => controller
-                                    .setDocumentServiceConfig(
-                                      s.documentService.copyWith(
-                                        timeoutSeconds: v.round(),
-                                      ),
-                                    ),
-                              ),
-                              trailing: Text(
-                                '${s.documentService.timeoutSeconds}s',
-                              ),
-                            ),
-                            Row(
-                              children: [
-                                OutlinedButton.icon(
-                                  onPressed: _testingDocService
-                                      ? null
-                                      : _testDocService,
-                                  icon: _testingDocService
-                                      ? const SizedBox.square(
-                                          dimension: 16,
-                                          child: CircularProgressIndicator(
-                                            strokeWidth: 2,
-                                          ),
-                                        )
-                                      : const Icon(
-                                          Icons.cloud_done_outlined,
-                                          size: 18,
-                                        ),
-                                  label: Text(
-                                    _testingDocService
-                                        ? '测试中…'
-                                        : '测试文档服务连通性',
+                                    GatewayConfig.maxTaskPollSeconds -
+                                    GatewayConfig.minTaskPollSeconds,
+                                label: '${s.gateway.taskPollSeconds}s',
+                                onChanged: (v) => controller.setGatewayConfig(
+                                  s.gateway.copyWith(
+                                    taskPollSeconds: v.round(),
                                   ),
                                 ),
-                              ],
+                              ),
+                              trailing: Text('${s.gateway.taskPollSeconds}s'),
                             ),
-                            if (_docServiceTestResult != null) ...[
+                            ListTile(
+                              contentPadding: EdgeInsets.zero,
+                              title: const Text('文件处理请求超时'),
+                              subtitle: Slider(
+                                value: s.gateway.requestTimeoutSeconds
+                                    .toDouble(),
+                                min: GatewayConfig.minRequestTimeoutSeconds
+                                    .toDouble(),
+                                max: GatewayConfig.maxRequestTimeoutSeconds
+                                    .toDouble(),
+                                divisions:
+                                    (GatewayConfig.maxRequestTimeoutSeconds -
+                                        GatewayConfig
+                                            .minRequestTimeoutSeconds) ~/
+                                    30,
+                                label: '${s.gateway.requestTimeoutSeconds}s',
+                                onChanged: (v) => controller.setGatewayConfig(
+                                  s.gateway.copyWith(
+                                    requestTimeoutSeconds: v.round(),
+                                  ),
+                                ),
+                              ),
+                              trailing: Text(
+                                '${s.gateway.requestTimeoutSeconds}s',
+                              ),
+                            ),
+                            OutlinedButton.icon(
+                              onPressed: _testingGateway ? null : _testGateway,
+                              icon: _testingGateway
+                                  ? const SizedBox.square(
+                                      dimension: 16,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : const Icon(
+                                      Icons.cloud_done_outlined,
+                                      size: 18,
+                                    ),
+                              label: Text(_testingGateway ? '发现中…' : '连接并发现能力'),
+                            ),
+                            if (_gatewayTestResult != null) ...[
                               const SizedBox(height: 8),
                               Text(
-                                _docServiceTestResult!,
+                                _gatewayTestResult!,
                                 style: Theme.of(context).textTheme.bodySmall
                                     ?.copyWith(
                                       color:
-                                          _docServiceTestResult!.startsWith(
-                                            '测试失败',
-                                          )
+                                          _gatewayTestResult!.startsWith('测试失败')
                                           ? Theme.of(context).colorScheme.error
-                                          : null,
+                                          : Theme.of(
+                                              context,
+                                            ).colorScheme.onSurfaceVariant,
                                     ),
+                              ),
+                            ],
+                            if (s.gateway.capabilitiesDiscovered) ...[
+                              const SizedBox(height: 8),
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 6,
+                                children: [
+                                  for (final id in s.gateway.capabilities)
+                                    Chip(
+                                      avatar: const Icon(
+                                        Icons.extension_outlined,
+                                        size: 17,
+                                      ),
+                                      label: Text(_gatewayCapabilityLabel(id)),
+                                    ),
+                                ],
                               ),
                             ],
                             const SizedBox(height: 32),
                             const _SectionTitle('实验功能'),
+                            _StudyModeCard(
+                              enabled: s.studyModeEnabled,
+                              onChanged: _setStudyModeEnabled,
+                              onOpenStudy: s.studyModeEnabled
+                                  ? () => openShellTab(ref, ShellTab.study)
+                                  : null,
+                            ),
+                            const SizedBox(height: 16),
                             _CreationModeCard(
                               enabled: s.creationModeEnabled,
                               onChanged: _setCreationModeEnabled,
@@ -1188,6 +1239,18 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         context,
       ).showSnackBar(const SnackBar(content: Text('删除服务商失败，请重试。')));
     }
+  }
+
+  Future<void> _setStudyModeEnabled(bool enabled) async {
+    final controller = ref.read(settingsControllerProvider.notifier);
+    if (enabled) {
+      await controller.setStudyModeEnabled(true);
+      return;
+    }
+    if (ref.read(shellTabProvider) == ShellTab.study) {
+      ref.read(shellTabProvider.notifier).set(ShellTab.settings);
+    }
+    await controller.setStudyModeEnabled(false);
   }
 
   Future<void> _setCreationModeEnabled(bool enabled) async {
@@ -2690,10 +2753,7 @@ class _ProfileEditPageState extends State<_ProfileEditPage> {
 /// Mini chat mock using the selected palette (independent of applied ThemeData
 /// timing so the card always previews the chosen seed/accent).
 class _ColorThemeLivePreview extends StatelessWidget {
-  const _ColorThemeLivePreview({
-    required this.theme,
-    required this.themeMode,
-  });
+  const _ColorThemeLivePreview({required this.theme, required this.themeMode});
 
   final ColorThemePref theme;
   final ThemeMode themeMode;
@@ -2728,9 +2788,7 @@ class _ColorThemeLivePreview extends StatelessWidget {
       decoration: BoxDecoration(
         color: surface,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: seed.withValues(alpha: dark ? 0.35 : 0.22),
-        ),
+        border: Border.all(color: seed.withValues(alpha: dark ? 0.35 : 0.22)),
         boxShadow: [
           BoxShadow(
             color: seed.withValues(alpha: 0.12),
@@ -2747,10 +2805,7 @@ class _ColorThemeLivePreview extends StatelessWidget {
               Container(
                 width: 10,
                 height: 10,
-                decoration: BoxDecoration(
-                  color: seed,
-                  shape: BoxShape.circle,
-                ),
+                decoration: BoxDecoration(color: seed, shape: BoxShape.circle),
               ),
               const SizedBox(width: 6),
               Container(
@@ -2884,10 +2939,7 @@ class _PreviewChip extends StatelessWidget {
 
 /// Visual grid of curated color themes.
 class _ColorThemePicker extends StatelessWidget {
-  const _ColorThemePicker({
-    required this.selected,
-    required this.onSelected,
-  });
+  const _ColorThemePicker({required this.selected, required this.onSelected});
 
   final ColorThemePref selected;
   final ValueChanged<ColorThemePref> onSelected;
@@ -3010,9 +3062,7 @@ class _ColorThemePicker extends StatelessWidget {
                                 style: Theme.of(context).textTheme.labelLarge
                                     ?.copyWith(
                                       fontWeight: FontWeight.w800,
-                                      color: isOn
-                                          ? seed
-                                          : scheme.onSurface,
+                                      color: isOn ? seed : scheme.onSurface,
                                     ),
                               ),
                               const SizedBox(height: 2),
@@ -3080,7 +3130,11 @@ class _SelectedBadge extends StatelessWidget {
           ),
         ],
       ),
-      child: const Icon(Icons.check_rounded, size: 14, color: Color(0xFF1C2430)),
+      child: const Icon(
+        Icons.check_rounded,
+        size: 14,
+        color: Color(0xFF1C2430),
+      ),
     );
   }
 }
@@ -3098,7 +3152,10 @@ class _Dot extends StatelessWidget {
       decoration: BoxDecoration(
         color: color,
         shape: BoxShape.circle,
-        border: Border.all(color: Colors.white.withValues(alpha: 0.7), width: 0.8),
+        border: Border.all(
+          color: Colors.white.withValues(alpha: 0.7),
+          width: 0.8,
+        ),
       ),
     );
   }
@@ -3256,6 +3313,86 @@ class _MemorySettingsCard extends ConsumerWidget {
 }
 
 /// Creation hub toggle under 能力 → 实验功能 (mirrors research mode hide/show).
+class _StudyModeCard extends StatelessWidget {
+  const _StudyModeCard({
+    required this.enabled,
+    required this.onChanged,
+    this.onOpenStudy,
+  });
+
+  final bool enabled;
+  final ValueChanged<bool> onChanged;
+  final VoidCallback? onOpenStudy;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: scheme.secondaryContainer,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Icon(
+                    Icons.school_rounded,
+                    color: scheme.onSecondaryContainer,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '学习模式',
+                        style: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        '启用底部「学习」入口：导师、课程、刷题与间隔复习。',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+                Switch.adaptive(value: enabled, onChanged: onChanged),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          '关闭后隐藏学习入口；课程、卡片与错题本仍保留在本机。',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        if (enabled && onOpenStudy != null) ...[
+          const SizedBox(height: 12),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: OutlinedButton.icon(
+              onPressed: onOpenStudy,
+              icon: const Icon(Icons.school_outlined, size: 18),
+              label: const Text('进入学习中心'),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
 class _CreationModeCard extends StatelessWidget {
   const _CreationModeCard({
     required this.enabled,
@@ -3310,10 +3447,7 @@ class _CreationModeCard extends StatelessWidget {
                     ],
                   ),
                 ),
-                Switch.adaptive(
-                  value: enabled,
-                  onChanged: onChanged,
-                ),
+                Switch.adaptive(value: enabled, onChanged: onChanged),
               ],
             ),
           ),

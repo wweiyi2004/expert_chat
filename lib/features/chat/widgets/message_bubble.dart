@@ -57,6 +57,8 @@ class MessageBubble extends StatefulWidget {
     this.selected = false,
     this.onToggleSelect,
     this.onStartSelect,
+    this.onCancelLongTask,
+    this.onRetryLongTask,
   });
 
   final ChatMessage message;
@@ -95,6 +97,8 @@ class MessageBubble extends StatefulWidget {
   final bool selected;
   final VoidCallback? onToggleSelect;
   final VoidCallback? onStartSelect;
+  final VoidCallback? onCancelLongTask;
+  final VoidCallback? onRetryLongTask;
 
   @override
   State<MessageBubble> createState() => _MessageBubbleState();
@@ -145,9 +149,9 @@ class _MessageBubbleState extends State<MessageBubble> {
       bytes = Uint8List.fromList(base64Decode(b64));
     } catch (_) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('文件数据无效，无法下载')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('文件数据无效，无法下载')));
       return;
     }
     final ext = a.name.contains('.') ? a.name.split('.').last : 'bin';
@@ -366,7 +370,9 @@ class _MessageBubbleState extends State<MessageBubble> {
                         ],
                       ),
                       borderRadius:
-                          Theme.of(context).extension<AppMetrics>()?.bubbleUser ??
+                          Theme.of(
+                            context,
+                          ).extension<AppMetrics>()?.bubbleUser ??
                           const BorderRadius.only(
                             topLeft: Radius.circular(20),
                             topRight: Radius.circular(20),
@@ -496,6 +502,12 @@ class _MessageBubbleState extends State<MessageBubble> {
                   ),
                 ),
               ),
+            if (m.longTask != null)
+              _LongTaskCard(
+                task: m.longTask!,
+                onCancel: widget.onCancelLongTask,
+                onRetry: widget.onRetryLongTask,
+              ),
             if (m.searchActivities.isNotEmpty)
               SearchActivityPanel(
                 activities: m.searchActivities,
@@ -540,7 +552,8 @@ class _MessageBubbleState extends State<MessageBubble> {
                 Padding(
                   padding: EdgeInsets.only(
                     top: hasReasoning ? 10 : 0,
-                    bottom: m.content.isNotEmpty ||
+                    bottom:
+                        m.content.isNotEmpty ||
                             m.attachments.any(
                               (a) => !a.isImage && a.hasDownloadableBytes,
                             )
@@ -564,7 +577,8 @@ class _MessageBubbleState extends State<MessageBubble> {
               ))
                 Padding(
                   padding: EdgeInsets.only(
-                    top: hasReasoning &&
+                    top:
+                        hasReasoning &&
                             !m.attachments.any(
                               (a) => a.isImage && a.hasImageData,
                             )
@@ -598,9 +612,9 @@ class _MessageBubbleState extends State<MessageBubble> {
                       : BoxDecoration(
                           color: scheme.surfaceContainer,
                           borderRadius:
-                              Theme.of(context)
-                                  .extension<AppMetrics>()
-                                  ?.bubbleAssistant ??
+                              Theme.of(
+                                context,
+                              ).extension<AppMetrics>()?.bubbleAssistant ??
                               const BorderRadius.only(
                                 topLeft: Radius.circular(6),
                                 topRight: Radius.circular(20),
@@ -737,6 +751,147 @@ class _MessageBubbleState extends State<MessageBubble> {
       ],
     );
   }
+}
+
+class _LongTaskCard extends StatelessWidget {
+  const _LongTaskCard({required this.task, this.onCancel, this.onRetry});
+
+  final LongTaskState task;
+  final VoidCallback? onCancel;
+  final VoidCallback? onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final active = task.isActive;
+    final failed = task.status == LongTaskStatus.failed;
+    final cancelled = task.status == LongTaskStatus.cancelled;
+    final completed = task.status == LongTaskStatus.completed;
+    final color = failed
+        ? scheme.error
+        : cancelled
+        ? scheme.onSurfaceVariant
+        : completed
+        ? scheme.tertiary
+        : scheme.primary;
+    final icon = failed
+        ? Icons.error_outline
+        : cancelled
+        ? Icons.cancel_outlined
+        : completed
+        ? Icons.task_alt
+        : Icons.schedule_send_outlined;
+    final title = failed
+        ? '文档长任务失败'
+        : cancelled
+        ? '文档长任务已取消'
+        : completed
+        ? '文档长任务已完成'
+        : '正在后台处理文档';
+    final detail = task.error?.trim().isNotEmpty == true
+        ? task.error!.trim()
+        : (task.detail?.trim().isNotEmpty == true
+              ? task.detail!.trim()
+              : _statusLabel(task.status));
+
+    return Container(
+      key: ValueKey('long-task-${task.taskId ?? task.startedAt}'),
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.fromLTRB(14, 12, 12, 10),
+      decoration: BoxDecoration(
+        color: Color.alphaBlend(
+          color.withValues(alpha: 0.08),
+          scheme.surfaceContainer,
+        ),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color.withValues(alpha: 0.28)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, size: 20, color: color),
+              const SizedBox(width: 9),
+              Expanded(
+                child: Text(
+                  title,
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w700,
+                    color: color,
+                  ),
+                ),
+              ),
+              if (onRetry != null)
+                TextButton.icon(
+                  onPressed: onRetry,
+                  icon: const Icon(Icons.refresh, size: 17),
+                  label: const Text('重试'),
+                ),
+              if (onCancel != null)
+                TextButton(onPressed: onCancel, child: const Text('取消')),
+            ],
+          ),
+          const SizedBox(height: 5),
+          Text(
+            detail,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: failed ? scheme.error : scheme.onSurfaceVariant,
+              height: 1.45,
+            ),
+          ),
+          const SizedBox(height: 5),
+          Text(
+            task.model.trim().isEmpty
+                ? '${task.providerName} · 服务端默认模型'
+                : '${task.providerName} · ${task.model}',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: scheme.onSurfaceVariant.withValues(alpha: 0.82),
+            ),
+          ),
+          if (active) ...[
+            const SizedBox(height: 10),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(999),
+              child: LinearProgressIndicator(
+                value: task.progress > 0 ? task.progress : null,
+                minHeight: 3,
+                color: color,
+                backgroundColor: color.withValues(alpha: 0.12),
+              ),
+            ),
+            const SizedBox(height: 7),
+            if (task.progress > 0)
+              Text(
+                '${(task.progress * 100).round()}%',
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: color,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            Text(
+              '可以离开当前会话；服务端会继续运行，重新打开应用后自动恢复状态。',
+              style: Theme.of(
+                context,
+              ).textTheme.labelSmall?.copyWith(color: scheme.onSurfaceVariant),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  static String _statusLabel(LongTaskStatus status) => switch (status) {
+    LongTaskStatus.preparing => '正在准备文件',
+    LongTaskStatus.uploading => '正在上传文件',
+    LongTaskStatus.queued => '已排队，等待服务端开始处理',
+    LongTaskStatus.running => '服务端正在处理',
+    LongTaskStatus.completed => '处理完成',
+    LongTaskStatus.failed => '处理失败',
+    LongTaskStatus.cancelled => '已取消',
+  };
 }
 
 /// Compact strip listing world-info entries injected for this story turn.

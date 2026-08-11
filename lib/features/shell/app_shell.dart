@@ -14,13 +14,14 @@ import '../research/research_mode_ripple.dart';
 import '../research/research_terminal_page.dart';
 import '../settings/settings_page.dart';
 import '../story/studio_page.dart';
+import '../study/study_hub_page.dart';
 import 'shell_tab.dart';
 
-/// Root chrome: 会话 / [终端] / [创作] / 设置.
+/// Root chrome: 会话 / [终端] / [学习] / [创作] / 设置.
 ///
 /// Phone: bottom [NavigationBar]. Wide: [NavigationRail].
 /// [IndexedStack] preserves scroll position and draft input across switches.
-/// Terminal / 创作 tabs are only present when their mode flags are enabled.
+/// Terminal / 学习 / 创作 tabs are only present when their mode flags are enabled.
 class AppShell extends ConsumerStatefulWidget {
   const AppShell({super.key});
 
@@ -70,11 +71,12 @@ class _AppShellState extends ConsumerState<AppShell>
     }
   }
 
-  /// Fixed page order — never insert/remove middle slots when research toggles,
+  /// Fixed page order — never insert/remove middle slots when mode toggles,
   /// or Settings/Studio state (e.g. 能力分类) is recreated and jumps to 模型.
   static const _stackOrder = <ShellTab>[
     ShellTab.chat,
     ShellTab.terminal,
+    ShellTab.study,
     ShellTab.studio,
     ShellTab.settings,
   ];
@@ -82,6 +84,7 @@ class _AppShellState extends ConsumerState<AppShell>
   Widget _pageFor(
     ShellTab tab, {
     required bool researchOn,
+    required bool studyOn,
     required bool creationOn,
   }) => switch (tab) {
     ShellTab.chat => const ChatPage(),
@@ -89,6 +92,7 @@ class _AppShellState extends ConsumerState<AppShell>
     ShellTab.terminal => researchOn
         ? const ResearchTerminalPage()
         : const SizedBox.shrink(),
+    ShellTab.study => studyOn ? const StudyHubPage() : const SizedBox.shrink(),
     ShellTab.studio => creationOn
         ? const StudioPage()
         : const SizedBox.shrink(),
@@ -99,9 +103,11 @@ class _AppShellState extends ConsumerState<AppShell>
   Widget build(BuildContext context) {
     final settings = ref.watch(settingsControllerProvider).value;
     final researchOn = settings?.researchModeEnabled ?? false;
+    final studyOn = settings?.studyModeEnabled ?? true;
     final creationOn = settings?.creationModeEnabled ?? true;
     final visible = ShellTab.visible(
       researchModeEnabled: researchOn,
+      studyModeEnabled: studyOn,
       creationModeEnabled: creationOn,
     );
     final selected = ref.watch(shellTabProvider);
@@ -110,9 +116,11 @@ class _AppShellState extends ConsumerState<AppShell>
     // Keep selection valid when mode flags hide the current tab.
     ref.listen(settingsControllerProvider, (prev, next) {
       final research = next.value?.researchModeEnabled ?? false;
+      final study = next.value?.studyModeEnabled ?? true;
       final creation = next.value?.creationModeEnabled ?? true;
       final tabs = ShellTab.visible(
         researchModeEnabled: research,
+        studyModeEnabled: study,
         creationModeEnabled: creation,
       );
       ref.read(shellTabProvider.notifier).ensureVisible(tabs);
@@ -144,6 +152,7 @@ class _AppShellState extends ConsumerState<AppShell>
             child: _pageFor(
               tab,
               researchOn: researchOn,
+              studyOn: studyOn,
               creationOn: creationOn,
             ),
           ),

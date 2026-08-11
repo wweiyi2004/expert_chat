@@ -10,6 +10,142 @@ enum MessageRole { system, user, assistant, tool }
 
 enum MessageKind { text, generatedImage }
 
+/// Lifecycle of a server-side document job attached to an assistant message.
+///
+/// This deliberately lives outside [MessageKind]: a long task still produces a
+/// normal Markdown assistant answer, while the task metadata only controls the
+/// progress card and resume/cancel behavior.
+enum LongTaskStatus {
+  preparing,
+  uploading,
+  queued,
+  running,
+  completed,
+  failed,
+  cancelled,
+}
+
+class LongTaskState {
+  LongTaskState({
+    required this.status,
+    required this.providerProfileId,
+    required this.providerName,
+    required this.baseUrl,
+    required this.model,
+    this.taskId,
+    this.remoteFileIds = const [],
+    this.progress = 0,
+    this.lastEventId = 0,
+    this.detail,
+    this.error,
+    DateTime? startedAt,
+    DateTime? updatedAt,
+  }) : startedAt = startedAt ?? DateTime.now(),
+       updatedAt = updatedAt ?? DateTime.now();
+
+  final LongTaskStatus status;
+
+  /// Retained in the stored schema for tasks created by older app versions.
+  /// Gateway tasks leave [providerProfileId] empty and use [providerName] as a
+  /// display label only.
+  final String providerProfileId;
+  final String providerName;
+
+  /// Snapshot the Gateway endpoint/model used to create the remote job so a
+  /// later settings change cannot redirect an in-flight task.
+  final String baseUrl;
+  final String model;
+  final String? taskId;
+  final List<String> remoteFileIds;
+  final double progress;
+  final int lastEventId;
+  final String? detail;
+  final String? error;
+  final DateTime startedAt;
+  final DateTime updatedAt;
+
+  bool get isActive => switch (status) {
+    LongTaskStatus.preparing ||
+    LongTaskStatus.uploading ||
+    LongTaskStatus.queued ||
+    LongTaskStatus.running => true,
+    _ => false,
+  };
+
+  bool get canRetry =>
+      status == LongTaskStatus.failed || status == LongTaskStatus.cancelled;
+
+  LongTaskState copyWith({
+    LongTaskStatus? status,
+    Object? taskId = _longTaskSentinel,
+    List<String>? remoteFileIds,
+    double? progress,
+    int? lastEventId,
+    Object? detail = _longTaskSentinel,
+    Object? error = _longTaskSentinel,
+    DateTime? updatedAt,
+  }) => LongTaskState(
+    status: status ?? this.status,
+    providerProfileId: providerProfileId,
+    providerName: providerName,
+    baseUrl: baseUrl,
+    model: model,
+    taskId: identical(taskId, _longTaskSentinel)
+        ? this.taskId
+        : taskId as String?,
+    remoteFileIds: remoteFileIds ?? this.remoteFileIds,
+    progress: progress ?? this.progress,
+    lastEventId: lastEventId ?? this.lastEventId,
+    detail: identical(detail, _longTaskSentinel)
+        ? this.detail
+        : detail as String?,
+    error: identical(error, _longTaskSentinel) ? this.error : error as String?,
+    startedAt: startedAt,
+    updatedAt: updatedAt ?? DateTime.now(),
+  );
+
+  Map<String, dynamic> toJson() => {
+    'status': status.name,
+    'providerProfileId': providerProfileId,
+    'providerName': providerName,
+    'baseUrl': baseUrl,
+    'model': model,
+    if (taskId != null) 'taskId': taskId,
+    if (remoteFileIds.isNotEmpty) 'remoteFileIds': remoteFileIds,
+    'progress': progress,
+    'lastEventId': lastEventId,
+    if (detail != null) 'detail': detail,
+    if (error != null) 'error': error,
+    'startedAt': startedAt.toIso8601String(),
+    'updatedAt': updatedAt.toIso8601String(),
+  };
+
+  factory LongTaskState.fromJson(Map<String, dynamic> json) => LongTaskState(
+    status: LongTaskStatus.values.firstWhere(
+      (value) => value.name == json['status'],
+      orElse: () => LongTaskStatus.failed,
+    ),
+    providerProfileId: json['providerProfileId'] as String? ?? '',
+    providerName: json['providerName'] as String? ?? 'API 提供商',
+    baseUrl: json['baseUrl'] as String? ?? '',
+    model: json['model'] as String? ?? '',
+    // `responseId` was used by the pre-Gateway OpenAI background prototype.
+    taskId: json['taskId'] as String? ?? json['responseId'] as String?,
+    remoteFileIds: (json['remoteFileIds'] as List<dynamic>? ?? const [])
+        .map((value) => value.toString())
+        .where((value) => value.isNotEmpty)
+        .toList(),
+    progress: ((json['progress'] as num?)?.toDouble() ?? 0).clamp(0, 1),
+    lastEventId: (json['lastEventId'] as num?)?.toInt() ?? 0,
+    detail: json['detail'] as String?,
+    error: json['error'] as String?,
+    startedAt: _parseStoredTime(json['startedAt']),
+    updatedAt: _parseStoredTime(json['updatedAt']),
+  );
+}
+
+const _longTaskSentinel = Object();
+
 extension MessageRoleApi on MessageRole {
   String get wire => switch (this) {
     MessageRole.system => 'system',
@@ -24,8 +160,9 @@ extension MessageRoleApi on MessageRole {
   );
 }
 
-/// A file the user attached to a message. The body is parsed to [text] locally
-/// (M4) and injected into the prompt; raw bytes are never sent to the API.
+/// A file the user attached to a message. Ordinary chat injects locally parsed
+/// [text] into the prompt. Raw bytes are retained only for explicit document
+/// editing/download and server-side long-task uploads.
 class Attachment {
   Attachment({
     String? id,
@@ -300,6 +437,7 @@ class ChatMessage {
     List<Citation>? citations,
     List<SearchActivity>? searchActivities,
     List<WorldInfoHit>? appliedWorldInfo,
+    this.longTask,
     DateTime? createdAt,
   }) : id = id ?? _uuid.v4(),
        attachments = attachments ?? const [],
@@ -345,6 +483,10 @@ class ChatMessage {
   /// assistant turn (story / ensemble). Empty when none fired.
   final List<WorldInfoHit> appliedWorldInfo;
 
+  /// Server-side long-running document job represented by this assistant
+  /// message. Null for ordinary chat messages.
+  final LongTaskState? longTask;
+
   final DateTime createdAt;
 
   ChatMessage copyWith({
@@ -359,6 +501,7 @@ class ChatMessage {
     List<Citation>? citations,
     List<SearchActivity>? searchActivities,
     List<WorldInfoHit>? appliedWorldInfo,
+    Object? longTask = _msgSentinel,
   }) => ChatMessage(
     id: id,
     role: role,
@@ -378,6 +521,9 @@ class ChatMessage {
     citations: citations ?? this.citations,
     searchActivities: searchActivities ?? this.searchActivities,
     appliedWorldInfo: appliedWorldInfo ?? this.appliedWorldInfo,
+    longTask: identical(longTask, _msgSentinel)
+        ? this.longTask
+        : longTask as LongTaskState?,
     createdAt: createdAt,
   );
 
@@ -402,6 +548,7 @@ class ChatMessage {
       'searchActivities': searchActivities.map((a) => a.toJson()).toList(),
     if (appliedWorldInfo.isNotEmpty)
       'appliedWorldInfo': appliedWorldInfo.map((a) => a.toJson()).toList(),
+    if (longTask != null) 'longTask': longTask!.toJson(),
     'createdAt': createdAt.toIso8601String(),
   };
 
@@ -431,6 +578,9 @@ class ChatMessage {
     appliedWorldInfo: (json['appliedWorldInfo'] as List<dynamic>? ?? [])
         .map((e) => WorldInfoHit.fromJson(e as Map<String, dynamic>))
         .toList(),
+    longTask: json['longTask'] is Map<String, dynamic>
+        ? LongTaskState.fromJson(json['longTask'] as Map<String, dynamic>)
+        : null,
     createdAt: _parseStoredTime(json['createdAt']),
   );
 }
@@ -516,11 +666,11 @@ class Conversation {
 
   bool get isStory => mode == ConversationMode.story;
   bool get isEnsemble => mode == ConversationMode.ensemble;
+  bool get isStudy => mode == ConversationMode.study;
   bool get isStoryLike => isStory || isEnsemble;
 
   /// User has sent at least one message (branch-wide, not only active path).
-  bool get hasUserActivity =>
-      messages.any((m) => m.role == MessageRole.user);
+  bool get hasUserActivity => messages.any((m) => m.role == MessageRole.user);
 
   /// Fresh session of this mode with no user turns yet (may still have an
   /// opener / system-style assistant line, e.g. story firstMes).

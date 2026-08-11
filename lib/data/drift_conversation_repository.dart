@@ -222,6 +222,7 @@ class DriftConversationRepository implements ConversationRepository {
       stored.citationsJson == _citationsJson(message) &&
       stored.searchActivitiesJson == _searchActivitiesJson(message) &&
       stored.appliedWorldInfoJson == _appliedWorldInfoJson(message) &&
+      stored.longTaskJson == _longTaskJson(message) &&
       _matchesStoredTimestamp(stored.createdAt, message.createdAt) &&
       stored.seq == seq;
 
@@ -330,6 +331,7 @@ class DriftConversationRepository implements ConversationRepository {
       m.appliedWorldInfoJson,
       (e) => WorldInfoHit.fromJson(e),
     ),
+    longTask: _decodeObject(m.longTaskJson, LongTaskState.fromJson),
   );
 
   String? _attachmentsJson(ChatMessage message) => message.attachments.isEmpty
@@ -350,6 +352,9 @@ class DriftConversationRepository implements ConversationRepository {
       ? null
       : jsonEncode(message.appliedWorldInfo.map((a) => a.toJson()).toList());
 
+  String? _longTaskJson(ChatMessage message) =>
+      message.longTask == null ? null : jsonEncode(message.longTask!.toJson());
+
   MessagesCompanion _toCompanion(ChatMessage m, String convoId, int seq) =>
       MessagesCompanion.insert(
         id: m.id,
@@ -367,6 +372,7 @@ class DriftConversationRepository implements ConversationRepository {
         citationsJson: Value(_citationsJson(m)),
         searchActivitiesJson: Value(_searchActivitiesJson(m)),
         appliedWorldInfoJson: Value(_appliedWorldInfoJson(m)),
+        longTaskJson: Value(_longTaskJson(m)),
         createdAt: m.createdAt,
         seq: Value(seq),
       );
@@ -381,6 +387,15 @@ class DriftConversationRepository implements ConversationRepository {
       return list.map((e) => fromJson(e as Map<String, dynamic>)).toList();
     } catch (_) {
       return const [];
+    }
+  }
+
+  T? _decodeObject<T>(String? raw, T Function(Map<String, dynamic>) fromJson) {
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      return fromJson(jsonDecode(raw) as Map<String, dynamic>);
+    } catch (_) {
+      return null;
     }
   }
 }

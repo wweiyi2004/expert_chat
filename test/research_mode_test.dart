@@ -995,12 +995,14 @@ void main() {
     test('hides terminal unless research on', () {
       expect(ShellTab.visible(researchModeEnabled: false), [
         ShellTab.chat,
+        ShellTab.study,
         ShellTab.studio,
         ShellTab.settings,
       ]);
       expect(ShellTab.visible(researchModeEnabled: true), [
         ShellTab.chat,
         ShellTab.terminal,
+        ShellTab.study,
         ShellTab.studio,
         ShellTab.settings,
       ]);
@@ -1010,6 +1012,7 @@ void main() {
       expect(
         ShellTab.visible(
           researchModeEnabled: false,
+          studyModeEnabled: false,
           creationModeEnabled: false,
         ),
         [ShellTab.chat, ShellTab.settings],
@@ -1017,6 +1020,7 @@ void main() {
       expect(
         ShellTab.visible(
           researchModeEnabled: true,
+          studyModeEnabled: false,
           creationModeEnabled: false,
         ),
         [ShellTab.chat, ShellTab.terminal, ShellTab.settings],
@@ -1024,11 +1028,13 @@ void main() {
       expect(
         ShellTab.visible(
           researchModeEnabled: true,
+          studyModeEnabled: true,
           creationModeEnabled: true,
         ),
         [
           ShellTab.chat,
           ShellTab.terminal,
+          ShellTab.study,
           ShellTab.studio,
           ShellTab.settings,
         ],
@@ -1040,9 +1046,12 @@ void main() {
       addTearDown(container.dispose);
       container.read(shellTabProvider.notifier).set(ShellTab.terminal);
       expect(container.read(shellTabProvider), ShellTab.terminal);
-      container
-          .read(shellTabProvider.notifier)
-          .ensureVisible(ShellTab.visible(researchModeEnabled: false));
+      container.read(shellTabProvider.notifier).ensureVisible(
+        ShellTab.visible(
+          researchModeEnabled: false,
+          studyModeEnabled: false,
+        ),
+      );
       expect(container.read(shellTabProvider), ShellTab.settings);
     });
 
@@ -1053,6 +1062,7 @@ void main() {
       container.read(shellTabProvider.notifier).ensureVisible(
         ShellTab.visible(
           researchModeEnabled: false,
+          studyModeEnabled: false,
           creationModeEnabled: false,
         ),
       );

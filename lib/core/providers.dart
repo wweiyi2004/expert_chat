@@ -10,10 +10,13 @@ import '../data/db/app_database.dart';
 import '../data/drift_conversation_repository.dart';
 import '../data/memory_file_store.dart';
 import '../data/memory_repository.dart';
+import '../data/study_repository.dart';
 import '../data/world_info_repository.dart';
 import '../domain/context/context_window_manager.dart';
 import '../domain/cache/app_cache_service.dart';
 import '../domain/llm/llm_provider.dart';
+import '../domain/llm/long_task_gateway_client.dart';
+import '../domain/gateway/gateway_client.dart';
 import '../domain/llm/routing_llm_provider.dart';
 import '../domain/media/openai_compatible_media_provider.dart';
 import '../domain/memory/memory_backup_file.dart';
@@ -63,6 +66,13 @@ final worldInfoRepositoryProvider = Provider<WorldInfoRepository>(
   (ref) => WorldInfoRepository(ref.read(appDatabaseProvider)),
 );
 
+final studyRepositoryProvider = Provider<StudyRepository>(
+  (ref) => StudyRepository(
+    ref.read(appDatabaseProvider),
+    ref.read(sharedPrefsProvider),
+  ),
+);
+
 final memoryStoreProvider = Provider<MemoryStore>(
   (ref) => MemoryFileStore(ref.read(sharedPrefsProvider)),
 );
@@ -72,6 +82,12 @@ final memoryRepositoryProvider = Provider<MemoryRepository>(
 );
 
 final llmProvider = Provider<LlmProvider>((ref) => RoutingLlmProvider());
+
+final longTaskGatewayClientProvider = Provider<LongTaskGatewayClient>(
+  (ref) => LongTaskGatewayClient(),
+);
+
+final gatewayClientProvider = Provider<GatewayClient>((ref) => GatewayClient());
 
 final memoryCandidateServiceProvider = Provider<MemoryCandidateService>(
   (ref) => MemoryCandidateService(ref.read(llmProvider)),

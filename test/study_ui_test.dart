@@ -117,6 +117,8 @@ void main() {
 
     await tester.pumpWidget(_subject());
     await tester.pumpAndSettle();
+    await tester.drag(find.byType(ListView).first, const Offset(0, -260));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('课程').first);
     await tester.pumpAndSettle();
     await tester.tap(find.text('线性代数'));

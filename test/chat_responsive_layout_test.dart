@@ -4,6 +4,7 @@ import 'package:expert_chat/data/conversation_repository.dart';
 import 'package:expert_chat/data/media_api_config.dart';
 import 'package:expert_chat/data/models.dart';
 import 'package:expert_chat/features/chat/chat_page.dart';
+import 'package:expert_chat/state/chat_controller.dart';
 import 'package:expert_chat/state/settings_controller.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -41,6 +42,60 @@ class _LayoutSettingsController extends SettingsController {
 }
 
 void main() {
+  testWidgets('desktop sidebar unifies workspaces and conversation history', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1200, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          conversationRepositoryProvider.overrideWithValue(
+            _MemoryConversationRepository(),
+          ),
+          settingsControllerProvider.overrideWith(
+            _LayoutSettingsController.new,
+          ),
+        ],
+        child: MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 288,
+              child: Consumer(
+                builder: (context, ref, _) => ChatWorkspaceSidebar(
+                  asyncState: ref.watch(chatControllerProvider),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Expert Chat'), findsOneWidget);
+    expect(find.byKey(const ValueKey('sidebar-new-chat')), findsOneWidget);
+    expect(find.text('工作区'), findsOneWidget);
+    expect(find.text('学习'), findsOneWidget);
+    expect(find.text('创作'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('conversation-mode-filter')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('conversation-mode-filter-all')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('conversation-mode-filter-chat')),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets(
     'short window keeps the empty state scroll-safe and composer low',
     (tester) async {

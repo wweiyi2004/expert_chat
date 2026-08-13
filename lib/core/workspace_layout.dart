@@ -6,7 +6,7 @@ abstract final class WorkspaceBreakpoints {
   /// Optional tools / story panel on the right.
   static const double triplePane = 1200;
 
-  /// Shell uses [NavigationRail] instead of bottom bar.
+  /// Shell uses its unified desktop sidebar instead of the bottom bar.
   static const double shellRail = 840;
 }
 

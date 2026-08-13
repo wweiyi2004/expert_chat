@@ -9,7 +9,8 @@
 - **思考过程展示** — 可展开查看模型的推理过程（thinking）
 - **文件解析** — 支持上传 PDF、DOCX、Excel、TXT 等文件作为上下文
 - **持久化文件长任务** — 可连接自建 Gateway；应用退到后台或关闭后服务端继续解析超长文档，重新打开自动补齐进度和增量结果
-- **统一文件 Gateway** — 一套地址和 Token 同时承载长文件分析、文档编辑与格式转换，并通过能力发现继续扩展 OCR、知识库等模块
+- **统一文件 Gateway** — 一套地址承载长文件分析、文档编辑与格式转换，并通过能力发现继续扩展 OCR、知识库等模块
+- **多账户与分类授权** — AuthService OIDC + PKCE 登录，Access/Refresh Token 自动刷新；Gateway 按账户隔离资源并管理能力、配额和审计
 - **视觉理解** — 可单独配置 OpenAI 兼容视觉 API，上传图片进行分析
 - **图片生成** — 可单独配置 `/images/generations`，在对话中生成并保存图片
 - **上下文管理** — 配置模型窗口、回复预留和历史条数，超限时仅压缩临时请求
@@ -64,7 +65,9 @@ flutter run
 3. （可选）联网搜索可选「API 提供商官方联网」（DeepSeek flash，无需搜索 Key）、DuckDuckGo 免费后端，或 Tavily / Exa / 博查（需搜索 API Key）
 4. （可选）在“多媒体能力”中分别配置视觉与生图；未完整配置的能力不会出现在聊天界面
 5. 在“上下文管理”中按所用模型设置上下文窗口；默认使用 256K
-6. （可选）运行 [`server/gateway`](server/gateway) 并在“能力 → Expert Chat Gateway”中填写唯一地址与 Token，再点击“连接并发现能力”；上游模型密钥只保存在服务器
+6. （可选）运行 [`server/gateway`](server/gateway)；生产环境同时部署 [`server/authservice`](server/authservice) 和 [`server/edge`](server/edge)
+7. 当前服务器配置：Gateway `https://125.208.22.148/gateway`，AuthService `https://125.208.22.148`，Client ID `expert-chat`，回调 `expertchat://auth/callback`
+8. 在“能力 → Expert Chat Gateway”填写上述地址，启用 Gateway，点击“使用 AuthService 登录”，再“连接并发现能力”；旧 Gateway Token 仅用于迁移
 
 ## 项目结构
 
@@ -85,8 +88,15 @@ lib/
 └── state/             # 状态管理（Controller）
 server/
 ├── gateway/           # 统一入口、能力发现、长任务与断线恢复
-└── doc_edit/          # 被 Gateway 挂载的文档编辑/转换模块
+├── doc_edit/          # 被 Gateway 挂载的文档编辑/转换模块
+├── authservice/       # AuthService 补丁、Compose 与 OIDC 引导脚本
+└── edge/              # Nginx、IP HTTPS、限流与自动续期
 ```
+
+## 架构文档
+
+- [当前系统逻辑、Gateway 边界与 AuthService 架构](docs/system-architecture-and-logic.md)
+- [Gateway 模块扩展约定](docs/gateway-architecture.md)
 
 ## 许可证
 

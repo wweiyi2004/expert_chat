@@ -17,6 +17,7 @@ import '../domain/cache/app_cache_service.dart';
 import '../domain/llm/llm_provider.dart';
 import '../domain/llm/long_task_gateway_client.dart';
 import '../domain/gateway/gateway_client.dart';
+import '../domain/gateway/gateway_auth_service.dart';
 import '../domain/llm/routing_llm_provider.dart';
 import '../domain/media/openai_compatible_media_provider.dart';
 import '../domain/memory/memory_backup_file.dart';
@@ -88,6 +89,10 @@ final longTaskGatewayClientProvider = Provider<LongTaskGatewayClient>(
 );
 
 final gatewayClientProvider = Provider<GatewayClient>((ref) => GatewayClient());
+
+final gatewayAuthServiceProvider = Provider<GatewayAuthService>(
+  (ref) => GatewayAuthService(),
+);
 
 final memoryCandidateServiceProvider = Provider<MemoryCandidateService>(
   (ref) => MemoryCandidateService(ref.read(llmProvider)),

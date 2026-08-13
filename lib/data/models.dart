@@ -31,6 +31,7 @@ class LongTaskState {
     required this.providerProfileId,
     required this.providerName,
     required this.baseUrl,
+    this.uploadBaseUrl = '',
     required this.model,
     this.taskId,
     this.remoteFileIds = const [],
@@ -54,6 +55,7 @@ class LongTaskState {
   /// Snapshot the Gateway endpoint/model used to create the remote job so a
   /// later settings change cannot redirect an in-flight task.
   final String baseUrl;
+  final String uploadBaseUrl;
   final String model;
   final String? taskId;
   final List<String> remoteFileIds;
@@ -89,6 +91,7 @@ class LongTaskState {
     providerProfileId: providerProfileId,
     providerName: providerName,
     baseUrl: baseUrl,
+    uploadBaseUrl: uploadBaseUrl,
     model: model,
     taskId: identical(taskId, _longTaskSentinel)
         ? this.taskId
@@ -109,6 +112,7 @@ class LongTaskState {
     'providerProfileId': providerProfileId,
     'providerName': providerName,
     'baseUrl': baseUrl,
+    if (uploadBaseUrl.isNotEmpty) 'uploadBaseUrl': uploadBaseUrl,
     'model': model,
     if (taskId != null) 'taskId': taskId,
     if (remoteFileIds.isNotEmpty) 'remoteFileIds': remoteFileIds,
@@ -128,6 +132,7 @@ class LongTaskState {
     providerProfileId: json['providerProfileId'] as String? ?? '',
     providerName: json['providerName'] as String? ?? 'API 提供商',
     baseUrl: json['baseUrl'] as String? ?? '',
+    uploadBaseUrl: json['uploadBaseUrl'] as String? ?? '',
     model: json['model'] as String? ?? '',
     // `responseId` was used by the pre-Gateway OpenAI background prototype.
     taskId: json['taskId'] as String? ?? json['responseId'] as String?,

@@ -12,6 +12,10 @@ class GatewayConfig {
   const GatewayConfig({
     this.enabled = false,
     this.baseUrl = 'http://127.0.0.1:8790',
+    this.uploadBaseUrl = '',
+    this.authServiceUrl = '',
+    this.oidcClientId = 'expert-chat',
+    this.oidcRedirectUri = 'expertchat://auth/callback',
     this.taskModel = '',
     this.taskPollSeconds = 2,
     this.requestTimeoutSeconds = 120,
@@ -27,6 +31,10 @@ class GatewayConfig {
 
   final bool enabled;
   final String baseUrl;
+  final String uploadBaseUrl;
+  final String authServiceUrl;
+  final String oidcClientId;
+  final String oidcRedirectUri;
   final String taskModel;
   final int taskPollSeconds;
   final int requestTimeoutSeconds;
@@ -35,9 +43,30 @@ class GatewayConfig {
   final String? serverVersion;
 
   bool get isConfigured => enabled && normalizedBaseUrl.isNotEmpty;
+  bool get authServiceConfigured =>
+      normalizedAuthServiceUrl.isNotEmpty &&
+      oidcClientId.trim().isNotEmpty &&
+      Uri.tryParse(oidcRedirectUri.trim())?.scheme.isNotEmpty == true;
 
   String get normalizedBaseUrl {
-    var value = baseUrl.trim();
+    return _normalizeBaseUrl(baseUrl);
+  }
+
+  String get normalizedUploadBaseUrl => _normalizeBaseUrl(uploadBaseUrl);
+  String get normalizedAuthServiceUrl => _normalizeBaseUrl(authServiceUrl);
+
+  String get effectiveUploadBaseUrl {
+    final upload = normalizedUploadBaseUrl;
+    return upload.isEmpty ? normalizedBaseUrl : upload;
+  }
+
+  bool get hasDedicatedUploadBaseUrl {
+    final upload = normalizedUploadBaseUrl;
+    return upload.isNotEmpty && upload != normalizedBaseUrl;
+  }
+
+  static String _normalizeBaseUrl(String raw) {
+    var value = raw.trim();
     while (value.endsWith('/')) {
       value = value.substring(0, value.length - 1);
     }
@@ -60,6 +89,10 @@ class GatewayConfig {
   GatewayConfig copyWith({
     bool? enabled,
     String? baseUrl,
+    String? uploadBaseUrl,
+    String? authServiceUrl,
+    String? oidcClientId,
+    String? oidcRedirectUri,
     String? taskModel,
     int? taskPollSeconds,
     int? requestTimeoutSeconds,
@@ -69,6 +102,10 @@ class GatewayConfig {
   }) => GatewayConfig(
     enabled: enabled ?? this.enabled,
     baseUrl: baseUrl ?? this.baseUrl,
+    uploadBaseUrl: uploadBaseUrl ?? this.uploadBaseUrl,
+    authServiceUrl: authServiceUrl ?? this.authServiceUrl,
+    oidcClientId: oidcClientId ?? this.oidcClientId,
+    oidcRedirectUri: oidcRedirectUri ?? this.oidcRedirectUri,
     taskModel: taskModel ?? this.taskModel,
     taskPollSeconds: (taskPollSeconds ?? this.taskPollSeconds).clamp(
       minTaskPollSeconds,
@@ -93,6 +130,10 @@ class GatewayConfig {
   Map<String, dynamic> toJson() => {
     'enabled': enabled,
     'baseUrl': baseUrl,
+    'uploadBaseUrl': uploadBaseUrl,
+    'authServiceUrl': authServiceUrl,
+    'oidcClientId': oidcClientId,
+    'oidcRedirectUri': oidcRedirectUri,
     'taskModel': taskModel,
     'taskPollSeconds': taskPollSeconds,
     'requestTimeoutSeconds': requestTimeoutSeconds,
@@ -104,6 +145,22 @@ class GatewayConfig {
   factory GatewayConfig.fromJson(Map<String, dynamic> json) => GatewayConfig(
     enabled: json['enabled'] as bool? ?? false,
     baseUrl: json['baseUrl'] as String? ?? 'http://127.0.0.1:8790',
+    uploadBaseUrl:
+        json['uploadBaseUrl'] as String? ??
+        json['upload_base_url'] as String? ??
+        '',
+    authServiceUrl:
+        json['authServiceUrl'] as String? ??
+        json['auth_service_url'] as String? ??
+        '',
+    oidcClientId:
+        json['oidcClientId'] as String? ??
+        json['oidc_client_id'] as String? ??
+        'expert-chat',
+    oidcRedirectUri:
+        json['oidcRedirectUri'] as String? ??
+        json['oidc_redirect_uri'] as String? ??
+        'expertchat://auth/callback',
     taskModel: json['taskModel'] as String? ?? '',
     taskPollSeconds: ((json['taskPollSeconds'] as num?)?.toInt() ?? 2).clamp(
       minTaskPollSeconds,
@@ -125,8 +182,18 @@ class GatewayConfig {
 }
 
 class GatewayConnection {
-  const GatewayConnection({required this.config, required this.apiToken});
+  const GatewayConnection({
+    required this.config,
+    required this.apiToken,
+    this.tokenProvider,
+  });
 
   final GatewayConfig config;
   final String apiToken;
+  final Future<String> Function()? tokenProvider;
+
+  Future<String> resolveApiToken() async {
+    final provider = tokenProvider;
+    return provider == null ? apiToken : (await provider()).trim();
+  }
 }

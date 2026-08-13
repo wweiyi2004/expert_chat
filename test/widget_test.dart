@@ -192,6 +192,7 @@ class FakeMediaProvider extends OpenAiCompatibleMediaProvider {
 
 class FakeLongTaskGatewayClient extends LongTaskGatewayClient {
   final uploadedNames = <String>[];
+  final uploadBaseUrls = <String>[];
   var createCount = 0;
   final deletedFileIds = <String>[];
 
@@ -202,6 +203,7 @@ class FakeLongTaskGatewayClient extends LongTaskGatewayClient {
     required CancelToken cancelToken,
   }) async {
     uploadedNames.add(attachment.name);
+    uploadBaseUrls.add(connection.config.normalizedUploadBaseUrl);
     return 'file_${uploadedNames.length}';
   }
 
@@ -250,6 +252,7 @@ class FakeSettings extends SettingsController {
       gateway: const GatewayConfig(
         enabled: true,
         baseUrl: 'https://gateway.example.com',
+        uploadBaseUrl: 'https://upload.example.com',
       ),
       gatewayToken: 'gateway-token',
     );
@@ -819,10 +822,15 @@ void main() {
           .last;
       expect(llm.callCount, 0);
       expect(gateway.uploadedNames, ['report.txt']);
+      expect(gateway.uploadBaseUrls, ['https://upload.example.com']);
       expect(gateway.createCount, 1);
       expect(assistant.longTask?.status, LongTaskStatus.completed);
       expect(assistant.content, '长任务最终结果');
       expect(repo.store.single.messages.last.longTask?.taskId, 'task_test');
+      expect(
+        repo.store.single.messages.last.longTask?.uploadBaseUrl,
+        'https://upload.example.com',
+      );
     },
   );
 

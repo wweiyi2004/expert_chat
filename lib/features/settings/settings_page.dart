@@ -97,6 +97,10 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   final _apiKey = TextEditingController();
   final _searchKey = TextEditingController();
   final _gatewayUrl = TextEditingController();
+  final _gatewayUploadUrl = TextEditingController();
+  final _gatewayAuthUrl = TextEditingController();
+  final _gatewayOidcClientId = TextEditingController();
+  final _gatewayOidcRedirectUri = TextEditingController();
   final _gatewayToken = TextEditingController();
   final _gatewayTaskModel = TextEditingController();
   final _systemPrompt = TextEditingController();
@@ -110,8 +114,10 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   bool _clearingCache = false;
   bool _testingSearch = false;
   bool _testingGateway = false;
+  bool _signingGatewayIn = false;
   String? _searchTestResult;
   String? _gatewayTestResult;
+  String? _gatewayAuthResult;
   _SettingsCategory _category = _SettingsCategory.model;
 
   @override
@@ -139,7 +145,11 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     }
     if (!_gatewaySynced) {
       _gatewayUrl.text = s.gateway.baseUrl;
-      _gatewayToken.text = s.gatewayToken;
+      _gatewayUploadUrl.text = s.gateway.uploadBaseUrl;
+      _gatewayAuthUrl.text = s.gateway.authServiceUrl;
+      _gatewayOidcClientId.text = s.gateway.oidcClientId;
+      _gatewayOidcRedirectUri.text = s.gateway.oidcRedirectUri;
+      _gatewayToken.text = s.gatewayLegacyToken;
       _gatewayTaskModel.text = s.gateway.taskModel;
       _gatewaySynced = true;
     }
@@ -154,6 +164,10 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     _apiKey.dispose();
     _searchKey.dispose();
     _gatewayUrl.dispose();
+    _gatewayUploadUrl.dispose();
+    _gatewayAuthUrl.dispose();
+    _gatewayOidcClientId.dispose();
+    _gatewayOidcRedirectUri.dispose();
     _gatewayToken.dispose();
     _gatewayTaskModel.dispose();
     _systemPrompt.dispose();
@@ -190,6 +204,29 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     } finally {
       if (mounted) setState(() => _testingGateway = false);
     }
+  }
+
+  Future<void> _signInGateway() async {
+    if (_signingGatewayIn) return;
+    setState(() {
+      _signingGatewayIn = true;
+      _gatewayAuthResult = null;
+    });
+    try {
+      await ref.read(settingsControllerProvider.notifier).signInGateway();
+      if (!mounted) return;
+      setState(() => _gatewayAuthResult = '登录成功，Gateway 将自动刷新访问令牌。');
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _gatewayAuthResult = '登录失败：$error');
+    } finally {
+      if (mounted) setState(() => _signingGatewayIn = false);
+    }
+  }
+
+  Future<void> _signOutGateway() async {
+    await ref.read(settingsControllerProvider.notifier).signOutGateway();
+    if (mounted) setState(() => _gatewayAuthResult = '已退出 AuthService 账户。');
   }
 
   /// Fires one real search against the configured backend so the user learns
@@ -975,13 +1012,172 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                             ),
                             const SizedBox(height: 12),
                             TextField(
+                              controller: _gatewayUploadUrl,
+                              autocorrect: false,
+                              enableSuggestions: false,
+                              keyboardType: TextInputType.url,
+                              decoration: const InputDecoration(
+                                labelText: '文件上传地址（可选）',
+                                helperText: '仅 POST /v1/files 使用；留空则走主 Gateway',
+                              ),
+                              onChanged: (v) => controller.setGatewayConfig(
+                                s.gateway.copyWith(uploadBaseUrl: v),
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            Text(
+                              '账户登录',
+                              style: Theme.of(context).textTheme.titleSmall,
+                            ),
+                            const SizedBox(height: 8),
+                            TextField(
+                              controller: _gatewayAuthUrl,
+                              autocorrect: false,
+                              enableSuggestions: false,
+                              keyboardType: TextInputType.url,
+                              decoration: const InputDecoration(
+                                labelText: 'AuthService 地址',
+                                hintText: 'https://auth.example.com',
+                                helperText: '使用浏览器完成 OIDC + PKCE 登录；必须使用 HTTPS',
+                              ),
+                              onChanged: (v) => controller.setGatewayConfig(
+                                s.gateway.copyWith(authServiceUrl: v),
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Expanded(
+                                  child: TextField(
+                                    controller: _gatewayOidcClientId,
+                                    autocorrect: false,
+                                    enableSuggestions: false,
+                                    decoration: const InputDecoration(
+                                      labelText: 'OIDC Client ID',
+                                      helperText:
+                                          'AuthService 中创建的 Public Client',
+                                    ),
+                                    onChanged: (v) =>
+                                        controller.setGatewayConfig(
+                                          s.gateway.copyWith(oidcClientId: v),
+                                        ),
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: TextField(
+                                    controller: _gatewayOidcRedirectUri,
+                                    autocorrect: false,
+                                    enableSuggestions: false,
+                                    decoration: const InputDecoration(
+                                      labelText: '回调地址',
+                                      helperText:
+                                          '默认 expertchat://auth/callback',
+                                    ),
+                                    onChanged: (v) =>
+                                        controller.setGatewayConfig(
+                                          s.gateway.copyWith(
+                                            oidcRedirectUri: v,
+                                          ),
+                                        ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 12),
+                            if (s.gatewaySignedIn)
+                              Card(
+                                margin: EdgeInsets.zero,
+                                child: ListTile(
+                                  leading: CircleAvatar(
+                                    child: Text(
+                                      (s.gatewayAuthSession!.displayName
+                                                  .trim()
+                                                  .isEmpty
+                                              ? s.gatewayAuthSession!.subject
+                                              : s
+                                                    .gatewayAuthSession!
+                                                    .displayName)
+                                          .characters
+                                          .first
+                                          .toUpperCase(),
+                                    ),
+                                  ),
+                                  title: Text(
+                                    s.gatewayAuthSession!.displayName
+                                            .trim()
+                                            .isEmpty
+                                        ? '已登录'
+                                        : s.gatewayAuthSession!.displayName,
+                                  ),
+                                  subtitle: Text(
+                                    '账户 ${s.gatewayAuthSession!.subject}\n'
+                                    '访问令牌到期前会自动刷新',
+                                  ),
+                                  isThreeLine: true,
+                                  trailing: TextButton(
+                                    onPressed: _signOutGateway,
+                                    child: const Text('退出'),
+                                  ),
+                                ),
+                              )
+                            else
+                              FilledButton.icon(
+                                onPressed:
+                                    s.gateway.authServiceConfigured &&
+                                        !_signingGatewayIn
+                                    ? _signInGateway
+                                    : null,
+                                icon: _signingGatewayIn
+                                    ? const SizedBox.square(
+                                        dimension: 16,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                        ),
+                                      )
+                                    : const Icon(Icons.login, size: 18),
+                                label: Text(
+                                  _signingGatewayIn
+                                      ? '正在打开登录…'
+                                      : '使用 AuthService 登录',
+                                ),
+                              ),
+                            if (_gatewayAuthResult != null) ...[
+                              const SizedBox(height: 8),
+                              Text(
+                                _gatewayAuthResult!,
+                                style: Theme.of(context).textTheme.bodySmall
+                                    ?.copyWith(
+                                      color:
+                                          _gatewayAuthResult!.startsWith('登录失败')
+                                          ? Theme.of(context).colorScheme.error
+                                          : Theme.of(
+                                              context,
+                                            ).colorScheme.onSurfaceVariant,
+                                    ),
+                              ),
+                            ],
+                            const SizedBox(height: 20),
+                            Text(
+                              '旧 Token 兼容',
+                              style: Theme.of(context).textTheme.titleSmall,
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              '仅用于迁移期或单用户部署；登录 AuthService 后会优先使用账户令牌。',
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                            const SizedBox(height: 8),
+                            TextField(
                               controller: _gatewayToken,
                               obscureText: _obscureGatewayToken,
                               autocorrect: false,
                               enableSuggestions: false,
                               decoration: InputDecoration(
                                 labelText: 'Gateway Token',
-                                helperText: '对应服务器 GATEWAY_API_TOKEN；本机开发可留空',
+                                helperText:
+                                    '对应服务器 GATEWAY_API_TOKEN；完成多账户迁移后可留空',
                                 suffixIcon: IconButton(
                                   tooltip: _obscureGatewayToken
                                       ? '显示 Token'

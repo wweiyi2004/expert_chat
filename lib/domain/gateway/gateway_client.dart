@@ -42,10 +42,11 @@ class GatewayClient {
     final base = connection.config.normalizedBaseUrl;
     if (base.isEmpty) throw const GatewayException('未配置 Gateway Base URL');
     try {
+      final headers = await _headers(connection);
       final response = await _dio.get<Map<String, dynamic>>(
         '$base/v1/capabilities',
         options: Options(
-          headers: _headers(connection),
+          headers: headers,
           receiveTimeout: connection.config.requestTimeout,
           sendTimeout: connection.config.requestTimeout,
         ),
@@ -81,10 +82,12 @@ class GatewayClient {
     }
   }
 
-  static Map<String, String> _headers(GatewayConnection connection) => {
-    if (connection.apiToken.trim().isNotEmpty)
-      'Authorization': 'Bearer ${connection.apiToken.trim()}',
-  };
+  static Future<Map<String, String>> _headers(
+    GatewayConnection connection,
+  ) async {
+    final token = await connection.resolveApiToken();
+    return {if (token.isNotEmpty) 'Authorization': 'Bearer $token'};
+  }
 
   static String _humanize(DioException error) {
     final status = error.response?.statusCode;

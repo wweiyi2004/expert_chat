@@ -45,16 +45,16 @@ class LongTaskSnapshot {
 class LongTaskGatewayClient {
   LongTaskGatewayClient({Dio? dio})
     : _dio =
-          dio ??
-          Dio(
-            BaseOptions(
-              connectTimeout: const Duration(seconds: 30),
-              sendTimeout: const Duration(minutes: 2),
-              receiveTimeout: const Duration(seconds: 45),
-            ),
-          );
+          dio ?? Dio(BaseOptions(connectTimeout: const Duration(seconds: 30)));
 
   final Dio _dio;
+
+  // Public/self-hosted gateways can have a very slow upload path even when
+  // health checks and small requests are fast. Budget at least 8 KiB/s plus a
+  // minute for proxy buffering, while still honoring the configured timeout.
+  static const int _minimumUploadBytesPerSecond = 8 * 1024;
+  static const int _uploadGraceSeconds = 60;
+  static const int _maximumUploadTimeoutSeconds = 2 * 60 * 60;
 
   Future<String> uploadFile({
     required GatewayConnection connection,
@@ -72,28 +72,69 @@ class LongTaskGatewayClient {
       throw Exception('附件 ${attachment.name} 的原始数据已损坏，请重新上传。');
     }
 
+    final config = connection.config;
+    if (config.hasDedicatedUploadBaseUrl) {
+      try {
+        return await _uploadOnce(
+          connection: connection,
+          baseUrl: config.normalizedUploadBaseUrl,
+          attachment: attachment,
+          bytes: bytes,
+          cancelToken: cancelToken,
+        );
+      } on DioException catch (error) {
+        if (CancelToken.isCancel(error)) rethrow;
+        if (!_isUploadEndpointUnavailable(error)) {
+          throw _humanize(error, action: '文件上传');
+        }
+      }
+    }
+
     try {
-      final response = await _dio.post<Map<String, dynamic>>(
-        _endpoint(connection, 'files'),
-        options: Options(headers: _headers(connection, json: false)),
-        data: FormData.fromMap({
-          'file': MultipartFile.fromBytes(
-            bytes,
-            filename: attachment.name,
-            contentType: DioMediaType.parse(attachment.mimeType),
-          ),
-        }),
+      return await _uploadOnce(
+        connection: connection,
+        baseUrl: config.normalizedBaseUrl,
+        attachment: attachment,
+        bytes: bytes,
         cancelToken: cancelToken,
       );
-      final id = response.data?['id'] as String?;
-      if (id == null || id.trim().isEmpty) {
-        throw Exception('文件上传成功，但 Gateway 没有返回文件 ID。');
-      }
-      return id;
     } on DioException catch (error) {
       if (CancelToken.isCancel(error)) rethrow;
       throw _humanize(error, action: '文件上传');
     }
+  }
+
+  Future<String> _uploadOnce({
+    required GatewayConnection connection,
+    required String baseUrl,
+    required Attachment attachment,
+    required List<int> bytes,
+    required CancelToken cancelToken,
+  }) async {
+    final headers = await _headers(connection, json: false);
+    final response = await _dio.post<Map<String, dynamic>>(
+      _endpointFromBase(baseUrl, 'files'),
+      options: Options(
+        headers: headers,
+        sendTimeout: _uploadTimeout(connection, bytes.length),
+        receiveTimeout: connection.config.requestTimeout,
+      ),
+      // FormData and MultipartFile are single-use streams. Build them inside
+      // each attempt so a direct-endpoint failure can safely retry the bytes.
+      data: FormData.fromMap({
+        'file': MultipartFile.fromBytes(
+          bytes,
+          filename: attachment.name,
+          contentType: DioMediaType.parse(attachment.mimeType),
+        ),
+      }),
+      cancelToken: cancelToken,
+    );
+    final id = response.data?['id'] as String?;
+    if (id == null || id.trim().isEmpty) {
+      throw Exception('文件上传成功，但 Gateway 没有返回文件 ID。');
+    }
+    return id;
   }
 
   Future<LongTaskSnapshot> create({
@@ -116,9 +157,10 @@ class LongTaskGatewayClient {
         .text
         .trim();
     try {
+      final options = await _requestOptions(connection);
       final response = await _dio.post<Map<String, dynamic>>(
         _endpoint(connection, 'tasks'),
-        options: Options(headers: _headers(connection)),
+        options: options,
         data: {
           'prompt': prompt.isEmpty ? '请深入处理这些文件。' : prompt,
           'file_ids': fileIds,
@@ -152,9 +194,10 @@ class LongTaskGatewayClient {
     CancelToken? cancelToken,
   }) async {
     try {
+      final options = await _requestOptions(connection);
       final response = await _dio.get<Map<String, dynamic>>(
         _endpoint(connection, 'tasks/$taskId'),
-        options: Options(headers: _headers(connection)),
+        options: options,
         cancelToken: cancelToken,
       );
       return _snapshot(response.data);
@@ -169,9 +212,10 @@ class LongTaskGatewayClient {
     required String taskId,
   }) async {
     try {
+      final options = await _requestOptions(connection);
       await _dio.post<void>(
         _endpoint(connection, 'tasks/$taskId/cancel'),
-        options: Options(headers: _headers(connection)),
+        options: options,
       );
     } on DioException catch (error) {
       if (error.response?.statusCode != 409) {
@@ -185,9 +229,10 @@ class LongTaskGatewayClient {
     required String fileId,
   }) async {
     try {
+      final options = await _requestOptions(connection);
       await _dio.delete<void>(
         _endpoint(connection, 'files/$fileId'),
-        options: Options(headers: _headers(connection)),
+        options: options,
       );
     } catch (_) {
       // Cleanup does not change an already completed task into a failure.
@@ -209,17 +254,53 @@ class LongTaskGatewayClient {
     );
   }
 
-  static Map<String, String> _headers(
+  static Future<Map<String, String>> _headers(
     GatewayConnection connection, {
     bool json = true,
-  }) => {
-    if (connection.apiToken.trim().isNotEmpty)
-      'Authorization': 'Bearer ${connection.apiToken}',
-    if (json) 'Content-Type': 'application/json',
-  };
+  }) async {
+    final token = await connection.resolveApiToken();
+    return {
+      if (token.isNotEmpty) 'Authorization': 'Bearer $token',
+      if (json) 'Content-Type': 'application/json',
+    };
+  }
 
   static String _endpoint(GatewayConnection connection, String path) =>
       '${connection.config.normalizedBaseUrl}/v1/$path';
+
+  static String _endpointFromBase(String baseUrl, String path) =>
+      '$baseUrl/v1/$path';
+
+  static bool _isUploadEndpointUnavailable(DioException error) {
+    if (error.response != null) return false;
+    return error.type == DioExceptionType.connectionTimeout ||
+        error.type == DioExceptionType.sendTimeout ||
+        error.type == DioExceptionType.connectionError;
+  }
+
+  static Future<Options> _requestOptions(GatewayConnection connection) async =>
+      Options(
+        headers: await _headers(connection),
+        sendTimeout: connection.config.requestTimeout,
+        receiveTimeout: connection.config.requestTimeout,
+      );
+
+  static Duration _uploadTimeout(GatewayConnection connection, int byteCount) {
+    final estimatedSeconds =
+        ((byteCount + _minimumUploadBytesPerSecond - 1) ~/
+            _minimumUploadBytesPerSecond) +
+        _uploadGraceSeconds;
+    final configuredSeconds = connection.config.requestTimeout.inSeconds;
+    final seconds = estimatedSeconds > configuredSeconds
+        ? estimatedSeconds
+        : configuredSeconds;
+    return Duration(
+      seconds: seconds.clamp(
+        GatewayConfig.minRequestTimeoutSeconds,
+        _maximumUploadTimeoutSeconds,
+      ),
+    );
+  }
 
   static Exception _humanize(DioException error, {required String action}) {
     final status = error.response?.statusCode;

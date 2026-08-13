@@ -1528,6 +1528,7 @@ class ChatController extends AsyncNotifier<ChatState> {
           providerProfileId: '',
           providerName: 'Expert Chat Gateway',
           baseUrl: gateway.baseUrl.trim(),
+          uploadBaseUrl: gateway.uploadBaseUrl.trim(),
           model: gatewayModel,
           detail: '正在准备文件',
         ),
@@ -1839,11 +1840,13 @@ class ChatController extends AsyncNotifier<ChatState> {
       config: GatewayConfig(
         enabled: true,
         baseUrl: task.baseUrl,
+        uploadBaseUrl: task.uploadBaseUrl,
         taskModel: task.model,
         taskPollSeconds: settings.gateway.taskPollSeconds,
         requestTimeoutSeconds: settings.gateway.requestTimeoutSeconds,
       ),
       apiToken: settings.gatewayToken,
+      tokenProvider: settings.gatewayTokenProvider,
     );
   }
 

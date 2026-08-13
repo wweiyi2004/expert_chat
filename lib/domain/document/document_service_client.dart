@@ -128,13 +128,13 @@ class DocumentServiceClient {
       throw const DocumentServiceException('文件为空', code: 'patch_invalid');
     }
     try {
+      final token = await connection.resolveApiToken();
       final r = await _dio.post<List<int>>(
         '${config.normalizedBaseUrl}$path',
         data: form,
         options: Options(
           headers: {
-            if (connection.apiToken.trim().isNotEmpty)
-              'Authorization': 'Bearer ${connection.apiToken.trim()}',
+            if (token.isNotEmpty) 'Authorization': 'Bearer $token',
             'Accept': '*/*',
           },
           responseType: ResponseType.bytes,

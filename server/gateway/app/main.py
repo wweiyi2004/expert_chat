@@ -135,6 +135,11 @@ _shutting_down = False
 _maintenance_task: asyncio.Task[None] | None = None
 _rate_windows: dict[tuple[str, str], deque[float]] = defaultdict(deque)
 _rate_lock = Lock()
+_rate_consume_count = 0
+# Lazy memory bound for _rate_windows: sweep expired windows every N consumes
+# and whenever the key count grows past the safety cap.
+_RATE_WINDOW_SWEEP_EVERY = 256
+_RATE_WINDOW_MAX_KEYS = 1024
 
 
 def _connect() -> sqlite3.Connection:
@@ -146,11 +151,26 @@ def _connect() -> sqlite3.Connection:
 
 
 @contextmanager
-def _db():
+def _db(*, immediate: bool = False):
     connection = _connect()
     try:
-        with connection:
-            yield connection
+        if immediate:
+            # Explicit IMMEDIATE transaction: callers that read usage/quota
+            # counters and then insert based on them must hold the write lock
+            # for the whole check-then-write, otherwise two concurrent
+            # requests can both pass the check before either commits.
+            connection.isolation_level = None  # autocommit; explicit control
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                yield connection
+            except BaseException:
+                connection.execute("ROLLBACK")
+                raise
+            else:
+                connection.execute("COMMIT")
+        else:
+            with connection:
+                yield connection
     finally:
         connection.close()
 
@@ -356,15 +376,19 @@ def _provision_principal(principal: Principal) -> sqlite3.Row:
             ).fetchone()
         else:
             is_admin = int(bool(existing["is_admin"]) or principal.bootstrap_admin)
-            db.execute(
-                "UPDATE user_entitlements SET display_name = ?, is_admin = ?, "
-                "updated_at = ? WHERE owner_sub = ?",
-                (principal.display_name, is_admin, now, principal.subject),
-            )
-            existing = db.execute(
-                "SELECT * FROM user_entitlements WHERE owner_sub = ?",
-                (principal.subject,),
-            ).fetchone()
+            if (
+                is_admin != bool(existing["is_admin"])
+                or principal.display_name != existing["display_name"]
+            ):
+                db.execute(
+                    "UPDATE user_entitlements SET display_name = ?, is_admin = ?, "
+                    "updated_at = ? WHERE owner_sub = ?",
+                    (principal.display_name, is_admin, now, principal.subject),
+                )
+                existing = db.execute(
+                    "SELECT * FROM user_entitlements WHERE owner_sub = ?",
+                    (principal.subject,),
+                ).fetchone()
     assert existing is not None
     return existing
 
@@ -388,11 +412,13 @@ def _permissions(entitlement: sqlite3.Row) -> frozenset[str]:
 
 
 def _consume_rate_limit(subject: str, group: str) -> None:
+    global _rate_consume_count
     limit = RATE_LIMIT_UPLOADS if group == "upload" else RATE_LIMIT_REQUESTS
     now = time.monotonic()
     cutoff = now - 60.0
     key = (subject, group)
     with _rate_lock:
+        _rate_consume_count += 1
         window = _rate_windows[key]
         while window and window[0] < cutoff:
             window.popleft()
@@ -404,6 +430,18 @@ def _consume_rate_limit(subject: str, group: str) -> None:
                 headers={"Retry-After": str(retry_after)},
             )
         window.append(now)
+        if (
+            _rate_consume_count % _RATE_WINDOW_SWEEP_EVERY == 0
+            or len(_rate_windows) > _RATE_WINDOW_MAX_KEYS
+        ):
+            # Drop windows whose last hit is older than the limit; memory then
+            # stays bounded by accounts actually active in the last minute.
+            for stale_key in list(_rate_windows):
+                stale_window = _rate_windows[stale_key]
+                while stale_window and stale_window[0] < cutoff:
+                    stale_window.popleft()
+                if not stale_window:
+                    del _rate_windows[stale_key]
 
 
 def _authorize(principal: Principal, permission: str, *, group: str = "api") -> sqlite3.Row:
@@ -1034,28 +1072,32 @@ async def upload_file(
         path.unlink(missing_ok=True)
         raise
     entitlement = _provision_principal(principal)
-    with _db() as db:
-        used = db.execute(
-            "SELECT COALESCE(SUM(size_bytes), 0) AS total FROM files WHERE owner_sub = ?",
-            (principal.subject,),
-        ).fetchone()["total"]
-    if used + size > entitlement["storage_quota_bytes"]:
+    try:
+        with _db(immediate=True) as db:
+            used = db.execute(
+                "SELECT COALESCE(SUM(size_bytes), 0) AS total FROM files WHERE owner_sub = ?",
+                (principal.subject,),
+            ).fetchone()["total"]
+            if used + size > entitlement["storage_quota_bytes"]:
+                raise HTTPException(
+                    status_code=413, detail="账户文件存储配额不足。"
+                )
+            db.execute(
+                "INSERT INTO files(id, owner_sub, name, mime_type, size_bytes, path, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    file_id,
+                    principal.subject,
+                    file.filename or "upload.bin",
+                    file.content_type or "application/octet-stream",
+                    size,
+                    str(path),
+                    _now(),
+                ),
+            )
+    except BaseException:
         path.unlink(missing_ok=True)
-        raise HTTPException(status_code=413, detail="账户文件存储配额不足。")
-    with _db() as db:
-        db.execute(
-            "INSERT INTO files(id, owner_sub, name, mime_type, size_bytes, path, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                file_id,
-                principal.subject,
-                file.filename or "upload.bin",
-                file.content_type or "application/octet-stream",
-                size,
-                str(path),
-                _now(),
-            ),
-        )
+        raise
     _audit(
         principal.subject,
         "file.upload",
@@ -1109,7 +1151,7 @@ async def create_task(
     principal: Principal = Depends(_require("tasks.create")),
 ) -> dict[str, Any]:
     entitlement = _provision_principal(principal)
-    with _db() as db:
+    with _db(immediate=True) as db:
         client_request_id = (request.client_request_id or "").strip() or None
         if client_request_id is not None:
             existing_task = db.execute(

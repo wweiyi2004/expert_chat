@@ -211,6 +211,130 @@ class GatewayFlowTest(unittest.TestCase):
                 self.assertEqual(task_ids, {"task_recent", "task_running"})
                 self.assertEqual(event_task_ids, {"task_recent", "task_running"})
 
+    def test_provision_skips_writes_when_entitlement_is_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+            os.environ, {"GATEWAY_DATA_DIR": temp_dir}
+        ):
+            from gateway.app import main
+            from gateway.app.auth import Principal
+
+            importlib.reload(main)
+            main._init_db()
+            principal = Principal(
+                subject="user-1",
+                display_name="用户一",
+                scopes=frozenset(),
+                auth_kind="oidc",
+            )
+
+            main._provision_principal(principal)
+            with main._db() as db:
+                db.execute(
+                    "UPDATE user_entitlements SET updated_at = 'sentry' "
+                    "WHERE owner_sub = 'user-1'"
+                )
+            main._provision_principal(principal)
+            with main._db() as db:
+                row = db.execute(
+                    "SELECT updated_at FROM user_entitlements "
+                    "WHERE owner_sub = 'user-1'"
+                ).fetchone()
+            self.assertEqual(row["updated_at"], "sentry")
+
+            changed = Principal(
+                subject="user-1",
+                display_name="用户二",
+                scopes=frozenset(),
+                auth_kind="oidc",
+            )
+            main._provision_principal(changed)
+            with main._db() as db:
+                row = db.execute(
+                    "SELECT display_name, updated_at FROM user_entitlements "
+                    "WHERE owner_sub = 'user-1'"
+                ).fetchone()
+            self.assertEqual(row["display_name"], "用户二")
+            self.assertNotEqual(row["updated_at"], "sentry")
+
+    def test_upload_quota_is_checked_atomically_with_the_insert(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+            os.environ,
+            {
+                "GATEWAY_DATA_DIR": temp_dir,
+                "GATEWAY_AUTH_MODE": "hybrid",
+                "GATEWAY_API_TOKEN": "migration-token",
+                "LLM_BASE_URL": "http://upstream.invalid/v1",
+                "LLM_MODEL": "test-model",
+            },
+        ):
+            from gateway.app import main
+            from gateway.app.auth import Principal
+
+            importlib.reload(main)
+
+            def authenticate(value):
+                del value
+                return Principal(
+                    subject="quota-user",
+                    display_name="quota-user",
+                    scopes=frozenset(),
+                    auth_kind="oidc",
+                )
+
+            with patch.object(main.AUTH, "authenticate", authenticate), TestClient(
+                main.app
+            ) as client:
+                headers = {"Authorization": "Bearer quota-user"}
+                main._provision_principal(
+                    Principal(
+                        subject="quota-user",
+                        display_name="quota-user",
+                        scopes=frozenset(),
+                        auth_kind="oidc",
+                    )
+                )
+                with main._db() as db:
+                    db.execute(
+                        "UPDATE user_entitlements SET storage_quota_bytes = ? "
+                        "WHERE owner_sub = 'quota-user'",
+                        (200,),
+                    )
+                first = client.post(
+                    "/v1/files",
+                    headers=headers,
+                    files={"file": ("a.txt", b"x" * 100, "text/plain")},
+                )
+                self.assertEqual(first.status_code, 200, first.text)
+                over = client.post(
+                    "/v1/files",
+                    headers=headers,
+                    files={"file": ("b.txt", b"y" * 150, "text/plain")},
+                )
+                self.assertEqual(over.status_code, 413, over.text)
+                with main._db() as db:
+                    count = db.execute(
+                        "SELECT COUNT(*) AS total FROM files "
+                        "WHERE owner_sub = 'quota-user'"
+                    ).fetchone()["total"]
+                self.assertEqual(count, 1)
+                self.assertEqual(len(list(main.UPLOAD_DIR.glob("file_*"))), 1)
+
+    def test_rate_limit_windows_are_swept_after_expiry(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+            os.environ, {"GATEWAY_DATA_DIR": temp_dir}
+        ):
+            from gateway.app import main
+
+            importlib.reload(main)
+            with patch.object(main.time, "monotonic", return_value=0.0):
+                for index in range(main._RATE_WINDOW_SWEEP_EVERY - 1):
+                    main._consume_rate_limit(f"subject-{index}", "api")
+            self.assertEqual(len(main._rate_windows), 255)
+            with patch.object(main.time, "monotonic", return_value=120.0):
+                main._consume_rate_limit("subject-new", "api")
+            self.assertEqual(len(main._rate_windows), 1)
+            self.assertIn(("subject-new", "api"), main._rate_windows)
+
     def test_upload_durable_task_events_and_idempotency(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             os.environ["GATEWAY_DATA_DIR"] = temp_dir

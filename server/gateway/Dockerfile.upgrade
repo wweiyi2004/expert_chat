@@ -1,0 +1,8 @@
+# Fast, deterministic upgrade path for an already deployed Gateway host.
+# Override BASE_IMAGE when the previous production tag is different.
+ARG BASE_IMAGE=expert-chat-gateway:0.2.0
+FROM ${BASE_IMAGE}
+ARG PIP_INDEX_URL=https://pypi.org/simple
+RUN pip install --no-cache-dir --index-url "$PIP_INDEX_URL" "PyJWT[crypto]==2.13.0"
+COPY gateway ./gateway
+COPY doc_edit ./doc_edit

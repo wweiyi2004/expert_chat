@@ -1,0 +1,83 @@
+diff --git a/backend/AuthService/Controllers/AuthorizationController.cs b/backend/AuthService/Controllers/AuthorizationController.cs
+--- a/backend/AuthService/Controllers/AuthorizationController.cs
++++ b/backend/AuthService/Controllers/AuthorizationController.cs
+@@ -69,6 +69,11 @@ namespace AuthService.Controllers
+ 
+             // Seeded clients use implicit consent, so no consent screen is shown.
+             identity.SetScopes(request.GetScopes());
++
++            // Give each public client an explicit resource audience. Downstream
++            // APIs can then reject a valid AuthService token minted for another
++            // application instead of accepting every token from this issuer.
++            identity.SetResources(request.ClientId!);
+             identity.SetDestinations(GetDestinations);
+ 
+             return SignIn(new ClaimsPrincipal(identity), OpenIddictServerAspNetCoreDefaults.AuthenticationScheme);
+diff --git a/backend/AuthService/Services/OidcClientAdminService.cs b/backend/AuthService/Services/OidcClientAdminService.cs
+--- a/backend/AuthService/Services/OidcClientAdminService.cs
++++ b/backend/AuthService/Services/OidcClientAdminService.cs
+@@ -36,7 +36,7 @@ namespace AuthService.Services
+             if (!isPublic && !string.Equals(request.Type, "confidential", StringComparison.OrdinalIgnoreCase))
+                 return Result<CreateOidcClientResponse>.Fail(AuthError.InvalidOidcClient, "Type must be 'confidential' or 'public'.");
+ 
+-            var uriError = ValidateRedirectUris(request.RedirectUris);
++            var uriError = ValidateRedirectUris(request.RedirectUris, isPublic);
+             if (uriError is not null)
+                 return Result<CreateOidcClientResponse>.Fail(AuthError.InvalidOidcClient, uriError);
+ 
+@@ -62,14 +62,15 @@ namespace AuthService.Services
+             if (string.IsNullOrWhiteSpace(request.DisplayName))
+                 return Result<OidcClientSummary>.Fail(AuthError.InvalidOidcClient, "DisplayName is required.");
+ 
+-            var uriError = ValidateRedirectUris(request.RedirectUris);
+-            if (uriError is not null)
+-                return Result<OidcClientSummary>.Fail(AuthError.InvalidOidcClient, uriError);
+-
+             var application = await manager.FindByClientIdAsync(clientId, ct);
+             if (application is null)
+                 return Result<OidcClientSummary>.Fail(AuthError.OidcClientNotFound);
+ 
++            var isPublic = OidcClientDescriptors.IsPublicType(await manager.GetClientTypeAsync(application, ct));
++            var uriError = ValidateRedirectUris(request.RedirectUris, isPublic);
++            if (uriError is not null)
++                return Result<OidcClientSummary>.Fail(AuthError.InvalidOidcClient, uriError);
++
+             // Round-trip the descriptor so type, consent and the stored (hashed)
+             // secret are preserved — only the fields below change.
+             var descriptor = new OpenIddictApplicationDescriptor();
+@@ -140,16 +141,32 @@ namespace AuthService.Services
+             };
+         }
+ 
+-        private static string? ValidateRedirectUris(List<string> uris)
++        private static string? ValidateRedirectUris(List<string> uris, bool isPublic)
+         {
+             if (uris.Count == 0)
+                 return "At least one redirect URI is required.";
+ 
+             foreach (var uri in uris)
+             {
+-                if (!Uri.TryCreate(uri, UriKind.Absolute, out var parsed)
+-                    || (parsed.Scheme != Uri.UriSchemeHttps && parsed.Scheme != Uri.UriSchemeHttp))
++                if (!Uri.TryCreate(uri, UriKind.Absolute, out var parsed) || !string.IsNullOrEmpty(parsed.Fragment))
+                     return $"Invalid redirect URI: {uri}";
++
++                if (parsed.Scheme == Uri.UriSchemeHttps)
++                    continue;
++
++                if (parsed.Scheme == Uri.UriSchemeHttp)
++                {
++                    // RFC 8252 only permits clear-text redirect URIs for a
++                    // loopback native-app listener.
++                    if (isPublic && parsed.IsLoopback)
++                        continue;
++                    return $"Invalid redirect URI: {uri}";
++                }
++
++                // Claimed HTTPS URIs are preferred, but private-use schemes
++                // are a standard native-app redirect for public PKCE clients.
++                if (!isPublic || parsed.Scheme.Length < 2)
++                    return $"Invalid redirect URI: {uri}";
+             }
+             return null;
+         }

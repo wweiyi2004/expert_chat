@@ -52,10 +52,148 @@ void main() {
     expect(created.id, 'task_123');
     expect(created.status, 'queued');
     expect(adapter.paths, ['/v1/files', '/v1/tasks']);
+    expect(adapter.uploadSendTimeout, const Duration(seconds: 120));
     expect(adapter.createBody?['file_ids'], ['file_123']);
     expect(adapter.createBody?['prompt'], '深入分析');
     expect(adapter.createBody?['model'], 'document-model');
     expect(adapter.createBody?['client_request_id'], 'message-123');
+  });
+
+  test('large uploads receive a size-aware timeout budget', () async {
+    final adapter = _GatewayAdapter();
+    final client = LongTaskGatewayClient(
+      dio: Dio()..httpClientAdapter = adapter,
+    );
+    final bytes = Uint8List(3849013);
+    final attachment = Attachment(
+      name: 'paper.pdf',
+      mimeType: 'application/pdf',
+      sizeBytes: bytes.length,
+      imageBase64: base64Encode(bytes),
+    );
+    const slowConnection = GatewayConnection(
+      config: GatewayConfig(
+        enabled: true,
+        baseUrl: 'https://gateway.example.com',
+        requestTimeoutSeconds: 210,
+      ),
+      apiToken: 'gateway-token',
+    );
+
+    await client.uploadFile(
+      connection: slowConnection,
+      attachment: attachment,
+      cancelToken: CancelToken(),
+    );
+
+    // 3,849,013 bytes at the conservative 8 KiB/s floor, plus 60 seconds.
+    expect(adapter.uploadSendTimeout, const Duration(seconds: 530));
+    expect(adapter.uploadReceiveTimeout, const Duration(seconds: 210));
+  });
+
+  test('dedicated upload URL is used only for file transfer', () async {
+    final adapter = _GatewayAdapter();
+    final client = LongTaskGatewayClient(
+      dio: Dio()..httpClientAdapter = adapter,
+    );
+    const splitConnection = GatewayConnection(
+      config: GatewayConfig(
+        enabled: true,
+        baseUrl: 'https://gateway.example.com',
+        uploadBaseUrl: 'https://upload.example.com/',
+      ),
+      apiToken: 'gateway-token',
+    );
+    final attachment = Attachment(
+      name: 'notes.txt',
+      mimeType: 'text/plain',
+      sizeBytes: 5,
+      imageBase64: base64Encode(utf8.encode('hello')),
+    );
+
+    final fileId = await client.uploadFile(
+      connection: splitConnection,
+      attachment: attachment,
+      cancelToken: CancelToken(),
+    );
+    await client.create(
+      connection: splitConnection,
+      messages: const [
+        LongTaskInputMessage(role: MessageRole.user, text: 'analyze'),
+      ],
+      fileIds: [fileId],
+      cancelToken: CancelToken(),
+      clientRequestId: 'split-route',
+    );
+
+    expect(adapter.uris[0].host, 'upload.example.com');
+    expect(adapter.uris[1].host, 'gateway.example.com');
+  });
+
+  test('unreachable dedicated upload URL falls back to main Gateway', () async {
+    final adapter = _GatewayAdapter(failDedicatedUploadConnection: true);
+    final client = LongTaskGatewayClient(
+      dio: Dio()..httpClientAdapter = adapter,
+    );
+    const splitConnection = GatewayConnection(
+      config: GatewayConfig(
+        enabled: true,
+        baseUrl: 'https://gateway.example.com',
+        uploadBaseUrl: 'https://upload.example.com',
+      ),
+      apiToken: 'gateway-token',
+    );
+    final attachment = Attachment(
+      name: 'notes.txt',
+      mimeType: 'text/plain',
+      sizeBytes: 5,
+      imageBase64: base64Encode(utf8.encode('hello')),
+    );
+
+    final fileId = await client.uploadFile(
+      connection: splitConnection,
+      attachment: attachment,
+      cancelToken: CancelToken(),
+    );
+
+    expect(fileId, 'file_123');
+    expect(adapter.uris.map((uri) => uri.host), [
+      'upload.example.com',
+      'gateway.example.com',
+    ]);
+  });
+
+  test('dedicated upload send timeout falls back to main Gateway', () async {
+    final adapter = _GatewayAdapter(failDedicatedUploadSend: true);
+    final client = LongTaskGatewayClient(
+      dio: Dio()..httpClientAdapter = adapter,
+    );
+    const splitConnection = GatewayConnection(
+      config: GatewayConfig(
+        enabled: true,
+        baseUrl: 'https://gateway.example.com',
+        uploadBaseUrl: 'https://upload.example.com',
+      ),
+      apiToken: 'gateway-token',
+    );
+    final attachment = Attachment(
+      name: 'notes.txt',
+      mimeType: 'text/plain',
+      sizeBytes: 5,
+      imageBase64: base64Encode(utf8.encode('hello')),
+    );
+
+    final fileId = await client.uploadFile(
+      connection: splitConnection,
+      attachment: attachment,
+      cancelToken: CancelToken(),
+    );
+
+    expect(fileId, 'file_123');
+    expect(adapter.uris.map((uri) => uri.host), [
+      'upload.example.com',
+      'gateway.example.com',
+    ]);
   });
 
   test('retrieves completed output text and supports cancellation', () async {
@@ -86,6 +224,7 @@ void main() {
       providerProfileId: 'profile-1',
       providerName: '文件长任务 Gateway',
       baseUrl: connection.config.baseUrl,
+      uploadBaseUrl: 'https://upload.example.com',
       model: connection.config.taskModel,
       taskId: 'task_123',
       remoteFileIds: const ['file_123'],
@@ -96,6 +235,7 @@ void main() {
     final restored = LongTaskState.fromJson(task.toJson());
     expect(restored.status, LongTaskStatus.running);
     expect(restored.taskId, 'task_123');
+    expect(restored.uploadBaseUrl, 'https://upload.example.com');
     expect(restored.remoteFileIds, ['file_123']);
     expect(restored.progress, 0.6);
     expect(restored.lastEventId, 17);
@@ -141,8 +281,18 @@ void main() {
 }
 
 class _GatewayAdapter implements HttpClientAdapter {
+  _GatewayAdapter({
+    this.failDedicatedUploadConnection = false,
+    this.failDedicatedUploadSend = false,
+  });
+
+  final bool failDedicatedUploadConnection;
+  final bool failDedicatedUploadSend;
   final paths = <String>[];
+  final uris = <Uri>[];
   Map<String, dynamic>? createBody;
+  Duration? uploadSendTimeout;
+  Duration? uploadReceiveTimeout;
 
   @override
   Future<ResponseBody> fetch(
@@ -151,9 +301,27 @@ class _GatewayAdapter implements HttpClientAdapter {
     Future<void>? cancelFuture,
   ) async {
     paths.add(options.uri.path);
+    uris.add(options.uri);
     final path = options.uri.path;
     if (path == '/v1/files' && options.method == 'POST') {
+      if (failDedicatedUploadConnection &&
+          options.uri.host == 'upload.example.com') {
+        throw DioException(
+          requestOptions: options,
+          type: DioExceptionType.connectionError,
+          message: 'dedicated upload endpoint unavailable',
+        );
+      }
+      if (failDedicatedUploadSend && options.uri.host == 'upload.example.com') {
+        throw DioException(
+          requestOptions: options,
+          type: DioExceptionType.sendTimeout,
+          message: 'dedicated upload endpoint timed out while sending',
+        );
+      }
       expect(options.data, isA<FormData>());
+      uploadSendTimeout = options.sendTimeout;
+      uploadReceiveTimeout = options.receiveTimeout;
       return _json({'id': 'file_123', 'object': 'file'});
     }
     if (path == '/v1/tasks' && options.method == 'POST') {

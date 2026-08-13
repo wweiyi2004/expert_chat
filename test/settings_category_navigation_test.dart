@@ -1,5 +1,6 @@
 import 'package:expert_chat/data/media_api_config.dart';
 import 'package:expert_chat/data/provider_profile.dart';
+import 'package:expert_chat/data/gateway_config.dart';
 import 'package:expert_chat/features/settings/settings_page.dart';
 import 'package:expert_chat/state/settings_controller.dart';
 import 'package:flutter/material.dart';
@@ -62,6 +63,11 @@ class _FakeSettingsController extends SettingsController {
       case MediaApiKind.asr:
         state = AsyncData(current.copyWith(asrApiKey: key));
     }
+  }
+
+  @override
+  Future<void> setGatewayConfig(GatewayConfig config) async {
+    state = AsyncData(state.requireValue.copyWith(gateway: config));
   }
 
   @override
@@ -290,6 +296,31 @@ void main() {
       );
     },
   );
+
+  testWidgets('Gateway exposes a separately persisted file upload URL', (
+    tester,
+  ) async {
+    final container = await pumpSettingsPage(tester, tall: true);
+    await tester.tap(find.text('能力'));
+    tester.view.physicalSize = const Size(480, 4000);
+    await tester.pumpAndSettle();
+
+    final uploadUrl = find.byWidgetPredicate(
+      (widget) =>
+          widget is TextField && widget.decoration?.labelText == '文件上传地址（可选）',
+      skipOffstage: false,
+    );
+    expect(uploadUrl, findsOneWidget);
+    await tester.enterText(uploadUrl, 'https://upload.example.com/');
+    await tester.pump();
+
+    final gateway = container
+        .read(settingsControllerProvider)
+        .requireValue
+        .gateway;
+    expect(gateway.uploadBaseUrl, 'https://upload.example.com/');
+    expect(gateway.effectiveUploadBaseUrl, 'https://upload.example.com');
+  });
 
   testWidgets('cloud TTS configuration includes a persisted voice field', (
     tester,

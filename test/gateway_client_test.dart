@@ -46,6 +46,30 @@ void main() {
     expect(discovered.supports(GatewayCapabilityIds.longTasks), isTrue);
     expect(discovered.supports(GatewayCapabilityIds.documentEdit), isFalse);
   });
+
+  test('optional upload URL normalizes and survives JSON round trip', () {
+    const config = GatewayConfig(
+      enabled: true,
+      baseUrl: 'https://gateway.example.com/',
+      uploadBaseUrl: 'https://upload.example.com///',
+    );
+
+    expect(config.normalizedBaseUrl, 'https://gateway.example.com');
+    expect(config.normalizedUploadBaseUrl, 'https://upload.example.com');
+    expect(config.effectiveUploadBaseUrl, 'https://upload.example.com');
+    expect(config.hasDedicatedUploadBaseUrl, isTrue);
+
+    final restored = GatewayConfig.fromJson(config.toJson());
+    expect(restored.uploadBaseUrl, config.uploadBaseUrl);
+    expect(restored.effectiveUploadBaseUrl, 'https://upload.example.com');
+
+    final legacy = GatewayConfig.fromJson(const {
+      'enabled': true,
+      'baseUrl': 'https://gateway.example.com',
+    });
+    expect(legacy.uploadBaseUrl, isEmpty);
+    expect(legacy.effectiveUploadBaseUrl, legacy.normalizedBaseUrl);
+  });
 }
 
 class _GatewayManifestAdapter implements HttpClientAdapter {

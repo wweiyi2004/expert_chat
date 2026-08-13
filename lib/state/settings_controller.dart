@@ -12,6 +12,7 @@ import '../data/media_api_config.dart';
 import '../data/provider_profile.dart';
 import '../data/ui_prefs.dart';
 import '../domain/llm/llm_provider.dart';
+import '../domain/gateway/gateway_auth_service.dart';
 import '../domain/tools/search_provider.dart';
 
 /// Bounds / defaults for the web-search knobs surfaced in settings.
@@ -50,6 +51,9 @@ class SettingsState {
     this.context = const ContextPrefs(),
     this.gateway = const GatewayConfig(),
     this.gatewayToken = '',
+    this.gatewayLegacyToken = '',
+    this.gatewayAuthSession,
+    this.gatewayTokenProvider,
     this.memoryEnabled = false,
     this.researchModeEnabled = false,
     this.studyModeEnabled = true,
@@ -101,6 +105,9 @@ class SettingsState {
   /// One connection for every server-side Expert Chat capability.
   final GatewayConfig gateway;
   final String gatewayToken;
+  final String gatewayLegacyToken;
+  final GatewayAuthSession? gatewayAuthSession;
+  final Future<String> Function()? gatewayTokenProvider;
 
   /// Local Markdown long-term memory. Off by default until the user opts in.
   final bool memoryEnabled;
@@ -116,14 +123,18 @@ class SettingsState {
 
   bool get searchConfigured => searchApiKey.trim().isNotEmpty;
   bool get gatewayConfigured => gateway.isConfigured;
+  bool get gatewaySignedIn => gatewayAuthSession != null;
   bool get supportsLongTasks =>
       gateway.supports(GatewayCapabilityIds.longTasks);
   bool get supportsDocumentEdit =>
       gateway.supports(GatewayCapabilityIds.documentEdit);
   bool get supportsDocumentConvert =>
       gateway.supports(GatewayCapabilityIds.documentConvert);
-  GatewayConnection get gatewayConnection =>
-      GatewayConnection(config: gateway, apiToken: gatewayToken);
+  GatewayConnection get gatewayConnection => GatewayConnection(
+    config: gateway,
+    apiToken: gatewayToken,
+    tokenProvider: gatewayTokenProvider,
+  );
   bool get visionConfigured => visionApi.isConfiguredWith(visionApiKey);
   bool get imageGenerationConfigured =>
       imageGenerationApi.isConfiguredWith(imageGenerationApiKey);
@@ -195,6 +206,9 @@ class SettingsState {
     ContextPrefs? context,
     GatewayConfig? gateway,
     String? gatewayToken,
+    String? gatewayLegacyToken,
+    Object? gatewayAuthSession = _sentinel,
+    Future<String> Function()? gatewayTokenProvider,
     bool? memoryEnabled,
     bool? researchModeEnabled,
     bool? studyModeEnabled,
@@ -227,6 +241,11 @@ class SettingsState {
     context: context ?? this.context,
     gateway: gateway ?? this.gateway,
     gatewayToken: gatewayToken ?? this.gatewayToken,
+    gatewayLegacyToken: gatewayLegacyToken ?? this.gatewayLegacyToken,
+    gatewayAuthSession: identical(gatewayAuthSession, _sentinel)
+        ? this.gatewayAuthSession
+        : gatewayAuthSession as GatewayAuthSession?,
+    gatewayTokenProvider: gatewayTokenProvider ?? this.gatewayTokenProvider,
     memoryEnabled: memoryEnabled ?? this.memoryEnabled,
     researchModeEnabled: researchModeEnabled ?? this.researchModeEnabled,
     studyModeEnabled: studyModeEnabled ?? this.studyModeEnabled,
@@ -258,6 +277,12 @@ const _kAsrApiKeySecure = 'asr_api_key';
 const _kContextPrefs = 'contextPrefs';
 const _kGateway = 'expertChatGateway';
 const _kGatewayTokenSecure = 'expert_chat_gateway_token';
+const _kGatewayOidcAccessTokenSecure = 'expert_chat_gateway_oidc_access_token';
+const _kGatewayOidcRefreshTokenSecure =
+    'expert_chat_gateway_oidc_refresh_token';
+const _kGatewayOidcExpiresAtSecure = 'expert_chat_gateway_oidc_expires_at';
+const _kGatewayOidcSubjectSecure = 'expert_chat_gateway_oidc_subject';
+const _kGatewayOidcDisplayNameSecure = 'expert_chat_gateway_oidc_display_name';
 // Legacy split-service keys retained for a lossless one-time migration.
 const _kLegacyDocumentService = 'documentService';
 const _kLegacyDocumentServiceTokenSecure = 'document_service_token';
@@ -290,6 +315,8 @@ String _ttsApiProfileSecureKey(SpeechApiProtocol protocol) =>
 /// Loads settings (profiles + active key) and persists changes. Migrates the
 /// M1 single-config layout to a profile on first run.
 class SettingsController extends AsyncNotifier<SettingsState> {
+  Future<GatewayAuthSession>? _gatewayRefreshInFlight;
+
   @override
   Future<SettingsState> build() async {
     final prefs = ref.read(sharedPrefsProvider);
@@ -404,18 +431,39 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       gateway = _migrateLegacyGateway(prefs);
       await prefs.setString(_kGateway, jsonEncode(gateway.toJson()));
     }
-    var gatewayToken = await secure.read(key: _kGatewayTokenSecure) ?? '';
-    if (gatewayToken.isEmpty) {
-      gatewayToken =
+    var gatewayLegacyToken = await secure.read(key: _kGatewayTokenSecure) ?? '';
+    if (gatewayLegacyToken.isEmpty) {
+      gatewayLegacyToken =
           await secure.read(key: _kLegacyLongTaskGatewayTokenSecure) ?? '';
-      if (gatewayToken.isEmpty) {
-        gatewayToken =
+      if (gatewayLegacyToken.isEmpty) {
+        gatewayLegacyToken =
             await secure.read(key: _kLegacyDocumentServiceTokenSecure) ?? '';
       }
-      if (gatewayToken.isNotEmpty) {
-        await secure.write(key: _kGatewayTokenSecure, value: gatewayToken);
+      if (gatewayLegacyToken.isNotEmpty) {
+        await secure.write(
+          key: _kGatewayTokenSecure,
+          value: gatewayLegacyToken,
+        );
       }
     }
+    var gatewayAuthSession = await _readGatewayAuthSession();
+    if (gateway.authServiceConfigured &&
+        gatewayAuthSession != null &&
+        gatewayAuthSession.needsRefresh) {
+      try {
+        gatewayAuthSession = await ref
+            .read(gatewayAuthServiceProvider)
+            .refresh(gateway, gatewayAuthSession);
+        await _persistGatewayAuthSession(gatewayAuthSession);
+      } catch (_) {
+        // Preserve the refresh token for a later online retry. Gateway clients
+        // call _freshGatewayToken before every request.
+      }
+    }
+    final gatewayToken =
+        gateway.authServiceConfigured && gatewayAuthSession != null
+        ? gatewayAuthSession.accessToken
+        : gatewayLegacyToken;
 
     // Drop a stored model override that no longer exists in the active
     // profile's model list (e.g. the profile was edited since), so requests
@@ -466,6 +514,9 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       context: _readContextPrefs(prefs),
       gateway: gateway,
       gatewayToken: gatewayToken,
+      gatewayLegacyToken: gatewayLegacyToken,
+      gatewayAuthSession: gatewayAuthSession,
+      gatewayTokenProvider: _freshGatewayToken,
       memoryEnabled: prefs.getBool(_kMemoryEnabled) ?? false,
       researchModeEnabled: prefs.getBool(_kResearchModeEnabled) ?? false,
       // Default on: learning hub is part of the main product surface.
@@ -728,20 +779,156 @@ class SettingsController extends AsyncNotifier<SettingsState> {
 
   Future<void> setGatewayConfig(GatewayConfig config) async {
     final current = _current.gateway;
+    final authChanged =
+        config.normalizedAuthServiceUrl != current.normalizedAuthServiceUrl ||
+        config.oidcClientId.trim() != current.oidcClientId.trim() ||
+        config.oidcRedirectUri.trim() != current.oidcRedirectUri.trim();
     final next = config.normalizedBaseUrl != current.normalizedBaseUrl
         ? config.clearDiscovery()
         : config;
-    state = AsyncData(_current.copyWith(gateway: next));
+    if (authChanged && _current.gatewayAuthSession != null) {
+      await _clearGatewayAuthSession();
+      state = AsyncData(
+        _current.copyWith(
+          gateway: next,
+          gatewayToken: _current.gatewayLegacyToken,
+          gatewayAuthSession: null,
+        ),
+      );
+    } else {
+      state = AsyncData(_current.copyWith(gateway: next));
+    }
     await ref
         .read(sharedPrefsProvider)
         .setString(_kGateway, jsonEncode(next.toJson()));
   }
 
   Future<void> setGatewayToken(String token) async {
-    state = AsyncData(_current.copyWith(gatewayToken: token));
+    state = AsyncData(
+      _current.copyWith(
+        gatewayLegacyToken: token,
+        gatewayToken: _current.gatewayAuthSession == null
+            ? token
+            : _current.gatewayToken,
+      ),
+    );
     await ref
         .read(secureStorageProvider)
         .write(key: _kGatewayTokenSecure, value: token);
+  }
+
+  Future<void> signInGateway() async {
+    final config = _current.gateway;
+    final session = await ref.read(gatewayAuthServiceProvider).signIn(config);
+    await _persistGatewayAuthSession(session);
+    state = AsyncData(
+      _current.copyWith(
+        gatewayToken: session.accessToken,
+        gatewayAuthSession: session,
+        gatewayTokenProvider: _freshGatewayToken,
+      ),
+    );
+  }
+
+  Future<void> signOutGateway() async {
+    await _clearGatewayAuthSession();
+    state = AsyncData(
+      _current.copyWith(
+        gatewayToken: _current.gatewayLegacyToken,
+        gatewayAuthSession: null,
+      ),
+    );
+  }
+
+  Future<String> _freshGatewayToken() async {
+    final current = _current;
+    final session = current.gatewayAuthSession;
+    if (!current.gateway.authServiceConfigured || session == null) {
+      return current.gatewayLegacyToken;
+    }
+    if (!session.needsRefresh) return session.accessToken;
+    var pending = _gatewayRefreshInFlight;
+    if (pending == null) {
+      pending = ref
+          .read(gatewayAuthServiceProvider)
+          .refresh(current.gateway, session);
+      _gatewayRefreshInFlight = pending;
+    }
+    try {
+      final refreshed = await pending;
+      await _persistGatewayAuthSession(refreshed);
+      state = AsyncData(
+        _current.copyWith(
+          gatewayToken: refreshed.accessToken,
+          gatewayAuthSession: refreshed,
+        ),
+      );
+      return refreshed.accessToken;
+    } catch (_) {
+      if (DateTime.now().toUtc().isBefore(session.expiresAt)) {
+        return session.accessToken;
+      }
+      rethrow;
+    } finally {
+      if (identical(_gatewayRefreshInFlight, pending)) {
+        _gatewayRefreshInFlight = null;
+      }
+    }
+  }
+
+  Future<GatewayAuthSession?> _readGatewayAuthSession() async {
+    final secure = ref.read(secureStorageProvider);
+    final access = await secure.read(key: _kGatewayOidcAccessTokenSecure) ?? '';
+    final refresh =
+        await secure.read(key: _kGatewayOidcRefreshTokenSecure) ?? '';
+    final expiresRaw =
+        await secure.read(key: _kGatewayOidcExpiresAtSecure) ?? '';
+    final subject = await secure.read(key: _kGatewayOidcSubjectSecure) ?? '';
+    final displayName =
+        await secure.read(key: _kGatewayOidcDisplayNameSecure) ?? subject;
+    final expiresAt = DateTime.tryParse(expiresRaw)?.toUtc();
+    if (access.isEmpty || expiresAt == null) return null;
+    return GatewayAuthSession(
+      accessToken: access,
+      refreshToken: refresh,
+      expiresAt: expiresAt,
+      subject: subject,
+      displayName: displayName,
+    );
+  }
+
+  Future<void> _persistGatewayAuthSession(GatewayAuthSession session) async {
+    final secure = ref.read(secureStorageProvider);
+    await Future.wait([
+      secure.write(
+        key: _kGatewayOidcAccessTokenSecure,
+        value: session.accessToken,
+      ),
+      secure.write(
+        key: _kGatewayOidcRefreshTokenSecure,
+        value: session.refreshToken,
+      ),
+      secure.write(
+        key: _kGatewayOidcExpiresAtSecure,
+        value: session.expiresAt.toUtc().toIso8601String(),
+      ),
+      secure.write(key: _kGatewayOidcSubjectSecure, value: session.subject),
+      secure.write(
+        key: _kGatewayOidcDisplayNameSecure,
+        value: session.displayName,
+      ),
+    ]);
+  }
+
+  Future<void> _clearGatewayAuthSession() async {
+    final secure = ref.read(secureStorageProvider);
+    await Future.wait([
+      secure.delete(key: _kGatewayOidcAccessTokenSecure),
+      secure.delete(key: _kGatewayOidcRefreshTokenSecure),
+      secure.delete(key: _kGatewayOidcExpiresAtSecure),
+      secure.delete(key: _kGatewayOidcSubjectSecure),
+      secure.delete(key: _kGatewayOidcDisplayNameSecure),
+    ]);
   }
 
   Future<void> setGatewayCapabilities({

@@ -7,6 +7,7 @@ import '../../core/workspace_layout.dart';
 import '../../domain/notify/generation_notify.dart';
 import '../../domain/update/shorebird_ui.dart';
 import '../../domain/update/update_ui.dart';
+import '../../state/chat_controller.dart';
 import '../../state/research_mode_fx.dart';
 import '../../state/settings_controller.dart';
 import '../chat/chat_page.dart';
@@ -19,7 +20,8 @@ import 'shell_tab.dart';
 
 /// Root chrome: 会话 / [终端] / [学习] / [创作] / 设置.
 ///
-/// Phone: bottom [NavigationBar]. Wide: [NavigationRail].
+/// Phone: bottom [NavigationBar]. Wide: a unified collapsible workspace and
+/// conversation sidebar.
 /// [IndexedStack] preserves scroll position and draft input across switches.
 /// Terminal / 学习 / 创作 tabs are only present when their mode flags are enabled.
 class AppShell extends ConsumerStatefulWidget {
@@ -32,6 +34,7 @@ class AppShell extends ConsumerStatefulWidget {
 class _AppShellState extends ConsumerState<AppShell>
     with WidgetsBindingObserver {
   final _shellKey = GlobalKey();
+  bool _desktopSidebarExpanded = true;
 
   @override
   void initState() {
@@ -86,16 +89,15 @@ class _AppShellState extends ConsumerState<AppShell>
     required bool researchOn,
     required bool studyOn,
     required bool creationOn,
+    required bool desktopShell,
   }) => switch (tab) {
-    ShellTab.chat => const ChatPage(),
+    ShellTab.chat => ChatPage(desktopShell: desktopShell),
     // Only mount heavy tabs when their mode is on; other stack slots stay put.
-    ShellTab.terminal => researchOn
-        ? const ResearchTerminalPage()
-        : const SizedBox.shrink(),
+    ShellTab.terminal =>
+      researchOn ? const ResearchTerminalPage() : const SizedBox.shrink(),
     ShellTab.study => studyOn ? const StudyHubPage() : const SizedBox.shrink(),
-    ShellTab.studio => creationOn
-        ? const StudioPage()
-        : const SizedBox.shrink(),
+    ShellTab.studio =>
+      creationOn ? const StudioPage() : const SizedBox.shrink(),
     ShellTab.settings => const SettingsPage(asRootTab: true),
   };
 
@@ -135,57 +137,63 @@ class _AppShellState extends ConsumerState<AppShell>
       }
     }
 
-    final navIndex = visible.contains(selected)
-        ? visible.indexOf(selected)
-        : 0;
-    final stackIndex = _stackOrder.indexOf(selected).clamp(
-      0,
-      _stackOrder.length - 1,
-    );
-
-    final stack = IndexedStack(
-      index: stackIndex,
-      children: [
-        for (final tab in _stackOrder)
-          KeyedSubtree(
-            key: ValueKey(tab),
-            child: _pageFor(
-              tab,
-              researchOn: researchOn,
-              studyOn: studyOn,
-              creationOn: creationOn,
-            ),
-          ),
-      ],
-    );
+    final navIndex = visible.contains(selected) ? visible.indexOf(selected) : 0;
+    final stackIndex = _stackOrder
+        .indexOf(selected)
+        .clamp(0, _stackOrder.length - 1);
 
     return LayoutBuilder(
       builder: (context, constraints) {
         final useRail = constraints.maxWidth >= WorkspaceBreakpoints.shellRail;
+        final stack = IndexedStack(
+          index: stackIndex,
+          children: [
+            for (final tab in _stackOrder)
+              KeyedSubtree(
+                key: ValueKey(tab),
+                child: _pageFor(
+                  tab,
+                  researchOn: researchOn,
+                  studyOn: studyOn,
+                  creationOn: creationOn,
+                  desktopShell: useRail,
+                ),
+              ),
+          ],
+        );
 
         final scaffold = useRail
             ? Scaffold(
                 body: Row(
                   children: [
-                    NavigationRail(
-                      selectedIndex: navIndex,
-                      onDestinationSelected: (i) =>
-                          ref.read(shellTabProvider.notifier).set(visible[i]),
-                      labelType: NavigationRailLabelType.all,
-                      backgroundColor: scheme.surfaceContainer.withValues(
-                        alpha: 0.96,
-                      ),
-                      indicatorColor: scheme.primaryContainer.withValues(
-                        alpha: 0.85,
-                      ),
-                      destinations: [
-                        for (final tab in visible)
-                          NavigationRailDestination(
-                            icon: Icon(tab.icon),
-                            selectedIcon: Icon(tab.selectedIcon),
-                            label: Text(tab.label),
-                          ),
-                      ],
+                    AnimatedContainer(
+                      duration: const Duration(milliseconds: 180),
+                      curve: Curves.easeOutCubic,
+                      width: _desktopSidebarExpanded ? 288 : 64,
+                      child: _desktopSidebarExpanded
+                          ? ChatWorkspaceSidebar(
+                              asyncState: ref.watch(chatControllerProvider),
+                              onCollapse: () => setState(
+                                () => _desktopSidebarExpanded = false,
+                              ),
+                            )
+                          : _CompactWorkspaceRail(
+                              visible: visible,
+                              selected: selected,
+                              onExpand: () => setState(
+                                () => _desktopSidebarExpanded = true,
+                              ),
+                              onSelect: (tab) =>
+                                  ref.read(shellTabProvider.notifier).set(tab),
+                              onNewChat: () {
+                                ref
+                                    .read(chatControllerProvider.notifier)
+                                    .newConversation();
+                                ref
+                                    .read(shellTabProvider.notifier)
+                                    .set(ShellTab.chat);
+                              },
+                            ),
                     ),
                     VerticalDivider(
                       width: 1,
@@ -240,6 +248,81 @@ class _AppShellState extends ConsumerState<AppShell>
           ),
         );
       },
+    );
+  }
+}
+
+class _CompactWorkspaceRail extends StatelessWidget {
+  const _CompactWorkspaceRail({
+    required this.visible,
+    required this.selected,
+    required this.onExpand,
+    required this.onSelect,
+    required this.onNewChat,
+  });
+
+  final List<ShellTab> visible;
+  final ShellTab selected;
+  final VoidCallback onExpand;
+  final ValueChanged<ShellTab> onSelect;
+  final VoidCallback onNewChat;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Material(
+      color: scheme.surfaceContainerLow.withValues(alpha: 0.96),
+      child: SafeArea(
+        child: Column(
+          children: [
+            const SizedBox(height: 8),
+            IconButton(
+              tooltip: '展开侧边栏',
+              onPressed: onExpand,
+              icon: const Icon(Icons.menu_rounded),
+            ),
+            const SizedBox(height: 4),
+            IconButton.filled(
+              tooltip: '新对话',
+              onPressed: onNewChat,
+              icon: const Icon(Icons.add_rounded),
+              style: IconButton.styleFrom(
+                backgroundColor: scheme.primary,
+                foregroundColor: scheme.onPrimary,
+              ),
+            ),
+            const SizedBox(height: 12),
+            for (final tab in visible.where((tab) => tab != ShellTab.settings))
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2),
+                child: IconButton(
+                  tooltip: tab.label,
+                  isSelected: selected == tab,
+                  onPressed: () => onSelect(tab),
+                  icon: Icon(tab.icon),
+                  selectedIcon: Icon(tab.selectedIcon),
+                  style: IconButton.styleFrom(
+                    backgroundColor: selected == tab
+                        ? scheme.primaryContainer.withValues(alpha: 0.72)
+                        : Colors.transparent,
+                    foregroundColor: selected == tab
+                        ? scheme.primary
+                        : scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            const Spacer(),
+            IconButton(
+              tooltip: ShellTab.settings.label,
+              isSelected: selected == ShellTab.settings,
+              onPressed: () => onSelect(ShellTab.settings),
+              icon: Icon(ShellTab.settings.icon),
+              selectedIcon: Icon(ShellTab.settings.selectedIcon),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
     );
   }
 }

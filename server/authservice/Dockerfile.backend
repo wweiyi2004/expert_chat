@@ -1,0 +1,23 @@
+# syntax=docker/dockerfile:1
+
+ARG DOTNET_REGISTRY=mcr.microsoft.com
+
+FROM ${DOTNET_REGISTRY}/dotnet/sdk:10.0 AS build
+WORKDIR /src
+
+COPY AuthService/AuthService.csproj AuthService/
+RUN dotnet restore AuthService/AuthService.csproj
+
+COPY AuthService/ AuthService/
+RUN dotnet publish AuthService/AuthService.csproj \
+    -c Release -o /app/publish --no-restore /p:UseAppHost=false
+
+FROM ${DOTNET_REGISTRY}/dotnet/aspnet:10.0 AS runtime
+WORKDIR /app
+
+ENV ASPNETCORE_URLS=http://+:8080
+EXPOSE 8080
+
+COPY --from=build /app/publish .
+
+ENTRYPOINT ["dotnet", "AuthService.dll"]

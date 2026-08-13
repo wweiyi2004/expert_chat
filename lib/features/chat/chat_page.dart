@@ -47,7 +47,11 @@ import 'widgets/message_bubble.dart';
 import 'widgets/recent_photo_sheet.dart';
 
 class ChatPage extends ConsumerStatefulWidget {
-  const ChatPage({super.key});
+  const ChatPage({super.key, this.desktopShell = false});
+
+  /// The desktop app shell owns the unified workspace/history sidebar.
+  /// Standalone and phone layouts keep the local drawer/two-pane fallback.
+  final bool desktopShell;
 
   @override
   ConsumerState<ChatPage> createState() => _ChatPageState();
@@ -1569,13 +1573,15 @@ class _ChatPageState extends ConsumerState<ChatPage>
         autofocus: true,
         child: LayoutBuilder(
           builder: (context, constraints) {
+            final ownsWorkspaceSidebar = !widget.desktopShell;
             final dualPane =
                 constraints.maxWidth >= WorkspaceBreakpoints.dualPane;
             final triplePane =
                 constraints.maxWidth >= WorkspaceBreakpoints.triplePane;
             final storyLike =
                 current != null && (current.isStory || current.isEnsemble);
-            final showHistory = dualPane && _historyOpen;
+            final showHistory =
+                ownsWorkspaceSidebar && dualPane && _historyOpen;
             final showTools = triplePane && storyLike && _toolsOpen;
             final scheme = Theme.of(context).colorScheme;
             final speakerName = _characterNameFor(current);
@@ -1710,7 +1716,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
                         ),
                       ),
                     ),
-                  if (dualPane)
+                  if (ownsWorkspaceSidebar && dualPane)
                     IconButton(
                       tooltip: _historyOpen ? '隐藏会话列表' : '显示会话列表',
                       icon: Icon(
@@ -1731,71 +1737,72 @@ class _ChatPageState extends ConsumerState<ChatPage>
                       ),
                       onPressed: () => setState(() => _toolsOpen = !_toolsOpen),
                     ),
-                  PopupMenuButton<String>(
-                    tooltip: '新建',
-                    icon: const Icon(Icons.add_comment_outlined),
-                    onSelected: (v) {
-                      if (v == 'chat') {
-                        controller.newConversation();
-                      } else if (v == 'story') {
-                        Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => const DirectorStorySetupPage(),
-                          ),
-                        );
-                      } else if (v == 'ensemble') {
-                        Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => const EnsembleSetupPage(),
-                          ),
-                        );
-                      }
-                    },
-                    itemBuilder: (_) => [
-                      PopupMenuItem(
-                        value: 'chat',
-                        child: ListTile(
-                          dense: true,
-                          contentPadding: EdgeInsets.zero,
-                          leading: Icon(
-                            ModeStyle.icon(ConversationMode.chat),
-                            color: ModeStyle.chat,
-                          ),
-                          title: Text(
-                            ModeStyle.longLabel(ConversationMode.chat),
+                  if (!widget.desktopShell)
+                    PopupMenuButton<String>(
+                      tooltip: '新建',
+                      icon: const Icon(Icons.add_comment_outlined),
+                      onSelected: (v) {
+                        if (v == 'chat') {
+                          controller.newConversation();
+                        } else if (v == 'story') {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => const DirectorStorySetupPage(),
+                            ),
+                          );
+                        } else if (v == 'ensemble') {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => const EnsembleSetupPage(),
+                            ),
+                          );
+                        }
+                      },
+                      itemBuilder: (_) => [
+                        PopupMenuItem(
+                          value: 'chat',
+                          child: ListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            leading: Icon(
+                              ModeStyle.icon(ConversationMode.chat),
+                              color: ModeStyle.chat,
+                            ),
+                            title: Text(
+                              ModeStyle.longLabel(ConversationMode.chat),
+                            ),
                           ),
                         ),
-                      ),
-                      PopupMenuItem(
-                        value: 'story',
-                        child: ListTile(
-                          dense: true,
-                          contentPadding: EdgeInsets.zero,
-                          leading: Icon(
-                            ModeStyle.icon(ConversationMode.story),
-                            color: ModeStyle.story,
+                        PopupMenuItem(
+                          value: 'story',
+                          child: ListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            leading: Icon(
+                              ModeStyle.icon(ConversationMode.story),
+                              color: ModeStyle.story,
+                            ),
+                            title: Text('导演故事'),
+                            subtitle: const Text('输入情节，AI 自动选角并编排'),
                           ),
-                          title: Text('导演故事'),
-                          subtitle: const Text('输入情节，AI 自动选角并编排'),
                         ),
-                      ),
-                      PopupMenuItem(
-                        value: 'ensemble',
-                        child: ListTile(
-                          dense: true,
-                          contentPadding: EdgeInsets.zero,
-                          leading: Icon(
-                            ModeStyle.icon(ConversationMode.ensemble),
-                            color: ModeStyle.ensemble,
+                        PopupMenuItem(
+                          value: 'ensemble',
+                          child: ListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            leading: Icon(
+                              ModeStyle.icon(ConversationMode.ensemble),
+                              color: ModeStyle.ensemble,
+                            ),
+                            title: Text(
+                              ModeStyle.longLabel(ConversationMode.ensemble),
+                            ),
+                            subtitle: const Text('多角色同台对谈'),
                           ),
-                          title: Text(
-                            ModeStyle.longLabel(ConversationMode.ensemble),
-                          ),
-                          subtitle: const Text('多角色同台对谈'),
                         ),
-                      ),
-                    ],
-                  ),
+                      ],
+                    ),
                   PopupMenuButton<String>(
                     tooltip: '更多',
                     icon: const Icon(Icons.more_horiz),
@@ -1849,13 +1856,15 @@ class _ChatPageState extends ConsumerState<ChatPage>
                   ),
                 ],
               ),
-              drawer: dualPane ? null : _HistoryDrawer(asyncState: asyncState),
+              drawer: ownsWorkspaceSidebar && !dualPane
+                  ? _HistoryDrawer(asyncState: asyncState)
+                  : null,
               body: Row(
                 children: [
                   if (showHistory) ...[
                     SizedBox(
                       width: _historyWidth,
-                      child: _HistoryPanel(asyncState: asyncState),
+                      child: ChatWorkspaceSidebar(asyncState: asyncState),
                     ),
                     _PaneResizeHandle(
                       onDrag: (dx) {
@@ -2350,9 +2359,15 @@ class _ComposerState extends State<_Composer> {
     return Container(
       key: const ValueKey('chat-composer'),
       decoration: BoxDecoration(
-        color: scheme.surface.withValues(alpha: 0.94),
-        border: Border(
-          top: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.9)),
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            scheme.surface.withValues(alpha: 0),
+            scheme.surface.withValues(alpha: 0.94),
+            scheme.surface,
+          ],
+          stops: const [0, 0.32, 1],
         ),
       ),
       child: SafeArea(
@@ -2361,7 +2376,7 @@ class _ComposerState extends State<_Composer> {
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 900),
             child: Padding(
-              padding: EdgeInsets.fromLTRB(12, 6, 12, compactHeight ? 7 : 9),
+              padding: EdgeInsets.fromLTRB(12, 8, 12, compactHeight ? 8 : 13),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -2487,15 +2502,15 @@ class _ComposerState extends State<_Composer> {
                     padding: const EdgeInsets.fromLTRB(6, 4, 6, 4),
                     decoration: BoxDecoration(
                       color: scheme.surfaceContainer,
-                      borderRadius: BorderRadius.circular(18),
+                      borderRadius: BorderRadius.circular(22),
                       border: Border.all(
-                        color: scheme.outlineVariant.withValues(alpha: 0.95),
+                        color: scheme.outlineVariant.withValues(alpha: 0.72),
                       ),
                       boxShadow: [
                         BoxShadow(
-                          color: scheme.shadow.withValues(alpha: 0.06),
-                          blurRadius: 18,
-                          offset: const Offset(0, 8),
+                          color: scheme.shadow.withValues(alpha: 0.08),
+                          blurRadius: 24,
+                          offset: const Offset(0, 10),
                         ),
                       ],
                     ),
@@ -3186,18 +3201,29 @@ class _HistoryDrawer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) =>
-      Drawer(child: _HistoryPanel(asyncState: asyncState));
+      Drawer(child: ChatWorkspaceSidebar(asyncState: asyncState));
 }
 
-class _HistoryPanel extends ConsumerStatefulWidget {
-  const _HistoryPanel({required this.asyncState});
+/// Unified desktop workspace navigation and conversation history.
+///
+/// This is public so [AppShell] can own a single left sidebar instead of
+/// stacking a navigation rail beside a second history pane.
+class ChatWorkspaceSidebar extends ConsumerStatefulWidget {
+  const ChatWorkspaceSidebar({
+    super.key,
+    required this.asyncState,
+    this.onCollapse,
+  });
+
   final AsyncValue<ChatState> asyncState;
+  final VoidCallback? onCollapse;
 
   @override
-  ConsumerState<_HistoryPanel> createState() => _HistoryPanelState();
+  ConsumerState<ChatWorkspaceSidebar> createState() =>
+      _ChatWorkspaceSidebarState();
 }
 
-class _HistoryPanelState extends ConsumerState<_HistoryPanel> {
+class _ChatWorkspaceSidebarState extends ConsumerState<ChatWorkspaceSidebar> {
   String _query = '';
 
   /// null = all modes.
@@ -3325,45 +3351,132 @@ class _HistoryPanelState extends ConsumerState<_HistoryPanel> {
     final controller = ref.read(chatControllerProvider.notifier);
     final scheme = Theme.of(context).colorScheme;
     final state = widget.asyncState.value;
+    final settings = ref.watch(settingsControllerProvider).value;
+    final selectedTab = ref.watch(shellTabProvider);
+    final workspaceTabs = ShellTab.visible(
+      researchModeEnabled: settings?.researchModeEnabled ?? false,
+      studyModeEnabled: settings?.studyModeEnabled ?? true,
+      creationModeEnabled: settings?.creationModeEnabled ?? true,
+    ).where((tab) => tab != ShellTab.settings).toList();
+    final showWorkspaceLinks = MediaQuery.sizeOf(context).height >= 600;
+    final showSettingsFooter = MediaQuery.sizeOf(context).height >= 480;
     final all = state?.conversations ?? const <Conversation>[];
     final visible = [
       for (final c in all)
         if (_matches(c, _query)) c,
     ];
 
-    // Header is a solid, non-scrolling block so list items never paint under
-    // the controls. The equal-width segmented filter stays on one clean row.
+    void openWorkspace(ShellTab tab) {
+      openShellTab(ref, tab);
+      _closeDrawerIfAny();
+    }
+
+    void newConversation() {
+      controller.newConversation();
+      openWorkspace(ShellTab.chat);
+    }
+
+    // Header remains fixed while the recent conversation list scrolls.
     final header = Material(
       color: scheme.surfaceContainerLow.withValues(alpha: 0.98),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 8, 6),
+            padding: const EdgeInsets.fromLTRB(14, 14, 8, 10),
             child: Row(
               children: [
-                Expanded(
-                  child: Text(
-                    '会话',
-                    style: Theme.of(context).textTheme.titleLarge,
+                Container(
+                  width: 34,
+                  height: 34,
+                  decoration: BoxDecoration(
+                    color: scheme.primary,
+                    borderRadius: BorderRadius.circular(11),
+                  ),
+                  child: Icon(
+                    Icons.auto_awesome_rounded,
+                    size: 19,
+                    color: scheme.onPrimary,
                   ),
                 ),
-                IconButton(
-                  tooltip: '新建普通对话',
-                  onPressed: () {
-                    controller.newConversation();
-                    _closeDrawerIfAny();
-                  },
-                  icon: Icon(Icons.add, color: scheme.primary),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Expert Chat',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: -0.2,
+                    ),
+                  ),
                 ),
+                if (widget.onCollapse != null)
+                  IconButton(
+                    tooltip: '收起侧边栏',
+                    onPressed: widget.onCollapse,
+                    icon: const Icon(Icons.menu_open_rounded),
+                  ),
               ],
             ),
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-            child: _ModeFilterBar(
-              selected: _modeFilter,
-              onSelected: (mode) => setState(() => _modeFilter = mode),
+            child: Row(
+              children: [
+                Expanded(
+                  child: FilledButton.icon(
+                    key: const ValueKey('sidebar-new-chat'),
+                    onPressed: newConversation,
+                    icon: const Icon(Icons.add_rounded, size: 20),
+                    label: const Text('新对话'),
+                    style: FilledButton.styleFrom(
+                      minimumSize: const Size.fromHeight(42),
+                      alignment: Alignment.centerLeft,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                PopupMenuButton<String>(
+                  tooltip: '更多新建方式',
+                  icon: const Icon(Icons.expand_more_rounded),
+                  onSelected: (value) {
+                    if (value == 'story') {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => const DirectorStorySetupPage(),
+                        ),
+                      );
+                    } else if (value == 'ensemble') {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => const EnsembleSetupPage(),
+                        ),
+                      );
+                    }
+                  },
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(
+                      value: 'story',
+                      child: ListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        leading: Icon(Icons.auto_stories_outlined),
+                        title: Text('导演故事'),
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: 'ensemble',
+                      child: ListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        leading: Icon(Icons.groups_outlined),
+                        title: Text('角色大乱斗'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
             ),
           ),
           Padding(
@@ -3372,12 +3485,36 @@ class _HistoryPanelState extends ConsumerState<_HistoryPanel> {
               key: const ValueKey('conversation-search-field'),
               decoration: InputDecoration(
                 isDense: true,
-                prefixIcon: const Icon(Icons.search, size: 20),
-                hintText: '搜索标题或正文，点结果可定位…',
+                prefixIcon: const Icon(Icons.search, size: 19),
+                hintText: '搜索会话',
                 filled: true,
                 fillColor: scheme.surfaceContainer,
               ),
               onChanged: _scheduleSearch,
+            ),
+          ),
+          if (showWorkspaceLinks) ...[
+            const _SidebarSectionLabel('工作区'),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 2, 8, 10),
+              child: Column(
+                children: [
+                  for (final tab in workspaceTabs)
+                    _WorkspaceDestination(
+                      tab: tab,
+                      selected: selectedTab == tab,
+                      onTap: () => openWorkspace(tab),
+                    ),
+                ],
+              ),
+            ),
+          ],
+          const _SidebarSectionLabel('最近会话'),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 4, 12, 10),
+            child: _ModeFilterBar(
+              selected: _modeFilter,
+              onSelected: (mode) => setState(() => _modeFilter = mode),
             ),
           ),
           Divider(
@@ -3444,20 +3581,20 @@ class _HistoryPanelState extends ConsumerState<_HistoryPanel> {
                         final preview = hit.snippet.isNotEmpty
                             ? hit.snippet
                             : _conversationPreview(c);
-                        final timeLabel = _relativeTime(c.updatedAt);
                         return Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 2),
+                          padding: const EdgeInsets.symmetric(vertical: 1),
                           child: Material(
                             color: selected
                                 ? scheme.primaryContainer.withValues(
-                                    alpha: 0.45,
+                                    alpha: 0.52,
                                   )
-                                : scheme.surfaceContainer,
-                            borderRadius: BorderRadius.circular(14),
+                                : Colors.transparent,
+                            borderRadius: BorderRadius.circular(11),
                             child: InkWell(
-                              borderRadius: BorderRadius.circular(14),
+                              borderRadius: BorderRadius.circular(11),
                               onTap: () {
                                 controller.selectConversation(c.id);
+                                openShellTab(ref, ShellTab.chat);
                                 if (hit.messageId != null) {
                                   ref
                                       .read(
@@ -3468,27 +3605,22 @@ class _HistoryPanelState extends ConsumerState<_HistoryPanel> {
                                 _closeDrawerIfAny();
                               },
                               child: Padding(
-                                padding: const EdgeInsets.fromLTRB(
-                                  10,
-                                  10,
-                                  4,
-                                  10,
-                                ),
+                                padding: const EdgeInsets.fromLTRB(10, 7, 2, 7),
                                 child: Row(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  crossAxisAlignment: CrossAxisAlignment.center,
                                   children: [
                                     Container(
-                                      width: 36,
-                                      height: 36,
+                                      width: 30,
+                                      height: 30,
                                       decoration: BoxDecoration(
                                         color: modeColor.withValues(
-                                          alpha: 0.12,
+                                          alpha: 0.10,
                                         ),
-                                        borderRadius: BorderRadius.circular(11),
+                                        borderRadius: BorderRadius.circular(9),
                                       ),
                                       child: Icon(
                                         ModeStyle.icon(c.mode),
-                                        size: 18,
+                                        size: 16,
                                         color: modeColor,
                                       ),
                                     ),
@@ -3504,9 +3636,11 @@ class _HistoryPanelState extends ConsumerState<_HistoryPanel> {
                                             overflow: TextOverflow.ellipsis,
                                             style: Theme.of(context)
                                                 .textTheme
-                                                .titleSmall
+                                                .bodyMedium
                                                 ?.copyWith(
-                                                  fontWeight: FontWeight.w700,
+                                                  fontWeight: selected
+                                                      ? FontWeight.w700
+                                                      : FontWeight.w600,
                                                 ),
                                           ),
                                           if (preview.isNotEmpty) ...[
@@ -3515,9 +3649,7 @@ class _HistoryPanelState extends ConsumerState<_HistoryPanel> {
                                               hit.snippet.isNotEmpty
                                                   ? '匹配：$preview'
                                                   : preview,
-                                              maxLines: hit.snippet.isNotEmpty
-                                                  ? 2
-                                                  : 1,
+                                              maxLines: 1,
                                               overflow: TextOverflow.ellipsis,
                                               style: Theme.of(context)
                                                   .textTheme
@@ -3535,65 +3667,33 @@ class _HistoryPanelState extends ConsumerState<_HistoryPanel> {
                                                   ),
                                             ),
                                           ],
-                                          const SizedBox(height: 4),
-                                          Text(
-                                            [
-                                              c.localCast.isNotEmpty
-                                                  ? '导演故事'
-                                                  : ModeStyle.label(c.mode),
-                                              if (hit.messageId != null) '可定位',
-                                            ].join(' · '),
-                                            style: TextStyle(
-                                              fontSize: 11,
-                                              color: modeColor,
-                                              fontWeight: FontWeight.w600,
-                                            ),
-                                          ),
                                         ],
                                       ),
                                     ),
-                                    Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.end,
-                                      children: [
-                                        Text(
-                                          timeLabel,
-                                          style: Theme.of(context)
-                                              .textTheme
-                                              .labelSmall
-                                              ?.copyWith(
-                                                color: scheme.onSurfaceVariant,
-                                              ),
+                                    PopupMenuButton<String>(
+                                      tooltip: '会话操作',
+                                      icon: const Icon(
+                                        Icons.more_horiz,
+                                        size: 19,
+                                      ),
+                                      padding: EdgeInsets.zero,
+                                      onSelected: (v) {
+                                        if (v == 'rename') _startRename(c);
+                                        if (v == 'delete') _confirmDelete(c);
+                                      },
+                                      itemBuilder: (_) => [
+                                        const PopupMenuItem(
+                                          value: 'rename',
+                                          child: Text('重命名'),
                                         ),
-                                        PopupMenuButton<String>(
-                                          icon: const Icon(
-                                            Icons.more_horiz,
-                                            size: 20,
+                                        PopupMenuItem(
+                                          value: 'delete',
+                                          child: Text(
+                                            '删除',
+                                            style: TextStyle(
+                                              color: scheme.error,
+                                            ),
                                           ),
-                                          padding: EdgeInsets.zero,
-                                          onSelected: (v) {
-                                            if (v == 'rename') {
-                                              _startRename(c);
-                                            }
-                                            if (v == 'delete') {
-                                              _confirmDelete(c);
-                                            }
-                                          },
-                                          itemBuilder: (_) => [
-                                            const PopupMenuItem(
-                                              value: 'rename',
-                                              child: Text('重命名'),
-                                            ),
-                                            PopupMenuItem(
-                                              value: 'delete',
-                                              child: Text(
-                                                '删除',
-                                                style: TextStyle(
-                                                  color: scheme.error,
-                                                ),
-                                              ),
-                                            ),
-                                          ],
                                         ),
                                       ],
                                     ),
@@ -3606,8 +3706,89 @@ class _HistoryPanelState extends ConsumerState<_HistoryPanel> {
                       },
                     ),
             ),
+            if (showSettingsFooter) ...[
+              Divider(
+                height: 1,
+                color: scheme.outlineVariant.withValues(alpha: 0.72),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
+                child: _WorkspaceDestination(
+                  tab: ShellTab.settings,
+                  selected: selectedTab == ShellTab.settings,
+                  onTap: () => openWorkspace(ShellTab.settings),
+                ),
+              ),
+            ],
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _SidebarSectionLabel extends StatelessWidget {
+  const _SidebarSectionLabel(this.label);
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.fromLTRB(16, 2, 16, 2),
+    child: Text(
+      label,
+      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+        color: Theme.of(context).colorScheme.onSurfaceVariant,
+        fontWeight: FontWeight.w700,
+        letterSpacing: 0.4,
+      ),
+    ),
+  );
+}
+
+class _WorkspaceDestination extends StatelessWidget {
+  const _WorkspaceDestination({
+    required this.tab,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final ShellTab tab;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 1),
+      child: ListTile(
+        dense: true,
+        minTileHeight: 40,
+        selected: selected,
+        leading: Icon(
+          selected ? tab.selectedIcon : tab.icon,
+          size: 20,
+          color: selected ? scheme.primary : scheme.onSurfaceVariant,
+        ),
+        title: Text(
+          tab.label,
+          style: TextStyle(
+            fontSize: 13.5,
+            fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+          ),
+        ),
+        trailing: selected
+            ? Container(
+                width: 5,
+                height: 5,
+                decoration: BoxDecoration(
+                  color: scheme.primary,
+                  shape: BoxShape.circle,
+                ),
+              )
+            : null,
+        onTap: onTap,
       ),
     );
   }
@@ -3622,20 +3803,6 @@ String _conversationPreview(Conversation c) {
     }
   }
   return '';
-}
-
-String _relativeTime(DateTime when) {
-  final now = DateTime.now();
-  final diff = now.difference(when);
-  if (diff.inMinutes < 1) return '刚刚';
-  if (diff.inMinutes < 60) return '${diff.inMinutes} 分钟';
-  if (diff.inHours < 24) return '${diff.inHours} 小时';
-  if (diff.inDays == 1) return '昨天';
-  if (diff.inDays < 7) return '${diff.inDays} 天前';
-  final y = when.year.toString().padLeft(4, '0');
-  final m = when.month.toString().padLeft(2, '0');
-  final d = when.day.toString().padLeft(2, '0');
-  return '$y-$m-$d';
 }
 
 class _ModeFilterBar extends StatelessWidget {

@@ -1,7 +1,8 @@
 FROM python:3.12-slim
 WORKDIR /app
 COPY gateway/requirements.txt ./requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+ARG PIP_INDEX_URL=https://pypi.org/simple
+RUN pip install --no-cache-dir --index-url "$PIP_INDEX_URL" -r requirements.txt
 COPY gateway ./gateway
 COPY doc_edit ./doc_edit
 ENV GATEWAY_DATA_DIR=/data

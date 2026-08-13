@@ -65,4 +65,45 @@ void main() {
     await tester.pump();
     expect(remembered, isTrue);
   });
+
+  testWidgets('assistant reasoning remains available as a collapsible panel', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: MessageBubble(
+            message: ChatMessage(
+              role: MessageRole.assistant,
+              content: '最终回答',
+              reasoning: '这里是可展开的思考过程',
+              thinkingMillis: 4200,
+            ),
+            isStreaming: false,
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('已深度思考 4 秒'), findsOneWidget);
+    expect(
+      tester
+          .widget<AnimatedCrossFade>(find.byType(AnimatedCrossFade))
+          .crossFadeState,
+      CrossFadeState.showFirst,
+    );
+
+    await tester.tap(find.text('已深度思考 4 秒'));
+    await tester.pumpAndSettle();
+
+    expect(
+      tester
+          .widget<AnimatedCrossFade>(find.byType(AnimatedCrossFade))
+          .crossFadeState,
+      CrossFadeState.showSecond,
+    );
+    expect(find.text('这里是可展开的思考过程'), findsOneWidget);
+    expect(find.text('最终回答'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }

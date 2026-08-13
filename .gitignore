@@ -71,3 +71,17 @@ scripts/use_e_drive.ps1
 /output/
 /tool/arxiv_context_landmarks.py
 /tool/arxiv_context_search.py
+
+# Local Python env for running gateway tests
+server/.venv/
+
+# Self-hosted AuthService/Gateway runtime secrets and state
+server/authservice/.env
+server/authservice/.initial_admin_password
+server/authservice/.gateway_admin_sub
+server/authservice/secrets/
+server/authservice/upstream/
+server/authservice/.*-request.json
+server/authservice/.*-response.json
+server/authservice/UPSTREAM_COMMIT
+server/**/data/

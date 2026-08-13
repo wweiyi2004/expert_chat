@@ -66,7 +66,7 @@ class StudyHubPage extends ConsumerWidget {
         children: [
           Center(
             child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 1040),
+              constraints: const BoxConstraints(maxWidth: 920),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
@@ -75,31 +75,51 @@ class StudyHubPage extends ConsumerWidget {
                     activeCourses: activeCourses,
                     openWrong: openWrong,
                   ),
+                  if (hasContinue) ...[
+                    const SizedBox(height: 26),
+                    const _SectionHeading(
+                      title: '继续学习',
+                      subtitle: '从上次停下的地方接着来',
+                    ),
+                    const SizedBox(height: 10),
+                    _ContinuePanel(
+                      due: due,
+                      courses: continueCourses,
+                      conversations: studyConversations,
+                      onReview: () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => const ReviewSessionPage(),
+                        ),
+                      ),
+                      onCourse: (course) => Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => CourseDetailPage(courseId: course.id),
+                        ),
+                      ),
+                      onConversation: (conversation) {
+                        ref
+                            .read(chatControllerProvider.notifier)
+                            .selectConversation(conversation.id);
+                        openShellTab(ref, ShellTab.chat);
+                      },
+                    ),
+                  ],
                   const SizedBox(height: 28),
                   const _SectionHeading(
                     title: '开始学习',
-                    subtitle: '按你此刻的目标，选择最合适的方式',
+                    subtitle: '选择一种方式，直接进入学习',
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 10),
                   LayoutBuilder(
                     builder: (context, constraints) {
-                      final columns = constraints.maxWidth >= 820
-                          ? 4
-                          : constraints.maxWidth >= 390
-                          ? 2
-                          : 1;
-                      final ratio = switch (columns) {
-                        4 => 1.08,
-                        2 => 1.34,
-                        _ => 2.65,
-                      };
+                      final columns = constraints.maxWidth >= 620 ? 2 : 1;
                       return GridView.count(
                         crossAxisCount: columns,
                         shrinkWrap: true,
                         physics: const NeverScrollableScrollPhysics(),
                         mainAxisSpacing: 10,
                         crossAxisSpacing: 10,
-                        childAspectRatio: ratio,
+                        childAspectRatio: columns == 2 ? 3.4 : 3.75,
                         children: [
                           _LearningPathCard(
                             icon: Icons.psychology_alt_outlined,
@@ -147,41 +167,12 @@ class StudyHubPage extends ConsumerWidget {
                       );
                     },
                   ),
-                  if (hasContinue) ...[
-                    const SizedBox(height: 30),
-                    const _SectionHeading(
-                      title: '继续学习',
-                      subtitle: '从上次停下的地方接着来',
-                    ),
-                    const SizedBox(height: 12),
-                    _ContinuePanel(
-                      due: due,
-                      courses: continueCourses,
-                      conversations: studyConversations,
-                      onReview: () => Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => const ReviewSessionPage(),
-                        ),
-                      ),
-                      onCourse: (course) => Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => CourseDetailPage(courseId: course.id),
-                        ),
-                      ),
-                      onConversation: (conversation) {
-                        ref
-                            .read(chatControllerProvider.notifier)
-                            .selectConversation(conversation.id);
-                        openShellTab(ref, ShellTab.chat);
-                      },
-                    ),
-                  ],
-                  const SizedBox(height: 30),
+                  const SizedBox(height: 28),
                   const _SectionHeading(
                     title: '学习资料库',
                     subtitle: '管理长期积累的课程、卡片和错题',
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 10),
                   LayoutBuilder(
                     builder: (context, constraints) {
                       final columns = constraints.maxWidth >= 620 ? 3 : 1;
@@ -257,90 +248,82 @@ class _LearningHero extends StatelessWidget {
         ? '有 $due 张卡片已到复习时间，几分钟就能完成。'
         : '从一个问题开始，让讲解、练习和复习连成一条路。';
     return Container(
-      clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [
-            Color.alphaBlend(
-              ModeStyle.study.withValues(alpha: 0.14),
-              scheme.surfaceContainerLow,
-            ),
-            Color.alphaBlend(
-              ModeStyle.study.withValues(alpha: 0.035),
-              scheme.surfaceContainerLow,
-            ),
-          ],
+        color: Color.alphaBlend(
+          ModeStyle.study.withValues(alpha: 0.075),
+          scheme.surfaceContainerLow,
         ),
-        borderRadius: BorderRadius.circular(26),
+        borderRadius: BorderRadius.circular(22),
         border: Border.all(color: ModeStyle.study.withValues(alpha: 0.16)),
       ),
-      child: Stack(
-        children: [
-          Positioned(
-            right: -40,
-            top: -52,
-            child: Container(
-              width: 180,
-              height: 180,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: ModeStyle.study.withValues(alpha: 0.055),
+      padding: const EdgeInsets.all(20),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final wide = constraints.maxWidth >= 660;
+          final intro = Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  color: ModeStyle.study,
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: const Icon(
+                  Icons.school_rounded,
+                  color: Colors.white,
+                  size: 23,
+                ),
               ),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  width: 44,
-                  height: 44,
-                  decoration: BoxDecoration(
-                    color: ModeStyle.study,
-                    borderRadius: BorderRadius.circular(15),
-                  ),
-                  child: const Icon(
-                    Icons.school_rounded,
-                    color: Colors.white,
-                    size: 24,
-                  ),
-                ),
-                const SizedBox(height: 18),
-                Text(
-                  headline,
-                  style: theme.textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: -0.5,
-                  ),
-                ),
-                const SizedBox(height: 7),
-                ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 610),
-                  child: Text(
-                    subtitle,
-                    style: theme.textTheme.bodyMedium?.copyWith(
-                      color: scheme.onSurfaceVariant,
-                      height: 1.5,
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 22),
-                Wrap(
-                  spacing: 20,
-                  runSpacing: 10,
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    _HeroMetric(value: '$due', label: '待复习'),
-                    _HeroMetric(value: '$activeCourses', label: '进行中课程'),
-                    _HeroMetric(value: '$openWrong', label: '待消化错题'),
+                    Text(
+                      headline,
+                      style: theme.textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: -0.3,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      subtitle,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                        height: 1.45,
+                      ),
+                    ),
                   ],
                 ),
-              ],
-            ),
-          ),
-        ],
+              ),
+            ],
+          );
+          final metrics = Wrap(
+            spacing: 18,
+            runSpacing: 8,
+            children: [
+              _HeroMetric(value: '$due', label: '待复习'),
+              _HeroMetric(value: '$activeCourses', label: '进行中课程'),
+              _HeroMetric(value: '$openWrong', label: '错题'),
+            ],
+          );
+          if (!wide) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [intro, const SizedBox(height: 16), metrics],
+            );
+          }
+          return Row(
+            children: [
+              Expanded(child: intro),
+              const SizedBox(width: 24),
+              metrics,
+            ],
+          );
+        },
       ),
     );
   }
@@ -453,62 +436,70 @@ class _LearningPathCard extends StatelessWidget {
       child: InkWell(
         onTap: onTap,
         child: Padding(
-          padding: const EdgeInsets.all(18),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          child: Row(
             children: [
-              Row(
-                children: [
-                  Container(
-                    width: 42,
-                    height: 42,
-                    decoration: BoxDecoration(
-                      color: ModeStyle.study.withValues(
-                        alpha: emphasized ? 0.16 : 0.09,
-                      ),
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: Icon(icon, color: ModeStyle.study, size: 23),
+              Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  color: ModeStyle.study.withValues(
+                    alpha: emphasized ? 0.16 : 0.09,
                   ),
-                  const Spacer(),
-                  if (badge != null)
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 3,
-                      ),
-                      decoration: BoxDecoration(
-                        color: ModeStyle.study,
-                        borderRadius: BorderRadius.circular(999),
-                      ),
-                      child: Text(
-                        badge!,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 11,
-                          fontWeight: FontWeight.w700,
-                        ),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Icon(icon, color: ModeStyle.study, size: 22),
+              ),
+              const SizedBox(width: 13),
+              Expanded(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w700,
                       ),
                     ),
-                ],
-              ),
-              const Spacer(),
-              Text(
-                title,
-                style: Theme.of(
-                  context,
-                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                subtitle,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: scheme.onSurfaceVariant,
-                  height: 1.35,
+                    const SizedBox(height: 3),
+                    Text(
+                      subtitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
                 ),
               ),
+              if (badge != null) ...[
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 3,
+                  ),
+                  decoration: BoxDecoration(
+                    color: ModeStyle.study,
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Text(
+                    badge!,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ] else
+                Icon(
+                  Icons.arrow_forward_rounded,
+                  size: 18,
+                  color: scheme.outline,
+                ),
             ],
           ),
         ),

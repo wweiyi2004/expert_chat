@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Expert Chat Gateway 管理</title>
+  <style>
+    :root { color-scheme: light dark; --accent:#7657d5; --bg:#f7f5fb; --card:#fff;
+      --text:#241f2d; --muted:#706a78; --line:#e4dfea; --bad:#b42318; }
+    @media(prefers-color-scheme:dark){:root{--bg:#151219;--card:#201c25;--text:#f3edf7;
+      --muted:#b9b0c0;--line:#3c3543;--bad:#ff8a80}}
+    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);
+      font:14px/1.5 system-ui,"Noto Sans SC",sans-serif} main{max-width:1180px;margin:auto;padding:28px 20px 56px}
+    header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:22px}
+    h1{font-size:22px;margin:0} h2{font-size:16px;margin:0 0 14px} .muted{color:var(--muted)}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px;
+      box-shadow:0 8px 28px rgba(40,25,65,.05)} .login{display:flex;gap:10px;flex-wrap:wrap}
+    input,button,select{font:inherit;border:1px solid var(--line);border-radius:10px;padding:9px 11px;
+      background:var(--card);color:var(--text)} input{min-width:250px;flex:1} button{cursor:pointer}
+    button.primary{background:var(--accent);border-color:var(--accent);color:white;font-weight:600}
+    button.danger{color:var(--bad)} button:disabled{opacity:.55;cursor:default}
+    .stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:16px 0}
+    .stat b{display:block;font-size:24px;margin-top:5px}.grid{display:grid;grid-template-columns:1.25fr .75fr;gap:16px}
+    table{width:100%;border-collapse:collapse} th,td{text-align:left;padding:10px 8px;border-bottom:1px solid var(--line);
+      vertical-align:top} th{color:var(--muted);font-weight:600}.scroll{overflow:auto;max-height:470px}
+    .pill{display:inline-block;border:1px solid var(--line);border-radius:99px;padding:2px 8px;margin:2px 3px 2px 0}
+    .ok{color:#138a4b}.error{color:var(--bad);white-space:pre-wrap}.editor{display:grid;gap:12px}
+    .editor label{display:grid;gap:5px}.checks{display:grid;gap:7px}.checks label{display:flex;gap:8px;align-items:center}
+    .checks input{min-width:0;flex:0}.hidden{display:none!important}.section{margin-top:16px}
+    @media(max-width:780px){.stats{grid-template-columns:repeat(2,1fr)}.grid{grid-template-columns:1fr}header{align-items:flex-start}}
+  </style>
+</head>
+<body><main>
+  <header><div><h1>Expert Chat Gateway</h1><div class="muted" id="subtitle">账户、任务、配额与审计</div></div>
+    <button id="logout" class="hidden">退出管理</button></header>
+  <section id="loginCard" class="card"><h2>管理员验证</h2><div class="login">
+    <button id="oidcLogin" class="primary">使用 AuthService 登录</button>
+  </div><p class="muted">推荐使用 OIDC + PKCE。Access Token 只保存在当前标签页，关闭标签页后自动清除。</p>
+  <div class="login">
+    <input id="token" type="password" autocomplete="off" placeholder="粘贴管理员 Bearer Token">
+    <button id="connect">使用现有 Token</button></div>
+    <p class="muted">手工 Token 仅作为运维回退，不会写入服务器日志或长期存储。</p>
+    <div id="loginError" class="error"></div></section>
+
+  <div id="dashboard" class="hidden">
+    <section class="stats">
+      <div class="card stat"><span class="muted">用户</span><b id="usersCount">—</b></div>
+      <div class="card stat"><span class="muted">运行中</span><b id="activeCount">—</b></div>
+      <div class="card stat"><span class="muted">失败任务</span><b id="failedCount">—</b></div>
+      <div class="card stat"><span class="muted">文件占用</span><b id="storageCount">—</b></div>
+    </section>
+    <div class="grid">
+      <section class="card"><h2>Gateway 用户</h2><div class="scroll"><table><thead><tr>
+        <th>账户</th><th>状态</th><th>配额</th><th></th></tr></thead><tbody id="usersBody"></tbody></table></div></section>
+      <section class="card"><h2>用户授权</h2><div id="emptyEditor" class="muted">从左侧选择一个账户。</div>
+        <form id="userEditor" class="editor hidden">
+          <label>显示名称<input id="editName"></label><div><b id="editSub"></b></div>
+          <label>并发长任务<input id="editConcurrent" type="number" min="1" max="100"></label>
+          <label>存储配额（MB）<input id="editStorage" type="number" min="50"></label>
+          <div class="checks"><label><input id="editEnabled" type="checkbox">启用账户</label>
+            <label><input id="editAdmin" type="checkbox">Gateway 管理员</label></div>
+          <div><span class="muted">分类权限</span><div id="permissions" class="checks"></div></div>
+          <button class="primary" type="submit">保存授权</button><div id="saveResult"></div>
+        </form></section>
+    </div>
+    <section class="card section"><h2>最近任务</h2><div class="scroll"><table><thead><tr>
+      <th>任务</th><th>账户</th><th>状态</th><th>更新时间</th><th></th></tr></thead><tbody id="tasksBody"></tbody></table></div></section>
+    <section class="card section"><h2>审计日志</h2><div class="scroll"><table><thead><tr>
+      <th>时间</th><th>操作者</th><th>操作</th><th>对象</th></tr></thead><tbody id="auditBody"></tbody></table></div></section>
+  </div>
+</main><script>
+const $=id=>document.getElementById(id); const apiBase=location.pathname.replace(/\/admin\/?$/,'');
+const redirectUri=location.origin+location.pathname; const clientId='expert-chat';
+let token=sessionStorage.getItem('gatewayAdminToken')||'';let refreshToken=sessionStorage.getItem('gatewayAdminRefreshToken')||'';
+let catalog={}, selected=null, users=[]; $('token').value=token;
+const randomUrlSafe=()=>{const bytes=crypto.getRandomValues(new Uint8Array(32));return btoa(String.fromCharCode(...bytes)).replaceAll('+','-').replaceAll('/','_').replaceAll('=','')};
+const digestUrlSafe=async value=>{const bytes=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value));return btoa(String.fromCharCode(...new Uint8Array(bytes))).replaceAll('+','-').replaceAll('/','_').replaceAll('=','')};
+async function beginOidc(){const verifier=randomUrlSafe(),state=randomUrlSafe();sessionStorage.setItem('gatewayAdminOidcVerifier',verifier);sessionStorage.setItem('gatewayAdminOidcState',state);
+  const url=new URL('/connect/authorize',location.origin);url.search=new URLSearchParams({client_id:clientId,redirect_uri:redirectUri,response_type:'code',scope:'openid profile email offline_access',code_challenge:await digestUrlSafe(verifier),code_challenge_method:'S256',state});location.assign(url)}
+async function finishOidc(){const query=new URLSearchParams(location.search),code=query.get('code'),error=query.get('error');if(!code&&!error)return;
+  const expected=sessionStorage.getItem('gatewayAdminOidcState'),verifier=sessionStorage.getItem('gatewayAdminOidcVerifier');if(!expected||query.get('state')!==expected)throw new Error('OIDC state 校验失败，已拒绝本次登录。');
+  if(error)throw new Error(query.get('error_description')||`AuthService 登录失败：${error}`);if(!verifier)throw new Error('OIDC PKCE 校验信息已丢失，请重新登录。');
+  const body=new URLSearchParams({grant_type:'authorization_code',client_id:clientId,redirect_uri:redirectUri,code,code_verifier:verifier});const r=await fetch('/connect/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});const data=await r.json();if(!r.ok)throw new Error(data.error_description||data.error||`Token HTTP ${r.status}`);
+  token=data.access_token||'';refreshToken=data.refresh_token||'';sessionStorage.setItem('gatewayAdminToken',token);sessionStorage.setItem('gatewayAdminRefreshToken',refreshToken);sessionStorage.removeItem('gatewayAdminOidcState');sessionStorage.removeItem('gatewayAdminOidcVerifier');history.replaceState({},'',location.pathname)}
+async function refreshOidc(){if(!refreshToken)return false;const body=new URLSearchParams({grant_type:'refresh_token',client_id:clientId,refresh_token:refreshToken,scope:'openid profile email offline_access'});const r=await fetch('/connect/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});if(!r.ok)return false;const data=await r.json();token=data.access_token||'';refreshToken=data.refresh_token||refreshToken;sessionStorage.setItem('gatewayAdminToken',token);sessionStorage.setItem('gatewayAdminRefreshToken',refreshToken);return !!token}
+const fmtBytes=n=>{if(!n)return '0 B';const u=['B','KB','MB','GB','TB'];let i=0;while(n>=1024&&i<u.length-1){n/=1024;i++}return `${n.toFixed(i?1:0)} ${u[i]}`};
+const cell=(tr,text)=>{const td=document.createElement('td');td.textContent=text??'';tr.append(td);return td};
+async function api(path,options={},retry=true){const headers=new Headers(options.headers||{});headers.set('Authorization',`Bearer ${token}`);
+  if(options.body)headers.set('Content-Type','application/json');const r=await fetch(`${apiBase}${path}`,{...options,headers});let data=null;
+  try{data=await r.json()}catch{}if(r.status===401&&retry&&await refreshOidc())return api(path,options,false);if(!r.ok)throw new Error(data?.detail||`HTTP ${r.status}`);return data}
+async function load(){try{const [o,u,t,a]=await Promise.all([api('/v1/admin/overview'),api('/v1/admin/users'),api('/v1/admin/tasks?limit=100'),api('/v1/admin/audit?limit=100')]);
+  catalog=o.permission_catalog||{};users=u.items||[];$('usersCount').textContent=o.users;$('activeCount').textContent=(o.task_statuses?.queued||0)+(o.task_statuses?.running||0);
+  $('failedCount').textContent=o.task_statuses?.failed||0;$('storageCount').textContent=fmtBytes(o.storage_bytes);$('subtitle').textContent=`Gateway ${o.version} · ${o.auth?.mode||'auth'}`;
+  renderUsers();renderTasks(t.items||[]);renderAudit(a.items||[]);$('loginCard').classList.add('hidden');$('dashboard').classList.remove('hidden');$('logout').classList.remove('hidden');
+ }catch(e){$('loginError').textContent=e.message;throw e}}
+function renderUsers(){const body=$('usersBody');body.replaceChildren();for(const u of users){const tr=document.createElement('tr');cell(tr,u.display_name).append(document.createElement('br'));
+  tr.firstChild.append(Object.assign(document.createElement('small'),{textContent:u.sub,className:'muted'}));cell(tr,u.enabled?(u.is_admin?'管理员':'已启用'):'已停用');
+  cell(tr,`${u.active_tasks}/${u.max_concurrent_tasks} 任务\n${fmtBytes(u.storage_used_bytes)}/${fmtBytes(u.storage_quota_bytes)}`).style.whiteSpace='pre-line';
+  const b=document.createElement('button');b.textContent='编辑';b.onclick=()=>editUser(u);cell(tr,'').append(b);body.append(tr)}}
+function editUser(u){selected=u;$('emptyEditor').classList.add('hidden');$('userEditor').classList.remove('hidden');$('editName').value=u.display_name;$('editSub').textContent=u.sub;
+  $('editConcurrent').value=u.max_concurrent_tasks;$('editStorage').value=Math.round(u.storage_quota_bytes/1048576);$('editEnabled').checked=u.enabled;$('editAdmin').checked=u.is_admin;
+  const box=$('permissions');box.replaceChildren();for(const [id,label] of Object.entries(catalog)){const row=document.createElement('label'),cb=document.createElement('input');cb.type='checkbox';cb.value=id;cb.checked=u.permissions.includes(id);row.append(cb,document.createTextNode(`${label} (${id})`));box.append(row)}$('saveResult').textContent=''}
+function renderTasks(items){const body=$('tasksBody');body.replaceChildren();for(const x of items){const tr=document.createElement('tr');cell(tr,x.id);cell(tr,x.owner_sub);cell(tr,x.status);cell(tr,new Date(x.updated_at).toLocaleString());const action=cell(tr,'');
+  if(['queued','running'].includes(x.status)){const b=document.createElement('button');b.textContent='取消';b.className='danger';b.onclick=async()=>{b.disabled=true;try{await api(`/v1/admin/tasks/${encodeURIComponent(x.id)}/cancel`,{method:'POST'});await load()}catch(e){$('loginError').textContent=e.message}finally{b.disabled=false}};action.append(b)}body.append(tr)}}
+function renderAudit(items){const body=$('auditBody');body.replaceChildren();for(const x of items){const tr=document.createElement('tr');cell(tr,new Date(x.created_at).toLocaleString());cell(tr,x.actor_sub);cell(tr,x.action);cell(tr,x.target_sub||x.resource_id||'');body.append(tr)}}
+$('connect').onclick=async()=>{token=$('token').value.trim();$('loginError').textContent='';if(!token)return;$('connect').disabled=true;try{sessionStorage.setItem('gatewayAdminToken',token);await load()}catch{}finally{$('connect').disabled=false}};
+$('oidcLogin').onclick=()=>beginOidc().catch(e=>$('loginError').textContent=e.message);
+$('logout').onclick=()=>{for(const key of ['gatewayAdminToken','gatewayAdminRefreshToken','gatewayAdminOidcState','gatewayAdminOidcVerifier'])sessionStorage.removeItem(key);location.assign(location.pathname)};
+$('userEditor').onsubmit=async e=>{e.preventDefault();if(!selected)return;const permissions=[...$('permissions').querySelectorAll('input:checked')].map(x=>x.value);
+  const body={display_name:$('editName').value.trim(),enabled:$('editEnabled').checked,is_admin:$('editAdmin').checked,permissions,max_concurrent_tasks:Number($('editConcurrent').value),storage_quota_bytes:Number($('editStorage').value)*1048576};
+  try{$('saveResult').textContent='保存中…';const updated=await api(`/v1/admin/users/${encodeURIComponent(selected.sub)}`,{method:'PUT',body:JSON.stringify(body)});users=users.map(u=>u.sub===updated.sub?updated:u);renderUsers();editUser(updated);$('saveResult').textContent='已保存'}catch(err){$('saveResult').textContent=err.message;$('saveResult').className='error'}};
+(async()=>{try{await finishOidc();if(token){$('token').value=token;await load()}}catch(e){$('loginError').textContent=e.message}})();
+</script></body></html>

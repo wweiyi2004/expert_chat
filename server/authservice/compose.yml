@@ -1,0 +1,67 @@
+services:
+  db:
+    image: postgres:18.4-alpine
+    restart: unless-stopped
+    mem_limit: 640m
+    cpus: 0.75
+    pids_limit: 128
+    environment:
+      POSTGRES_USER: authservice
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: authservice
+    volumes:
+      - db-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U authservice"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [backend]
+
+  backend:
+    image: ${AUTH_BACKEND_IMAGE:-expert-chat-authservice-backend:local}
+    restart: unless-stopped
+    mem_limit: 1024m
+    cpus: 1.0
+    pids_limit: 256
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      ConnectionStrings__DefaultConnection: "Host=db;Port=5432;Database=authservice;Username=authservice;Password=${DB_PASSWORD}"
+      Jwt__PrivateKeyPath: /run/secrets/jwt_private
+      Jwt__PublicKeyPath: /run/secrets/jwt_public
+      Jwt__Issuer: ${JWT_ISSUER}
+      Jwt__Audience: ${JWT_AUDIENCE}
+      GithubOAuth__ClientId: ${GITHUB_OAUTH_CLIENT_ID:-}
+      GithubOAuth__ClientSecret: ${GITHUB_OAUTH_CLIENT_SECRET:-}
+      GoogleOAuth__ClientId: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      GoogleOAuth__ClientSecret: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+      Resend__ApiKey: ${RESEND_API_KEY:-}
+      Oidc__EncryptionKey: ${OIDC_ENCRYPTION_KEY}
+      Admin__BootstrapUsername: ${ADMIN_BOOTSTRAP_USERNAME}
+    secrets: [jwt_private, jwt_public]
+    networks: [backend]
+
+  frontend:
+    image: ${AUTH_FRONTEND_IMAGE:-expert-chat-authservice-frontend:local}
+    restart: unless-stopped
+    mem_limit: 192m
+    cpus: 0.25
+    pids_limit: 128
+    depends_on: [backend]
+    ports: ["127.0.0.1:8080:8080"]
+    networks: [backend]
+
+volumes:
+  db-data:
+
+secrets:
+  jwt_private:
+    file: ./secrets/jwt_private.pem
+  jwt_public:
+    file: ./secrets/jwt_public.pem
+
+networks:
+  backend:
+    driver: bridge

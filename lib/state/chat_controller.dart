@@ -301,6 +301,11 @@ class ChatController extends AsyncNotifier<ChatState> {
   /// one and overwrite it (especially around stop / rename / branch switches).
   Future<void> _writeQueue = Future<void>.value();
 
+  /// Conversations deleted while a generation was still in the [_starting]
+  /// preflight window. [_generate] consults this tombstone to abandon (not
+  /// resurrect) a turn whose target was deleted before streaming began.
+  final Set<String> _deletedWhileStartingIds = {};
+
   /// A slow disk must not let periodic stream checkpoints pile up behind one
   /// another. The final turn write is still awaited separately, so dropping an
   /// overlapping best-effort checkpoint cannot lose the completed answer.
@@ -1103,9 +1108,17 @@ class ChatController extends AsyncNotifier<ChatState> {
   }
 
   /// One AI line from the next cast member (round-robin).
-  Future<void> ensembleNextTurn({String? forceCharacterId}) async {
+  Future<void> ensembleNextTurn({
+    String? forceCharacterId,
+
+    /// Explicit target conversation (auto-play pins its origin so the loop
+    /// keeps writing there even after the user switches conversations).
+    String? conversationId,
+  }) async {
     if (_s.isStreaming || _starting) return;
-    final convo = _s.current;
+    final convo = conversationId == null
+        ? _s.current
+        : _s.conversations.where((c) => c.id == conversationId).firstOrNull;
     if (convo == null || !convo.isEnsemble) return;
     final castIds = convo.castIds;
     if (castIds.length < 2) {
@@ -1168,20 +1181,28 @@ class ChatController extends AsyncNotifier<ChatState> {
     }
   }
 
-  /// Auto-run [rounds] ensemble turns (or until stop).
+  /// Auto-run [rounds] ensemble turns (or until stop) on the conversation that
+  /// started the run. Reading [_s.current] each round instead would retarget
+  /// the loop whenever the user switches to another ensemble conversation.
   Future<void> ensembleAutoPlay({int rounds = 6}) async {
+    final target = _s.current;
+    if (target == null || !target.isEnsemble) return;
+    final targetId = target.id;
     final n = rounds.clamp(1, 20);
     for (var i = 0; i < n; i++) {
-      final current = _s.current;
-      if (current == null || !current.isEnsemble) return;
       if (_s.isStreaming || _starting) return;
-      await ensembleNextTurn();
+      await ensembleNextTurn(conversationId: targetId);
       // Allow UI to settle between turns.
       await Future<void>.delayed(const Duration(milliseconds: 80));
-      final after = _s.current;
+      final after = _s.conversations
+          .where((c) => c.id == targetId)
+          .firstOrNull;
       if (_cancelStart || after == null || !after.isEnsemble) return;
+      // Stop on errors that belong to the target conversation; a banner parked
+      // on another conversation must not end this run.
       final err = _s.error;
-      if (err != null && err.isNotEmpty) return;
+      final errOnTarget = _s.errorConvoId == null || _s.errorConvoId == targetId;
+      if (err != null && err.isNotEmpty && errOnTarget) return;
     }
   }
 
@@ -1236,6 +1257,11 @@ class ChatController extends AsyncNotifier<ChatState> {
     // first, WITHOUT persisting it (a late save would resurrect the row).
     if (_s.streamingConvoId == id) stop(persist: false);
 
+    // Also tombstone it against a generation that is still preflighting
+    // (awaiting settings): streamingConvoId is not set yet, so only this
+    // record can stop _generate from re-inserting the stale snapshot.
+    _rememberDeletedConversation(id);
+
     // Remove it from memory before awaiting the database operation. The stream
     // teardown may resume as soon as stop() completes; _persistById then sees
     // no matching conversation and cannot enqueue a save behind this delete.
@@ -1272,6 +1298,9 @@ class ChatController extends AsyncNotifier<ChatState> {
     try {
       await _deletePersistedConversation(id);
     } catch (e) {
+      // The row is still alive; drop the tombstone so a later send into this
+      // restored conversation is not wrongly abandoned.
+      _deletedWhileStartingIds.remove(id);
       // Keep the archive visible if deleting its row failed, but do not restore
       // the entire old state: the user may have created or edited another
       // conversation while this awaited database write was in flight.
@@ -1297,6 +1326,15 @@ class ChatController extends AsyncNotifier<ChatState> {
 
     if (createsFreshConversation) {
       _persistSoon(_persist());
+    }
+  }
+
+  void _rememberDeletedConversation(String id) {
+    _deletedWhileStartingIds.add(id);
+    // Bounded: only the in-flight preflight window consults it, so a rolling
+    // window of recent deletions is more than enough.
+    while (_deletedWhileStartingIds.length > 128) {
+      _deletedWhileStartingIds.remove(_deletedWhileStartingIds.first);
     }
   }
 
@@ -1964,7 +2002,14 @@ class ChatController extends AsyncNotifier<ChatState> {
       }
     }
     for (final fileId in task.remoteFileIds) {
-      await client.deleteFile(connection: connection, fileId: fileId);
+      // Best-effort cleanup after the user's cancel action: a network hiccup
+      // on one file must neither crash the unawaited caller nor abort the
+      // remaining deletions (the Gateway reaps orphaned files regardless).
+      try {
+        await client.deleteFile(connection: connection, fileId: fileId);
+      } catch (_) {
+        // Ignored on purpose; see comment above.
+      }
     }
   }
 
@@ -2196,7 +2241,10 @@ class ChatController extends AsyncNotifier<ChatState> {
 
   /// Switch which sibling branch is active at [messageId] (delta -1 / +1).
   void switchBranch(String messageId, int delta) {
-    if (_s.isStreaming) return;
+    // The _starting guard matches every other mutating entry point: a switch
+    // during the preflight window would be silently rolled back by _generate
+    // installing its own snapshot of activeChildren.
+    if (_s.isStreaming || _starting) return;
     final convo = _s.current;
     if (convo == null) return;
     final mIdx = convo.messages.indexWhere((x) => x.id == messageId);
@@ -2819,6 +2867,10 @@ class ChatController extends AsyncNotifier<ChatState> {
     CharacterCard? ensembleSpeaker,
     bool forceDocumentEdit = false,
   }) async {
+    // The conversation was deleted while this turn was preflighting (awaiting
+    // settings). Abandon the turn: re-inserting [working] here would resurrect
+    // the deleted row both in memory and, via _persistById, in the database.
+    if (_deletedWhileStartingIds.contains(working.id)) return;
     final searchMode = _s.searchMode;
     final searchAllowed =
         searchMode != SearchMode.off && searchQuery.trim().isNotEmpty;
@@ -2901,13 +2953,34 @@ class ChatController extends AsyncNotifier<ChatState> {
     // (awaiting settings); don't yank focus back. The stream itself still
     // targets [working.id] and writes into it.
     final holdsFocus = _s.currentId == working.id || _s.currentId == null;
+    // Side edits (rename, story-meta changes, cast updates) may have landed on
+    // the live conversation during the same window; carry them over so the
+    // snapshot below does not roll them back to the preflight-time values.
+    // The message tree stays owned by [working]: it carries this turn's new
+    // messages and branch links.
+    var turnTarget = working;
+    for (final c in _s.conversations) {
+      if (c.id != working.id) continue;
+      turnTarget = working.copyWith(
+        title: c.title,
+        participantIds: c.participantIds,
+        localCast: c.localCast,
+        worldInfoIds: c.worldInfoIds,
+        outline: c.outline,
+        authorNote: c.authorNote,
+        plotCursor: c.plotCursor,
+        venue: c.venue,
+        targetTotalChars: c.targetTotalChars,
+      );
+      break;
+    }
     _set(
       _s.copyWith(
         // Move the conversation to the top: it just got new activity, matching
         // the updatedAt-desc order used when loading from the DB. Also covers
         // the defensive case where [working] wasn't in the list yet.
         conversations: [
-          working,
+          turnTarget,
           ..._s.conversations.where((c) => c.id != working.id),
         ],
         currentId: holdsFocus ? working.id : _s.currentId,

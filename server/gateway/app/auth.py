@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -103,7 +104,9 @@ class GatewayAuthenticator:
         if (
             self.mode in {"legacy", "hybrid"}
             and self.legacy_token
-            and token == self.legacy_token
+            and hmac.compare_digest(
+                token.encode("utf-8"), self.legacy_token.encode("utf-8")
+            )
         ):
             return Principal(
                 subject=self.legacy_owner,

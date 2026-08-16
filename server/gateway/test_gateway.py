@@ -1,7 +1,9 @@
+import concurrent.futures
 import importlib
 import json
 import os
 import tempfile
+import threading
 import time
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -444,6 +446,169 @@ class GatewayFlowTest(unittest.TestCase):
                 self.assertIn("completed", event_types)
                 self.assertGreater(events["next_after"], 0)
                 self.assertTrue((Path(temp_dir) / "gateway.sqlite3").exists())
+
+    def test_startup_finalizes_cancel_requested_ghost_tasks(self) -> None:
+        """Hard-crash leftovers with cancel_requested=1 must not occupy quota.
+
+        The recovery UPDATE used to only re-queue cancel_requested=0 rows, so
+        ghosts stayed queued/running forever: _cleanup_expired_tasks deletes
+        terminal states only, and create_task counts them against
+        max_concurrent_tasks until the user is permanently 429-locked.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+            os.environ,
+            {
+                "GATEWAY_DATA_DIR": temp_dir,
+                "GATEWAY_AUTH_MODE": "hybrid",
+                "GATEWAY_API_TOKEN": "migration-token",
+                "LLM_BASE_URL": "http://upstream.invalid/v1",
+                "LLM_MODEL": "test-model",
+            },
+        ):
+            from gateway.app import main
+            from gateway.app.auth import Principal
+
+            importlib.reload(main)
+            main._init_db()
+            stamp = datetime.now(timezone.utc).isoformat()
+            with main._db() as db:
+                for task_id, status in (
+                    ("ghost_running", "running"),
+                    ("ghost_queued", "queued"),
+                ):
+                    db.execute(
+                        """
+                        INSERT INTO tasks(
+                            id, owner_sub, status, prompt, instructions,
+                            messages_json, file_ids_json, model, cancel_requested,
+                            created_at, updated_at
+                        ) VALUES (?, 'user-a', ?, '', '', '[]', '[]',
+                                  'test-model', 1, ?, ?)
+                        """,
+                        (task_id, status, stamp, stamp),
+                    )
+
+            def authenticate(value):
+                token = (value or "").removeprefix("Bearer ")
+                return Principal(
+                    subject=token,
+                    display_name=token,
+                    scopes=frozenset(),
+                    auth_kind="oidc",
+                )
+
+            async def fake_stream(task_id, model, messages):
+                return "完成"
+
+            with patch.object(main.AUTH, "authenticate", authenticate), patch.object(
+                main, "_stream_completion", fake_stream
+            ), TestClient(main.app) as client:
+                headers = {"Authorization": "Bearer user-a"}
+                with main._db() as db:
+                    statuses = {
+                        row["id"]: row["status"]
+                        for row in db.execute("SELECT id, status FROM tasks")
+                    }
+                self.assertEqual(statuses["ghost_running"], "cancelled")
+                self.assertEqual(statuses["ghost_queued"], "cancelled")
+
+                # The finalized ghosts no longer occupy the account quota.
+                upload = client.post(
+                    "/v1/files",
+                    headers=headers,
+                    files={"file": ("note.txt", "内容", "text/plain")},
+                )
+                self.assertEqual(upload.status_code, 200, upload.text)
+                created = client.post(
+                    "/v1/tasks",
+                    headers=headers,
+                    json={"prompt": "总结", "file_ids": [upload.json()["id"]]},
+                )
+                self.assertEqual(created.status_code, 200, created.text)
+
+    def test_provision_first_login_race_is_insert_or_ignore(self) -> None:
+        """Concurrent first logins for one subject must not 500 on the PK.
+
+        Two requests can both pass the SELECT before either commits; the
+        loser used to crash with sqlite3.IntegrityError (sync deps run on a
+        thread pool, so this is real concurrency).
+        """
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+            os.environ, {"GATEWAY_DATA_DIR": temp_dir}
+        ):
+            from gateway.app import main
+            from gateway.app.auth import Principal
+
+            importlib.reload(main)
+            main._init_db()
+            principal = Principal(
+                subject="user-race",
+                display_name="并发用户",
+                scopes=frozenset(),
+                auth_kind="oidc",
+            )
+
+            workers = 8
+            barrier = threading.Barrier(workers)
+
+            def hit():
+                barrier.wait()
+                return main._provision_principal(principal)
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+                for future in concurrent.futures.as_completed(
+                    [pool.submit(hit) for _ in range(workers)]
+                ):
+                    future.result()  # must not raise IntegrityError
+
+            with main._db() as db:
+                total = db.execute(
+                    "SELECT COUNT(*) AS total FROM user_entitlements "
+                    "WHERE owner_sub = 'user-race'"
+                ).fetchone()["total"]
+            self.assertEqual(total, 1)
+
+
+class StandaloneDocEditAuthTest(unittest.TestCase):
+    def test_empty_or_whitespace_bearer_is_rejected(self) -> None:
+        with patch.dict(os.environ, {"GATEWAY_API_TOKEN": "secret-token"}):
+            from doc_edit.app import main as doc_edit
+
+            importlib.reload(doc_edit)
+            for header in ("Bearer", "Bearer   ", "Bearer\t"):
+                with self.subTest(header=header):
+                    with self.assertRaises(HTTPException) as caught:
+                        doc_edit.require_auth(header)
+                    self.assertEqual(caught.exception.status_code, 401)
+            doc_edit.require_auth("Bearer secret-token")
+
+    def test_wrong_token_is_rejected(self) -> None:
+        with patch.dict(os.environ, {"GATEWAY_API_TOKEN": "secret-token"}):
+            from doc_edit.app import main as doc_edit
+
+            importlib.reload(doc_edit)
+            with self.assertRaises(HTTPException) as caught:
+                doc_edit.require_auth("Bearer other-token")
+            self.assertEqual(caught.exception.status_code, 401)
+
+
+class GatewayLegacyTokenCompareTest(unittest.TestCase):
+    def test_non_ascii_legacy_token_compares_without_500(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "GATEWAY_AUTH_MODE": "legacy",
+                "GATEWAY_API_TOKEN": "令牌-密钥",
+            },
+        ):
+            from gateway.app.auth import GatewayAuthenticator
+
+            auth = GatewayAuthenticator()
+            principal = auth.authenticate("Bearer 令牌-密钥")
+            self.assertEqual(principal.auth_kind, "legacy")
+            with self.assertRaises(HTTPException) as caught:
+                auth.authenticate("Bearer 错误令牌")
+            self.assertEqual(caught.exception.status_code, 401)
 
 
 if __name__ == "__main__":

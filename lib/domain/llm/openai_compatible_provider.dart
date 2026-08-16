@@ -105,6 +105,16 @@ class OpenAiCompatibleProvider implements LlmProvider {
     }
 
     final Response<ResponseBody> response;
+    // Timing out the await alone leaves the socket open: the server keeps
+    // generating (and billing) a response nobody reads. Route the request
+    // through a token linked to the caller's so the timeout — or stop() —
+    // actually aborts the connection.
+    final requestToken = CancelToken();
+    unawaited(
+      cancelToken?.whenCancel.then(
+        (e) => requestToken.cancel(e.error ?? e.message ?? 'cancelled'),
+      ),
+    );
     try {
       // The post future completes once response headers arrive; the body
       // stream is consumed lazily afterwards. Timing out here only guards the
@@ -121,9 +131,15 @@ class OpenAiCompatibleProvider implements LlmProvider {
               },
             ),
             data: jsonEncode(body),
-            cancelToken: cancelToken,
+            cancelToken: requestToken,
           )
-          .timeout(responseHeaderTimeout);
+          .timeout(
+            responseHeaderTimeout,
+            onTimeout: () {
+              requestToken.cancel('响应超时');
+              throw TimeoutException('响应头等待超时', responseHeaderTimeout);
+            },
+          );
     } on DioException catch (e) {
       // Stop pressed during connection setup → end the stream quietly.
       if (CancelToken.isCancel(e)) return;

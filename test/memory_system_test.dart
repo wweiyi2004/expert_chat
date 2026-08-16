@@ -439,6 +439,29 @@ void main() {
     expect(store.markdown, contains('用户偏好中文回答。'));
   });
 
+  test('刷新读到旧版本不会回退缓存,后续写入不会丢条目', () async {
+    final store = _MemoryStore();
+    final repository = MemoryRepository(store);
+    await repository.add(content: '项目使用 Flutter 开发。');
+    final staleMarkdown = store.markdown;
+    await repository.add(content: '用户偏好中文回答。');
+
+    // 模拟读落在写入换页窗口内:read 观察到的是上一版本(如 .bak 内容)。
+    // 它的 revision 低于缓存,不允许把缓存回退,否则下一次写入会把
+    // 上一版之后保存的条目从文件里抹掉。
+    store.markdown = staleMarkdown;
+    final refreshed = await repository.load(refresh: true);
+    expect(
+      refreshed.entries.map((entry) => entry.content),
+      contains('用户偏好中文回答。'),
+    );
+
+    await repository.add(content: '部署采用 Shorebird 热更新。');
+    expect(store.markdown, contains('项目使用 Flutter 开发。'));
+    expect(store.markdown, contains('用户偏好中文回答。'));
+    expect(store.markdown, contains('部署采用 Shorebird 热更新。'));
+  });
+
   test('首次使用没有文件时仍返回空文档', () async {
     final repository = MemoryRepository(_MemoryStore());
     final document = await repository.load();

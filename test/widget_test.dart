@@ -300,6 +300,21 @@ class FakeOneSearchRoundSettings extends FakeSettings {
   }
 }
 
+/// Settings whose build parks on an external gate, holding a send's preflight
+/// window open so tests can act while the turn still awaits settings.
+class GatedSettings extends FakeSettings {
+  GatedSettings(this.gate);
+
+  final Completer<void> gate;
+
+  @override
+  Future<SettingsState> build() async {
+    final base = await super.build();
+    await gate.future;
+    return base;
+  }
+}
+
 /// LLM provider that errors on its first call, then answers normally.
 class _FailOnceLlm implements LlmProvider {
   int callCount = 0;
@@ -757,6 +772,44 @@ void main() {
     expect(assistant.content, 'answer');
     expect(assistant.reasoning, 'pondering');
   });
+
+  test(
+    'deleting a conversation during send preflight does not resurrect it',
+    () async {
+      final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'answer')]);
+      final repo = InMemoryRepo();
+      final gate = Completer<void>();
+      final c = _container(
+        llm,
+        repo,
+        settingsBuilder: () => GatedSettings(gate),
+      );
+      addTearDown(c.dispose);
+
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
+      final id = c.read(chatControllerProvider).value!.current!.id;
+
+      // Enter the _starting preflight window: sendMessage has been accepted
+      // but is still awaiting settings, so streamingConvoId is not set yet.
+      final sending = ctrl.sendMessage('hi');
+      await Future<void>.delayed(Duration.zero);
+
+      await ctrl.deleteConversation(id);
+
+      gate.complete();
+      await sending;
+
+      final state = c.read(chatControllerProvider).value!;
+      expect(state.conversations.any((convo) => convo.id == id), isFalse);
+      expect(state.streamingConvoId, isNull);
+      // The abandoned turn never reached the LLM and never wrote the deleted
+      // row back: before the tombstone, _generate re-inserted its stale
+      // snapshot and _persistById resurrected the conversation.
+      expect(llm.callCount, 0);
+      expect(repo.store.any((convo) => convo.id == id), isFalse);
+    },
+  );
 
   test(
     'without deepThink the chat model is used with thinking disabled',

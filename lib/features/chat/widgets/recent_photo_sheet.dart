@@ -84,6 +84,7 @@ class _RecentPhotoSheetBodyState extends State<_RecentPhotoSheetBody> {
         onlyAll: true,
       );
       if (paths.isEmpty) {
+        if (!mounted) return;
         setState(() {
           _loading = false;
           _error = '相册为空';

@@ -78,7 +78,16 @@ class MemoryRepository {
       if (_cache != null) return _cache!;
       _cache = const MemoryDocument();
     } else {
-      _cache = _codec.decode(markdown);
+      final decoded = _codec.decode(markdown);
+      // The same swap window can also expose the previous revision (the .bak
+      // or the not-yet-renamed main file). Installing it over a newer cache
+      // would roll the document back, and the next queued write would then
+      // persist that older entry set — silently dropping memories. Only
+      // versions at least as new as the cache may replace it; an equal
+      // revision is still accepted so externally hand-edited files reload.
+      if (_cache == null || decoded.revision >= _cache!.revision) {
+        _cache = decoded;
+      }
     }
     return _cache!;
   }

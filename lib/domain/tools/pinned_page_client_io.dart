@@ -41,7 +41,11 @@ class PinnedPageClient {
       }
 
       final port = url.hasPort ? url.port : (url.scheme == 'https' ? 443 : 80);
-      final socketTask = await Socket.startConnect(addresses.first, port);
+      final socketTask = await startConnectPinned(
+        addresses: addresses,
+        port: port,
+        host: url.host,
+      );
       if (url.scheme != 'https') {
         return socketTask;
       }
@@ -53,4 +57,33 @@ class PinnedPageClient {
     };
     return client;
   }
+}
+
+/// Tries each already-validated address. [Socket.startConnect] only accepts a
+/// hostname [String] or a single [InternetAddress]; a [List] throws TypeError.
+Future<ConnectionTask<Socket>> startConnectPinned({
+  required List<InternetAddress> addresses,
+  required int port,
+  required String host,
+}) async {
+  Object? lastError;
+  for (var i = 0; i < addresses.length; i++) {
+    final isLast = i == addresses.length - 1;
+    try {
+      final task = await Socket.startConnect(addresses[i], port);
+      if (isLast) return task;
+      try {
+        final socket = await task.socket;
+        return ConnectionTask.fromSocket(
+          Future<Socket>.value(socket),
+          task.cancel,
+        );
+      } catch (error) {
+        lastError = error;
+      }
+    } on SocketException catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError ?? SocketException('No validated address for $host');
 }

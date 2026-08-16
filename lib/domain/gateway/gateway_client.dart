@@ -47,6 +47,10 @@ class GatewayClient {
         '$base/v1/capabilities',
         options: Options(
           headers: headers,
+          // Without a connect timeout a firewalled (black-holed) address
+          // stalls until the OS-level TCP timeout, far past the intended
+          // request budget for a "test connection" action.
+          connectTimeout: connection.config.requestTimeout,
           receiveTimeout: connection.config.requestTimeout,
           sendTimeout: connection.config.requestTimeout,
         ),

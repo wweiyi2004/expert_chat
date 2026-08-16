@@ -351,9 +351,12 @@ def _provision_principal(principal: Principal) -> sqlite3.Row:
         ).fetchone()
         if existing is None:
             is_admin = int(principal.bootstrap_admin)
+            # INSERT OR IGNORE, not plain INSERT: two first-login requests for
+            # the same new subject can race past the SELECT (sync deps run on
+            # a thread pool); the loser must not 500 on the PK conflict.
             db.execute(
                 """
-                INSERT INTO user_entitlements(
+                INSERT OR IGNORE INTO user_entitlements(
                     owner_sub, display_name, enabled, is_admin,
                     permissions_json, max_concurrent_tasks,
                     storage_quota_bytes, created_at, updated_at
@@ -912,6 +915,18 @@ async def _lifespan(_: FastAPI):
     _init_db()
     _cleanup_expired_tasks()
     with _db() as db:
+        # A hard crash (kill -9 / OOM / power loss) leaves cancel-requested
+        # tasks stuck in queued/running: the recovery UPDATE below excludes
+        # them, yet _cleanup_expired_tasks only ever deletes terminal states.
+        # Left as-is they permanently occupy the owner's concurrency quota.
+        # The user already asked to cancel, so finalizing them as cancelled
+        # matches what graceful shutdown would have written.
+        db.execute(
+            "UPDATE tasks SET status = 'cancelled', "
+            "detail = '服务异常退出，取消请求已生效', updated_at = ? "
+            "WHERE status IN ('queued', 'running') AND cancel_requested = 1",
+            (_now(),),
+        )
         db.execute(
             "UPDATE tasks SET status = 'queued', detail = '服务已恢复，任务重新排队', updated_at = ? "
             "WHERE status IN ('queued', 'running') AND cancel_requested = 0",

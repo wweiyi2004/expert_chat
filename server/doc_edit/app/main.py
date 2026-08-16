@@ -8,7 +8,9 @@ Env: GATEWAY_API_TOKEN (or legacy DOC_API_TOKEN), GATEWAY_MAX_FILE_MB, GATEWAY_D
 
 from __future__ import annotations
 
+import asyncio
 import csv
+import hmac
 import io
 import json
 import os
@@ -111,7 +113,8 @@ def require_auth(authorization: str | None = Header(default=None)) -> None:
             status_code=401,
             detail=_err("unauthorized", "缺少 Authorization: Bearer"),
         )
-    if authorization[7:].strip() != expected:
+    provided = authorization[7:].strip()
+    if not hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8")):
         raise HTTPException(
             status_code=401,
             detail=_err("unauthorized", "Token 无效"),
@@ -120,6 +123,31 @@ def require_auth(authorization: str | None = Header(default=None)) -> None:
 
 def _err(code: str, message: str, details: dict[str, Any] | None = None) -> dict:
     return {"error": {"code": code, "message": message, "details": details or {}}}
+
+
+async def _spool_upload(file: UploadFile, dest: Path) -> int:
+    """Stream an upload to disk in bounded chunks and return its size.
+
+    A single await file.read() would load the whole body into memory before
+    the size check runs, so an oversized request could OOM the process (this
+    app also runs mounted inside the Gateway process). Chunked spooling
+    rejects as soon as the limit is crossed.
+    """
+    limit = _max_upload_bytes()
+    size = 0
+    with dest.open("wb") as out:
+        while chunk := await file.read(1024 * 1024):
+            size += len(chunk)
+            if size > limit:
+                raise HTTPException(
+                    status_code=400,
+                    detail=_err(
+                        "file_too_large",
+                        f"文件超过 {limit // (1024 * 1024)} MB 限制",
+                    ),
+                )
+            out.write(chunk)
+    return size
 
 
 @app.get("/v1/health")
@@ -156,16 +184,10 @@ async def edit_document(
                 detail=_err("unsupported_format", f"仅支持 {', '.join(sorted(SUPPORTED))}"),
             )
 
-        data = await file.read()
-        if len(data) > _max_upload_bytes():
-            raise HTTPException(
-                status_code=400,
-                detail=_err(
-                    "file_too_large",
-                    f"文件超过 {_max_upload_bytes() // (1024 * 1024)} MB 限制",
-                ),
-            )
-        if not data:
+        in_path = job_dir / f"input{ext}"
+        out_path = job_dir / f"output{ext}"
+        size = await _spool_upload(file, in_path)
+        if size == 0:
             raise HTTPException(
                 status_code=400,
                 detail=_err("patch_invalid", "上传文件为空"),
@@ -197,11 +219,7 @@ async def edit_document(
                 detail=_err("patch_invalid", str(e)),
             ) from e
 
-        in_path = job_dir / f"input{ext}"
-        out_path = job_dir / f"output{ext}"
-        in_path.write_bytes(data)
-
-        try:
+        def apply_patch() -> None:
             if ext == ".xlsx":
                 _apply_xlsx(in_path, out_path, validated)
             elif ext == ".docx":
@@ -210,6 +228,11 @@ async def edit_document(
                 _apply_pptx(in_path, out_path, validated)
             else:
                 _apply_text(in_path, out_path, validated)
+
+        try:
+            # Office parsing/saving is CPU-bound; keep it off the event loop
+            # (this router also runs mounted inside the Gateway process).
+            await asyncio.to_thread(apply_patch)
         except ValueError as e:
             raise HTTPException(
                 status_code=400,
@@ -281,35 +304,30 @@ async def convert_document(
                 ),
             )
 
-        data = await file.read()
-        if len(data) > _max_upload_bytes():
-            raise HTTPException(
-                status_code=400,
-                detail=_err(
-                    "file_too_large",
-                    f"文件超过 {_max_upload_bytes() // (1024 * 1024)} MB 限制",
-                ),
-            )
-        if not data:
+        out_name = _sanitize_output_filename(output_filename, raw_name, f".{tgt_fmt}")
+        in_path = job_dir / f"input{src_ext}"
+        out_path = job_dir / f"output.{tgt_fmt}"
+        size = await _spool_upload(file, in_path)
+        if size == 0:
             raise HTTPException(
                 status_code=400,
                 detail=_err("patch_invalid", "上传文件为空"),
             )
 
-        out_name = _sanitize_output_filename(output_filename, raw_name, f".{tgt_fmt}")
-        in_path = job_dir / f"input{src_ext}"
-        out_path = job_dir / f"output.{tgt_fmt}"
-        in_path.write_bytes(data)
-
-        try:
+        def run_conversion() -> None:
             if src_fmt == tgt_fmt:
                 if src_fmt in {"txt", "md", "csv", "tsv"}:
                     # Normalize text encodings to UTF-8 on same-format pass-through.
                     _write_text_file(out_path, _read_text_file(in_path))
                 else:
-                    out_path.write_bytes(data)
+                    shutil.copyfile(in_path, out_path)
             else:
                 _convert_file(in_path, src_fmt, out_path, tgt_fmt)
+
+        try:
+            # Parsing/converting documents is CPU-bound; keep it off the event
+            # loop (this router also runs mounted inside the Gateway process).
+            await asyncio.to_thread(run_conversion)
         except ValueError as e:
             raise HTTPException(
                 status_code=400,

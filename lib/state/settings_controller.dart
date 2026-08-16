@@ -1109,37 +1109,15 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     final prefs = ref.read(sharedPrefsProvider);
     if (remaining.isEmpty) {
       final fresh = ProviderPreset.presets.first.toProfile();
-      // Keep search + system-prompt settings: only the LLM profile is being
-      // replaced. Dropping them here would clear the in-memory form while the
-      // secure-storage / prefs values still exist, so a restart "revives" them.
+      // copyWith keeps in-memory settings that still live in secure storage
+      // / prefs; reconstructing SettingsState would drop them until restart.
       state = AsyncData(
-        SettingsState(
+        _current.copyWith(
           profiles: [fresh],
           activeProfileId: fresh.id,
           apiKey: '',
-          themeMode: _current.themeMode,
-          searchBackend: _current.searchBackend,
-          searchApiKey: _current.searchApiKey,
-          searchBrainModel: _current.searchBrainModel,
-          searchMaxRounds: _current.searchMaxRounds,
-          searchMaxResults: _current.searchMaxResults,
-          systemPrompt: _current.systemPrompt,
-          ui: _current.ui,
-          visionApi: _current.visionApi,
-          visionApiKey: _current.visionApiKey,
-          imageGenerationApi: _current.imageGenerationApi,
-          imageGenerationApiKey: _current.imageGenerationApiKey,
-          ttsApi: _current.ttsApi,
-          ttsApiKey: _current.ttsApiKey,
-          asrApi: _current.asrApi,
-          asrApiKey: _current.asrApiKey,
-          context: _current.context,
-          gateway: _current.gateway,
-          gatewayToken: _current.gatewayToken,
-          memoryEnabled: _current.memoryEnabled,
-          researchModeEnabled: _current.researchModeEnabled,
-          studyModeEnabled: _current.studyModeEnabled,
-          creationModeEnabled: _current.creationModeEnabled,
+          // The override pointed into the deleted profile; start clean.
+          selectedModel: null,
         ),
       );
       await _writeProfiles(prefs, [fresh]);

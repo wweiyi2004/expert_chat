@@ -4,7 +4,20 @@ import 'package:dio/dio.dart' show CancelToken;
 
 import '../../data/chat_skill.dart';
 import '../../data/models.dart';
+import '../../data/story_models.dart';
 import '../llm/llm_provider.dart';
+
+/// System preset for one generate turn. Story / study / ensemble never use
+/// this catalog; chat uses the routed skill prompt, or [fallbackPrompt] when
+/// routing did not produce a skill.
+String chatPresetPrompt({
+  required ConversationMode mode,
+  required ChatSkillRoute? route,
+  required String fallbackPrompt,
+}) {
+  if (mode != ConversationMode.chat) return '';
+  return route?.skill.prompt.trim() ?? fallbackPrompt;
+}
 
 class ChatSkillRoute {
   const ChatSkillRoute({

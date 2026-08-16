@@ -8,6 +8,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:expert_chat/core/providers.dart';
 import 'package:expert_chat/data/character_repository.dart';
+import 'package:expert_chat/data/chat_skill.dart';
 import 'package:expert_chat/data/conversation_repository.dart';
 import 'package:expert_chat/data/context_prefs.dart';
 import 'package:expert_chat/data/db/app_database.dart' show AppDatabase;
@@ -255,6 +256,19 @@ class FakeSettings extends SettingsController {
         uploadBaseUrl: 'https://upload.example.com',
       ),
       gatewayToken: 'gateway-token',
+    );
+  }
+}
+
+/// Settings with the factory chat-skill catalog so [_generate] can route.
+class FakeChatSkillSettings extends FakeSettings {
+  @override
+  Future<SettingsState> build() async {
+    final base = await super.build();
+    final catalog = ChatSkillCatalog.factory();
+    return base.copyWith(
+      chatSkills: catalog,
+      systemPrompt: catalog.fallback.prompt,
     );
   }
 }
@@ -823,6 +837,50 @@ void main() {
       await ctrl.sendMessage('hi');
       expect(llm.lastConfig?.model, KnownModels.chat);
       expect(llm.lastThinking, isFalse); // normal mode disables thinking
+    },
+  );
+
+  test(
+    'chat send routes via the classifier and marks the assistant skill',
+    () async {
+      final llm = FakeLlmProvider(
+        const [],
+        scriptedChunks: const [
+          [ChatChunk(contentDelta: '{"skill":"writing","confidence":0.9}')],
+          [ChatChunk(contentDelta: '改好了')],
+        ],
+      );
+      final c = _container(
+        llm,
+        InMemoryRepo(),
+        settingsBuilder: FakeChatSkillSettings.new,
+      );
+      addTearDown(c.dispose);
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
+
+      await ctrl.sendMessage('把这段改得更顺');
+
+      expect(llm.callCount, 2);
+      expect(llm.calls.first.first.content, contains('你是任务分类器'));
+      expect(llm.calls.first.last.content, contains('把这段改得更顺'));
+      expect(
+        llm.calls.last.any(
+          (m) =>
+              m.role == MessageRole.system && m.content.contains('按用户指定文体'),
+        ),
+        isTrue,
+      );
+      final assistant = c
+          .read(chatControllerProvider)
+          .value!
+          .current!
+          .activePath
+          .last;
+      expect(assistant.content, '改好了');
+      expect(assistant.turnSkill?.id, 'writing');
+      expect(assistant.turnSkill?.name, '写作');
+      expect(assistant.turnSkill?.source, ChatSkillSource.model);
     },
   );
 

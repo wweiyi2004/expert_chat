@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:dio/dio.dart' show CancelToken;
@@ -112,33 +113,47 @@ class ChatSkillRouter {
     if (prefixed != null) {
       return ChatSkillRoute(skill: prefixed, source: ChatSkillSource.prefix);
     }
-    try {
-      final buf = StringBuffer();
-      await for (final chunk
-          in llm
-              .streamChat(
-                config: config,
-                thinking: false,
-                cancelToken: cancelToken,
-                messages: [
-                  LlmRequestMessage(
-                    role: MessageRole.system,
-                    content: classifierSystemPrompt(catalog),
-                  ),
-                  LlmRequestMessage(
-                    role: MessageRole.user,
-                    content: classifierUserPrompt(
-                      userText: userText,
-                      recent: recent,
-                    ),
-                  ),
-                ],
-              )
-              .timeout(timeout)) {
+    final localCancel = CancelToken();
+    if (cancelToken != null) {
+      if (cancelToken.isCancelled) {
+        return ChatSkillRoute(
+          skill: catalog.fallback,
+          source: ChatSkillSource.fallback,
+        );
+      }
+      cancelToken.whenCancel.then((_) {
+        if (!localCancel.isCancelled) localCancel.cancel();
+      });
+    }
+    final buf = StringBuffer();
+    final consume = Future(() async {
+      await for (final chunk in llm.streamChat(
+        config: config,
+        thinking: false,
+        cancelToken: localCancel,
+        messages: [
+          LlmRequestMessage(
+            role: MessageRole.system,
+            content: classifierSystemPrompt(catalog),
+          ),
+          LlmRequestMessage(
+            role: MessageRole.user,
+            content: classifierUserPrompt(
+              userText: userText,
+              recent: recent,
+            ),
+          ),
+        ],
+      )) {
         if (chunk.contentDelta != null) buf.write(chunk.contentDelta);
       }
+    });
+    try {
+      await consume.timeout(timeout);
       return parseClassifierOutput(buf.toString(), catalog);
     } catch (_) {
+      if (!localCancel.isCancelled) localCancel.cancel();
+      unawaited(consume.then((_) {}, onError: (_) {}));
       return ChatSkillRoute(
         skill: catalog.fallback,
         source: ChatSkillSource.fallback,

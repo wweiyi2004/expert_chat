@@ -37,7 +37,24 @@ void main() {
   test('matchPrefix prefers the longest enabled prefix', () {
     final catalog = ChatSkillCatalog.factory();
     expect(catalog.matchPrefix('/代码 重构这段')?.id, 'code');
+    expect(catalog.matchPrefix('/代码重构这段')?.id, 'code');
+    expect(catalog.matchPrefix('/代码\r\n重构这段')?.id, 'code');
     expect(catalog.matchPrefix('重构这段'), isNull);
+  });
+
+  test('matchPrefix longest startsWith wins on overlapping prefixes', () {
+    final catalog = ChatSkillCatalog([
+      ...ChatSkillCatalog.factory().skills,
+      const ChatSkill(
+        id: 'write-short',
+        name: '写',
+        when: '短写',
+        prompt: '短',
+        prefix: '/写',
+      ),
+    ]);
+    expect(catalog.matchPrefix('/写作这段')?.id, 'writing');
+    expect(catalog.matchPrefix('/写一段')?.id, 'write-short');
   });
 
   test('disabled skill prefix does not match', () {

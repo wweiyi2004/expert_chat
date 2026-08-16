@@ -86,9 +86,9 @@ class SettingsState {
   /// Results requested per search call.
   final int searchMaxResults;
 
-  /// Optional global preset/persona prompt, prepended as a `system` message on
-  /// every request. Empty = no preset (model uses its own default behavior).
-  /// Kept in sync with [chatSkills].fallback.prompt on load and save.
+  /// User-authored general prompt. Empty on first install even though the
+  /// chat catalog fallback has factory text. Synced with
+  /// [chatSkills].fallback.prompt when the user edits general.
   final String systemPrompt;
 
   /// Per-turn skill catalog. Empty lists are sanitized on read/save.
@@ -489,13 +489,13 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       await prefs.remove(_kSelectedModel);
     }
 
+    final storedSystemPrompt = prefs.getString(_kSystemPrompt) ?? '';
     final catalog = ChatSkillCatalog.decode(
       prefs.getString(_kChatSkills),
-      legacySystemPrompt: prefs.getString(_kSystemPrompt) ?? '',
+      legacySystemPrompt: storedSystemPrompt,
     );
     if (prefs.getString(_kChatSkills) == null) {
       await prefs.setString(_kChatSkills, catalog.encode());
-      await prefs.setString(_kSystemPrompt, catalog.fallback.prompt);
     }
 
     return SettingsState(
@@ -519,7 +519,7 @@ class SettingsController extends AsyncNotifier<SettingsState> {
             kMinSearchMaxResults,
             kMaxSearchMaxResults,
           ),
-      systemPrompt: catalog.fallback.prompt,
+      systemPrompt: storedSystemPrompt,
       chatSkills: catalog,
       ui: _readUiPrefs(prefs),
       visionApi: _readMediaApi(prefs, _kVisionApi),

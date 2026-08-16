@@ -336,6 +336,31 @@ void main() {
     expect(prefs.getString('chatSkills'), isNotNull);
   });
 
+  test('first load with empty systemPrompt keeps factory out of storage', () async {
+    SharedPreferences.setMockInitialValues({});
+    FlutterSecureStoragePlatform.instance =
+        TestFlutterSecureStoragePlatform({});
+    addTearDown(() {
+      FlutterSecureStoragePlatform.instance =
+          TestFlutterSecureStoragePlatform({});
+    });
+    final prefs = await SharedPreferences.getInstance();
+    final container = ProviderContainer(
+      overrides: [
+        sharedPrefsProvider.overrideWithValue(prefs),
+        secureStorageProvider.overrideWithValue(const FlutterSecureStorage()),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    final state = await container.read(settingsControllerProvider.future);
+    final factoryGeneral = ChatSkillCatalog.factory().fallback.prompt;
+    expect(state.chatSkills.fallback.prompt, factoryGeneral);
+    expect(state.systemPrompt, isEmpty);
+    expect(prefs.getString('systemPrompt'), isNull);
+    expect(prefs.getString('chatSkills'), isNotNull);
+  });
+
   test('setChatSkills rejects a catalog with no fallback by sanitizing', () async {
     SharedPreferences.setMockInitialValues({});
     FlutterSecureStoragePlatform.instance =

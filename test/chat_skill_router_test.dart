@@ -5,6 +5,24 @@ import 'package:expert_chat/domain/chat/chat_skill_router.dart';
 import 'package:expert_chat/domain/llm/llm_provider.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+class _DripLlm implements LlmProvider {
+  @override
+  Stream<ChatChunk> streamChat({
+    required LlmConfig config,
+    required List<LlmRequestMessage> messages,
+    List<ToolSpec>? tools,
+    bool? thinking,
+    String? forceToolName,
+    CancelToken? cancelToken,
+  }) async* {
+    for (var i = 0; i < 20; i++) {
+      if (cancelToken?.isCancelled == true) return;
+      yield const ChatChunk(contentDelta: 'x');
+      await Future<void>.delayed(const Duration(milliseconds: 15));
+    }
+  }
+}
+
 class _FakeLlm implements LlmProvider {
   _FakeLlm(this.output, {this.onCall});
   final String output;
@@ -96,6 +114,22 @@ void main() {
       expect(route.skill.id, 'general', reason: raw);
       expect(route.source, ChatSkillSource.fallback);
     }
+  });
+
+  test('wall-clock timeout beats a slow drip and returns fallback', () async {
+    final sw = Stopwatch()..start();
+    final route = await router.route(
+      userText: '把这段改得更顺',
+      recent: const [],
+      catalog: catalog,
+      llm: _DripLlm(),
+      config: config,
+      timeout: const Duration(milliseconds: 50),
+    );
+    sw.stop();
+    expect(route.skill.id, 'general');
+    expect(route.source, ChatSkillSource.fallback);
+    expect(sw.elapsedMilliseconds, lessThan(200));
   });
 
   test('classifier user prompt includes recent turns and strips nothing required', () {

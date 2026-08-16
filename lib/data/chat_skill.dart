@@ -196,13 +196,9 @@ class ChatSkillCatalog {
     for (final s in enabled) {
       final prefix = s.prefix.trim();
       if (prefix.isEmpty) continue;
-      if (value == prefix ||
-          value.startsWith('$prefix ') ||
-          value.startsWith('$prefix\n')) {
-        if (prefix.length > bestLen) {
-          best = s;
-          bestLen = prefix.length;
-        }
+      if (value.startsWith(prefix) && prefix.length > bestLen) {
+        best = s;
+        bestLen = prefix.length;
       }
     }
     return best;

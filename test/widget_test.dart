@@ -51,6 +51,7 @@ class FakeLlmProvider implements LlmProvider {
   final List<List<ChatChunk>>? scriptedChunks;
   final List<List<LlmRequestMessage>> calls = [];
   final List<List<ToolSpec>?> toolCalls = [];
+  final List<LlmConfig> configs = [];
   LlmConfig? lastConfig;
   List<ToolSpec>? lastTools;
   bool? lastThinking;
@@ -68,6 +69,7 @@ class FakeLlmProvider implements LlmProvider {
     final callIndex = callCount++;
     calls.add(List<LlmRequestMessage>.of(messages));
     toolCalls.add(tools == null ? null : List<ToolSpec>.of(tools));
+    configs.add(config);
     lastConfig = config;
     lastTools = tools;
     lastThinking = thinking;
@@ -270,6 +272,14 @@ class FakeChatSkillSettings extends FakeSettings {
       chatSkills: catalog,
       systemPrompt: catalog.fallback.prompt,
     );
+  }
+}
+
+class FakeChatSkillSelectedModelSettings extends FakeChatSkillSettings {
+  @override
+  Future<SettingsState> build() async {
+    final base = await super.build();
+    return base.copyWith(selectedModel: KnownModels.reasoner);
   }
 }
 
@@ -881,6 +891,34 @@ void main() {
       expect(assistant.turnSkill?.id, 'writing');
       expect(assistant.turnSkill?.name, '写作');
       expect(assistant.turnSkill?.source, ChatSkillSource.model);
+    },
+  );
+
+  test(
+    'classifier uses the profile chat model, not selectedModel or reasoner',
+    () async {
+      final llm = FakeLlmProvider(
+        const [],
+        scriptedChunks: const [
+          [ChatChunk(contentDelta: '{"skill":"writing","confidence":0.9}')],
+          [ChatChunk(contentDelta: '改好了')],
+        ],
+      );
+      final c = _container(
+        llm,
+        InMemoryRepo(),
+        settingsBuilder: FakeChatSkillSelectedModelSettings.new,
+      );
+      addTearDown(c.dispose);
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
+      ctrl.toggleDeepThink();
+
+      await ctrl.sendMessage('把这段改得更顺');
+
+      expect(llm.configs, hasLength(2));
+      expect(llm.configs.first.model, KnownModels.chat);
+      expect(llm.lastConfig?.model, KnownModels.reasoner);
     },
   );
 

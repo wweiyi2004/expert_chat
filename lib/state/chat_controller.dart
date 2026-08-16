@@ -1706,7 +1706,13 @@ class ChatController extends AsyncNotifier<ChatState> {
         await _writeLongTask(convoId, assistantId, task);
         final messages = _longTaskMessages(convoId, assistantId);
         final settings = await ref.read(settingsControllerProvider.future);
-        final globalPrompt = settings.systemPrompt.trim();
+        final authoredGeneral = settings.systemPrompt.trim();
+        final factoryGeneral = ChatSkillCatalog.factory().fallback.prompt
+            .trim();
+        final globalPrompt =
+            authoredGeneral.isNotEmpty && authoredGeneral != factoryGeneral
+            ? authoredGeneral
+            : '';
         final instructions = [
           if (globalPrompt.isNotEmpty) globalPrompt,
           '你正在执行一个长时间文档处理任务。请完整阅读所有上传文件，'
@@ -3189,8 +3195,8 @@ class ChatController extends AsyncNotifier<ChatState> {
       );
     }
 
-    // System prefix: story / ensemble use the assembler; chat uses the
-    // per-turn skill (or the global fallback). Study keeps its own prompt.
+    // System prefix: story / ensemble use the assembler (no chat catalog
+    // persona). Chat uses the per-turn skill. Study keeps its own prompt.
     if (cur.isStoryLike) {
       final worldPool = cur.worldInfoIds.isEmpty
           ? const <WorldInfoEntry>[]
@@ -3256,7 +3262,7 @@ class ChatController extends AsyncNotifier<ChatState> {
           ? cur
           : cur.copyWith(plotCursor: promptPlotCursor);
       final prefix = const StoryPromptAssembler().buildSystemPrefix(
-        globalSystemPrompt: settings.systemPrompt,
+        globalSystemPrompt: '',
         character: card,
         cast: cast,
         speakingAs: ensembleSpeaker,
@@ -3346,7 +3352,9 @@ class ChatController extends AsyncNotifier<ChatState> {
             ),
             catalog: settings.chatSkills,
             llm: ref.read(llmProvider),
-            config: settings.config,
+            config: settings.config.copyWith(
+              model: settings.active?.chatModel ?? settings.model,
+            ),
             cancelToken: cancelToken,
           );
         }

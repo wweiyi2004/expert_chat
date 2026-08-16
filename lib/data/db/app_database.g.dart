@@ -1087,6 +1087,17 @@ class $MessagesTable extends Messages with TableInfo<$MessagesTable, Message> {
     type: DriftSqlType.string,
     requiredDuringInsert: false,
   );
+  static const VerificationMeta _turnSkillJsonMeta = const VerificationMeta(
+    'turnSkillJson',
+  );
+  @override
+  late final GeneratedColumn<String> turnSkillJson = GeneratedColumn<String>(
+    'turn_skill_json',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
   @override
   List<GeneratedColumn> get $columns => [
     id,
@@ -1107,6 +1118,7 @@ class $MessagesTable extends Messages with TableInfo<$MessagesTable, Message> {
     searchActivitiesJson,
     appliedWorldInfoJson,
     longTaskJson,
+    turnSkillJson,
   ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -1256,6 +1268,15 @@ class $MessagesTable extends Messages with TableInfo<$MessagesTable, Message> {
         ),
       );
     }
+    if (data.containsKey('turn_skill_json')) {
+      context.handle(
+        _turnSkillJsonMeta,
+        turnSkillJson.isAcceptableOrUnknown(
+          data['turn_skill_json']!,
+          _turnSkillJsonMeta,
+        ),
+      );
+    }
     return context;
   }
 
@@ -1337,6 +1358,10 @@ class $MessagesTable extends Messages with TableInfo<$MessagesTable, Message> {
         DriftSqlType.string,
         data['${effectivePrefix}long_task_json'],
       ),
+      turnSkillJson: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}turn_skill_json'],
+      ),
     );
   }
 
@@ -1365,6 +1390,7 @@ class Message extends DataClass implements Insertable<Message> {
   final String? searchActivitiesJson;
   final String? appliedWorldInfoJson;
   final String? longTaskJson;
+  final String? turnSkillJson;
   const Message({
     required this.id,
     required this.convoId,
@@ -1384,6 +1410,7 @@ class Message extends DataClass implements Insertable<Message> {
     this.searchActivitiesJson,
     this.appliedWorldInfoJson,
     this.longTaskJson,
+    this.turnSkillJson,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -1423,6 +1450,9 @@ class Message extends DataClass implements Insertable<Message> {
     }
     if (!nullToAbsent || longTaskJson != null) {
       map['long_task_json'] = Variable<String>(longTaskJson);
+    }
+    if (!nullToAbsent || turnSkillJson != null) {
+      map['turn_skill_json'] = Variable<String>(turnSkillJson);
     }
     return map;
   }
@@ -1465,6 +1495,9 @@ class Message extends DataClass implements Insertable<Message> {
       longTaskJson: longTaskJson == null && nullToAbsent
           ? const Value.absent()
           : Value(longTaskJson),
+      turnSkillJson: turnSkillJson == null && nullToAbsent
+          ? const Value.absent()
+          : Value(turnSkillJson),
     );
   }
 
@@ -1496,6 +1529,7 @@ class Message extends DataClass implements Insertable<Message> {
         json['appliedWorldInfoJson'],
       ),
       longTaskJson: serializer.fromJson<String?>(json['longTaskJson']),
+      turnSkillJson: serializer.fromJson<String?>(json['turnSkillJson']),
     );
   }
   @override
@@ -1520,6 +1554,7 @@ class Message extends DataClass implements Insertable<Message> {
       'searchActivitiesJson': serializer.toJson<String?>(searchActivitiesJson),
       'appliedWorldInfoJson': serializer.toJson<String?>(appliedWorldInfoJson),
       'longTaskJson': serializer.toJson<String?>(longTaskJson),
+      'turnSkillJson': serializer.toJson<String?>(turnSkillJson),
     };
   }
 
@@ -1542,6 +1577,7 @@ class Message extends DataClass implements Insertable<Message> {
     Value<String?> searchActivitiesJson = const Value.absent(),
     Value<String?> appliedWorldInfoJson = const Value.absent(),
     Value<String?> longTaskJson = const Value.absent(),
+    Value<String?> turnSkillJson = const Value.absent(),
   }) => Message(
     id: id ?? this.id,
     convoId: convoId ?? this.convoId,
@@ -1569,6 +1605,9 @@ class Message extends DataClass implements Insertable<Message> {
         ? appliedWorldInfoJson.value
         : this.appliedWorldInfoJson,
     longTaskJson: longTaskJson.present ? longTaskJson.value : this.longTaskJson,
+    turnSkillJson: turnSkillJson.present
+        ? turnSkillJson.value
+        : this.turnSkillJson,
   );
   Message copyWithCompanion(MessagesCompanion data) {
     return Message(
@@ -1604,6 +1643,9 @@ class Message extends DataClass implements Insertable<Message> {
       longTaskJson: data.longTaskJson.present
           ? data.longTaskJson.value
           : this.longTaskJson,
+      turnSkillJson: data.turnSkillJson.present
+          ? data.turnSkillJson.value
+          : this.turnSkillJson,
     );
   }
 
@@ -1627,7 +1669,8 @@ class Message extends DataClass implements Insertable<Message> {
           ..write('kind: $kind, ')
           ..write('searchActivitiesJson: $searchActivitiesJson, ')
           ..write('appliedWorldInfoJson: $appliedWorldInfoJson, ')
-          ..write('longTaskJson: $longTaskJson')
+          ..write('longTaskJson: $longTaskJson, ')
+          ..write('turnSkillJson: $turnSkillJson')
           ..write(')'))
         .toString();
   }
@@ -1652,6 +1695,7 @@ class Message extends DataClass implements Insertable<Message> {
     searchActivitiesJson,
     appliedWorldInfoJson,
     longTaskJson,
+    turnSkillJson,
   );
   @override
   bool operator ==(Object other) =>
@@ -1674,7 +1718,8 @@ class Message extends DataClass implements Insertable<Message> {
           other.kind == this.kind &&
           other.searchActivitiesJson == this.searchActivitiesJson &&
           other.appliedWorldInfoJson == this.appliedWorldInfoJson &&
-          other.longTaskJson == this.longTaskJson);
+          other.longTaskJson == this.longTaskJson &&
+          other.turnSkillJson == this.turnSkillJson);
 }
 
 class MessagesCompanion extends UpdateCompanion<Message> {
@@ -1696,6 +1741,7 @@ class MessagesCompanion extends UpdateCompanion<Message> {
   final Value<String?> searchActivitiesJson;
   final Value<String?> appliedWorldInfoJson;
   final Value<String?> longTaskJson;
+  final Value<String?> turnSkillJson;
   final Value<int> rowid;
   const MessagesCompanion({
     this.id = const Value.absent(),
@@ -1716,6 +1762,7 @@ class MessagesCompanion extends UpdateCompanion<Message> {
     this.searchActivitiesJson = const Value.absent(),
     this.appliedWorldInfoJson = const Value.absent(),
     this.longTaskJson = const Value.absent(),
+    this.turnSkillJson = const Value.absent(),
     this.rowid = const Value.absent(),
   });
   MessagesCompanion.insert({
@@ -1737,6 +1784,7 @@ class MessagesCompanion extends UpdateCompanion<Message> {
     this.searchActivitiesJson = const Value.absent(),
     this.appliedWorldInfoJson = const Value.absent(),
     this.longTaskJson = const Value.absent(),
+    this.turnSkillJson = const Value.absent(),
     this.rowid = const Value.absent(),
   }) : id = Value(id),
        convoId = Value(convoId),
@@ -1762,6 +1810,7 @@ class MessagesCompanion extends UpdateCompanion<Message> {
     Expression<String>? searchActivitiesJson,
     Expression<String>? appliedWorldInfoJson,
     Expression<String>? longTaskJson,
+    Expression<String>? turnSkillJson,
     Expression<int>? rowid,
   }) {
     return RawValuesInsertable({
@@ -1785,6 +1834,7 @@ class MessagesCompanion extends UpdateCompanion<Message> {
       if (appliedWorldInfoJson != null)
         'applied_world_info_json': appliedWorldInfoJson,
       if (longTaskJson != null) 'long_task_json': longTaskJson,
+      if (turnSkillJson != null) 'turn_skill_json': turnSkillJson,
       if (rowid != null) 'rowid': rowid,
     });
   }
@@ -1808,6 +1858,7 @@ class MessagesCompanion extends UpdateCompanion<Message> {
     Value<String?>? searchActivitiesJson,
     Value<String?>? appliedWorldInfoJson,
     Value<String?>? longTaskJson,
+    Value<String?>? turnSkillJson,
     Value<int>? rowid,
   }) {
     return MessagesCompanion(
@@ -1829,6 +1880,7 @@ class MessagesCompanion extends UpdateCompanion<Message> {
       searchActivitiesJson: searchActivitiesJson ?? this.searchActivitiesJson,
       appliedWorldInfoJson: appliedWorldInfoJson ?? this.appliedWorldInfoJson,
       longTaskJson: longTaskJson ?? this.longTaskJson,
+      turnSkillJson: turnSkillJson ?? this.turnSkillJson,
       rowid: rowid ?? this.rowid,
     );
   }
@@ -1894,6 +1946,9 @@ class MessagesCompanion extends UpdateCompanion<Message> {
     if (longTaskJson.present) {
       map['long_task_json'] = Variable<String>(longTaskJson.value);
     }
+    if (turnSkillJson.present) {
+      map['turn_skill_json'] = Variable<String>(turnSkillJson.value);
+    }
     if (rowid.present) {
       map['rowid'] = Variable<int>(rowid.value);
     }
@@ -1921,6 +1976,7 @@ class MessagesCompanion extends UpdateCompanion<Message> {
           ..write('searchActivitiesJson: $searchActivitiesJson, ')
           ..write('appliedWorldInfoJson: $appliedWorldInfoJson, ')
           ..write('longTaskJson: $longTaskJson, ')
+          ..write('turnSkillJson: $turnSkillJson, ')
           ..write('rowid: $rowid')
           ..write(')'))
         .toString();
@@ -4607,6 +4663,7 @@ typedef $$MessagesTableCreateCompanionBuilder =
       Value<String?> searchActivitiesJson,
       Value<String?> appliedWorldInfoJson,
       Value<String?> longTaskJson,
+      Value<String?> turnSkillJson,
       Value<int> rowid,
     });
 typedef $$MessagesTableUpdateCompanionBuilder =
@@ -4629,6 +4686,7 @@ typedef $$MessagesTableUpdateCompanionBuilder =
       Value<String?> searchActivitiesJson,
       Value<String?> appliedWorldInfoJson,
       Value<String?> longTaskJson,
+      Value<String?> turnSkillJson,
       Value<int> rowid,
     });
 
@@ -4750,6 +4808,11 @@ class $$MessagesTableFilterComposer
     builder: (column) => ColumnFilters(column),
   );
 
+  ColumnFilters<String> get turnSkillJson => $composableBuilder(
+    column: $table.turnSkillJson,
+    builder: (column) => ColumnFilters(column),
+  );
+
   $$ConversationsTableFilterComposer get convoId {
     final $$ConversationsTableFilterComposer composer = $composerBuilder(
       composer: this,
@@ -4868,6 +4931,11 @@ class $$MessagesTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get turnSkillJson => $composableBuilder(
+    column: $table.turnSkillJson,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   $$ConversationsTableOrderingComposer get convoId {
     final $$ConversationsTableOrderingComposer composer = $composerBuilder(
       composer: this,
@@ -4966,6 +5034,11 @@ class $$MessagesTableAnnotationComposer
     builder: (column) => column,
   );
 
+  GeneratedColumn<String> get turnSkillJson => $composableBuilder(
+    column: $table.turnSkillJson,
+    builder: (column) => column,
+  );
+
   $$ConversationsTableAnnotationComposer get convoId {
     final $$ConversationsTableAnnotationComposer composer = $composerBuilder(
       composer: this,
@@ -5036,6 +5109,7 @@ class $$MessagesTableTableManager
                 Value<String?> searchActivitiesJson = const Value.absent(),
                 Value<String?> appliedWorldInfoJson = const Value.absent(),
                 Value<String?> longTaskJson = const Value.absent(),
+                Value<String?> turnSkillJson = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => MessagesCompanion(
                 id: id,
@@ -5056,6 +5130,7 @@ class $$MessagesTableTableManager
                 searchActivitiesJson: searchActivitiesJson,
                 appliedWorldInfoJson: appliedWorldInfoJson,
                 longTaskJson: longTaskJson,
+                turnSkillJson: turnSkillJson,
                 rowid: rowid,
               ),
           createCompanionCallback:
@@ -5078,6 +5153,7 @@ class $$MessagesTableTableManager
                 Value<String?> searchActivitiesJson = const Value.absent(),
                 Value<String?> appliedWorldInfoJson = const Value.absent(),
                 Value<String?> longTaskJson = const Value.absent(),
+                Value<String?> turnSkillJson = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => MessagesCompanion.insert(
                 id: id,
@@ -5098,6 +5174,7 @@ class $$MessagesTableTableManager
                 searchActivitiesJson: searchActivitiesJson,
                 appliedWorldInfoJson: appliedWorldInfoJson,
                 longTaskJson: longTaskJson,
+                turnSkillJson: turnSkillJson,
                 rowid: rowid,
               ),
           withReferenceMapper: (p0) => p0

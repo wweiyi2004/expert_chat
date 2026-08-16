@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/providers.dart';
+import '../data/chat_skill.dart';
 import '../data/context_prefs.dart';
 import '../data/gateway_config.dart';
 import '../data/media_api_config.dart';
@@ -39,6 +40,7 @@ class SettingsState {
     this.searchMaxRounds = kDefaultSearchMaxRounds,
     this.searchMaxResults = kDefaultSearchMaxResults,
     this.systemPrompt = '',
+    this.chatSkills = const ChatSkillCatalog([]),
     this.ui = const UiPrefs(),
     this.visionApi = const MediaApiConfig(),
     this.visionApiKey = '',
@@ -84,9 +86,13 @@ class SettingsState {
   /// Results requested per search call.
   final int searchMaxResults;
 
-  /// Optional global preset/persona prompt, prepended as a `system` message on
-  /// every request. Empty = no preset (model uses its own default behavior).
+  /// User-authored general prompt. Empty on first install even though the
+  /// chat catalog fallback has factory text. Synced with
+  /// [chatSkills].fallback.prompt when the user edits general.
   final String systemPrompt;
+
+  /// Per-turn skill catalog. Empty lists are sanitized on read/save.
+  final ChatSkillCatalog chatSkills;
 
   /// Appearance / reading preferences (text scale, density, message style…).
   final UiPrefs ui;
@@ -194,6 +200,7 @@ class SettingsState {
     int? searchMaxRounds,
     int? searchMaxResults,
     String? systemPrompt,
+    ChatSkillCatalog? chatSkills,
     UiPrefs? ui,
     MediaApiConfig? visionApi,
     String? visionApiKey,
@@ -229,6 +236,7 @@ class SettingsState {
     searchMaxRounds: searchMaxRounds ?? this.searchMaxRounds,
     searchMaxResults: searchMaxResults ?? this.searchMaxResults,
     systemPrompt: systemPrompt ?? this.systemPrompt,
+    chatSkills: chatSkills ?? this.chatSkills,
     ui: ui ?? this.ui,
     visionApi: visionApi ?? this.visionApi,
     visionApiKey: visionApiKey ?? this.visionApiKey,
@@ -265,6 +273,7 @@ const _kSearchBrainModel = 'searchBrainModel';
 const _kSearchMaxRounds = 'searchMaxRounds';
 const _kSearchMaxResults = 'searchMaxResults';
 const _kSystemPrompt = 'systemPrompt';
+const _kChatSkills = 'chatSkills';
 const _kUiPrefs = 'uiPrefs';
 const _kVisionApi = 'visionApi';
 const _kVisionApiKeySecure = 'vision_api_key';
@@ -480,6 +489,15 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       await prefs.remove(_kSelectedModel);
     }
 
+    final storedSystemPrompt = prefs.getString(_kSystemPrompt) ?? '';
+    final catalog = ChatSkillCatalog.decode(
+      prefs.getString(_kChatSkills),
+      legacySystemPrompt: storedSystemPrompt,
+    );
+    if (prefs.getString(_kChatSkills) == null) {
+      await prefs.setString(_kChatSkills, catalog.encode());
+    }
+
     return SettingsState(
       profiles: profiles,
       activeProfileId: activeId,
@@ -501,7 +519,8 @@ class SettingsController extends AsyncNotifier<SettingsState> {
             kMinSearchMaxResults,
             kMaxSearchMaxResults,
           ),
-      systemPrompt: prefs.getString(_kSystemPrompt) ?? '',
+      systemPrompt: storedSystemPrompt,
+      chatSkills: catalog,
       ui: _readUiPrefs(prefs),
       visionApi: _readMediaApi(prefs, _kVisionApi),
       visionApiKey: visionApiKey,
@@ -942,10 +961,29 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     ),
   );
 
+  Future<void> setChatSkills(ChatSkillCatalog catalog) async {
+    final next = catalog.sanitize(
+      legacySystemPrompt: _current.systemPrompt,
+    );
+    state = AsyncData(
+      _current.copyWith(
+        chatSkills: next,
+        systemPrompt: next.fallback.prompt,
+      ),
+    );
+    final prefs = ref.read(sharedPrefsProvider);
+    await prefs.setString(_kChatSkills, next.encode());
+    await prefs.setString(_kSystemPrompt, next.fallback.prompt);
+  }
+
   /// Set the global preset/system prompt (persisted in shared preferences).
   Future<void> setSystemPrompt(String prompt) async {
-    state = AsyncData(_current.copyWith(systemPrompt: prompt));
-    await ref.read(sharedPrefsProvider).setString(_kSystemPrompt, prompt);
+    final updated = _current.chatSkills.update(
+      (s) => s.id == _current.chatSkills.fallback.id
+          ? s.copyWith(prompt: prompt)
+          : s,
+    );
+    await setChatSkills(updated);
   }
 
   Future<void> setContextPrefs(ContextPrefs context) async {

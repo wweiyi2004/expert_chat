@@ -1,3 +1,4 @@
+import 'package:expert_chat/data/chat_skill.dart';
 import 'package:expert_chat/data/media_api_config.dart';
 import 'package:expert_chat/data/provider_profile.dart';
 import 'package:expert_chat/data/gateway_config.dart';
@@ -24,6 +25,7 @@ class _FakeSettingsController extends SettingsController {
       profiles: [profile],
       activeProfileId: profile.id,
       apiKey: 'sk-test',
+      chatSkills: ChatSkillCatalog.factory(),
     );
     _ttsConfigs[initial.ttsApi.effectiveSpeechProtocol] = initial.ttsApi;
     return initial;
@@ -68,6 +70,19 @@ class _FakeSettingsController extends SettingsController {
   @override
   Future<void> setGatewayConfig(GatewayConfig config) async {
     state = AsyncData(state.requireValue.copyWith(gateway: config));
+  }
+
+  @override
+  Future<void> setChatSkills(ChatSkillCatalog catalog) async {
+    final next = catalog.sanitize(
+      legacySystemPrompt: state.requireValue.systemPrompt,
+    );
+    state = AsyncData(
+      state.requireValue.copyWith(
+        chatSkills: next,
+        systemPrompt: next.fallback.prompt,
+      ),
+    );
   }
 
   @override
@@ -691,5 +706,17 @@ void main() {
       MediaApiConfig.mimoTtsCloneModel,
     );
     expect(find.text('上传录音'), findsOneWidget);
+  });
+
+  testWidgets('preset prompt section lists factory skill names', (tester) async {
+    await pumpSettingsPage(tester, tall: true);
+    await tester.scrollUntilVisible(
+      find.text('预设提示词'),
+      200,
+      scrollable: find.byType(Scrollable).last,
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('写作'), findsWidgets);
+    expect(find.text('添加任务类型'), findsOneWidget);
   });
 }

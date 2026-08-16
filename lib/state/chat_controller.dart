@@ -8,10 +8,12 @@ import 'package:flutter/foundation.dart' show compute, kIsWeb;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/providers.dart';
+import '../data/chat_skill.dart';
 import '../data/gateway_config.dart';
 import '../data/models.dart';
 import '../data/story_models.dart';
 import '../data/study_models.dart';
+import '../domain/chat/chat_skill_router.dart';
 import '../domain/context/context_window_manager.dart';
 import '../domain/llm/long_task_gateway_client.dart';
 import '../domain/llm/llm_provider.dart';
@@ -1704,7 +1706,13 @@ class ChatController extends AsyncNotifier<ChatState> {
         await _writeLongTask(convoId, assistantId, task);
         final messages = _longTaskMessages(convoId, assistantId);
         final settings = await ref.read(settingsControllerProvider.future);
-        final globalPrompt = settings.systemPrompt.trim();
+        final authoredGeneral = settings.systemPrompt.trim();
+        final factoryGeneral = ChatSkillCatalog.factory().fallback.prompt
+            .trim();
+        final globalPrompt =
+            authoredGeneral.isNotEmpty && authoredGeneral != factoryGeneral
+            ? authoredGeneral
+            : '';
         final instructions = [
           if (globalPrompt.isNotEmpty) globalPrompt,
           '你正在执行一个长时间文档处理任务。请完整阅读所有上传文件，'
@@ -3187,7 +3195,8 @@ class ChatController extends AsyncNotifier<ChatState> {
       );
     }
 
-    // System prefix: story / ensemble use the assembler; chat keeps global only.
+    // System prefix: story / ensemble use the assembler (no chat catalog
+    // persona). Chat uses the per-turn skill. Study keeps its own prompt.
     if (cur.isStoryLike) {
       final worldPool = cur.worldInfoIds.isEmpty
           ? const <WorldInfoEntry>[]
@@ -3253,7 +3262,7 @@ class ChatController extends AsyncNotifier<ChatState> {
           ? cur
           : cur.copyWith(plotCursor: promptPlotCursor);
       final prefix = const StoryPromptAssembler().buildSystemPrefix(
-        globalSystemPrompt: settings.systemPrompt,
+        globalSystemPrompt: '',
         character: card,
         cast: cast,
         speakingAs: ensembleSpeaker,
@@ -3324,6 +3333,41 @@ class ChatController extends AsyncNotifier<ChatState> {
       history.insertAll(0, systemPrefix);
       history.addAll(prefix.postHistoryMessages);
     } else {
+      ChatSkillRoute? skillRoute;
+      if (cur.mode == ConversationMode.chat &&
+          settings.chatSkills.enabled.isNotEmpty) {
+        if (!settings.config.isReady) {
+          skillRoute = ChatSkillRoute(
+            skill: settings.chatSkills.fallback,
+            source: ChatSkillSource.fallback,
+          );
+        } else {
+          final parentUser = _parentUserForTurn(working, assistantId);
+          skillRoute = await const ChatSkillRouter().route(
+            userText: parentUser?.content ?? '',
+            recent: _recentTurnsBefore(
+              working,
+              assistantId: assistantId,
+              excludeId: parentUser?.id,
+            ),
+            catalog: settings.chatSkills,
+            llm: ref.read(llmProvider),
+            config: settings.config.copyWith(
+              model: settings.active?.chatModel ?? settings.model,
+            ),
+            cancelToken: cancelToken,
+          );
+        }
+        _setTurnSkill(
+          working.id,
+          assistantId,
+          TurnSkillMark(
+            id: skillRoute.skill.id,
+            name: skillRoute.skill.name,
+            source: skillRoute.source,
+          ),
+        );
+      }
       if (cur.isStudy) {
         final studySystem = await _studySystemPrompt(cur);
         if (studySystem.isNotEmpty) {
@@ -3339,7 +3383,11 @@ class ChatController extends AsyncNotifier<ChatState> {
           LlmRequestMessage(role: MessageRole.system, content: memoryPrompt),
         );
       }
-      final preset = settings.systemPrompt.trim();
+      final preset = chatPresetPrompt(
+        mode: cur.mode,
+        route: skillRoute,
+        fallbackPrompt: settings.systemPrompt.trim(),
+      );
       if (preset.isNotEmpty) {
         history.insert(
           0,
@@ -4166,6 +4214,44 @@ class ChatController extends AsyncNotifier<ChatState> {
 
   /// User attachments belonging to the turn that produced [assistantId]
   /// (walk parent chain to the nearest user message).
+  ChatMessage? _parentUserForTurn(Conversation convo, String assistantId) {
+    final byId = {for (final m in convo.messages) m.id: m};
+    var cur = byId[assistantId];
+    while (cur != null) {
+      if (cur.role == MessageRole.user) return cur;
+      final parentId = cur.parentId;
+      if (parentId == null) break;
+      cur = byId[parentId];
+    }
+    return null;
+  }
+
+  List<ChatMessage> _recentTurnsBefore(
+    Conversation convo, {
+    required String assistantId,
+    String? excludeId,
+  }) => [
+    for (final message in convo.activePath)
+      if (message.id != assistantId &&
+          message.id != excludeId &&
+          (message.role == MessageRole.user ||
+              message.role == MessageRole.assistant))
+        message,
+  ];
+
+  void _setTurnSkill(String convoId, String msgId, TurnSkillMark mark) {
+    final idx = _s.conversations.indexWhere((c) => c.id == convoId);
+    if (idx < 0) return;
+    final convo = _s.conversations[idx];
+    final messages = [
+      for (final m in convo.messages)
+        if (m.id == msgId) m.copyWith(turnSkill: mark) else m,
+    ];
+    _set(
+      _s.copyWith(conversations: _replace(convo.copyWith(messages: messages))),
+    );
+  }
+
   List<Attachment> _userAttachmentsForTurn(
     Conversation working,
     String assistantId,

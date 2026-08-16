@@ -9,6 +9,7 @@ import 'package:gpt_markdown/gpt_markdown.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/theme.dart';
+import '../../../data/chat_skill.dart';
 import '../../../data/models.dart';
 import '../../../data/ui_prefs.dart';
 import '../../../domain/html/html_snippet.dart';
@@ -513,6 +514,7 @@ class _MessageBubbleState extends State<MessageBubble> {
                 activities: m.searchActivities,
                 isStreaming: widget.isStreaming,
               ),
+            if (m.turnSkill != null) _TurnSkillChip(mark: m.turnSkill!),
             if (m.appliedWorldInfo.isNotEmpty)
               _AppliedWorldInfoBar(hits: m.appliedWorldInfo),
             if (hasReasoning)
@@ -892,6 +894,63 @@ class _LongTaskCard extends StatelessWidget {
     LongTaskStatus.failed => '处理失败',
     LongTaskStatus.cancelled => '已取消',
   };
+}
+
+String _turnSkillSourceLabel(ChatSkillSource source) => switch (source) {
+  ChatSkillSource.prefix => '已指定',
+  ChatSkillSource.model => '自动',
+  ChatSkillSource.fallback => '回退',
+};
+
+/// Outlined chip showing which catalog skill handled this assistant turn.
+class _TurnSkillChip extends StatelessWidget {
+  const _TurnSkillChip({required this.mark});
+
+  final TurnSkillMark mark;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final source = _turnSkillSourceLabel(mark.source);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Tooltip(
+        message: source,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(color: scheme.outline.withValues(alpha: 0.4)),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.auto_awesome_outlined,
+                size: 14,
+                color: scheme.onSurfaceVariant,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                '本轮：${mark.name}',
+                style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                  color: scheme.onSurface,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                source,
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 /// Compact strip listing world-info entries injected for this story turn.

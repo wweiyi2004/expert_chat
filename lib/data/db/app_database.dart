@@ -63,6 +63,8 @@ class Messages extends Table {
   TextColumn get appliedWorldInfoJson => text().nullable()();
   // Durable server-side document-processing job metadata (v11).
   TextColumn get longTaskJson => text().nullable()();
+  // Per-turn skill route persisted on the assistant message (v12).
+  TextColumn get turnSkillJson => text().nullable()();
 
   @override
   Set<Column> get primaryKey => {id};
@@ -149,7 +151,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase([QueryExecutor? executor]) : super(executor ?? _open());
 
   @override
-  int get schemaVersion => 11;
+  int get schemaVersion => 12;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -208,6 +210,9 @@ class AppDatabase extends _$AppDatabase {
       }
       if (from < 11) {
         await m.addColumn(messages, messages.longTaskJson);
+      }
+      if (from < 12) {
+        await m.addColumn(messages, messages.turnSkillJson);
       }
     },
     beforeOpen: (details) async {

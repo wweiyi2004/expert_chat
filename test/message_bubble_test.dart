@@ -1,3 +1,4 @@
+import 'package:expert_chat/data/chat_skill.dart';
 import 'package:expert_chat/data/models.dart';
 import 'package:expert_chat/features/chat/widgets/message_bubble.dart';
 import 'package:flutter/material.dart';
@@ -105,5 +106,29 @@ void main() {
     expect(find.text('这里是可展开的思考过程'), findsOneWidget);
     expect(find.text('最终回答'), findsOneWidget);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('assistant bubble shows turn skill chip', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: MessageBubble(
+            message: ChatMessage(
+              role: MessageRole.assistant,
+              content: '按你的要求改写好了。',
+              turnSkill: const TurnSkillMark(
+                id: 'writing',
+                name: '写作',
+                source: ChatSkillSource.model,
+              ),
+            ),
+            isStreaming: false,
+          ),
+        ),
+      ),
+    );
+
+    expect(find.textContaining('本轮：写作'), findsOneWidget);
+    expect(find.text('自动'), findsOneWidget);
   });
 }

@@ -1,5 +1,6 @@
-import 'package:drift/drift.dart';
+import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:drift/native.dart';
+import 'package:expert_chat/data/chat_skill.dart';
 import 'package:expert_chat/data/db/app_database.dart' hide Conversation;
 import 'package:expert_chat/data/drift_conversation_repository.dart';
 import 'package:expert_chat/data/models.dart';
@@ -674,6 +675,71 @@ void main() {
       expect(restored.remoteFileIds, ['file_123']);
     },
   );
+
+  test('round-trips a per-turn skill mark through JSON and copyWith', () {
+    final message = ChatMessage(
+      id: 'asst-1',
+      role: MessageRole.assistant,
+      content: '成稿',
+      turnSkill: const TurnSkillMark(
+        id: 'writing',
+        name: '写作',
+        source: ChatSkillSource.model,
+      ),
+    );
+
+    final restored = ChatMessage.fromJson(message.toJson());
+    expect(restored.turnSkill, isNotNull);
+    expect(restored.turnSkill!.id, 'writing');
+    expect(restored.turnSkill!.name, '写作');
+    expect(restored.turnSkill!.source, ChatSkillSource.model);
+
+    expect(message.copyWith(content: '改写').turnSkill!.id, 'writing');
+    expect(message.copyWith(turnSkill: null).turnSkill, isNull);
+    expect(
+      ChatMessage.fromJson(const {
+        'id': 'legacy',
+        'role': 'assistant',
+        'content': 'ok',
+      }).turnSkill,
+      isNull,
+    );
+  });
+
+  test('persists the per-turn skill mark on assistant messages', () async {
+    final db = AppDatabase(NativeDatabase.memory());
+    addTearDown(db.close);
+    final repo = DriftConversationRepository(db);
+    final user = ChatMessage(
+      id: 'skill-user',
+      role: MessageRole.user,
+      content: '/写作 润色这段',
+    );
+    final assistant = ChatMessage(
+      id: 'skill-assistant',
+      role: MessageRole.assistant,
+      parentId: user.id,
+      content: '润色后的正文',
+      turnSkill: const TurnSkillMark(
+        id: 'writing',
+        name: '写作',
+        source: ChatSkillSource.model,
+      ),
+    );
+    final conversation = Conversation(
+      id: 'skill-conversation',
+      messages: [user, assistant],
+      activeChildren: {kRootKey: user.id, user.id: assistant.id},
+    );
+
+    await repo.saveAll([conversation]);
+    final restored = (await repo.loadAll()).single.messages.last.turnSkill;
+
+    expect(restored, isNotNull);
+    expect(restored!.id, 'writing');
+    expect(restored.name, '写作');
+    expect(restored.source, ChatSkillSource.model);
+  });
 }
 
 Future<List<String>> _auditOperations(AppDatabase db) async {

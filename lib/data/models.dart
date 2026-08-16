@@ -1,6 +1,7 @@
 import 'package:uuid/uuid.dart';
 
 import '../domain/story/story_prompt_assembler.dart' show WorldInfoHit;
+import 'chat_skill.dart';
 import 'story_models.dart';
 
 const _uuid = Uuid();
@@ -443,6 +444,7 @@ class ChatMessage {
     List<SearchActivity>? searchActivities,
     List<WorldInfoHit>? appliedWorldInfo,
     this.longTask,
+    this.turnSkill,
     DateTime? createdAt,
   }) : id = id ?? _uuid.v4(),
        attachments = attachments ?? const [],
@@ -492,6 +494,10 @@ class ChatMessage {
   /// message. Null for ordinary chat messages.
   final LongTaskState? longTask;
 
+  /// Skill selected for this assistant turn. Null for ordinary / legacy
+  /// messages that were never routed.
+  final TurnSkillMark? turnSkill;
+
   final DateTime createdAt;
 
   ChatMessage copyWith({
@@ -507,6 +513,7 @@ class ChatMessage {
     List<SearchActivity>? searchActivities,
     List<WorldInfoHit>? appliedWorldInfo,
     Object? longTask = _msgSentinel,
+    Object? turnSkill = _msgSentinel,
   }) => ChatMessage(
     id: id,
     role: role,
@@ -529,6 +536,9 @@ class ChatMessage {
     longTask: identical(longTask, _msgSentinel)
         ? this.longTask
         : longTask as LongTaskState?,
+    turnSkill: identical(turnSkill, _msgSentinel)
+        ? this.turnSkill
+        : turnSkill as TurnSkillMark?,
     createdAt: createdAt,
   );
 
@@ -554,6 +564,7 @@ class ChatMessage {
     if (appliedWorldInfo.isNotEmpty)
       'appliedWorldInfo': appliedWorldInfo.map((a) => a.toJson()).toList(),
     if (longTask != null) 'longTask': longTask!.toJson(),
+    if (turnSkill != null) 'turnSkill': turnSkill!.toJson(),
     'createdAt': createdAt.toIso8601String(),
   };
 
@@ -585,6 +596,9 @@ class ChatMessage {
         .toList(),
     longTask: json['longTask'] is Map<String, dynamic>
         ? LongTaskState.fromJson(json['longTask'] as Map<String, dynamic>)
+        : null,
+    turnSkill: json['turnSkill'] is Map<String, dynamic>
+        ? TurnSkillMark.fromJson(json['turnSkill'] as Map<String, dynamic>)
         : null,
     createdAt: _parseStoredTime(json['createdAt']),
   );

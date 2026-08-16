@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:drift/drift.dart';
 
 import '../domain/story/story_prompt_assembler.dart' show WorldInfoHit;
+import 'chat_skill.dart';
 import 'conversation_repository.dart';
 // Hide drift's generated `Conversation` data class so our domain model wins;
 // the drift `Message` row type is still used below for mapping.
@@ -223,6 +224,7 @@ class DriftConversationRepository implements ConversationRepository {
       stored.searchActivitiesJson == _searchActivitiesJson(message) &&
       stored.appliedWorldInfoJson == _appliedWorldInfoJson(message) &&
       stored.longTaskJson == _longTaskJson(message) &&
+      stored.turnSkillJson == _turnSkillJson(message) &&
       _matchesStoredTimestamp(stored.createdAt, message.createdAt) &&
       stored.seq == seq;
 
@@ -332,6 +334,7 @@ class DriftConversationRepository implements ConversationRepository {
       (e) => WorldInfoHit.fromJson(e),
     ),
     longTask: _decodeObject(m.longTaskJson, LongTaskState.fromJson),
+    turnSkill: _decodeObject(m.turnSkillJson, TurnSkillMark.fromJson),
   );
 
   String? _attachmentsJson(ChatMessage message) => message.attachments.isEmpty
@@ -355,6 +358,10 @@ class DriftConversationRepository implements ConversationRepository {
   String? _longTaskJson(ChatMessage message) =>
       message.longTask == null ? null : jsonEncode(message.longTask!.toJson());
 
+  String? _turnSkillJson(ChatMessage message) => message.turnSkill == null
+      ? null
+      : jsonEncode(message.turnSkill!.toJson());
+
   MessagesCompanion _toCompanion(ChatMessage m, String convoId, int seq) =>
       MessagesCompanion.insert(
         id: m.id,
@@ -373,6 +380,7 @@ class DriftConversationRepository implements ConversationRepository {
         searchActivitiesJson: Value(_searchActivitiesJson(m)),
         appliedWorldInfoJson: Value(_appliedWorldInfoJson(m)),
         longTaskJson: Value(_longTaskJson(m)),
+        turnSkillJson: Value(_turnSkillJson(m)),
         createdAt: m.createdAt,
         seq: Value(seq),
       );

@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:expert_chat/core/providers.dart';
+import 'package:expert_chat/data/chat_skill.dart';
 import 'package:expert_chat/data/gateway_config.dart';
 import 'package:expert_chat/data/media_api_config.dart';
 import 'package:expert_chat/data/provider_profile.dart';
@@ -307,5 +308,58 @@ void main() {
 
     final state = await container.read(settingsControllerProvider.future);
     expect(state.themeMode, ThemeMode.dark);
+  });
+
+  test('legacy systemPrompt migrates into the general chat skill', () async {
+    SharedPreferences.setMockInitialValues({
+      'systemPrompt': '你是专业助手',
+    });
+    FlutterSecureStoragePlatform.instance =
+        TestFlutterSecureStoragePlatform({});
+    addTearDown(() {
+      FlutterSecureStoragePlatform.instance =
+          TestFlutterSecureStoragePlatform({});
+    });
+    final prefs = await SharedPreferences.getInstance();
+    final container = ProviderContainer(
+      overrides: [
+        sharedPrefsProvider.overrideWithValue(prefs),
+        secureStorageProvider.overrideWithValue(const FlutterSecureStorage()),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    final state = await container.read(settingsControllerProvider.future);
+    expect(state.chatSkills.skillById('general')?.prompt, '你是专业助手');
+    expect(state.chatSkills.skillById('writing'), isNotNull);
+    expect(state.systemPrompt, '你是专业助手');
+    expect(prefs.getString('chatSkills'), isNotNull);
+  });
+
+  test('setChatSkills rejects a catalog with no fallback by sanitizing', () async {
+    SharedPreferences.setMockInitialValues({});
+    FlutterSecureStoragePlatform.instance =
+        TestFlutterSecureStoragePlatform({});
+    addTearDown(() {
+      FlutterSecureStoragePlatform.instance =
+          TestFlutterSecureStoragePlatform({});
+    });
+    final prefs = await SharedPreferences.getInstance();
+    final container = ProviderContainer(
+      overrides: [
+        sharedPrefsProvider.overrideWithValue(prefs),
+        secureStorageProvider.overrideWithValue(const FlutterSecureStorage()),
+      ],
+    );
+    addTearDown(container.dispose);
+    await container.read(settingsControllerProvider.future);
+    final controller = container.read(settingsControllerProvider.notifier);
+    await controller.setChatSkills(
+      const ChatSkillCatalog([
+        ChatSkill(id: 'only', name: '仅此', when: 'x', prompt: 'y'),
+      ]),
+    );
+    final next = container.read(settingsControllerProvider).requireValue;
+    expect(next.chatSkills.fallback.enabled, isTrue);
   });
 }

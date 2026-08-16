@@ -2,6 +2,35 @@ import 'dart:convert';
 
 const kChatSkillMinConfidence = 0.6;
 
+enum ChatSkillSource { prefix, model, fallback }
+
+class TurnSkillMark {
+  const TurnSkillMark({
+    required this.id,
+    required this.name,
+    required this.source,
+  });
+
+  final String id;
+  final String name;
+  final ChatSkillSource source;
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'source': source.name,
+  };
+
+  factory TurnSkillMark.fromJson(Map<String, dynamic> json) => TurnSkillMark(
+    id: (json['id'] as String? ?? '').trim(),
+    name: (json['name'] as String? ?? '').trim(),
+    source: ChatSkillSource.values.firstWhere(
+      (value) => value.name == json['source'],
+      orElse: () => ChatSkillSource.fallback,
+    ),
+  );
+}
+
 class ChatSkill {
   const ChatSkill({
     required this.id,

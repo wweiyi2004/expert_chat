@@ -6,8 +6,6 @@ import '../../data/chat_skill.dart';
 import '../../data/models.dart';
 import '../llm/llm_provider.dart';
 
-enum ChatSkillSource { prefix, model, fallback }
-
 class ChatSkillRoute {
   const ChatSkillRoute({
     required this.skill,

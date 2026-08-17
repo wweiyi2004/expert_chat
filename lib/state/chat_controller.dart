@@ -260,6 +260,13 @@ class ChatController extends AsyncNotifier<ChatState> {
   /// calls instead of text, so the turn is never left blank.
   static const _emptyReplyFallback = '模型未能输出有效回复，请重试。';
 
+  /// A reasoning model can consume its entire output allowance before it
+  /// reaches the public answer channel. In that case the reasoning is not a
+  /// safe substitute for a final answer because it may be incomplete.
+  static const _reasoningLimitFallback =
+      '模型的思考过程占满了输出额度，未能生成最终正文。'
+      '请重试；若已开启深度思考，可关闭后再试。';
+
   /// Streaming providers often emit many tiny SSE chunks per second. Coalescing
   /// them keeps the message list, markdown renderer and scroll controller from
   /// rebuilding for every token while still feeling live to the user.
@@ -3762,11 +3769,38 @@ class ChatController extends AsyncNotifier<ChatState> {
             allowTools &&
             (toolCalls.isNotEmpty || finishReason == 'tool_calls');
         if (!needsTools) {
-          // The final round withholds the tool list, but a stubborn model may
-          // still emit tool calls without any text; fall back so the turn is
-          // not left blank.
-          if (toolCalls.isNotEmpty && content.isEmpty) {
-            content.write(_emptyReplyFallback);
+          // Some DeepSeek-compatible endpoints occasionally put the entire
+          // final response in `reasoning_content` and leave `content` empty.
+          // Recover only after a normally completed round. If the provider
+          // reports an output-limit stop, the reasoning may be a truncated
+          // chain and must not be presented as a finished answer.
+          if (content.toString().trim().isEmpty) {
+            final reasoningOnly = turnReasoning.toString().trim();
+            content.clear();
+            if (toolCalls.isNotEmpty) {
+              // On the tool-withheld final round, reasoning that accompanies a
+              // rejected tool call is not a final answer.
+              content.write(_emptyReplyFallback);
+            } else if (reasoningOnly.isNotEmpty &&
+                !_isOutputLimitFinish(finishReason)) {
+              final recovered = _splitReasoningOnlyReply(reasoningOnly);
+              final allReasoning = reasoning.toString();
+              final priorLength = allReasoning.length - turnReasoning.length;
+              final priorReasoning = priorLength <= 0
+                  ? ''
+                  : allReasoning.substring(0, priorLength);
+              reasoning
+                ..clear()
+                ..write(priorReasoning)
+                ..write(recovered.reasoning);
+              content.write(recovered.content);
+            } else if (reasoningOnly.isNotEmpty) {
+              content.write(_reasoningLimitFallback);
+            } else {
+              // The final round withholds the tool list, but a stubborn model
+              // may still emit tool calls (or nothing) without any text.
+              content.write(_emptyReplyFallback);
+            }
             uiDirty = true;
             flushUi();
           }
@@ -3872,6 +3906,55 @@ class ChatController extends AsyncNotifier<ChatState> {
       if (identical(_cancelToken, cancelToken)) _cancelToken = null;
     }
     return succeeded;
+  }
+
+  static bool _isOutputLimitFinish(String? finishReason) {
+    final value = finishReason?.trim().toLowerCase();
+    return value == 'length' ||
+        value == 'max_tokens' ||
+        value == 'max_output_tokens';
+  }
+
+  /// Splits a misplaced reasoning-only response into the visible final answer
+  /// and the optional reasoning that preceded an explicit final-answer marker.
+  /// Without a marker, treat the whole payload as the answer: this is the
+  /// common gateway failure mode and avoids showing the same text twice.
+  static ({String content, String reasoning}) _splitReasoningOnlyReply(
+    String raw,
+  ) {
+    final text = raw.trim();
+    final lower = text.toLowerCase();
+    final thinkClose = lower.lastIndexOf('</think>');
+    if (thinkClose >= 0) {
+      final answer = text.substring(thinkClose + '</think>'.length).trim();
+      if (answer.isNotEmpty) {
+        final thought = text
+            .substring(0, thinkClose)
+            .replaceFirst(RegExp(r'^\s*<think>\s*', caseSensitive: false), '')
+            .trim();
+        return (content: answer, reasoning: thought);
+      }
+    }
+
+    final marker = RegExp(
+      r'^[ \t]*(?:#{1,6}[ \t]*)?'
+      r'(?:最终答案|最终答复|答案|final answer)'
+      r'[ \t]*[:：]?[ \t]*',
+      caseSensitive: false,
+      multiLine: true,
+    );
+    final matches = marker.allMatches(text).toList();
+    if (matches.isNotEmpty) {
+      final last = matches.last;
+      final answer = text.substring(last.end).trim();
+      if (answer.isNotEmpty) {
+        return (
+          content: answer,
+          reasoning: text.substring(0, last.start).trim(),
+        );
+      }
+    }
+    return (content: text, reasoning: '');
   }
 
   Future<List<LlmRequestMessage>> _executeToolCalls({

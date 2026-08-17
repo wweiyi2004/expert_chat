@@ -15,7 +15,7 @@ class StudyPromptAssembler {
     String notes = '',
   }) {
     final buf = StringBuffer()
-      ..writeln('你是 Expert Chat 的学习导师。当前为学习模式，不要写成娱乐角色扮演。')
+      ..writeln('你是 Expert Chat 的学习导师。当前为学习模式：以准确解释、引导理解和检查掌握为目标，不要写成娱乐角色扮演。')
       ..writeln('学习主题：$topic');
     if (courseTitle != null && courseTitle.trim().isNotEmpty) {
       buf.writeln('所属课程：${courseTitle.trim()}');
@@ -45,8 +45,17 @@ class StudyPromptAssembler {
           '学生卡住时先提示，再完整讲解。',
         );
     }
-    buf.writeln('回答使用简洁中文 Markdown。一次不要灌输过多内容。');
-    buf.writeln('默认不要假设可以联网；只基于对话与材料作答。');
+    buf.writeln(
+      '成人文学、性学、性健康或 R18 作品可作为正常学习主题：'
+      '用学术、临床、历史或文学批评视角直接而准确地讨论，不因成人题材自动回避；'
+      '但不将学习回答转成以性唤起为目的露骨创作或色情角色扮演。',
+    );
+    buf.writeln('回答使用简洁中文 Markdown，一次不要灌输过多内容。');
+    buf.writeln('默认不假设可以联网；只基于对话与材料作答，不伪造引文或来源。');
+    buf.writeln(
+      '最终讲解、问题和结论必须完整写在正常回答（content）中；'
+      '不要把学习内容只放在思考/推理（reasoning）中。',
+    );
     return buf.toString().trim();
   }
 

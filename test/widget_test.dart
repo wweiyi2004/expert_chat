@@ -797,6 +797,72 @@ void main() {
     expect(assistant.reasoning, 'pondering');
   });
 
+  test('reasoning-only completion is promoted to the visible answer', () async {
+    final llm = FakeLlmProvider([
+      const ChatChunk(reasoningDelta: '这是被服务商放错字段的完整答复', finishReason: 'stop'),
+    ]);
+    final c = _container(llm, InMemoryRepo());
+    addTearDown(c.dispose);
+    final ctrl = c.read(chatControllerProvider.notifier);
+    await c.read(chatControllerProvider.future);
+
+    await ctrl.sendMessage('请回答');
+
+    final assistant = c
+        .read(chatControllerProvider)
+        .value!
+        .current!
+        .activePath
+        .last;
+    expect(assistant.content, '这是被服务商放错字段的完整答复');
+    expect(assistant.reasoning, isEmpty);
+  });
+
+  test('reasoning-only completion keeps thought before final marker', () async {
+    final llm = FakeLlmProvider([
+      const ChatChunk(
+        reasoningDelta: '先分析一下。\n\n最终答案：这是可见正文。',
+        finishReason: 'stop',
+      ),
+    ]);
+    final c = _container(llm, InMemoryRepo());
+    addTearDown(c.dispose);
+    final ctrl = c.read(chatControllerProvider.notifier);
+    await c.read(chatControllerProvider.future);
+
+    await ctrl.sendMessage('请回答');
+
+    final assistant = c
+        .read(chatControllerProvider)
+        .value!
+        .current!
+        .activePath
+        .last;
+    expect(assistant.content, '这是可见正文。');
+    expect(assistant.reasoning, '先分析一下。');
+  });
+
+  test('output-limit reasoning is not promoted as a final answer', () async {
+    final llm = FakeLlmProvider([
+      const ChatChunk(reasoningDelta: '还在分析中……', finishReason: 'length'),
+    ]);
+    final c = _container(llm, InMemoryRepo());
+    addTearDown(c.dispose);
+    final ctrl = c.read(chatControllerProvider.notifier);
+    await c.read(chatControllerProvider.future);
+
+    await ctrl.sendMessage('请回答');
+
+    final assistant = c
+        .read(chatControllerProvider)
+        .value!
+        .current!
+        .activePath
+        .last;
+    expect(assistant.content, contains('输出额度'));
+    expect(assistant.reasoning, '还在分析中……');
+  });
+
   test(
     'deleting a conversation during send preflight does not resurrect it',
     () async {
@@ -877,7 +943,7 @@ void main() {
       expect(
         llm.calls.last.any(
           (m) =>
-              m.role == MessageRole.system && m.content.contains('按用户指定文体'),
+              m.role == MessageRole.system && m.content.contains('严格按用户指定的文体'),
         ),
         isTrue,
       );
@@ -1297,6 +1363,7 @@ void main() {
           ],
           [
             ChatChunk(
+              reasoningDelta: '我还想调用工具',
               toolCalls: [
                 ToolCall(
                   index: 0,

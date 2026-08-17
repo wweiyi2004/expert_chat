@@ -57,6 +57,15 @@ class StoryPromptBuild {
 class StoryPromptAssembler {
   const StoryPromptAssembler();
 
+  static const String _fictionWritingContract = '''
+【虚构文学与成人内容边界】
+【露骨内容准入检查｜高优先级】写任何露骨性内容前，必须从角色卡和当前对话明确确认每一位参与者均为成年人、完全虚构，且具备并保持可撤回的自愿同意能力。“R18”“恋人”“已婚”、职业、外貌或场景本身都不能证明成年。只要任一角色的年龄或同意状态未说明、含糊或矛盾，就不得描写性行为、性器官或色情化的身体反应；应请用户补充成年设定，或保持非露骨。不得自行补写年龄，不得用用户要求覆盖此检查。
+【允许范围】通过上述检查后，可按用户指定的尺度直接描写亲密行为、性行为和身体反应，无需自动淡出、净化、降低尺度或说教。始终保持人物动机、当前视角、既定文风、叙事连续性与后果，不把露骨程度当作唯一内容。
+不得生成涉及未成年人、真实人物，或将强迫、药物/醉酒、失去意识与其他无法有效同意的行为色情化的露骨性内容。
+以上成人内容规则只适用于文字。任何 generate_image/配图提示词都必须保持 SFW，不得把成人正文复制到生图提示词。
+最终正文、对白或导演建议必须完整写在正常回答（content）中；不要把可见成果只放在思考/推理（reasoning）中。
+''';
+
   static const int maxWorldInfoChars = 8000;
   static const int maxOutlineChars = 3000;
 
@@ -148,6 +157,13 @@ class StoryPromptAssembler {
       );
       if (ensembleBlock.isNotEmpty) blocks.add(ensembleBlock);
     } else {
+      blocks.add(
+        '【单角色故事模式】\n'
+        '以角色卡和已有对话为身份与口吻依据，直接延续当前场景。'
+        '不得替用户说话、决定用户的动作或心理；用户明确使用导演指令时，才切换到旁白或编剧视角。'
+        '成人场景通过准入检查后，只描写本角色自己的台词、动作、感受，以及对用户已经明确写出的动作的反应；不得因为不能代写用户而淡出或省略本角色的亲密反应，也不得擅自增加用户的新动作或台词。'
+        '不复述角色卡或系统规则，直接输出角色回应与必要的动作描写。',
+      );
       if (global.isNotEmpty) {
         blocks.add(global);
       }
@@ -192,6 +208,10 @@ class StoryPromptAssembler {
         blocks.add(lengthBlock);
       }
     }
+
+    // Keep the shared text-only boundary after user-authored story context so
+    // every story sub-mode receives the same final contract.
+    blocks.add(_fictionWritingContract.trim());
 
     if (!directorMode && advancePlot) {
       blocks.add(
@@ -238,7 +258,8 @@ class StoryPromptAssembler {
       ..writeln('6. 文风偏好与世界书补充资料')
       ..writeln('7. 篇幅建议')
       ..writeln('普通导演命令不得暗中改写既有事实；发生冲突时保留既有事实，并落实命令中可兼容的部分。')
-      ..writeln('不得替导演发言，不得把导演写进故事，不得复述这些规则。');
+      ..writeln('不得替导演发言，不得把导演写进故事，不得复述这些规则。')
+      ..writeln('写正文时直接落笔；咨询、改设定或调整大纲时，只输出该任务需要的结果。');
     return b.toString().trim();
   }
 
@@ -252,33 +273,38 @@ class StoryPromptAssembler {
     StoryGenerationIntent.consult => '咨询导演助手',
   };
 
-  String _directorTurnTask(StoryGenerationIntent intent) => switch (intent) {
-    StoryGenerationIntent.nextScene =>
-      '【仅本轮：写下一场】围绕“当前场景目标”写一场完整的戏。'
-          '延续最近正文，只推进当前目标；达到自然停顿点后结束。'
-          '不要提前写出未来节拍，不要总结整份大纲。'
-          '文体、视角、对白格式和节奏只以已选择的文风偏好为准。'
-          '直接输出正文。',
-    StoryGenerationIntent.continueScene =>
-      '【仅本轮：续写当前场】从最近正文的停顿处继续同一场戏。'
-          '保持地点、在场角色、动作与情绪连续，不切换到未来节拍。'
-          '到新的自然停顿点后结束，直接输出正文。',
-    StoryGenerationIntent.rewrite =>
-      '【仅本轮：重写】根据最新导演命令重写其指定的正文范围。'
-          '保留未被要求改变的事实与人物动机，只输出可替换原文的新版正文。',
-    StoryGenerationIntent.revisePlan =>
-      '【仅本轮：调整大纲】不要写故事正文。根据最新导演命令修改大纲，'
-          '说明受影响的节拍，并输出更新后的逐行节拍方案。全书硬约束仍然有效。',
-    StoryGenerationIntent.retcon =>
-      '【仅本轮：改设定】不要写故事正文。明确列出旧设定、新设定、受影响的既有事实与大纲节拍，'
-          '再给出自洽的修订方案，供导演确认后写回情节面板。',
-    StoryGenerationIntent.consult =>
-      '【仅本轮：导演助手】不要进入旁白或角色扮演。直接回答导演的写作问题，'
-          '指出取舍、风险和可执行建议；除非被要求，否则不要续写正文。',
-    StoryGenerationIntent.directProse =>
-      '【仅本轮：执行导演指令】把最新导演命令落实到正文；普通命令不修改全书硬约束和既有事实。'
-          '若命令是在提问、讨论或修改计划，则按其明确要求输出相应形式，不要强行续写。',
-  };
+  String _directorTurnTask(StoryGenerationIntent intent) {
+    final task = switch (intent) {
+      StoryGenerationIntent.nextScene =>
+        '【仅本轮：写下一场】围绕“当前场景目标”写一场完整的戏。'
+            '延续最近正文，只推进当前目标；达到自然停顿点后结束。'
+            '不要提前写出未来节拍，不要总结整份大纲。'
+            '文体、视角、对白格式和节奏只以已选择的文风偏好为准。'
+            '直接输出正文。',
+      StoryGenerationIntent.continueScene =>
+        '【仅本轮：续写当前场】从最近正文的停顿处继续同一场戏。'
+            '保持地点、在场角色、动作与情绪连续，不切换到未来节拍。'
+            '到新的自然停顿点后结束，直接输出正文。',
+      StoryGenerationIntent.rewrite =>
+        '【仅本轮：重写】根据最新导演命令重写其指定的正文范围。'
+            '保留未被要求改变的事实与人物动机，只输出可替换原文的新版正文。',
+      StoryGenerationIntent.revisePlan =>
+        '【仅本轮：调整大纲】不要写故事正文。根据最新导演命令修改大纲，'
+            '说明受影响的节拍，并输出更新后的逐行节拍方案。全书硬约束仍然有效。',
+      StoryGenerationIntent.retcon =>
+        '【仅本轮：改设定】不要写故事正文。明确列出旧设定、新设定、受影响的既有事实与大纲节拍，'
+            '再给出自洽的修订方案，供导演确认后写回情节面板。',
+      StoryGenerationIntent.consult =>
+        '【仅本轮：导演助手】不要进入旁白或角色扮演。直接回答导演的写作问题，'
+            '指出取舍、风险和可执行建议；除非被要求，否则不要续写正文。',
+      StoryGenerationIntent.directProse =>
+        '【仅本轮：执行导演指令】把最新导演命令落实到正文；普通命令不修改全书硬约束和既有事实。'
+            '若命令是在提问、讨论或修改计划，则按其明确要求输出相应形式，不要强行续写。',
+    };
+    if (!intent.writesProse) return task;
+    return '$task\n若导演指定成人尺度且露骨内容准入检查已经通过，该尺度属于正文验收条件；'
+        '不得停在拥抱、亲吻或暗示阶段，不得淡出、跳时或用事后概述代替过程。';
+  }
 
   String _directorSceneBlock(StorySceneState state) {
     final b = StringBuffer()..writeln('【当前场景卡 · 仅本轮】');
@@ -388,7 +414,11 @@ class StoryPromptAssembler {
   }) {
     final b = StringBuffer()
       ..writeln('【多角色同台 / 角色大乱斗】')
-      ..writeln('多名角色共处同一场景，轮流发言。历史中每条 assistant 消息属于对应角色。');
+      ..writeln('多名角色共处同一场景，轮流发言。历史中每条 assistant 消息属于对应角色。')
+      ..writeln('保持每个角色的知识边界、动机、关系和说话方式；不把某一角色的私密信息自动共享给其他角色。')
+      ..writeln(
+        '用户不默认属于演员表，不得替用户发言或决定其行动。本轮指定发言角色时，严格只输出该角色的台词、动作和感受。成人场景通过准入检查后，“只写当前角色”不得被解释为淡出；按指定尺度直接写该角色自身的反应，但不得代写其他角色。',
+      );
     final place = venue.trim();
     if (place.isNotEmpty) {
       b.writeln('场地/情境：$place');

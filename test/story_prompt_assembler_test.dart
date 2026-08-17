@@ -178,6 +178,7 @@ void main() {
       expect(joined, isNot(contains('零号现身')));
       final tail = build.postHistoryMessages.map((m) => m.content).join('\n');
       expect(tail, contains('仅本轮：写下一场'));
+      expect(tail, contains('正文验收条件'));
       expect(tail, isNot(contains('对白为主')));
     });
 

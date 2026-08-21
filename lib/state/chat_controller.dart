@@ -14,6 +14,7 @@ import '../data/models.dart';
 import '../data/story_models.dart';
 import '../data/study_models.dart';
 import '../domain/chat/chat_skill_router.dart';
+import '../domain/chat/stream_ui_coalescer.dart';
 import '../domain/context/context_window_manager.dart';
 import '../domain/llm/long_task_gateway_client.dart';
 import '../domain/llm/llm_provider.dart';
@@ -34,13 +35,14 @@ import '../domain/tools/search_orchestrator.dart';
 import '../domain/tools/search_provider.dart';
 import '../domain/tools/search_query.dart';
 import '../domain/tools/tool_engine.dart';
+import '../domain/tools/vision_tools.dart';
 import '../domain/tools/url_extract.dart';
 import 'settings_controller.dart';
 import 'study_controller.dart';
 
 /// Composer "联网" switch. [off] never searches; [auto] lets the model (or the
-/// planner, for tool-less models) decide per question; [always] guarantees at
-/// least one search before answering.
+/// planner, for tool-less models) decide per question; [always] forces a
+/// search tool call this turn (tool-less models still pre-search).
 enum SearchMode { off, auto, always }
 
 extension SearchModeInfo on SearchMode {
@@ -61,7 +63,7 @@ extension SearchModeInfo on SearchMode {
 ///
 /// - [off]: model cannot generate images in chat
 /// - [auto]: tool-capable models may call `generate_image` at most once / turn
-/// - [always]: guarantee one SFW image before/with the answer (pre-gen)
+/// - [always]: force `generate_image` this turn (tool-less models still pre-gen)
 enum ImageGenMode { off, auto, always }
 
 extension ImageGenModeInfo on ImageGenMode {
@@ -76,6 +78,20 @@ extension ImageGenModeInfo on ImageGenMode {
     ImageGenMode.auto => '配图·自动',
     ImageGenMode.always => '配图·强制',
   };
+}
+
+/// Which client tool to force this turn, or [kToolChoiceRequired] when more
+/// than one "强制" chip is on. Document-edit force always wins.
+String? forcedClientToolName({
+  required bool forceDocument,
+  required bool forceImage,
+  required bool forceClientSearch,
+}) {
+  if (forceDocument) return DocumentEditTools.editDocumentToolName;
+  if (forceImage && forceClientSearch) return kToolChoiceRequired;
+  if (forceImage) return ToolEngine.generateImageTool.name;
+  if (forceClientSearch) return ToolEngine.webSearchTool.name;
+  return null;
 }
 
 /// Exact operation represented by an error banner's retry action.
@@ -146,8 +162,9 @@ class ChatState {
 
   bool get isStreaming => streamingConvoId != null;
 
-  /// When true the next send is routed to the reasoner model regardless of the
-  /// configured default model (the "深度思考" toggle in the composer).
+  /// When true the next send enables thinking (the "深度思考" toggle).
+  /// DeepSeek V4 stays on the selected model and only flips `thinking`;
+  /// providers without that field still switch to [SettingsState.reasonerModel].
   final bool deepThink;
 
   /// Current "联网" switch position (off / auto / always).
@@ -269,8 +286,8 @@ class ChatController extends AsyncNotifier<ChatState> {
 
   /// Streaming providers often emit many tiny SSE chunks per second. Coalescing
   /// them keeps the message list, markdown renderer and scroll controller from
-  /// rebuilding for every token while still feeling live to the user.
-  static const _streamUiFlushInterval = Duration(milliseconds: 50);
+  /// rebuilding for every token while still feeling live. Thinking and answer
+  /// panes keep separate token budgets, and only the pane in view is flushed.
 
   /// A completed turn is always persisted, but Android can reclaim a background
   /// process before a long stream finishes. A low-frequency checkpoint protects
@@ -304,6 +321,41 @@ class ChatController extends AsyncNotifier<ChatState> {
   /// Invoked by [stop] before it snapshots the conversation, so a scheduled UI
   /// flush cannot leave the last received tokens out of the saved transcript.
   void Function()? _flushActiveStream;
+
+  /// Stick-to-bottom: the user is following the live tail.
+  bool _streamFollowingTail = true;
+
+  /// Thinking panel expanded on the in-flight assistant bubble.
+  bool _streamThinkingExpanded = true;
+
+  /// True once the current stream has emitted visible answer tokens.
+  bool _streamHasLiveContent = false;
+
+  StreamUiFocus get _streamUiFocus => streamUiFocusFor(
+    followingTail: _streamFollowingTail,
+    hasContent: _streamHasLiveContent,
+    thinkingExpanded: _streamThinkingExpanded,
+  );
+
+  /// Live catch-up when the user looks back at a streaming pane.
+  void Function()? _nudgeStreamUi;
+
+  /// Chat page reports scroll/thinking-panel attention during a live stream.
+  void reportStreamView({
+    required bool followingTail,
+    required bool thinkingExpanded,
+  }) {
+    if (_streamFollowingTail == followingTail &&
+        _streamThinkingExpanded == thinkingExpanded) {
+      return;
+    }
+    final before = _streamUiFocus;
+    _streamFollowingTail = followingTail;
+    _streamThinkingExpanded = thinkingExpanded;
+    if (_streamUiFocus != before && _streamUiFocus != StreamUiFocus.away) {
+      _nudgeStreamUi?.call();
+    }
+  }
 
   /// Serializes repository writes. Several UI actions intentionally don't await
   /// persistence; without a queue an older snapshot can finish after a newer
@@ -1203,14 +1255,13 @@ class ChatController extends AsyncNotifier<ChatState> {
       await ensembleNextTurn(conversationId: targetId);
       // Allow UI to settle between turns.
       await Future<void>.delayed(const Duration(milliseconds: 80));
-      final after = _s.conversations
-          .where((c) => c.id == targetId)
-          .firstOrNull;
+      final after = _s.conversations.where((c) => c.id == targetId).firstOrNull;
       if (_cancelStart || after == null || !after.isEnsemble) return;
       // Stop on errors that belong to the target conversation; a banner parked
       // on another conversation must not end this run.
       final err = _s.error;
-      final errOnTarget = _s.errorConvoId == null || _s.errorConvoId == targetId;
+      final errOnTarget =
+          _s.errorConvoId == null || _s.errorConvoId == targetId;
       if (err != null && err.isNotEmpty && errOnTarget) return;
     }
   }
@@ -1436,18 +1487,10 @@ class ChatController extends AsyncNotifier<ChatState> {
     _cancelStart = false;
     try {
       final convo = _s.current ?? Conversation();
-      final hasImages =
-          attachments.any((a) => a.isImage && a.hasImageData) ||
-          convo.activePath.any(
-            (m) =>
-                m.role == MessageRole.user &&
-                m.attachments.any((a) => a.isImage && a.hasImageData),
-          );
       final requiresVision = attachments.any(
         (a) => a.isImage && a.hasImageData,
       );
       final settings = await _readySettingsForTurn(
-        hasImages: hasImages,
         requireVision: requiresVision,
       );
       if (settings == null || _cancelStart) return false;
@@ -1455,10 +1498,7 @@ class ChatController extends AsyncNotifier<ChatState> {
         _set(_s.copyWith(error: '请先配置支持文档编辑能力的 Expert Chat Gateway。'));
         return false;
       }
-      final config = _configFor(
-        settings,
-        vision: hasImages && settings.visionConfigured,
-      );
+      final config = _configForTurn(settings, hasImages: requiresVision);
       if (forceDocumentEdit && !config.capabilities.supportsTools) {
         _set(
           _s.copyWith(
@@ -2076,30 +2116,12 @@ class ChatController extends AsyncNotifier<ChatState> {
     _cancelStart = false;
     try {
       final nextAttachments = attachments ?? old.attachments;
-      // Only ancestors of the edited turn stay in the regenerated branch;
-      // descendants (and their images) are discarded, so they must not pull
-      // the request over to the vision endpoint. The chain follows the edited
-      // turn's own parent links — it may live on an inactive branch, where
-      // scanning the active path would count unrelated image turns.
-      final ancestors = old.parentId == null
-          ? const <ChatMessage>[]
-          : _pathToMessage(convo, old.parentId!);
-      final hasImages =
-          nextAttachments.any((a) => a.isImage && a.hasImageData) ||
-          ancestors.any(
-            (m) =>
-                m.role == MessageRole.user &&
-                m.attachments.any((a) => a.isImage && a.hasImageData),
-          );
+      final hasImages = nextAttachments.any((a) => a.isImage && a.hasImageData);
       final turnSettings = await _readySettingsForTurn(
-        hasImages: hasImages,
-        requireVision: nextAttachments.any((a) => a.isImage && a.hasImageData),
+        requireVision: hasImages,
       );
       if (turnSettings == null || _cancelStart) return;
-      final config = _configFor(
-        turnSettings,
-        vision: hasImages && turnSettings.visionConfigured,
-      );
+      final config = _configForTurn(turnSettings, hasImages: hasImages);
 
       final userMsg = ChatMessage(
         role: MessageRole.user,
@@ -2113,10 +2135,13 @@ class ChatController extends AsyncNotifier<ChatState> {
         model: config.model,
         parentId: userMsg.id,
       );
+      final pathToParent = old.parentId == null
+          ? const <ChatMessage>[]
+          : _pathToMessage(convo, old.parentId!);
       final working = convo.copyWith(
         messages: [...convo.messages, userMsg, assistantMsg],
         activeChildren: {
-          ...convo.activeChildren,
+          ..._activatePath(convo.activeChildren, pathToParent),
           old.parentId ?? kRootKey: userMsg.id,
           userMsg.id: assistantMsg.id,
         },
@@ -2209,17 +2234,12 @@ class ChatController extends AsyncNotifier<ChatState> {
     _starting = true;
     _cancelStart = false;
     try {
-      final hasImages = pathToUser.any(
-        (m) =>
-            m.role == MessageRole.user &&
-            m.attachments.any((a) => a.isImage && a.hasImageData),
+      final hasImages = userMsg.attachments.any(
+        (a) => a.isImage && a.hasImageData,
       );
-      final settings = await _readySettingsForTurn(hasImages: hasImages);
+      final settings = await _readySettingsForTurn(requireVision: hasImages);
       if (settings == null || _cancelStart) return;
-      final config = _configFor(
-        settings,
-        vision: hasImages && settings.visionConfigured,
-      );
+      final config = _configForTurn(settings, hasImages: hasImages);
 
       final assistantMsg = ChatMessage(
         role: MessageRole.assistant,
@@ -2474,7 +2494,7 @@ class ChatController extends AsyncNotifier<ChatState> {
         role: MessageRole.assistant,
         content: '',
         model: useDeepThink
-            ? settings.reasonerModel
+            ? _configFor(settings).model
             : settings.imageGenerationApi.model,
         kind: MessageKind.generatedImage,
         parentId: userMsg.id,
@@ -2735,9 +2755,9 @@ class ChatController extends AsyncNotifier<ChatState> {
     }
   }
 
-  /// Uses the deep-think / reasoner model to rewrite [userPrompt] into a
-  /// stronger text-to-image prompt. Returns the cleaned prompt text (may be
-  /// empty if the model returned nothing useful — caller falls back to raw).
+  /// Uses the deep-think config to rewrite [userPrompt] into a stronger
+  /// text-to-image prompt. Returns the cleaned prompt text (may be empty if
+  /// the model returned nothing useful — caller falls back to raw).
   Future<String> _optimizeImagePrompt({
     required String userPrompt,
     required SettingsState settings,
@@ -2836,14 +2856,21 @@ class ChatController extends AsyncNotifier<ChatState> {
   }
 
   Future<SettingsState?> _readySettingsForTurn({
-    required bool hasImages,
     bool requireVision = false,
   }) async {
     final settings = await ref.read(settingsControllerProvider.future);
-    if (hasImages && settings.visionConfigured) return settings;
     if (requireVision) {
-      _set(_s.copyWith(error: '图片消息需要先在设置中完整配置视觉 API。'));
-      return null;
+      final config = _configForTurn(settings, hasImages: true);
+      if (!settings.visionConfigured && !config.capabilities.supportsVision) {
+        _set(
+          _s.copyWith(
+            error:
+                '当前模型不支持看图。请选用视觉模型（如 ${KnownModels.vision}），'
+                '或在设置中配置独立视觉 API。',
+          ),
+        );
+        return null;
+      }
     }
     if (!settings.config.isReady) {
       _set(_s.copyWith(error: '请先在设置中填写 API Key。'));
@@ -2852,12 +2879,31 @@ class ChatController extends AsyncNotifier<ChatState> {
     return settings;
   }
 
-  /// The deep-think toggle routes to the active profile's reasoner model.
-  LlmConfig _configFor(SettingsState settings, {bool vision = false}) => vision
-      ? settings.visionConfig
-      : _s.deepThink
-      ? settings.config.copyWith(model: settings.reasonerModel)
-      : settings.config;
+  /// Deep-think config for this turn.
+  ///
+  /// Models that accept DeepSeek's `thinking` field (V4 flash/pro/vision)
+  /// stay on the selected model and only enable thinking. Providers without
+  /// that field still switch to the profile's dedicated reasoner model.
+  LlmConfig _configFor(SettingsState settings) {
+    if (!_s.deepThink) return settings.config;
+    if (settings.config.capabilities.sendThinkingField) {
+      return settings.config;
+    }
+    return settings.config.copyWith(model: settings.reasonerModel);
+  }
+
+  /// Image turns stay on a vision-capable chat model when deep-think's
+  /// reasoner cannot accept pixels and no separate vision API is configured.
+  LlmConfig _configForTurn(SettingsState settings, {required bool hasImages}) {
+    final config = _configFor(settings);
+    if (!hasImages ||
+        config.capabilities.supportsVision ||
+        settings.visionConfigured) {
+      return config;
+    }
+    if (settings.config.capabilities.supportsVision) return settings.config;
+    return config;
+  }
 
   /// Shared pipeline: show the pending turn, optionally expose `web_search` as
   /// a model-controlled tool, then stream the answer along the active branch.
@@ -2928,9 +2974,28 @@ class ChatController extends AsyncNotifier<ChatState> {
         config.capabilities.supportsTools &&
         editableDocuments.isNotEmpty;
     final forceDocTool = forceDocumentEdit && useDocumentEditTool;
+    final turnImages = [
+      for (final a in turnUserAttachments)
+        if (a.isImage && a.hasImageData) a,
+    ];
+    final historyImages = _visionAttachmentsFor(working);
+    final visionSources = [
+      ...turnImages,
+      for (final a in historyImages)
+        if (!turnImages.any((t) => t.id == a.id)) a,
+    ];
+    final nativeVision =
+        config.capabilities.supportsVision && visionSources.isNotEmpty;
+    final visionToolWanted =
+        !nativeVision && settings.visionConfigured && visionSources.isNotEmpty;
+    final useVisionTool =
+        visionToolWanted && config.capabilities.supportsTools && !forceDocTool;
+    final needPreVision =
+        visionToolWanted && !useVisionTool && turnImages.isNotEmpty;
     final toolSpecs = <ToolSpec>[
       if (useWebSearchTool && !forceDocTool) ToolEngine.webSearchTool,
       if (useFetchUrlTool && !forceDocTool) ToolEngine.fetchUrlTool,
+      if (useVisionTool) VisionTools.analyzeImageTool,
       if (useDocumentEditTool) DocumentEditTools.editDocumentTool,
       // Conversion is never forced; available whenever document tools are on.
       if (useDocumentEditTool) DocumentEditTools.convertDocumentTool,
@@ -2940,7 +3005,7 @@ class ChatController extends AsyncNotifier<ChatState> {
         !config.capabilities.supportsServerWebSearch) {
       // Soft notice once per turn: official search only works on flash today.
       _setScopedError(
-        '当前模型不支持提供商官方联网（需 deepseek-v4-flash），'
+        '当前模型不支持提供商官方联网（需 DeepSeek V4），'
         '本轮将回退到客户端搜索后端。',
         convoId: working.id,
       );
@@ -3029,14 +3094,20 @@ class ChatController extends AsyncNotifier<ChatState> {
 
     // Pre-steps that inject context before the model answers:
     // 1) fetch any URLs the user pasted (works with or without "联网")
-    // 2) planner-orchestrated web search for models that cannot use tools
-    //    (deepseek-reasoner…), and for tool models when "联网·强制" is on —
-    //    which guarantees at least one search before the answer starts.
-    // 3) 配图·强制: one SFW image (character portrait when a card is bound).
+    // 2) planner-orchestrated web search only for models that cannot use tools
+    // 3) 配图·强制 on tool-less models: one SFW image before the answer
     SearchContext? searchContext;
     var forceImageNote = '';
+    // Auto: model may call once. Always: force the tool on tool-capable models.
+    final useImageGenTool =
+        imageGenWanted &&
+        imageBudget.canGenerate &&
+        config.capabilities.supportsTools &&
+        (imageGenMode == ImageGenMode.auto ||
+            imageGenMode == ImageGenMode.always);
     if (imageGenWanted &&
         imageGenMode == ImageGenMode.always &&
+        !useImageGenTool &&
         imageBudget.canGenerate &&
         _s.isStreaming) {
       final pre = await _runDialogueImageGeneration(
@@ -3059,14 +3130,6 @@ class ChatController extends AsyncNotifier<ChatState> {
         _setScopedError(pre.error!, convoId: working.id);
       }
     }
-    // Auto: model may call once. Always: tool only if pre-gen still has budget
-    // (e.g. pre-gen failed) so force can still succeed via function calling.
-    final useImageGenTool =
-        imageGenWanted &&
-        imageBudget.canGenerate &&
-        config.capabilities.supportsTools &&
-        (imageGenMode == ImageGenMode.auto ||
-            imageGenMode == ImageGenMode.always);
     if (useImageGenTool) {
       toolSpecs.add(ToolEngine.generateImageTool);
     }
@@ -3075,12 +3138,10 @@ class ChatController extends AsyncNotifier<ChatState> {
     // without function calling keep the deterministic pre-fetch fallback.
     final needPreFetch =
         directPageFetchAllowed && pastedUrls.isNotEmpty && !useFetchUrlTool;
-    // Provider-hosted search is done inside the Responses stream — skip the
-    // client pre-search (including 联网·强制, which becomes tool_choice).
+    // Provider-hosted search is done inside the Responses stream. Tool-capable
+    // models call web_search themselves; 联网·强制 becomes tool_choice.
     final needPreSearch =
-        searchAllowed &&
-        !useProviderSearch &&
-        (!useWebSearchTool || searchMode == SearchMode.always);
+        searchAllowed && !useProviderSearch && !useWebSearchTool;
     // When official search is unavailable, fall back to a free client backend
     // so the turn still has a search path without requiring a search key.
     final clientSearchBackend =
@@ -3185,10 +3246,45 @@ class ChatController extends AsyncNotifier<ChatState> {
         // memory file must never prevent the user from sending a message.
       }
     }
-    final vision = config.capabilities.supportsVision;
+    var preVisionNote = '';
+    if (needPreVision && _s.isStreaming) {
+      final parts = <String>[];
+      final question = searchQuery.trim().isEmpty
+          ? VisionTools.defaultQuestion
+          : searchQuery.trim();
+      for (final image in turnImages) {
+        final text = await _analyzeImageWithVisionApi(
+          settings: settings,
+          image: image,
+          question: question,
+          convoId: working.id,
+          assistantId: assistantId,
+          cancelToken: cancelToken,
+        );
+        if (text.isNotEmpty) {
+          parts.add('【图片：${image.name}】\n$text');
+        }
+        if (!_s.isStreaming) break;
+      }
+      if (parts.isNotEmpty) {
+        preVisionNote = '本轮附件图片已由识图服务分析（对话模型看不到像素）：\n${parts.join('\n\n')}';
+      }
+    }
+    if (!_s.isStreaming) {
+      await _persistSafely(working.id);
+      if (identical(_cancelToken, cancelToken)) _cancelToken = null;
+      return;
+    }
+
     final history = cur.activePath
         .where((m) => m.id != assistantId)
-        .map((m) => _toRequestMessage(m, vision: vision))
+        .map(
+          (m) => _toRequestMessage(
+            m,
+            vision: nativeVision,
+            imageToolAvailable: useVisionTool,
+          ),
+        )
         .toList();
 
     if (searchContext != null && searchContext.contextText.isNotEmpty) {
@@ -3247,7 +3343,13 @@ class ChatController extends AsyncNotifier<ChatState> {
               ),
             );
           } else {
-            labeled.add(_toRequestMessage(m, vision: vision));
+            labeled.add(
+              _toRequestMessage(
+                m,
+                vision: nativeVision,
+                imageToolAvailable: useVisionTool,
+              ),
+            );
           }
         }
         history
@@ -3297,12 +3399,19 @@ class ChatController extends AsyncNotifier<ChatState> {
           LlmRequestMessage(role: MessageRole.system, content: forceImageNote),
         );
       }
+      if (preVisionNote.isNotEmpty) {
+        systemPrefix.add(
+          LlmRequestMessage(role: MessageRole.system, content: preVisionNote),
+        );
+      }
       if (enableTools) {
         final hint = StringBuffer(ToolEngine.dateLine())..write('。');
         if (useWebSearchTool) {
           hint.write(
-            '需要实时、最新或不确定的事实信息时，优先调用 web_search；'
-            '搜索关键词应自包含（把指代替换成具体名称，时效性问题带上年份）。',
+            searchMode == SearchMode.always
+                ? '本轮必须调用 web_search。搜索关键词应自包含（把指代替换成具体名称，时效性问题带上年份）。'
+                : '需要实时、最新或不确定的事实信息时，优先调用 web_search；'
+                      '搜索关键词应自包含（把指代替换成具体名称，时效性问题带上年份）。',
           );
         }
         if (useFetchUrlTool) {
@@ -3311,12 +3420,25 @@ class ChatController extends AsyncNotifier<ChatState> {
         if (useImageGenTool) {
           if (imageCharacter != null) {
             hint.write(
-              '需要为角色「${imageCharacter.name}」配安全立绘时调用 generate_image（每轮最多一次）；'
-              '即使用户在写成人向内容，生图也只画干净角色形象，禁止色情提示词。',
+              imageGenMode == ImageGenMode.always
+                  ? '本轮必须调用 generate_image，为角色「${imageCharacter.name}」配一张安全立绘（每轮最多一次）；'
+                        '即使用户在写成人向内容，生图也只画干净角色形象，禁止色情提示词。'
+                  : '需要为角色「${imageCharacter.name}」配安全立绘时调用 generate_image（每轮最多一次）；'
+                        '即使用户在写成人向内容，生图也只画干净角色形象，禁止色情提示词。',
             );
           } else {
-            hint.write('需要配图时调用 generate_image（每轮最多一次）；提示词必须 SFW，禁止色情内容。');
+            hint.write(
+              imageGenMode == ImageGenMode.always
+                  ? '本轮必须调用 generate_image（每轮最多一次）；提示词必须 SFW，禁止色情内容。'
+                  : '需要配图时调用 generate_image（每轮最多一次）；提示词必须 SFW，禁止色情内容。',
+            );
           }
+        }
+        if (useVisionTool) {
+          hint.write(
+            '用户上传了图片。你看不到像素，需要看图、读图中文字或回答图里的细节时，'
+            '必须调用 analyze_image；attachment_name 用【图片：文件名】中的名字。',
+          );
         }
         if (useDocumentEditTool) {
           hint.write(
@@ -3407,14 +3529,22 @@ class ChatController extends AsyncNotifier<ChatState> {
           LlmRequestMessage(role: MessageRole.system, content: forceImageNote),
         );
       }
+      if (preVisionNote.isNotEmpty) {
+        history.insert(
+          0,
+          LlmRequestMessage(role: MessageRole.system, content: preVisionNote),
+        );
+      }
       if (enableTools) {
         // Ground tool-capable models in "now" so time-sensitive queries carry a
         // year, and spell out when each tool applies.
         final hint = StringBuffer(ToolEngine.dateLine())..write('。');
         if (useWebSearchTool) {
           hint.write(
-            '需要实时、最新或不确定的事实信息时，优先调用 web_search；'
-            '搜索关键词应自包含（把指代替换成具体名称，时效性问题带上年份）。',
+            searchMode == SearchMode.always
+                ? '本轮必须调用 web_search。搜索关键词应自包含（把指代替换成具体名称，时效性问题带上年份）。'
+                : '需要实时、最新或不确定的事实信息时，优先调用 web_search；'
+                      '搜索关键词应自包含（把指代替换成具体名称，时效性问题带上年份）。',
           );
         }
         if (useFetchUrlTool) {
@@ -3423,12 +3553,25 @@ class ChatController extends AsyncNotifier<ChatState> {
         if (useImageGenTool) {
           if (imageCharacter != null) {
             hint.write(
-              '需要为角色「${imageCharacter.name}」配安全立绘时调用 generate_image（每轮最多一次）；'
-              '即使用户在写成人向内容，生图也只画干净角色形象，禁止色情提示词。',
+              imageGenMode == ImageGenMode.always
+                  ? '本轮必须调用 generate_image，为角色「${imageCharacter.name}」配一张安全立绘（每轮最多一次）；'
+                        '即使用户在写成人向内容，生图也只画干净角色形象，禁止色情提示词。'
+                  : '需要为角色「${imageCharacter.name}」配安全立绘时调用 generate_image（每轮最多一次）；'
+                        '即使用户在写成人向内容，生图也只画干净角色形象，禁止色情提示词。',
             );
           } else {
-            hint.write('需要配图时调用 generate_image（每轮最多一次）；提示词必须 SFW，禁止色情内容。');
+            hint.write(
+              imageGenMode == ImageGenMode.always
+                  ? '本轮必须调用 generate_image（每轮最多一次）；提示词必须 SFW，禁止色情内容。'
+                  : '需要配图时调用 generate_image（每轮最多一次）；提示词必须 SFW，禁止色情内容。',
+            );
           }
+        }
+        if (useVisionTool) {
+          hint.write(
+            '用户上传了图片。你看不到像素，需要看图、读图中文字或回答图里的细节时，'
+            '必须调用 analyze_image；attachment_name 用【图片：文件名】中的名字。',
+          );
         }
         if (useDocumentEditTool) {
           hint.write(
@@ -3508,9 +3651,11 @@ class ChatController extends AsyncNotifier<ChatState> {
       imageCharacter: imageCharacter,
       failureOperation: failureOperation,
       clientSearchBackend: clientSearchBackend,
-      forceToolName: forceDocTool
-          ? DocumentEditTools.editDocumentToolName
-          : null,
+      forceToolName: forcedClientToolName(
+        forceDocument: forceDocTool,
+        forceImage: useImageGenTool && imageGenMode == ImageGenMode.always,
+        forceClientSearch: useWebSearchTool && searchMode == SearchMode.always,
+      ),
     );
 
     unawaited(
@@ -3594,20 +3739,52 @@ class ChatController extends AsyncNotifier<ChatState> {
     var succeeded = false;
 
     Timer? uiFlushTimer;
+    Duration? uiFlushDelay;
     var uiDirty = false;
     var lastCheckpointAt = DateTime.now();
     var lastCheckpointLength = 0;
+    var cacheHitRate = 0.0;
+    try {
+      cacheHitRate =
+          ref
+              .read(modelUsageControllerProvider.notifier)
+              .find(endpoint: config.baseUrl, model: config.model)
+              ?.cacheHitRate ??
+          0;
+    } catch (_) {
+      // Optional: tests and early init may not override SharedPreferences.
+    }
+    _streamHasLiveContent = false;
+    var publishedContent = '';
+    var publishedReasoning = '';
+    final uiCoalescer = DualStreamUiCoalescer(
+      cacheHitRate: cacheHitRate,
+      focusOf: () => _streamUiFocus,
+    );
 
-    void flushUi() {
+    void flushUi({bool publishAll = false}) {
       uiFlushTimer?.cancel();
       uiFlushTimer = null;
-      if (!uiDirty) return;
+      uiFlushDelay = null;
+      if (!uiDirty && !publishAll) return;
       uiDirty = false;
+      final focus = _streamUiFocus;
+      final publishReasoning =
+          publishAll ||
+          focus == StreamUiFocus.away ||
+          focus == StreamUiFocus.reasoning;
+      final publishContent =
+          publishAll ||
+          focus == StreamUiFocus.away ||
+          focus == StreamUiFocus.content;
+      if (publishReasoning) publishedReasoning = reasoning.toString();
+      if (publishContent) publishedContent = content.toString();
+      uiCoalescer.markFlushed(all: publishAll);
       _updateAssistant(
         convoId,
         assistantId,
-        content.toString(),
-        reasoning.toString(),
+        publishedContent,
+        publishedReasoning,
         thinkMillis,
       );
 
@@ -3626,12 +3803,36 @@ class ChatController extends AsyncNotifier<ChatState> {
 
     void scheduleUiFlush() {
       uiDirty = true;
-      uiFlushTimer ??= Timer(_streamUiFlushInterval, flushUi);
+      if (uiCoalescer.shouldFlushNow) {
+        flushUi();
+        return;
+      }
+      if (_streamUiFocus != StreamUiFocus.away &&
+          !uiCoalescer.focusedHasPending) {
+        return;
+      }
+      final delay = uiCoalescer.delay;
+      // Keep an in-flight timer unless the other pane needs a shorter wait
+      // (typical: answer tokens arriving after a long think fallback).
+      if (uiFlushTimer != null &&
+          uiFlushDelay != null &&
+          delay >= uiFlushDelay!) {
+        return;
+      }
+      uiFlushTimer?.cancel();
+      uiFlushDelay = delay;
+      uiFlushTimer = Timer(delay, flushUi);
     }
 
     late final void Function() flushActiveStream;
-    flushActiveStream = flushUi;
+    flushActiveStream = () => flushUi(publishAll: true);
     _flushActiveStream = flushActiveStream;
+    late final void Function() nudgeStreamUi;
+    nudgeStreamUi = () {
+      uiDirty = true;
+      flushUi();
+    };
+    _nudgeStreamUi = nudgeStreamUi;
 
     // N search rounds (user-configurable) plus one final round with tools
     // withheld so the model must produce an answer.
@@ -3681,6 +3882,7 @@ class ChatController extends AsyncNotifier<ChatState> {
               }
               turnReasoning.write(chunk.reasoningDelta!);
               reasoning.write(chunk.reasoningDelta!);
+              uiCoalescer.addReasoning(chunk.reasoningDelta!);
             }
             if (chunk.contentDelta != null && chunk.contentDelta!.isNotEmpty) {
               if (thinkClock.isRunning) {
@@ -3689,6 +3891,8 @@ class ChatController extends AsyncNotifier<ChatState> {
               }
               turnContent.write(chunk.contentDelta!);
               content.write(chunk.contentDelta!);
+              _streamHasLiveContent = true;
+              uiCoalescer.addContent(chunk.contentDelta!);
             }
             for (final call in chunk.toolCalls ?? const <ToolCall>[]) {
               (toolDrafts[call.index] ??= ToolCallDraft(
@@ -3749,7 +3953,8 @@ class ChatController extends AsyncNotifier<ChatState> {
 
         // The fake/test stream and very short real answers may finish before
         // the coalescing timer fires, so always publish pending content here.
-        flushUi();
+        uiDirty = true;
+        flushUi(publishAll: true);
 
         if (streamError != null) throw streamError!;
         if (!_s.isStreaming) {
@@ -3761,7 +3966,7 @@ class ChatController extends AsyncNotifier<ChatState> {
           thinkClock.stop();
           thinkMillis = thinkClock.elapsedMilliseconds;
           uiDirty = true;
-          flushUi();
+          flushUi(publishAll: true);
         }
 
         final toolCalls = ToolCallDraft.finalize(toolDrafts);
@@ -3802,7 +4007,7 @@ class ChatController extends AsyncNotifier<ChatState> {
               content.write(_emptyReplyFallback);
             }
             uiDirty = true;
-            flushUi();
+            flushUi(publishAll: true);
           }
           // A failed search / image gen earlier in this turn must not leave its
           // error banner behind once the model answered. Only this
@@ -3836,8 +4041,9 @@ class ChatController extends AsyncNotifier<ChatState> {
         // Clear transient "let me search" text from the visible answer. The
         // final response will stream in after tool results are appended.
         content.clear();
+        publishedContent = '';
         uiDirty = true;
-        flushUi();
+        flushUi(publishAll: true);
 
         final toolMessages = await _executeToolCalls(
           toolCalls: toolCalls,
@@ -3882,7 +4088,8 @@ class ChatController extends AsyncNotifier<ChatState> {
         }
       }
     } catch (e) {
-      flushUi();
+      uiDirty = true;
+      flushUi(publishAll: true);
       if (thinkClock.isRunning) thinkClock.stop();
       _set(
         _s.copyWith(
@@ -3901,6 +4108,9 @@ class ChatController extends AsyncNotifier<ChatState> {
       uiFlushTimer?.cancel();
       if (identical(_flushActiveStream, flushActiveStream)) {
         _flushActiveStream = null;
+      }
+      if (identical(_nudgeStreamUi, nudgeStreamUi)) {
+        _nudgeStreamUi = null;
       }
       // Drop our token once finished so a later stop() can't cancel a stale one.
       if (identical(_cancelToken, cancelToken)) _cancelToken = null;
@@ -4024,6 +4234,20 @@ class ChatController extends AsyncNotifier<ChatState> {
             imageBudget: imageBudget,
             imageCharacter: imageCharacter,
             userText: fallbackSearchQuery,
+            cancelToken: cancelToken,
+          );
+        } else if (call.name == VisionTools.analyzeImageToolName) {
+          toolContent = await _runAnalyzeImageTool(
+            call,
+            settings: settings,
+            convoId: convoId,
+            assistantId: assistantId,
+            sources: _visionAttachmentsFor(
+              _s.conversations.firstWhere(
+                (c) => c.id == convoId,
+                orElse: () => Conversation(id: convoId),
+              ),
+            ),
             cancelToken: cancelToken,
           );
         } else if (call.name == DocumentEditTools.editDocumentToolName) {
@@ -4185,6 +4409,129 @@ class ChatController extends AsyncNotifier<ChatState> {
       return '生图已取消。';
     }
     return '生图失败：${result.error ?? '未知错误'}';
+  }
+
+  List<Attachment> _visionAttachmentsFor(Conversation convo) {
+    final out = <Attachment>[];
+    final seen = <String>{};
+    for (final message in convo.activePath) {
+      if (message.role != MessageRole.user) continue;
+      for (final a in message.attachments) {
+        if (!a.isImage || !a.hasImageData) continue;
+        if (!seen.add(a.id)) continue;
+        out.add(a);
+      }
+    }
+    return out;
+  }
+
+  Future<String> _runAnalyzeImageTool(
+    ToolCall call, {
+    required SettingsState settings,
+    required String convoId,
+    required String assistantId,
+    required List<Attachment> sources,
+    required CancelToken cancelToken,
+  }) async {
+    if (!settings.visionConfigured) {
+      return '未配置视觉 API，无法识图。';
+    }
+    final args = VisionTools.parseArgs(call.argumentsJson);
+    final image = VisionTools.pickImage(sources, args.attachmentName);
+    if (image == null) {
+      final names = VisionTools.availableNames(sources);
+      if (args.attachmentName.isNotEmpty) {
+        return '找不到图片「${args.attachmentName}」。可用： $names';
+      }
+      return '本轮没有可识图的图片附件。';
+    }
+    final text = await _analyzeImageWithVisionApi(
+      settings: settings,
+      image: image,
+      question: args.resolvedQuestion,
+      convoId: convoId,
+      assistantId: assistantId,
+      cancelToken: cancelToken,
+    );
+    if (text.isEmpty) {
+      return '识图服务没有返回可用内容。';
+    }
+    return '【图片：${image.name}】\n$text';
+  }
+
+  Future<String> _analyzeImageWithVisionApi({
+    required SettingsState settings,
+    required Attachment image,
+    required String question,
+    required String convoId,
+    required String assistantId,
+    required CancelToken cancelToken,
+  }) async {
+    final activity = SearchActivity(
+      kind: SearchActivityKind.vision,
+      query: image.name,
+    );
+    _upsertSearchActivity(convoId, assistantId, activity);
+    try {
+      final buf = StringBuffer();
+      await for (final chunk
+          in ref
+              .read(llmProvider)
+              .streamChat(
+                config: settings.visionConfig,
+                cancelToken: cancelToken,
+                messages: [
+                  const LlmRequestMessage(
+                    role: MessageRole.system,
+                    content:
+                        '你是视觉理解助手。只根据图片中可见内容作答，不要编造看不到的文字或物体。'
+                        '用简洁中文；若图中有文字请如实转录。',
+                  ),
+                  LlmRequestMessage(
+                    role: MessageRole.user,
+                    content: question,
+                    imageDataUrls: [image.imageDataUrl],
+                  ),
+                ],
+              )) {
+        if (cancelToken.isCancelled) break;
+        if (chunk.contentDelta != null && chunk.contentDelta!.isNotEmpty) {
+          buf.write(chunk.contentDelta);
+        }
+      }
+      final text = buf.toString().trim();
+      _upsertSearchActivity(
+        convoId,
+        assistantId,
+        activity.copyWith(
+          status: text.isEmpty
+              ? SearchActivityStatus.failed
+              : SearchActivityStatus.done,
+          resultCount: text.isEmpty ? 0 : 1,
+          error: text.isEmpty ? '空结果' : null,
+        ),
+      );
+      return text;
+    } catch (e) {
+      if (_isCancel(e) || cancelToken.isCancelled) {
+        _upsertSearchActivity(
+          convoId,
+          assistantId,
+          activity.copyWith(status: SearchActivityStatus.failed, error: '已取消'),
+        );
+        return '识图已取消。';
+      }
+      _upsertSearchActivity(
+        convoId,
+        assistantId,
+        activity.copyWith(
+          status: SearchActivityStatus.failed,
+          error: _describeError(e),
+        ),
+      );
+      _setScopedError(_describeError(e), convoId: convoId);
+      return '识图失败：$e';
+    }
   }
 
   /// Which character card (if any) should own dialogue portrait generation.
@@ -4780,7 +5127,11 @@ class ChatController extends AsyncNotifier<ChatState> {
   /// inlined into the content; image attachments are sent as `image_url` parts
   /// when [vision] is true, otherwise described in text. Messages with no
   /// attachments pass through unchanged.
-  LlmRequestMessage _toRequestMessage(ChatMessage m, {required bool vision}) {
+  LlmRequestMessage _toRequestMessage(
+    ChatMessage m, {
+    required bool vision,
+    bool imageToolAvailable = false,
+  }) {
     if (m.attachments.isEmpty || m.role != MessageRole.user) {
       return LlmRequestMessage.fromChatMessage(m);
     }
@@ -4792,10 +5143,16 @@ class ChatController extends AsyncNotifier<ChatState> {
         if (vision && a.hasImageData) {
           images.add(a.imageDataUrl); // sent through the image channel
         } else {
-          buffer
-            ..writeln('【图片：${a.name}】')
-            ..writeln(a.parseError ?? '（当前模型不支持图片，未发送图片内容）')
-            ..writeln();
+          buffer.writeln('【图片：${a.name}】');
+          if (imageToolAvailable) {
+            buffer.writeln(
+              '（像素未发送给对话模型；需要看图时请调用 analyze_image，'
+              'attachment_name 用此文件名）',
+            );
+          } else {
+            buffer.writeln(a.parseError ?? '（当前模型不支持图片，未发送图片内容）');
+          }
+          buffer.writeln();
         }
         continue;
       }

@@ -94,7 +94,8 @@ class ContextWindowManager {
       // Reasoning chains of thought are sent back verbatim on assistant turns;
       // omitting them systematically under-counts tool-loop requests.
       estimateTextTokens(message.reasoningContent ?? '') +
-      message.imageDataUrls.length * _imageEstimateTokens +
+      (message.imageDataUrls.length + message.imageFileIds.length) *
+          _imageEstimateTokens +
       message.toolCalls.fold<int>(
         0,
         (sum, call) =>
@@ -426,7 +427,8 @@ class ContextWindowManager {
         // Reasoning is preserved unclipped by [LlmRequestMessage], so its
         // estimated cost must come out of the clippable text budget.
         estimateTextTokens(message.reasoningContent ?? '') +
-        message.imageDataUrls.length * _imageEstimateTokens +
+        (message.imageDataUrls.length + message.imageFileIds.length) *
+            _imageEstimateTokens +
         message.toolCalls.fold<int>(
           0,
           (sum, call) =>
@@ -445,6 +447,7 @@ class ContextWindowManager {
       toolCallId: message.toolCallId,
       toolCalls: message.toolCalls,
       imageDataUrls: message.imageDataUrls,
+      imageFileIds: message.imageFileIds,
     );
   }
 

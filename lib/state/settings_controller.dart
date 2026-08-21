@@ -142,6 +142,13 @@ class SettingsState {
     tokenProvider: gatewayTokenProvider,
   );
   bool get visionConfigured => visionApi.isConfiguredWith(visionApiKey);
+
+  /// True when the user can upload pictures for this turn: either the optional
+  /// vision API is set, or the active chat/reasoner model accepts images.
+  bool canAttachImages({required bool deepThink}) =>
+      visionConfigured ||
+      ModelCapabilities.resolve(model).supportsVision ||
+      (deepThink && ModelCapabilities.resolve(reasonerModel).supportsVision);
   bool get imageGenerationConfigured =>
       imageGenerationApi.isConfiguredWith(imageGenerationApiKey);
   bool get ttsConfigured => ttsApi.isConfiguredWith(ttsApiKey);
@@ -158,7 +165,8 @@ class SettingsState {
   String get baseUrl => active?.baseUrl ?? '';
   String get model => selectedModel ?? active?.chatModel ?? KnownModels.chat;
 
-  /// Model used when "深度思考" is on — the active profile's reasoner.
+  /// Dedicated reasoner model for providers that cannot toggle thinking on
+  /// the chat model. DeepSeek V4 ignores this and stays on [model].
   String get reasonerModel => active?.reasonerModel ?? model;
 
   /// Resolved "搜索大脑" model: the explicit choice, else the active profile's
@@ -170,8 +178,7 @@ class SettingsState {
   }
 
   /// Models offered in the picker for the active profile.
-  List<String> get availableModels =>
-      active?.models ?? const [KnownModels.chat, KnownModels.reasoner];
+  List<String> get availableModels => active?.models ?? KnownModels.all;
 
   LlmConfig get config =>
       LlmConfig(baseUrl: baseUrl, apiKey: apiKey, model: model);
@@ -347,7 +354,7 @@ class SettingsController extends AsyncNotifier<SettingsState> {
           baseUrl: legacyBaseUrl ?? 'https://api.deepseek.com',
           chatModel: prefs.getString(_kLegacyModel) ?? KnownModels.chat,
           reasonerModel: KnownModels.reasoner,
-          models: const [KnownModels.chat, KnownModels.reasoner],
+          models: KnownModels.all,
         );
         profiles = [migrated];
         if (legacyKey != null && legacyKey.isNotEmpty) {
@@ -374,10 +381,22 @@ class SettingsController extends AsyncNotifier<SettingsState> {
         for (final p in profiles)
           if (_isLegacyDeepSeek(p))
             p.copyWith(
-              chatModel: 'deepseek-v4-flash',
-              reasonerModel: 'deepseek-v4-pro',
-              models: const ['deepseek-v4-flash', 'deepseek-v4-pro'],
+              chatModel: KnownModels.chat,
+              reasonerModel: KnownModels.reasoner,
+              models: KnownModels.all,
             )
+          else
+            p,
+      ];
+      await _writeProfiles(prefs, profiles);
+    }
+
+    // Add the official vision model to already-migrated DeepSeek v4 profiles.
+    if (profiles.any(_isDeepSeekMissingVision)) {
+      profiles = [
+        for (final p in profiles)
+          if (_isDeepSeekMissingVision(p))
+            p.copyWith(models: [...p.models, KnownModels.vision])
           else
             p,
       ];
@@ -681,6 +700,13 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       p.models.contains('deepseek-chat') &&
       p.models.contains('deepseek-reasoner');
 
+  /// Official DeepSeek v4 profile that predates `deepseek-v4-flash-vision-exp`.
+  static bool _isDeepSeekMissingVision(ProviderProfile p) =>
+      p.baseUrl.contains('api.deepseek.com') &&
+      p.models.contains(KnownModels.chat) &&
+      p.models.contains(KnownModels.reasoner) &&
+      !p.models.contains(KnownModels.vision);
+
   SettingsState get _current => state.value ?? const SettingsState();
 
   ({List<ProviderProfile> profiles, bool corrupt}) _readProfiles(
@@ -962,14 +988,9 @@ class SettingsController extends AsyncNotifier<SettingsState> {
   );
 
   Future<void> setChatSkills(ChatSkillCatalog catalog) async {
-    final next = catalog.sanitize(
-      legacySystemPrompt: _current.systemPrompt,
-    );
+    final next = catalog.sanitize(legacySystemPrompt: _current.systemPrompt);
     state = AsyncData(
-      _current.copyWith(
-        chatSkills: next,
-        systemPrompt: next.fallback.prompt,
-      ),
+      _current.copyWith(chatSkills: next, systemPrompt: next.fallback.prompt),
     );
     final prefs = ref.read(sharedPrefsProvider);
     await prefs.setString(_kChatSkills, next.encode());

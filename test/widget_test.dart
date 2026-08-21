@@ -30,7 +30,9 @@ import 'package:expert_chat/domain/speech/text_to_speech_service.dart';
 import 'package:expert_chat/domain/story/story_length_budget.dart';
 import 'package:expert_chat/domain/story/story_prompt_assembler.dart';
 import 'package:expert_chat/domain/tools/file_parser.dart';
+import 'package:expert_chat/domain/tools/vision_tools.dart';
 import 'package:expert_chat/domain/tools/search_provider.dart';
+import 'package:expert_chat/domain/document/document_edit_tools.dart';
 import 'package:expert_chat/domain/tools/tool_engine.dart';
 import 'package:expert_chat/features/chat/chat_page.dart';
 import 'package:expert_chat/state/chat_controller.dart';
@@ -54,6 +56,8 @@ class FakeLlmProvider implements LlmProvider {
   final List<LlmConfig> configs = [];
   LlmConfig? lastConfig;
   List<ToolSpec>? lastTools;
+  String? lastForceToolName;
+  final List<String?> forceToolNames = [];
   bool? lastThinking;
   int callCount = 0;
 
@@ -72,6 +76,8 @@ class FakeLlmProvider implements LlmProvider {
     configs.add(config);
     lastConfig = config;
     lastTools = tools;
+    lastForceToolName = forceToolName;
+    forceToolNames.add(forceToolName);
     lastThinking = thinking;
     final scripts = scriptedChunks;
     final scriptIndex = scripts == null
@@ -461,6 +467,68 @@ class FakeVisionSettings extends SettingsController {
   }
 }
 
+/// DeepSeek flash (no native vision) plus a separate vision API.
+class FakeVisionToolSettings extends SettingsController {
+  @override
+  Future<SettingsState> build() async {
+    final profile = ProviderProfile(
+      name: 'DeepSeek',
+      baseUrl: 'https://api.deepseek.com',
+      chatModel: KnownModels.chat,
+      reasonerModel: KnownModels.reasoner,
+      models: KnownModels.all,
+    );
+    return SettingsState(
+      profiles: [profile],
+      activeProfileId: profile.id,
+      apiKey: 'sk-test',
+      visionApi: const MediaApiConfig(
+        baseUrl: 'https://api.deepseek.com',
+        model: KnownModels.vision,
+      ),
+      visionApiKey: 'sk-vision-test',
+    );
+  }
+}
+
+/// DeepSeek official vision model, no extra vision API.
+class FakeDeepSeekVisionSettings extends SettingsController {
+  @override
+  Future<SettingsState> build() async {
+    final profile = ProviderProfile(
+      name: 'DeepSeek',
+      baseUrl: 'https://api.deepseek.com',
+      chatModel: KnownModels.vision,
+      reasonerModel: KnownModels.reasoner,
+      models: KnownModels.all,
+    );
+    return SettingsState(
+      profiles: [profile],
+      activeProfileId: profile.id,
+      apiKey: 'sk-test',
+    );
+  }
+}
+
+/// Tool-less chat model so 联网·强制 still falls back to client pre-search.
+class FakeToolLessSettings extends SettingsController {
+  @override
+  Future<SettingsState> build() async {
+    final profile = ProviderProfile(
+      name: 'DeepSeek',
+      baseUrl: 'https://api.deepseek.com',
+      chatModel: 'deepseek-reasoner',
+      reasonerModel: 'deepseek-reasoner',
+      models: const ['deepseek-reasoner'],
+    );
+    return SettingsState(
+      profiles: [profile],
+      activeProfileId: profile.id,
+      apiKey: 'sk-test',
+    );
+  }
+}
+
 /// Settings with the optional image-generation endpoint configured.
 class FakeImageGenSettings extends SettingsController {
   @override
@@ -774,7 +842,7 @@ void main() {
     expect(restored.citations.single.url, 'https://x');
   });
 
-  test('deepThink toggle routes the request to the reasoner model', () async {
+  test('deepThink on DeepSeek V4 stays on flash and enables thinking', () async {
     final llm = FakeLlmProvider([
       const ChatChunk(reasoningDelta: 'pondering'),
       const ChatChunk(contentDelta: 'answer'),
@@ -788,13 +856,32 @@ void main() {
     ctrl.toggleDeepThink();
     await ctrl.sendMessage('hi');
 
-    expect(llm.lastConfig?.model, KnownModels.reasoner);
-    expect(llm.lastThinking, isTrue); // thinking mode enabled for deep-think
+    expect(llm.lastConfig?.model, KnownModels.chat);
+    expect(llm.lastThinking, isTrue);
     final convo = c.read(chatControllerProvider).value!.current!;
     final assistant = convo.activePath.last;
-    expect(assistant.model, KnownModels.reasoner);
+    expect(assistant.model, KnownModels.chat);
     expect(assistant.content, 'answer');
     expect(assistant.reasoning, 'pondering');
+  });
+
+  test('deepThink on a dual-model profile still switches to the reasoner', () async {
+    final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'answer')]);
+    final c = _container(
+      llm,
+      InMemoryRepo(),
+      settingsBuilder: FakeVisionSettings.new,
+    );
+    addTearDown(c.dispose);
+
+    final ctrl = c.read(chatControllerProvider.notifier);
+    await c.read(chatControllerProvider.future);
+
+    ctrl.toggleDeepThink();
+    await ctrl.sendMessage('hi');
+
+    expect(llm.lastConfig?.model, 'o3-mini');
+    expect(llm.lastThinking, isTrue);
   });
 
   test('reasoning-only completion is promoted to the visible answer', () async {
@@ -2354,6 +2441,7 @@ void main() {
       final c = _container(
         llm,
         InMemoryRepo(),
+        settingsBuilder: FakeToolLessSettings.new,
         toolEngineFactory: ({required backend, required apiKey}) =>
             ToolEngine(_ThrowingSearch()),
       );
@@ -2363,13 +2451,40 @@ void main() {
       await c.read(chatControllerProvider.future);
 
       ctrl.toggleSearch(); // auto
-      ctrl.toggleSearch(); // always: forced pre-search runs before the answer
+      ctrl.toggleSearch(); // always: tool-less models still pre-search
       await ctrl.sendMessage('what is the weather?');
 
       final state = c.read(chatControllerProvider).value!;
       expect(state.error, isNull);
       expect(state.retryOperation, isNull);
       expect(state.current!.activePath.last.content, 'still answers');
+    },
+  );
+
+  test(
+    '联网·强制 on a tool model forces web_search instead of pre-search',
+    () async {
+      final llm = FakeLlmProvider([
+        const ChatChunk(contentDelta: 'answered without searching'),
+      ]);
+      final search = _CountingSearch(const []);
+      final c = _container(
+        llm,
+        InMemoryRepo(),
+        toolEngineFactory: ({required backend, required apiKey}) =>
+            ToolEngine(search),
+      );
+      addTearDown(c.dispose);
+
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
+      ctrl.toggleSearch();
+      ctrl.toggleSearch(); // always
+      await ctrl.sendMessage('what is the weather?');
+
+      expect(search.calls, 0);
+      expect(llm.forceToolNames.first, 'web_search');
+      expect(llm.lastTools?.any((t) => t.name == 'web_search'), isTrue);
     },
   );
 
@@ -2524,6 +2639,20 @@ void main() {
       expect(c.isReasoner, isFalse);
       expect(c.supportsTools, isTrue);
       expect(c.sendThinkingField, isTrue);
+      expect(c.supportsVision, isFalse);
+      expect(c.supportsReasoningEffort, isTrue);
+      expect(c.reasoningCanBeDisabled, isFalse);
+      expect(c.supportsServerWebSearch, isTrue);
+    });
+
+    test('DeepSeek V4 flash-vision-exp: vision + tools, not reasoner', () {
+      final c = ModelCapabilities.resolve(KnownModels.vision);
+      expect(c.isReasoner, isFalse);
+      expect(c.supportsTools, isTrue);
+      expect(c.sendThinkingField, isTrue);
+      expect(c.supportsVision, isTrue);
+      expect(c.supportsReasoningEffort, isTrue);
+      expect(c.supportsServerWebSearch, isTrue);
     });
 
     test('DeepSeek V4 pro: reasoner AND tool-capable (V4 hybrid)', () {
@@ -2531,6 +2660,8 @@ void main() {
       expect(c.isReasoner, isTrue);
       expect(c.supportsTools, isTrue);
       expect(c.sendThinkingField, isTrue);
+      expect(c.supportsReasoningEffort, isTrue);
+      expect(c.supportsServerWebSearch, isTrue);
     });
 
     test('legacy deepseek-reasoner: reasoner, no tools, no thinking field', () {
@@ -2635,6 +2766,10 @@ void main() {
         ModelCapabilities.resolve('deepseek-v4-flash').supportsVision,
         isFalse,
       );
+      expect(
+        ModelCapabilities.resolve(KnownModels.vision).supportsVision,
+        isTrue,
+      );
     });
 
     test('LlmConfig derives capabilities from its model by default', () {
@@ -2669,6 +2804,52 @@ void main() {
     expect(SearchMode.auto.composerLabel, '联网·自动');
     expect(SearchMode.always.composerLabel, '联网·强制');
   });
+
+  test(
+    'forcedClientToolName prefers document, then required, then one tool',
+    () {
+      expect(
+        forcedClientToolName(
+          forceDocument: true,
+          forceImage: true,
+          forceClientSearch: true,
+        ),
+        DocumentEditTools.editDocumentToolName,
+      );
+      expect(
+        forcedClientToolName(
+          forceDocument: false,
+          forceImage: true,
+          forceClientSearch: true,
+        ),
+        kToolChoiceRequired,
+      );
+      expect(
+        forcedClientToolName(
+          forceDocument: false,
+          forceImage: true,
+          forceClientSearch: false,
+        ),
+        'generate_image',
+      );
+      expect(
+        forcedClientToolName(
+          forceDocument: false,
+          forceImage: false,
+          forceClientSearch: true,
+        ),
+        'web_search',
+      );
+      expect(
+        forcedClientToolName(
+          forceDocument: false,
+          forceImage: false,
+          forceClientSearch: false,
+        ),
+        isNull,
+      );
+    },
+  );
 
   test('ToolEngine.dateLine produces the expected format', () {
     final line = ToolEngine.dateLine(DateTime(2026, 7, 26));
@@ -2926,6 +3107,18 @@ void main() {
     });
   });
 
+  test('LlmRequestMessage serializes Files API ids as file parts', () {
+    const msg = LlmRequestMessage(
+      role: MessageRole.user,
+      content: 'what is this?',
+      imageFileIds: ['file-api-abc'],
+    );
+    final json = msg.toOpenAiJson();
+    final parts = json['content'] as List;
+    expect(parts.first, {'type': 'text', 'text': 'what is this?'});
+    expect(parts.last, {'type': 'file', 'file_id': 'file-api-abc'});
+  });
+
   test('vision model receives image attachments as image parts', () async {
     final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'a cat')]);
     final c = _container(
@@ -2946,7 +3139,80 @@ void main() {
 
     final user = llm.calls.last.firstWhere((m) => m.role == MessageRole.user);
     expect(user.imageDataUrls, ['data:image/png;base64,AAAA']);
+    expect(llm.lastConfig!.model, 'gpt-4o');
+    expect(llm.lastConfig!.apiKey, 'sk-test');
   });
+
+  test(
+    'DeepSeek vision model sees images without a separate vision API',
+    () async {
+      final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'a cat')]);
+      final c = _container(
+        llm,
+        InMemoryRepo(),
+        settingsBuilder: FakeDeepSeekVisionSettings.new,
+      );
+      addTearDown(c.dispose);
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
+
+      final accepted = await ctrl.sendMessage(
+        '图里有什么？',
+        attachments: [
+          Attachment(
+            name: 'pic.png',
+            mimeType: 'image/png',
+            imageBase64: 'AAAA',
+          ),
+        ],
+      );
+
+      expect(accepted, isTrue);
+      expect(llm.lastConfig!.model, KnownModels.vision);
+      final user = llm.calls.last.firstWhere((m) => m.role == MessageRole.user);
+      expect(user.imageDataUrls, ['data:image/png;base64,AAAA']);
+      expect(
+        llm.lastTools?.any((t) => t.name == VisionTools.analyzeImageToolName),
+        isNot(isTrue),
+      );
+    },
+  );
+
+  test(
+    'non-vision chat model with a vision API exposes analyze_image',
+    () async {
+      final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'ok')]);
+      final c = _container(
+        llm,
+        InMemoryRepo(),
+        settingsBuilder: FakeVisionToolSettings.new,
+      );
+      addTearDown(c.dispose);
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
+
+      final accepted = await ctrl.sendMessage(
+        '图里有什么？',
+        attachments: [
+          Attachment(
+            name: 'pic.png',
+            mimeType: 'image/png',
+            imageBase64: 'AAAA',
+          ),
+        ],
+      );
+
+      expect(accepted, isTrue);
+      expect(llm.lastConfig!.model, KnownModels.chat);
+      expect(llm.lastConfig!.apiKey, 'sk-test');
+      expect(
+        llm.lastTools!.any((t) => t.name == VisionTools.analyzeImageToolName),
+        isTrue,
+      );
+      final user = llm.calls.last.firstWhere((m) => m.role == MessageRole.user);
+      expect(user.imageDataUrls, isEmpty);
+    },
+  );
 
   test(
     'image send is rejected when the optional vision API is not configured',
@@ -2970,47 +3236,45 @@ void main() {
 
       expect(accepted, isFalse);
       expect(llm.calls, isEmpty);
-      expect(c.read(chatControllerProvider).value!.error, contains('视觉 API'));
+      expect(c.read(chatControllerProvider).value!.error, contains('视觉'));
     },
   );
 
-  test(
-    'editMessage of a plain turn does not route to the vision model',
-    () async {
-      final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'ok')]);
-      final c = _container(
-        llm,
-        InMemoryRepo(),
-        settingsBuilder: FakeVisionSettings.new,
-      );
-      addTearDown(c.dispose);
-      final ctrl = c.read(chatControllerProvider.notifier);
-      await c.read(chatControllerProvider.future);
+  test('editMessage of a plain turn does not keep image parts', () async {
+    final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'ok')]);
+    final c = _container(
+      llm,
+      InMemoryRepo(),
+      settingsBuilder: FakeVisionSettings.new,
+    );
+    addTearDown(c.dispose);
+    final ctrl = c.read(chatControllerProvider.notifier);
+    await c.read(chatControllerProvider.future);
 
-      await ctrl.sendMessage('第一句纯文本');
-      await ctrl.sendMessage(
-        '看看这张图',
-        attachments: [
-          Attachment(
-            name: 'pic.png',
-            mimeType: 'image/png',
-            imageBase64: 'AAAA',
-          ),
-        ],
-      );
-      expect(llm.lastConfig!.apiKey, 'sk-vision-test');
+    await ctrl.sendMessage('第一句纯文本');
+    await ctrl.sendMessage(
+      '看看这张图',
+      attachments: [
+        Attachment(name: 'pic.png', mimeType: 'image/png', imageBase64: 'AAAA'),
+      ],
+    );
+    expect(
+      llm.calls.last.lastWhere((m) => m.role == MessageRole.user).imageDataUrls,
+      isNotEmpty,
+    );
 
-      // Editing the first (plain) turn discards the image turn; the regenerated
-      // branch contains no images, so it must use the plain chat credentials.
-      final convo = c.read(chatControllerProvider).value!.current!;
-      final firstUser = convo.activePath.firstWhere(
-        (m) => m.role == MessageRole.user,
-      );
-      await ctrl.editMessage(firstUser.id, '改写第一句');
+    // Editing the first (plain) turn discards the image turn.
+    final convo = c.read(chatControllerProvider).value!.current!;
+    final firstUser = convo.activePath.firstWhere(
+      (m) => m.role == MessageRole.user,
+    );
+    await ctrl.editMessage(firstUser.id, '改写第一句');
 
-      expect(llm.lastConfig!.apiKey, 'sk-test');
-    },
-  );
+    expect(
+      llm.calls.last.lastWhere((m) => m.role == MessageRole.user).imageDataUrls,
+      isEmpty,
+    );
+  });
 
   test(
     'editMessage of an inactive-branch turn ignores active-path images',
@@ -3034,7 +3298,12 @@ void main() {
       final firstUser = convo.activePath.first;
       final secondUser = convo.activePath[2];
       await ctrl.editMessage(firstUser.id, '改写第一句');
-      expect(llm.lastConfig!.apiKey, 'sk-test');
+      expect(
+        llm.calls.last
+            .lastWhere((m) => m.role == MessageRole.user)
+            .imageDataUrls,
+        isEmpty,
+      );
 
       // The active branch now carries an image turn...
       await ctrl.sendMessage(
@@ -3047,7 +3316,12 @@ void main() {
           ),
         ],
       );
-      expect(llm.lastConfig!.apiKey, 'sk-vision-test');
+      expect(
+        llm.calls.last
+            .lastWhere((m) => m.role == MessageRole.user)
+            .imageDataUrls,
+        isNotEmpty,
+      );
 
       // ...but editing the SECOND turn on the INACTIVE branch regenerates a
       // text-only branch whose own ancestors carry no images.
@@ -3056,7 +3330,12 @@ void main() {
         (m) => m.id == secondUser.id,
       );
       await ctrl.editMessage(secondUserOnInactive.id, '改写第二句');
-      expect(llm.lastConfig!.apiKey, 'sk-test');
+      expect(
+        llm.calls.last
+            .lastWhere((m) => m.role == MessageRole.user)
+            .imageDataUrls,
+        isEmpty,
+      );
     },
   );
 
@@ -3168,7 +3447,7 @@ void main() {
       expect(media.lastPrompt, isNot(equals('画一只猫')));
       expect(llm.callCount, 1);
       expect(llm.lastThinking, isTrue);
-      expect(llm.lastConfig?.model, KnownModels.reasoner);
+      expect(llm.lastConfig?.model, KnownModels.chat);
 
       final assistant = c
           .read(chatControllerProvider)
@@ -3263,9 +3542,28 @@ void main() {
     );
   });
 
-  test('配图·强制 pre-generates one SFW image on the assistant turn', () async {
+  test('配图·强制 forces generate_image instead of pre-generating', () async {
     final media = FakeMediaProvider();
-    final llm = FakeLlmProvider([const ChatChunk(contentDelta: '这是文字回复')]);
+    final llm = FakeLlmProvider(
+      const [],
+      scriptedChunks: const [
+        [
+          ChatChunk(
+            toolCalls: [
+              ToolCall(
+                index: 0,
+                id: 'img_1',
+                name: 'generate_image',
+                argumentsJson:
+                    '{"prompt":"a clean diagram of quantum computing"}',
+              ),
+            ],
+            finishReason: 'tool_calls',
+          ),
+        ],
+        [ChatChunk(contentDelta: '这是文字回复')],
+      ],
+    );
     final c = _container(
       llm,
       InMemoryRepo(),
@@ -3285,6 +3583,7 @@ void main() {
 
     final ok = await ctrl.sendMessage('请介绍一下量子计算');
     expect(ok, isTrue);
+    expect(llm.forceToolNames.first, 'generate_image');
     expect(media.prompts, hasLength(1));
     expect(media.lastPrompt, contains('safe for work'));
 
@@ -3303,7 +3602,25 @@ void main() {
     '配图·强制 on character chat builds portrait without R18 user text',
     () async {
       final media = FakeMediaProvider();
-      final llm = FakeLlmProvider([const ChatChunk(contentDelta: '……')]);
+      final llm = FakeLlmProvider(
+        const [],
+        scriptedChunks: const [
+          [
+            ChatChunk(
+              toolCalls: [
+                ToolCall(
+                  index: 0,
+                  id: 'img_1',
+                  name: 'generate_image',
+                  argumentsJson: '{}',
+                ),
+              ],
+              finishReason: 'tool_calls',
+            ),
+          ],
+          [ChatChunk(contentDelta: '……')],
+        ],
+      );
       final c = _container(
         llm,
         InMemoryRepo(),

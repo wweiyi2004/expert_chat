@@ -14,14 +14,14 @@ class OpenAiCompatibleProvider implements LlmProvider {
     Dio? dio,
     this.responseHeaderTimeout = const Duration(seconds: 30),
   }) : _dio =
-          dio ??
-          Dio(
-            BaseOptions(
-              // Fail fast on a dead network; no receiveTimeout so long streamed
-              // answers are never cut off mid-generation.
-              connectTimeout: const Duration(seconds: 30),
-            ),
-          );
+           dio ??
+           Dio(
+             BaseOptions(
+               // Fail fast on a dead network; no receiveTimeout so long streamed
+               // answers are never cut off mid-generation.
+               connectTimeout: const Duration(seconds: 30),
+             ),
+           );
 
   final Dio _dio;
 
@@ -57,6 +57,10 @@ class OpenAiCompatibleProvider implements LlmProvider {
     final body = <String, dynamic>{
       'model': config.model,
       'stream': true,
+      // OpenAI-compatible streaming APIs only include final token usage when
+      // explicitly requested. Providers that reject this optional field still
+      // receive the normal request and can be handled by their gateway policy.
+      'stream_options': {'include_usage': true},
       // `reasoning_content` round-trip only makes sense for models that emit
       // it (DeepSeek V4 and reasoners); a strict provider that rejects unknown
       // fields could 400 when history holds a previous answer's chain.
@@ -77,9 +81,9 @@ class OpenAiCompatibleProvider implements LlmProvider {
     if (thinking != null && config.capabilities.sendThinkingField) {
       body['thinking'] = {'type': thinking ? 'enabled' : 'disabled'};
     }
-    // Current xAI models use the OpenAI-compatible `reasoning_effort` field.
-    // Grok 4.3 accepts `none`; Grok 4.5 always reasons, so normal mode leaves
-    // its provider default untouched while deep-think requests high effort.
+    // DeepSeek V4: `reasoning_effort` (low/high/max) with thinking enabled.
+    // Grok 4.3 accepts `none` to disable; Grok 4.5 always reasons, so normal
+    // mode leaves its provider default untouched while deep-think requests high.
     if (thinking != null && config.capabilities.supportsReasoningEffort) {
       if (thinking) {
         body['reasoning_effort'] = 'high';
@@ -93,8 +97,10 @@ class OpenAiCompatibleProvider implements LlmProvider {
         tools.isNotEmpty &&
         config.capabilities.supportsTools) {
       body['tools'] = tools.map((t) => t.toJson()).toList();
-      final force = forceToolName?.trim();
-      if (force != null && force.isNotEmpty) {
+      final force = forceToolName?.trim() ?? '';
+      if (force == kToolChoiceRequired) {
+        body['tool_choice'] = 'required';
+      } else if (force.isNotEmpty) {
         body['tool_choice'] = {
           'type': 'function',
           'function': {'name': force},
@@ -277,9 +283,13 @@ class OpenAiCompatibleProvider implements LlmProvider {
       throw Exception('生成失败：$streamError');
     }
 
+    final usage = LlmUsage.fromChatCompletions(json['usage']);
     final choices = json['choices'] as List<dynamic>?;
     if (choices == null || choices.isEmpty) {
-      return (chunks: const [], done: false);
+      return (
+        chunks: usage == null ? const [] : [ChatChunk(usage: usage)],
+        done: false,
+      );
     }
     final choice = choices.first as Map<String, dynamic>;
     final delta = choice['delta'] as Map<String, dynamic>?;
@@ -294,8 +304,7 @@ class OpenAiCompatibleProvider implements LlmProvider {
     // Reasoning field names vary across OpenAI-compatible vendors:
     // DeepSeek → reasoning_content; some Grok / gateways → reasoning.
     final reasoning =
-        delta['reasoning_content'] as String? ??
-        delta['reasoning'] as String?;
+        delta['reasoning_content'] as String? ?? delta['reasoning'] as String?;
     return (
       chunks: [
         ChatChunk(
@@ -303,6 +312,7 @@ class OpenAiCompatibleProvider implements LlmProvider {
           reasoningDelta: reasoning,
           toolCalls: _parseToolCalls(delta['tool_calls']),
           finishReason: finishReason,
+          usage: usage,
         ),
       ],
       done: false,

@@ -5,7 +5,6 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show defaultTargetPlatform, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:gpt_markdown/gpt_markdown.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/theme.dart';
@@ -19,6 +18,7 @@ import 'citations_bar.dart';
 import 'html_preview_page.dart';
 import 'previewable_code_block.dart';
 import 'search_activity_panel.dart';
+import 'streaming_markdown.dart';
 import 'thinking_panel.dart';
 
 Future<void> _openUrl(String url) async {
@@ -60,6 +60,7 @@ class MessageBubble extends StatefulWidget {
     this.onStartSelect,
     this.onCancelLongTask,
     this.onRetryLongTask,
+    this.onThinkingExpandedChanged,
   });
 
   final ChatMessage message;
@@ -100,6 +101,7 @@ class MessageBubble extends StatefulWidget {
   final VoidCallback? onStartSelect;
   final VoidCallback? onCancelLongTask;
   final VoidCallback? onRetryLongTask;
+  final ValueChanged<bool>? onThinkingExpandedChanged;
 
   @override
   State<MessageBubble> createState() => _MessageBubbleState();
@@ -212,10 +214,9 @@ class _MessageBubbleState extends State<MessageBubble> {
           // Key by brightness so the whole markdown tree is recreated on theme
           // change (covers any internal cache that ignores TextStyle equality).
           key: ValueKey(Theme.of(context).brightness),
-          child: GptMarkdown(
+          child: StreamingGptMarkdown(
             m.content,
             style: baseStyle,
-            useDollarSignsForLatex: true,
             onLinkTap: (url, _) => _openUrl(url),
             codeBuilder: (context, name, code, closed) =>
                 PreviewableCodeBlock(name: name, code: code, closed: closed),
@@ -522,6 +523,7 @@ class _MessageBubbleState extends State<MessageBubble> {
                 reasoning: m.reasoning,
                 isStreaming: stillThinking,
                 thinkingMillis: m.thinkingMillis,
+                onExpandedChanged: widget.onThinkingExpandedChanged,
               ),
             if (showCursor)
               Padding(

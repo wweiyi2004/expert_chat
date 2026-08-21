@@ -334,7 +334,7 @@ class Citation {
 }
 
 /// What a [SearchActivity] step did: a keyword search or reading one page.
-enum SearchActivityKind { search, fetch }
+enum SearchActivityKind { search, fetch, vision }
 
 /// Lifecycle of a [SearchActivity]. `running` steps drive the live indicator;
 /// terminal states stay in the transcript so past turns show what was done.
@@ -356,8 +356,7 @@ class SearchActivity {
   final String id;
   final SearchActivityKind kind;
 
-  /// Search keywords ([SearchActivityKind.search]) or the page URL
-  /// ([SearchActivityKind.fetch]).
+  /// Search keywords, page URL, or image filename depending on [kind].
   final String query;
   final SearchActivityStatus status;
 

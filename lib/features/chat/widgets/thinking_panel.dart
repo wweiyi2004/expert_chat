@@ -9,6 +9,7 @@ class ThinkingPanel extends StatefulWidget {
     required this.reasoning,
     required this.isStreaming,
     this.thinkingMillis = 0,
+    this.onExpandedChanged,
   });
 
   /// The accumulated chain-of-thought text.
@@ -19,6 +20,9 @@ class ThinkingPanel extends StatefulWidget {
 
   /// Final reasoning duration in ms; 0 while still thinking.
   final int thinkingMillis;
+
+  /// Reports expand/collapse so the stream coalescer can follow this pane.
+  final ValueChanged<bool>? onExpandedChanged;
 
   @override
   State<ThinkingPanel> createState() => _ThinkingPanelState();
@@ -50,6 +54,7 @@ class _ThinkingPanelState extends State<ThinkingPanel>
       // Auto-collapse when thinking finishes, unless the user took control.
       if (!_userToggled) {
         setState(() => _expanded = false);
+        widget.onExpandedChanged?.call(false);
       }
     } else if (!old.isStreaming && widget.isStreaming) {
       _pulse.repeat(reverse: true);
@@ -85,10 +90,13 @@ class _ThinkingPanelState extends State<ThinkingPanel>
         children: [
           InkWell(
             borderRadius: BorderRadius.circular(14),
-            onTap: () => setState(() {
-              _expanded = !_expanded;
-              _userToggled = true;
-            }),
+            onTap: () {
+              setState(() {
+                _expanded = !_expanded;
+                _userToggled = true;
+              });
+              widget.onExpandedChanged?.call(_expanded);
+            },
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
               child: Row(

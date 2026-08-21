@@ -11,13 +11,13 @@
 - **持久化文件长任务** — 可连接自建 Gateway；应用退到后台或关闭后服务端继续解析超长文档，重新打开自动补齐进度和增量结果
 - **统一文件 Gateway** — 一套地址承载长文件分析、文档编辑与格式转换，并通过能力发现继续扩展 OCR、知识库等模块
 - **多账户与分类授权** — AuthService OIDC + PKCE 登录，Access/Refresh Token 自动刷新；Gateway 按账户隔离资源并管理能力、配额和审计
-- **视觉理解** — 可单独配置 OpenAI 兼容视觉 API，上传图片进行分析
+- **视觉理解** — 对话模型本身支持视觉时（如 DeepSeek `deepseek-v4-flash-vision-exp`、GPT-4o）可直接看图；官方 DeepSeek 会走 Files API 上传后按 `file_id` 引用，避免多轮重复内联 base64。也可单独配置 OpenAI 兼容视觉 API，由 `analyze_image` 调用
 - **图片生成** — 可单独配置 `/images/generations`，在对话中生成并保存图片
 - **上下文管理** — 配置模型窗口、回复预留和历史条数，超限时仅压缩临时请求
 - **本地长期记忆** — 支持手动“记住”和“更多 → 整理候选记忆”；AI 只生成候选，逐条确认后才写入 Markdown；新旧记忆不一致时可选择替换、两条都保留或忽略；支持手机分享备份、安全导入合并、常驻/按需召回、来源记录与敏感凭证拦截
 - **语音输入** — 调用手机/电脑的系统语音识别；首次点击麦克风时才申请权限，中文识别结果只写入输入框供确认和编辑，不会自动发送，也不在应用中保存原始录音
 - **缓存清理** — 一键清除临时网页预览、图片内存与短期搜索缓存，不影响用户数据
-- **联网搜索** — 可选「API 提供商官方联网」（DeepSeek Responses `web_search`，当前 `deepseek-v4-flash`）、DuckDuckGo 免费搜索（尽力而为）或 Tavily / Exa / 博查等搜索 API + 本地网页正文抓取
+- **联网搜索** — 可选「API 提供商官方联网」（DeepSeek Responses `web_search`，V4 flash / pro / vision-exp）、DuckDuckGo 免费搜索（尽力而为）或 Tavily / Exa / 博查等搜索 API + 本地网页正文抓取
 - **对话管理** — 创建、删除、导出对话历史
 - **Markdown 渲染** — 完整支持代码高亮、表格、链接等 Markdown 语法
 - **安全存储** — API 密钥通过 `flutter_secure_storage` 加密存储
@@ -62,9 +62,9 @@ flutter run
 
 1. 启动应用后进入 **设置** 页面
 2. 填写 LLM API 的 Base URL、API Key 和模型名称
-3. （可选）联网搜索可选「API 提供商官方联网」（DeepSeek flash，无需搜索 Key）、DuckDuckGo 免费后端，或 Tavily / Exa / 博查（需搜索 API Key）
-4. （可选）在“多媒体能力”中分别配置视觉与生图；未完整配置的能力不会出现在聊天界面
-5. 在“上下文管理”中按所用模型设置上下文窗口；默认使用 256K
+3. （可选）联网搜索可选「API 提供商官方联网」（DeepSeek V4，无需搜索 Key）、DuckDuckGo 免费后端，或 Tavily / Exa / 博查（需搜索 API Key）
+4. （可选）看图：把聊天模型换成 DeepSeek `deepseek-v4-flash-vision-exp` 等视觉模型，或在“多媒体能力”中单独配置视觉 API；生图同样在该分类配置
+5. 在“上下文管理”中按所用模型设置上下文窗口；DeepSeek V4 为 1M（最大输出 384K），默认仍按 256K 起算，可在设置中改为 1M
 6. （可选）运行 [`server/gateway`](server/gateway)；生产环境同时部署 [`server/authservice`](server/authservice) 和 [`server/edge`](server/edge)
 7. 当前服务器配置：Gateway `https://125.208.22.148/gateway`，AuthService `https://125.208.22.148`，Client ID `expert-chat`，回调 `expertchat://auth/callback`
 8. 在“能力 → Expert Chat Gateway”填写上述地址，启用 Gateway，点击“使用 AuthService 登录”，再“连接并发现能力”；旧 Gateway Token 仅用于迁移

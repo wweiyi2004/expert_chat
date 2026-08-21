@@ -166,6 +166,46 @@ void main() {
     expect(state.ttsApiKey, 'mimo-secret');
   });
 
+  test('DeepSeek v4 profiles gain the official vision model', () async {
+    final profile = ProviderProfile(
+      id: 'v4-profile',
+      name: 'DeepSeek',
+      baseUrl: 'https://api.deepseek.com',
+      chatModel: 'deepseek-v4-flash',
+      reasonerModel: 'deepseek-v4-pro',
+      models: const ['deepseek-v4-flash', 'deepseek-v4-pro'],
+    );
+    SharedPreferences.setMockInitialValues({
+      'providerProfiles': jsonEncode([profile.toJson()]),
+      'activeProfileId': profile.id,
+    });
+    FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
+      {},
+    );
+    addTearDown(() {
+      FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
+        {},
+      );
+    });
+
+    final prefs = await SharedPreferences.getInstance();
+    final container = ProviderContainer(
+      overrides: [
+        sharedPrefsProvider.overrideWithValue(prefs),
+        secureStorageProvider.overrideWithValue(const FlutterSecureStorage()),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    final state = await container.read(settingsControllerProvider.future);
+    expect(state.profiles.single.chatModel, 'deepseek-v4-flash');
+    expect(state.profiles.single.reasonerModel, 'deepseek-v4-pro');
+    expect(
+      state.profiles.single.models,
+      contains('deepseek-v4-flash-vision-exp'),
+    );
+  });
+
   test(
     'already-migrated profiles delete the verified legacy API key',
     () async {
@@ -311,14 +351,14 @@ void main() {
   });
 
   test('legacy systemPrompt migrates into the general chat skill', () async {
-    SharedPreferences.setMockInitialValues({
-      'systemPrompt': '你是专业助手',
-    });
-    FlutterSecureStoragePlatform.instance =
-        TestFlutterSecureStoragePlatform({});
+    SharedPreferences.setMockInitialValues({'systemPrompt': '你是专业助手'});
+    FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
+      {},
+    );
     addTearDown(() {
-      FlutterSecureStoragePlatform.instance =
-          TestFlutterSecureStoragePlatform({});
+      FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
+        {},
+      );
     });
     final prefs = await SharedPreferences.getInstance();
     final container = ProviderContainer(
@@ -336,55 +376,63 @@ void main() {
     expect(prefs.getString('chatSkills'), isNotNull);
   });
 
-  test('first load with empty systemPrompt keeps factory out of storage', () async {
-    SharedPreferences.setMockInitialValues({});
-    FlutterSecureStoragePlatform.instance =
-        TestFlutterSecureStoragePlatform({});
-    addTearDown(() {
-      FlutterSecureStoragePlatform.instance =
-          TestFlutterSecureStoragePlatform({});
-    });
-    final prefs = await SharedPreferences.getInstance();
-    final container = ProviderContainer(
-      overrides: [
-        sharedPrefsProvider.overrideWithValue(prefs),
-        secureStorageProvider.overrideWithValue(const FlutterSecureStorage()),
-      ],
-    );
-    addTearDown(container.dispose);
+  test(
+    'first load with empty systemPrompt keeps factory out of storage',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
+        {},
+      );
+      addTearDown(() {
+        FlutterSecureStoragePlatform.instance =
+            TestFlutterSecureStoragePlatform({});
+      });
+      final prefs = await SharedPreferences.getInstance();
+      final container = ProviderContainer(
+        overrides: [
+          sharedPrefsProvider.overrideWithValue(prefs),
+          secureStorageProvider.overrideWithValue(const FlutterSecureStorage()),
+        ],
+      );
+      addTearDown(container.dispose);
 
-    final state = await container.read(settingsControllerProvider.future);
-    final factoryGeneral = ChatSkillCatalog.factory().fallback.prompt;
-    expect(state.chatSkills.fallback.prompt, factoryGeneral);
-    expect(state.systemPrompt, isEmpty);
-    expect(prefs.getString('systemPrompt'), isNull);
-    expect(prefs.getString('chatSkills'), isNotNull);
-  });
+      final state = await container.read(settingsControllerProvider.future);
+      final factoryGeneral = ChatSkillCatalog.factory().fallback.prompt;
+      expect(state.chatSkills.fallback.prompt, factoryGeneral);
+      expect(state.systemPrompt, isEmpty);
+      expect(prefs.getString('systemPrompt'), isNull);
+      expect(prefs.getString('chatSkills'), isNotNull);
+    },
+  );
 
-  test('setChatSkills rejects a catalog with no fallback by sanitizing', () async {
-    SharedPreferences.setMockInitialValues({});
-    FlutterSecureStoragePlatform.instance =
-        TestFlutterSecureStoragePlatform({});
-    addTearDown(() {
-      FlutterSecureStoragePlatform.instance =
-          TestFlutterSecureStoragePlatform({});
-    });
-    final prefs = await SharedPreferences.getInstance();
-    final container = ProviderContainer(
-      overrides: [
-        sharedPrefsProvider.overrideWithValue(prefs),
-        secureStorageProvider.overrideWithValue(const FlutterSecureStorage()),
-      ],
-    );
-    addTearDown(container.dispose);
-    await container.read(settingsControllerProvider.future);
-    final controller = container.read(settingsControllerProvider.notifier);
-    await controller.setChatSkills(
-      const ChatSkillCatalog([
-        ChatSkill(id: 'only', name: '仅此', when: 'x', prompt: 'y'),
-      ]),
-    );
-    final next = container.read(settingsControllerProvider).requireValue;
-    expect(next.chatSkills.fallback.enabled, isTrue);
-  });
+  test(
+    'setChatSkills rejects a catalog with no fallback by sanitizing',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
+        {},
+      );
+      addTearDown(() {
+        FlutterSecureStoragePlatform.instance =
+            TestFlutterSecureStoragePlatform({});
+      });
+      final prefs = await SharedPreferences.getInstance();
+      final container = ProviderContainer(
+        overrides: [
+          sharedPrefsProvider.overrideWithValue(prefs),
+          secureStorageProvider.overrideWithValue(const FlutterSecureStorage()),
+        ],
+      );
+      addTearDown(container.dispose);
+      await container.read(settingsControllerProvider.future);
+      final controller = container.read(settingsControllerProvider.notifier);
+      await controller.setChatSkills(
+        const ChatSkillCatalog([
+          ChatSkill(id: 'only', name: '仅此', when: 'x', prompt: 'y'),
+        ]),
+      );
+      final next = container.read(settingsControllerProvider).requireValue;
+      expect(next.chatSkills.fallback.enabled, isTrue);
+    },
+  );
 }

@@ -41,6 +41,12 @@ class LlmConfig {
 
   bool get isReady => apiKey.trim().isNotEmpty && baseUrl.trim().isNotEmpty;
 
+  /// Official DeepSeek API (Files API + V4 thinking fields live here).
+  bool get isOfficialDeepSeek {
+    final host = Uri.tryParse(baseUrl)?.host.toLowerCase() ?? '';
+    return host == 'api.deepseek.com' || host.endsWith('.deepseek.com');
+  }
+
   /// True when this request should hit Responses with server-side search.
   bool get useServerWebSearch =>
       serverWebSearch && capabilities.supportsServerWebSearch;
@@ -147,6 +153,79 @@ class ToolCallDraft {
   }
 }
 
+/// Token usage reported by an LLM provider after a request completes.
+///
+/// Providers use different names for the same counters, so the wire-specific
+/// parsers live here and expose one provider-neutral shape to the rest of the
+/// app. Cached input tokens are a subset of [inputTokens].
+class LlmUsage {
+  const LlmUsage({
+    required this.inputTokens,
+    required this.outputTokens,
+    this.cachedInputTokens = 0,
+    this.reasoningTokens = 0,
+  });
+
+  final int inputTokens;
+  final int outputTokens;
+  final int cachedInputTokens;
+  final int reasoningTokens;
+
+  bool get hasValues =>
+      inputTokens > 0 ||
+      outputTokens > 0 ||
+      cachedInputTokens > 0 ||
+      reasoningTokens > 0;
+
+  static LlmUsage? fromChatCompletions(dynamic raw) {
+    if (raw is! Map) return null;
+    final input = _readInt(raw['prompt_tokens']);
+    final output = _readInt(raw['completion_tokens']);
+    final promptDetails = raw['prompt_tokens_details'];
+    final completionDetails = raw['completion_tokens_details'];
+    final cached = promptDetails is Map
+        ? _readInt(promptDetails['cached_tokens'])
+        : 0;
+    final reasoning = completionDetails is Map
+        ? _readInt(completionDetails['reasoning_tokens'])
+        : 0;
+    final usage = LlmUsage(
+      inputTokens: input,
+      outputTokens: output,
+      cachedInputTokens: cached,
+      reasoningTokens: reasoning,
+    );
+    return usage.hasValues || raw.containsKey('total_tokens') ? usage : null;
+  }
+
+  static LlmUsage? fromResponses(dynamic raw) {
+    if (raw is! Map) return null;
+    final input = _readInt(raw['input_tokens']);
+    final output = _readInt(raw['output_tokens']);
+    final inputDetails = raw['input_tokens_details'];
+    final outputDetails = raw['output_tokens_details'];
+    final cached = inputDetails is Map
+        ? _readInt(inputDetails['cached_tokens'])
+        : 0;
+    final reasoning = outputDetails is Map
+        ? _readInt(outputDetails['reasoning_tokens'])
+        : 0;
+    final usage = LlmUsage(
+      inputTokens: input,
+      outputTokens: output,
+      cachedInputTokens: cached,
+      reasoningTokens: reasoning,
+    );
+    return usage.hasValues || raw.containsKey('total_tokens') ? usage : null;
+  }
+
+  static int _readInt(dynamic value) {
+    if (value is num) return value.toInt().clamp(0, 1 << 31).toInt();
+    return int.tryParse(value?.toString() ?? '')?.clamp(0, 1 << 31).toInt() ??
+        0;
+  }
+}
+
 /// A single streamed delta from the model. Any field may be null/empty for a
 /// given chunk. [reasoningDelta] carries the chain-of-thought emitted by
 /// reasoning models such as `deepseek-reasoner`; [toolCalls] carries
@@ -160,6 +239,7 @@ class ChatChunk {
     this.serverSearchActivity,
     this.citations,
     this.responseOutputItems,
+    this.usage,
   });
 
   final String? contentDelta;
@@ -177,6 +257,9 @@ class ChatChunk {
   /// `finish_reason: tool_calls`, the controller must re-send these items
   /// (plus `function_call_output`) on the next Responses request.
   final List<Map<String, dynamic>>? responseOutputItems;
+
+  /// Provider-reported usage, normally present only on the terminal event.
+  final LlmUsage? usage;
 }
 
 /// One request message sent to an OpenAI-compatible chat endpoint. This is
@@ -190,6 +273,7 @@ class LlmRequestMessage {
     this.toolCallId,
     this.toolCalls = const [],
     this.imageDataUrls = const [],
+    this.imageFileIds = const [],
     this.responseOutputItems = const [],
   });
 
@@ -202,9 +286,16 @@ class LlmRequestMessage {
   final String? toolCallId;
   final List<ToolCall> toolCalls;
 
-  /// `data:` image URLs sent alongside [content] to a vision model. When
-  /// non-empty, `content` is serialized as an OpenAI multimodal parts array.
+  /// `data:` or `http(s)` image URLs sent alongside [content] to a vision
+  /// model. When non-empty (or [imageFileIds] is), `content` is serialized as
+  /// an OpenAI multimodal parts array.
   final List<String> imageDataUrls;
+
+  /// DeepSeek Files API ids (`file-api-…`) for images already uploaded.
+  /// Prefer these over repeating large base64 payloads across turns.
+  final List<String> imageFileIds;
+
+  bool get hasImageParts => imageDataUrls.isNotEmpty || imageFileIds.isNotEmpty;
 
   /// Raw Responses API output items from a prior assistant turn that used
   /// server-side tools (`web_search_call`, `function_call`, `reasoning`…).
@@ -220,10 +311,11 @@ class LlmRequestMessage {
   Map<String, dynamic> toOpenAiJson({bool includeReasoningContent = true}) {
     final json = <String, dynamic>{
       'role': role.wire,
-      'content': imageDataUrls.isEmpty
+      'content': !hasImageParts
           ? content
           : [
               if (content.isNotEmpty) {'type': 'text', 'text': content},
+              for (final id in imageFileIds) {'type': 'file', 'file_id': id},
               for (final url in imageDataUrls)
                 {
                   'type': 'image_url',
@@ -249,6 +341,9 @@ class LlmRequestMessage {
 /// Abstraction over a chat LLM backend. Implementations turn a request into a
 /// stream of incremental [ChatChunk]s. [tools] enables function calling (M5);
 /// when null/empty the request is a plain chat completion (backward compatible).
+/// OpenAI / Responses `tool_choice: required` — call any exposed tool.
+const kToolChoiceRequired = 'required';
+
 abstract class LlmProvider {
   Stream<ChatChunk> streamChat({
     required LlmConfig config,
@@ -257,8 +352,9 @@ abstract class LlmProvider {
     // DeepSeek V4 thinking-mode toggle. null = omit the field (use provider
     // default / non-DeepSeek providers); true/false = enable/disable.
     bool? thinking,
-    // When non-null and [tools] is non-empty, force the model to call this
-    // function (OpenAI `tool_choice: {type:function, function:{name}}`).
+    // When non-null and [tools] is non-empty, force a tool call.
+    // A function name becomes OpenAI `tool_choice: {type:function,...}`.
+    // [kToolChoiceRequired] becomes `tool_choice: required`.
     String? forceToolName,
     // Cancels the in-flight HTTP request when the user presses stop, including
     // during connection setup (before any chunk has streamed).
@@ -302,8 +398,7 @@ class ModelCapabilities {
   /// false, image attachments are described in text rather than sent.
   final bool supportsVision;
 
-  /// Hosted `web_search` via the Responses API (DeepSeek `deepseek-v4-flash`
-  /// today; pro support is pending per DeepSeek docs).
+  /// Hosted `web_search` via the Responses API (DeepSeek V4 models).
   final bool supportsServerWebSearch;
 
   /// Best-effort capability detection from a model id. Heuristic, but kept in a
@@ -393,18 +488,19 @@ class ModelCapabilities {
             (m.contains('vision') ||
                 (m.startsWith('grok-4.') && !m.contains('build'))));
 
-    // DeepSeek Responses API currently only accepts flash for web_search;
-    // pro is documented as landing early August 2026.
-    final serverWebSearch =
-        m == 'deepseek-v4-flash' || m.startsWith('deepseek-v4-flash-');
+    // Responses API lists flash / pro / vision-exp as supporting `web_search`.
+    final deepseekV4 = m.startsWith('deepseek-v4');
+    final serverWebSearch = deepseekV4;
 
     return ModelCapabilities(
       isReasoner: reasoner,
       supportsTools: tools,
       // DeepSeek-only request body field — never send to xAI/OpenAI/etc.
-      sendThinkingField: m.startsWith('deepseek-v4'),
+      sendThinkingField: deepseekV4,
       supportsVision: vision,
-      supportsReasoningEffort: grok43 || grok45,
+      // DeepSeek V4 uses `reasoning_effort` with thinking enabled; Grok uses
+      // the same field, and Grok 4.3 additionally accepts `none`.
+      supportsReasoningEffort: deepseekV4 || grok43 || grok45,
       reasoningCanBeDisabled: grok43,
       supportsServerWebSearch: serverWebSearch,
     );
@@ -417,12 +513,16 @@ class ModelCapabilities {
 class KnownModels {
   static const chat = 'deepseek-v4-flash';
   static const reasoner = 'deepseek-v4-pro';
+  static const vision = 'deepseek-v4-flash-vision-exp';
 
-  static const all = <String>[chat, reasoner];
+  static const all = <String>[chat, reasoner, vision];
 
   static bool isReasoner(String model) =>
       ModelCapabilities.resolve(model).isReasoner;
 
   static bool supportsToolCalls(String model) =>
       ModelCapabilities.resolve(model).supportsTools;
+
+  static bool supportsVision(String model) =>
+      ModelCapabilities.resolve(model).supportsVision;
 }

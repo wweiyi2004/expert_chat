@@ -18,6 +18,7 @@ import '../../core/workspace_layout.dart';
 import '../../data/models.dart';
 import '../../data/story_models.dart';
 import '../../data/ui_prefs.dart';
+import '../../domain/chat/conversation_outline.dart';
 import '../../domain/context/context_window_manager.dart';
 import '../../domain/export/conversation_export.dart';
 import '../../domain/media/image_codec_util.dart';
@@ -28,6 +29,7 @@ import '../../domain/speech/mimo_speech_input_service.dart';
 import '../../domain/speech/speech_input_service.dart';
 import '../../domain/speech/text_to_speech_service.dart';
 import '../../domain/story/story_length_budget.dart';
+import '../../domain/llm/llm_provider.dart';
 import '../../domain/tools/file_parser.dart';
 import '../../domain/tools/local_file_reader.dart';
 import '../../state/character_controller.dart';
@@ -42,6 +44,7 @@ import '../story/story_panel.dart';
 import '../study/study_session_actions.dart';
 import 'jump_to_message.dart';
 import 'widgets/attachment_chip.dart';
+import 'widgets/conversation_outline_panel.dart';
 import 'widgets/image_pick_confirm_bar.dart';
 import 'widgets/message_bubble.dart';
 import 'widgets/recent_photo_sheet.dart';
@@ -89,6 +92,10 @@ class _ChatPageState extends ConsumerState<ChatPage>
   /// Wide-layout tools pane (story / ensemble plot). Ignored on phone.
   bool _toolsOpen = true;
 
+  /// Wide-layout conversation outline pane.
+  bool _outlineOpen = false;
+  double _outlineWidth = 280;
+
   /// Wide-layout history pane toggle (desktop).
   bool _historyOpen = true;
   double _historyWidth = WorkspacePaneDefaults.historyWidth;
@@ -106,6 +113,9 @@ class _ChatPageState extends ConsumerState<ChatPage>
   /// them back down; restored when they scroll back to the bottom (or tap the
   /// jump button / send a message).
   bool _stick = true;
+
+  /// Last streaming thinking panel expand state, for stream UI attention.
+  bool _thinkingExpanded = true;
 
   /// How close to the bottom (px) still counts as "at the bottom".
   static const double _stickThreshold = 80;
@@ -273,13 +283,63 @@ class _ChatPageState extends ConsumerState<ChatPage>
     if (!_scroll.hasClients || _programmaticScroll) return;
     final pos = _scroll.position;
     final atBottom = pos.maxScrollExtent - pos.pixels <= _stickThreshold;
-    if (atBottom != _stick) setState(() => _stick = atBottom);
+    if (atBottom != _stick) {
+      setState(() => _stick = atBottom);
+      _reportStreamView();
+    }
   }
 
   /// Resume following and snap to the latest content (jump button / send).
   void _jumpToBottom() {
     setState(() => _stick = true);
+    _reportStreamView();
     _scrollToBottom(animated: true);
+  }
+
+  void _reportStreamView() {
+    ref
+        .read(chatControllerProvider.notifier)
+        .reportStreamView(
+          followingTail: _stick,
+          thinkingExpanded: _thinkingExpanded,
+        );
+  }
+
+  void _jumpToOutline(String messageId) {
+    if (_messageKeys[messageId]?.currentContext != null) {
+      _scrollToMessage(messageId);
+      return;
+    }
+    ref.read(pendingJumpMessageIdProvider.notifier).set(messageId);
+  }
+
+  void _toggleOutline({required bool wide}) {
+    if (wide) {
+      setState(() {
+        _outlineOpen = !_outlineOpen;
+        if (_outlineOpen) _toolsOpen = false;
+      });
+      return;
+    }
+    final path =
+        ref.read(chatControllerProvider).value?.current?.activePath ??
+        const <ChatMessage>[];
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) => SizedBox(
+        height: MediaQuery.sizeOf(ctx).height * 0.72,
+        child: ConversationOutlinePanel(
+          entries: buildConversationOutline(path),
+          asSheet: true,
+          onJump: (id) {
+            Navigator.of(ctx).pop();
+            _jumpToOutline(id);
+          },
+        ),
+      ),
+    );
   }
 
   /// Scroll so [messageId] is near the top of the viewport (search jump).
@@ -655,6 +715,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
       _attachments.clear();
       _longTaskMode = false;
     });
+    _thinkingExpanded = true;
     _jumpToBottom();
     final chat = ref.read(chatControllerProvider.notifier);
     final accepted = useImageGeneration
@@ -705,7 +766,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
 
   Future<void> _pickImages() => _pickFiles(
     imagesOnly: true,
-    // 生图模式：参考图不依赖视觉 API；普通对话看图仍要视觉配置。
+    // 生图模式：参考图不依赖视觉 API；普通对话看图需要视觉模型或独立视觉 API。
     forImageGeneration: _imageMode,
   );
 
@@ -717,7 +778,12 @@ class _ChatPageState extends ConsumerState<ChatPage>
     setState(() => _picking = true);
     try {
       final settings = ref.read(settingsControllerProvider).value;
-      final visionOk = settings?.visionConfigured ?? false;
+      final visionOk =
+          settings?.canAttachImages(
+            deepThink:
+                ref.read(chatControllerProvider).value?.deepThink ?? false,
+          ) ??
+          false;
       final imageGenOk = settings?.imageGenerationConfigured ?? false;
       if (imagesOnly && forImageGeneration) {
         if (!imageGenOk) {
@@ -725,7 +791,10 @@ class _ChatPageState extends ConsumerState<ChatPage>
           return;
         }
       } else if (imagesOnly && !visionOk) {
-        _showAttachmentNotice('请先在设置中配置视觉 API，再上传图片。');
+        _showAttachmentNotice(
+          '当前模型不支持看图。请选用视觉模型（如 ${KnownModels.vision}），'
+          '或在设置中配置独立视觉 API。',
+        );
         return;
       }
       // 图生图：gpt-image-* 可多参考；其它 edits 网关仍 1 张。
@@ -1583,6 +1652,8 @@ class _ChatPageState extends ConsumerState<ChatPage>
             final showHistory =
                 ownsWorkspaceSidebar && dualPane && _historyOpen;
             final showTools = triplePane && storyLike && _toolsOpen;
+            final showOutline =
+                dualPane && _outlineOpen && current != null && !showTools;
             final scheme = Theme.of(context).colorScheme;
             final speakerName = _characterNameFor(current);
             final mode = current?.mode ?? ConversationMode.chat;
@@ -1727,6 +1798,14 @@ class _ChatPageState extends ConsumerState<ChatPage>
                       onPressed: () =>
                           setState(() => _historyOpen = !_historyOpen),
                     ),
+                  if (current != null && dualPane)
+                    IconButton(
+                      tooltip: _outlineOpen ? '隐藏大纲' : '大纲',
+                      icon: Icon(
+                        _outlineOpen ? Icons.list_alt : Icons.list_alt_outlined,
+                      ),
+                      onPressed: () => _toggleOutline(wide: true),
+                    ),
                   if (triplePane && storyLike)
                     IconButton(
                       tooltip: _toolsOpen ? '隐藏情节面板' : '显示情节面板',
@@ -1735,7 +1814,10 @@ class _ChatPageState extends ConsumerState<ChatPage>
                             ? Icons.vertical_split
                             : Icons.vertical_split_outlined,
                       ),
-                      onPressed: () => setState(() => _toolsOpen = !_toolsOpen),
+                      onPressed: () => setState(() {
+                        _toolsOpen = !_toolsOpen;
+                        if (_toolsOpen) _outlineOpen = false;
+                      }),
                     ),
                   if (!widget.desktopShell)
                     PopupMenuButton<String>(
@@ -1783,7 +1865,6 @@ class _ChatPageState extends ConsumerState<ChatPage>
                               color: ModeStyle.story,
                             ),
                             title: Text('导演故事'),
-                            subtitle: const Text('输入情节，AI 自动选角并编排'),
                           ),
                         ),
                         PopupMenuItem(
@@ -1798,7 +1879,6 @@ class _ChatPageState extends ConsumerState<ChatPage>
                             title: Text(
                               ModeStyle.longLabel(ConversationMode.ensemble),
                             ),
-                            subtitle: const Text('多角色同台对谈'),
                           ),
                         ),
                       ],
@@ -1807,13 +1887,25 @@ class _ChatPageState extends ConsumerState<ChatPage>
                     tooltip: '更多',
                     icon: const Icon(Icons.more_horiz),
                     onSelected: (v) {
-                      if (v == 'export') {
+                      if (v == 'outline') {
+                        _toggleOutline(wide: dualPane);
+                      } else if (v == 'export') {
                         _export(current);
                       } else if (v == 'memory_candidates' && current != null) {
                         unawaited(_extractMemoryCandidates(current));
                       }
                     },
                     itemBuilder: (_) => [
+                      if (current != null)
+                        const PopupMenuItem(
+                          value: 'outline',
+                          child: ListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            leading: Icon(Icons.list_alt_outlined),
+                            title: Text('大纲'),
+                          ),
+                        ),
                       const PopupMenuItem(
                         value: 'export',
                         child: ListTile(
@@ -1889,6 +1981,26 @@ class _ChatPageState extends ConsumerState<ChatPage>
                       ),
                     ),
                   ),
+                  if (showOutline) ...[
+                    _PaneResizeHandle(
+                      onDrag: (dx) {
+                        setState(() {
+                          _outlineWidth = (_outlineWidth - dx).clamp(
+                            220.0,
+                            420.0,
+                          );
+                        });
+                      },
+                    ),
+                    SizedBox(
+                      width: _outlineWidth,
+                      child: ConversationOutlinePanel(
+                        entries: buildConversationOutline(current.activePath),
+                        onJump: _jumpToOutline,
+                        onClose: () => setState(() => _outlineOpen = false),
+                      ),
+                    ),
+                  ],
                   if (showTools) ...[
                     _PaneResizeHandle(
                       onDrag: (dx) {
@@ -2084,6 +2196,12 @@ class _ChatPageState extends ConsumerState<ChatPage>
                                     controller.switchBranch(m.id, 1),
                                 messageStyle: ui.messageStyle,
                                 liveMarkdown: ui.liveMarkdown,
+                                onThinkingExpandedChanged: isLastAssistant
+                                    ? (expanded) {
+                                        _thinkingExpanded = expanded;
+                                        _reportStreamView();
+                                      }
+                                    : null,
                                 selectionMode: _selecting,
                                 selected: _selectedIds.contains(m.id),
                                 onToggleSelect: () => _toggleSelect(m.id),
@@ -2140,7 +2258,8 @@ class _ChatPageState extends ConsumerState<ChatPage>
             picking: _picking,
             storyLike: convo != null && (convo.isStory || convo.isEnsemble),
             directorMode: convo?.localCast.isNotEmpty ?? false,
-            visionConfigured: settings?.visionConfigured ?? false,
+            canAttachImages:
+                settings?.canAttachImages(deepThink: state.deepThink) ?? false,
             imageGenerationConfigured:
                 settings?.imageGenerationConfigured ?? false,
             imageMode:
@@ -2246,7 +2365,7 @@ class _Composer extends StatefulWidget {
     required this.picking,
     required this.storyLike,
     required this.directorMode,
-    required this.visionConfigured,
+    required this.canAttachImages,
     required this.imageGenerationConfigured,
     required this.imageMode,
     required this.longTaskMode,
@@ -2281,7 +2400,7 @@ class _Composer extends StatefulWidget {
   final bool picking;
   final bool storyLike;
   final bool directorMode;
-  final bool visionConfigured;
+  final bool canAttachImages;
   final bool imageGenerationConfigured;
   final bool imageMode;
   final bool longTaskMode;
@@ -2355,7 +2474,7 @@ class _ComposerState extends State<_Composer> {
         !widget.isStreaming &&
         !widget.picking &&
         ((widget.imageMode && widget.imageGenerationConfigured) ||
-            (!widget.imageMode && widget.visionConfigured));
+            (!widget.imageMode && widget.canAttachImages));
     return Container(
       key: const ValueKey('chat-composer'),
       decoration: BoxDecoration(
@@ -2391,7 +2510,6 @@ class _ComposerState extends State<_Composer> {
                           selected: widget.deepThink,
                           icon: Icons.psychology_outlined,
                           label: '深度思考',
-                          tooltip: '开启后本次对话使用深度推理模型',
                           onSelected: widget.onToggleDeepThink,
                         ),
                         const SizedBox(width: 6),
@@ -2399,9 +2517,6 @@ class _ComposerState extends State<_Composer> {
                           selected: widget.searchMode != SearchMode.off,
                           icon: Icons.travel_explore,
                           label: widget.searchMode.composerLabel,
-                          tooltip:
-                              '点击切换：关闭 → 自动（模型按需搜索）→ 强制（先搜索再回答）；'
-                              '搜索服务可在「设置」配置',
                           onSelected: widget.onToggleSearch,
                         ),
                         if (widget.longTaskAvailable) ...[
@@ -2410,10 +2525,6 @@ class _ComposerState extends State<_Composer> {
                             selected: widget.longTaskMode,
                             icon: Icons.schedule_send_outlined,
                             label: '长任务',
-                            tooltip:
-                                '把原始文件上传到当前提供商的 Files / Responses 后台接口。'
-                                '任务会保存 ID，可离开会话或关闭应用，重开后继续查询；'
-                                '需要提供商支持 background mode。',
                             onSelected: widget.onToggleLongTask,
                           ),
                         ],
@@ -2424,10 +2535,6 @@ class _ComposerState extends State<_Composer> {
                             selected: widget.imageGenMode != ImageGenMode.off,
                             icon: Icons.image_outlined,
                             label: widget.imageGenMode.composerLabel,
-                            tooltip:
-                                '对话配图：关闭 → 自动（模型按需生图）→ 强制（本轮先配图再回答）；'
-                                '每轮最多一张；角色书画安全立绘（不含黄色内容）。'
-                                '与「+」里纯图片生成模式不同。',
                             onSelected: widget.onToggleImageGenMode,
                           ),
                         ],
@@ -2437,7 +2544,6 @@ class _ComposerState extends State<_Composer> {
                             selected: true,
                             icon: Icons.auto_awesome,
                             label: '生图中',
-                            tooltip: '再次点击可退出生图模式',
                             onSelected: widget.onToggleImageMode,
                           ),
                         ],
@@ -2452,9 +2558,6 @@ class _ComposerState extends State<_Composer> {
                             selected: false,
                             icon: Icons.edit_document,
                             label: '改文档',
-                            tooltip:
-                                '强制调用 Gateway 文档能力：根据你的说明修改已上传的 '
-                                '.xlsx / .docx / .pptx / .txt / .md / .csv / .tsv 并回传下载',
                             onSelected: () {
                               _closePlus();
                               widget.onDocumentEdit?.call();
@@ -2472,16 +2575,9 @@ class _ComposerState extends State<_Composer> {
                         ? Padding(
                             padding: const EdgeInsets.only(top: 8),
                             child: _ComposerPlusTray(
-                              visionConfigured: widget.visionConfigured,
                               imageGenerationConfigured:
                                   widget.imageGenerationConfigured,
                               imageMode: widget.imageMode,
-                              maxImageEditReferences:
-                                  widget.maxImageEditReferences,
-                              enabled:
-                                  canAttachDocs ||
-                                  canAttachImages ||
-                                  widget.imageMode,
                               picking: widget.picking,
                               onPickDocuments: canAttachDocs
                                   ? () => _runAndClose(widget.onPickDocuments)
@@ -2743,7 +2839,7 @@ class _ComposerPlusButton extends StatelessWidget {
       label: open ? '收起附件菜单' : '展开附件菜单',
       excludeSemantics: true,
       child: Tooltip(
-        message: open ? '收起' : '上传文件、图片等',
+        message: open ? '收起' : '添加',
         child: Padding(
           padding: const EdgeInsets.only(bottom: 2, right: 2),
           child: Material(
@@ -2793,22 +2889,16 @@ class _ComposerPlusButton extends StatelessWidget {
 /// Expandable action tray revealed by the composer “+” button.
 class _ComposerPlusTray extends StatelessWidget {
   const _ComposerPlusTray({
-    required this.visionConfigured,
     required this.imageGenerationConfigured,
     required this.imageMode,
-    this.maxImageEditReferences = 1,
-    required this.enabled,
     required this.picking,
     required this.onPickDocuments,
     required this.onPickImages,
     required this.onToggleImageMode,
   });
 
-  final bool visionConfigured;
   final bool imageGenerationConfigured;
   final bool imageMode;
-  final int maxImageEditReferences;
-  final bool enabled;
   final bool picking;
   final VoidCallback? onPickDocuments;
   final VoidCallback? onPickImages;
@@ -2817,7 +2907,6 @@ class _ComposerPlusTray extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final multiRef = maxImageEditReferences > 1;
     return Container(
       key: const ValueKey('composer-plus-tray'),
       padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
@@ -2834,7 +2923,6 @@ class _ComposerPlusTray extends StatelessWidget {
             child: _ComposerPlusAction(
               icon: Icons.folder_open_outlined,
               label: '上传文件',
-              tooltip: '上传 PDF / Office / 文本等（最多 5 个，单个最大 10 MB）',
               enabled: onPickDocuments != null && !picking,
               onTap: onPickDocuments,
             ),
@@ -2844,13 +2932,6 @@ class _ComposerPlusTray extends StatelessWidget {
             child: _ComposerPlusAction(
               icon: Icons.image_outlined,
               label: imageMode ? '参考图' : '上传图片',
-              tooltip: imageMode
-                  ? (multiRef
-                        ? '上传最多 $maxImageEditReferences 张参考图（gpt-image 多图 edits）'
-                        : '上传 1 张参考图做图生图（images/edits）')
-                  : visionConfigured
-                  ? '上传图片供视觉模型分析（最多 5 个，单个最大 10 MB）'
-                  : '请先在设置中配置视觉 API',
               enabled: onPickImages != null && !picking,
               onTap: onPickImages,
             ),
@@ -2863,9 +2944,6 @@ class _ComposerPlusTray extends StatelessWidget {
                     ? Icons.auto_awesome
                     : Icons.auto_awesome_outlined,
                 label: imageMode ? '退出生图' : '图片生成',
-                tooltip: imageMode
-                    ? '退出生图模式；可先上传参考图再描述修改'
-                    : '文生图 / 图生图（上传参考图后走 images/edits）',
                 selected: imageMode,
                 enabled: onToggleImageMode != null,
                 onTap: onToggleImageMode,
@@ -2882,7 +2960,6 @@ class _ComposerPlusAction extends StatelessWidget {
   const _ComposerPlusAction({
     required this.icon,
     required this.label,
-    required this.tooltip,
     required this.enabled,
     required this.onTap,
     this.selected = false,
@@ -2890,7 +2967,6 @@ class _ComposerPlusAction extends StatelessWidget {
 
   final IconData icon;
   final String label;
-  final String tooltip;
   final bool enabled;
   final bool selected;
   final VoidCallback? onTap;
@@ -2909,46 +2985,43 @@ class _ComposerPlusAction extends StatelessWidget {
     return Semantics(
       button: true,
       enabled: enabled,
-      label: '$label，$tooltip',
+      label: label,
       excludeSemantics: true,
-      child: Tooltip(
-        message: tooltip,
-        child: Material(
-          color: bg,
+      child: Material(
+        color: bg,
+        borderRadius: BorderRadius.circular(14),
+        child: InkWell(
+          onTap: enabled ? onTap : null,
           borderRadius: BorderRadius.circular(14),
-          child: InkWell(
-            onTap: enabled ? onTap : null,
-            borderRadius: BorderRadius.circular(14),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    width: 44,
-                    height: 44,
-                    decoration: BoxDecoration(
-                      color: selected
-                          ? scheme.primary.withValues(alpha: 0.14)
-                          : scheme.surfaceContainerHighest,
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: Icon(icon, size: 22, color: fg),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: selected
+                        ? scheme.primary.withValues(alpha: 0.14)
+                        : scheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(14),
                   ),
-                  const SizedBox(height: 8),
-                  Text(
-                    label,
-                    textAlign: TextAlign.center,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: fg,
-                    ),
+                  child: Icon(icon, size: 22, color: fg),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  label,
+                  textAlign: TextAlign.center,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: fg,
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
         ),
@@ -3103,14 +3176,12 @@ class _ComposerToggleChip extends StatelessWidget {
     required this.selected,
     required this.icon,
     required this.label,
-    required this.tooltip,
     required this.onSelected,
   });
 
   final bool selected;
   final IconData icon;
   final String label;
-  final String tooltip;
   final VoidCallback onSelected;
 
   @override
@@ -3120,35 +3191,32 @@ class _ComposerToggleChip extends StatelessWidget {
     return Semantics(
       button: true,
       toggled: selected,
-      label: '$label，$tooltip',
+      label: label,
       excludeSemantics: true,
-      child: Tooltip(
-        message: tooltip,
-        child: Material(
-          color: selected
-              ? scheme.primaryContainer.withValues(alpha: 0.75)
-              : scheme.surfaceContainerHighest,
+      child: Material(
+        color: selected
+            ? scheme.primaryContainer.withValues(alpha: 0.75)
+            : scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(999),
+        child: InkWell(
+          onTap: onSelected,
           borderRadius: BorderRadius.circular(999),
-          child: InkWell(
-            onTap: onSelected,
-            borderRadius: BorderRadius.circular(999),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(icon, size: 17, color: fg),
-                  const SizedBox(width: 5),
-                  Text(
-                    label,
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: fg,
-                    ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon, size: 17, color: fg),
+                const SizedBox(width: 5),
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: fg,
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
         ),
@@ -4154,7 +4222,7 @@ class _StorySessionBar extends StatelessWidget {
             ),
             if (conversation.localCast.isNotEmpty)
               IconButton(
-                tooltip: '续写刚才的场景（不推进大纲）',
+                tooltip: '续写当前场',
                 visualDensity: VisualDensity.compact,
                 onPressed: onContinue,
                 icon: const Icon(Icons.subdirectory_arrow_left, size: 20),

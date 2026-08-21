@@ -18,12 +18,7 @@ class ResponsesApiProvider implements LlmProvider {
     Dio? dio,
     this.responseHeaderTimeout = const Duration(seconds: 30),
   }) : _dio =
-           dio ??
-           Dio(
-             BaseOptions(
-               connectTimeout: const Duration(seconds: 30),
-             ),
-           );
+           dio ?? Dio(BaseOptions(connectTimeout: const Duration(seconds: 30)));
 
   final Dio _dio;
   final Duration responseHeaderTimeout;
@@ -41,14 +36,14 @@ class ResponsesApiProvider implements LlmProvider {
     String? forceToolName,
     CancelToken? cancelToken,
   }) async* {
-    final url =
-        '${config.baseUrl.replaceAll(RegExp(r"/+$"), "")}/responses';
+    final url = '${config.baseUrl.replaceAll(RegExp(r"/+$"), "")}/responses';
 
     final built = _buildRequest(
       config: config,
       messages: messages,
       tools: tools,
       thinking: thinking,
+      forceToolName: forceToolName,
     );
 
     final Response<ResponseBody> response;
@@ -203,11 +198,12 @@ class ResponsesApiProvider implements LlmProvider {
     }
 
     if (sawFunctionCall) {
-      final calls = functionDrafts.values
-          .map((d) => d.toToolCall())
-          .where((c) => (c.name ?? '').isNotEmpty)
-          .toList()
-        ..sort((a, b) => a.index.compareTo(b.index));
+      final calls =
+          functionDrafts.values
+              .map((d) => d.toToolCall())
+              .where((c) => (c.name ?? '').isNotEmpty)
+              .toList()
+            ..sort((a, b) => a.index.compareTo(b.index));
       yield ChatChunk(
         toolCalls: calls.isEmpty ? null : calls,
         finishReason: 'tool_calls',
@@ -234,6 +230,7 @@ class ResponsesApiProvider implements LlmProvider {
     required List<LlmRequestMessage> messages,
     List<ToolSpec>? tools,
     bool? thinking,
+    String? forceToolName,
   }) {
     final instructions = StringBuffer();
     final input = <Map<String, dynamic>>[];
@@ -256,7 +253,16 @@ class ResponsesApiProvider implements LlmProvider {
           input.add({
             'type': 'message',
             'role': 'user',
-            'content': message.content,
+            'content': !message.hasImageParts
+                ? message.content
+                : [
+                    if (message.content.isNotEmpty)
+                      {'type': 'input_text', 'text': message.content},
+                    for (final id in message.imageFileIds)
+                      {'type': 'input_image', 'file_id': id},
+                    for (final url in message.imageDataUrls)
+                      {'type': 'input_image', 'image_url': url},
+                  ],
           });
         case MessageRole.assistant:
           if (message.reasoningContent != null &&
@@ -264,10 +270,7 @@ class ResponsesApiProvider implements LlmProvider {
             input.add({
               'type': 'reasoning',
               'content': [
-                {
-                  'type': 'reasoning_text',
-                  'text': message.reasoningContent,
-                },
+                {'type': 'reasoning_text', 'text': message.reasoningContent},
               ],
             });
           }
@@ -306,16 +309,16 @@ class ResponsesApiProvider implements LlmProvider {
     };
 
     if (thinking != null) {
-      body['reasoning'] = {
-        'effort': thinking ? 'high' : 'none',
-      };
+      body['reasoning'] = {'effort': thinking ? 'high' : 'none'};
     }
 
     final toolList = <Map<String, dynamic>>[];
     if (config.useServerWebSearch) {
       toolList.add({'type': 'web_search'});
     }
-    if (tools != null && tools.isNotEmpty && config.capabilities.supportsTools) {
+    if (tools != null &&
+        tools.isNotEmpty &&
+        config.capabilities.supportsTools) {
       for (final tool in tools) {
         // Client web_search is replaced by the hosted tool when server search
         // is on; keep fetch_url / generate_image as functions.
@@ -330,7 +333,12 @@ class ResponsesApiProvider implements LlmProvider {
     }
     if (toolList.isNotEmpty) {
       body['tools'] = toolList;
-      if (config.useServerWebSearch && config.forceServerWebSearch) {
+      final force = forceToolName?.trim() ?? '';
+      if (force == kToolChoiceRequired) {
+        body['tool_choice'] = 'required';
+      } else if (force.isNotEmpty) {
+        body['tool_choice'] = {'type': 'function', 'name': force};
+      } else if (config.useServerWebSearch && config.forceServerWebSearch) {
         body['tool_choice'] = {'type': 'web_search'};
       } else {
         body['tool_choice'] = 'auto';
@@ -405,19 +413,19 @@ class ResponsesApiProvider implements LlmProvider {
             draft.callId ??= item['call_id'] as String?;
             draft.name ??= item['name'] as String?;
             final args = item['arguments'] as String?;
-            if (args != null &&
-                args.isNotEmpty &&
-                draft.arguments.isEmpty) {
+            if (args != null && args.isNotEmpty && draft.arguments.isEmpty) {
               draft.arguments.write(args);
             }
           }
-          if (itemType == 'web_search_call' && type == 'response.output_item.done') {
+          if (itemType == 'web_search_call' &&
+              type == 'response.output_item.done') {
             final activity = _activityFromWebSearchItem(
               item,
               searchActivityIds,
               completed: true,
             );
-            if (activity != null) out.add(ChatChunk(serverSearchActivity: activity));
+            if (activity != null)
+              out.add(ChatChunk(serverSearchActivity: activity));
             _collectCitationsFromWebSearch(item, citations, seenCitationUrls);
           }
           if (itemType == 'message') {
@@ -427,7 +435,8 @@ class ResponsesApiProvider implements LlmProvider {
       case 'response.web_search_call.in_progress':
       case 'response.web_search_call.searching':
       case 'response.web_search_call.completed':
-        final itemId = json['item_id'] as String? ??
+        final itemId =
+            json['item_id'] as String? ??
             json['output_index']?.toString() ??
             type;
         final query = _queryFromWebSearchEvent(json);
@@ -442,9 +451,7 @@ class ResponsesApiProvider implements LlmProvider {
               status: completed
                   ? SearchActivityStatus.done
                   : SearchActivityStatus.running,
-              resultCount: completed
-                  ? _resultCountFromWebSearchEvent(json)
-                  : 0,
+              resultCount: completed ? _resultCountFromWebSearchEvent(json) : 0,
             ),
           ),
         );
@@ -452,6 +459,8 @@ class ResponsesApiProvider implements LlmProvider {
       case 'response.incomplete':
         final response = json['response'];
         if (response is Map<String, dynamic>) {
+          final usage = LlmUsage.fromResponses(response['usage']);
+          if (usage != null) out.add(ChatChunk(usage: usage));
           final output = response['output'];
           if (output is List) {
             for (final raw in output) {
@@ -579,10 +588,9 @@ class ResponsesApiProvider implements LlmProvider {
           title: (raw['title'] as String? ?? raw['name'] as String? ?? url)
               .trim(),
           url: url,
-          snippet: (raw['snippet'] as String? ??
-                  raw['content'] as String? ??
-                  '')
-              .trim(),
+          snippet:
+              (raw['snippet'] as String? ?? raw['content'] as String? ?? '')
+                  .trim(),
         ));
       }
     }

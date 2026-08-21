@@ -1,6 +1,7 @@
 import 'package:dio/dio.dart' show CancelToken;
 
 import 'llm_provider.dart';
+import 'openai_compatible_files_client.dart';
 import 'openai_compatible_provider.dart';
 import 'responses_api_provider.dart';
 
@@ -13,11 +14,14 @@ class RoutingLlmProvider implements LlmProvider {
   RoutingLlmProvider({
     OpenAiCompatibleProvider? chatCompletions,
     ResponsesApiProvider? responses,
+    OpenAiCompatibleFilesClient? files,
   }) : _chat = chatCompletions ?? OpenAiCompatibleProvider(),
-       _responses = responses ?? ResponsesApiProvider();
+       _responses = responses ?? ResponsesApiProvider(),
+       _files = files ?? OpenAiCompatibleFilesClient();
 
   final OpenAiCompatibleProvider _chat;
   final ResponsesApiProvider _responses;
+  final OpenAiCompatibleFilesClient _files;
 
   @override
   Stream<ChatChunk> streamChat({
@@ -27,27 +31,29 @@ class RoutingLlmProvider implements LlmProvider {
     bool? thinking,
     String? forceToolName,
     CancelToken? cancelToken,
-  }) {
-    // Forced client tools (e.g. edit_document) need Chat Completions
-    // tool_choice; keep off the Responses path for those turns.
-    final forceClientTool = forceToolName != null && forceToolName.trim().isNotEmpty;
-    if (config.useServerWebSearch && !forceClientTool) {
-      return _responses.streamChat(
-        config: config,
-        messages: messages,
-        tools: tools,
-        thinking: thinking,
-        forceToolName: forceToolName,
-        cancelToken: cancelToken,
-      );
-    }
-    return _chat.streamChat(
+  }) async* {
+    final resolved = await _files.attachFileIds(
       config: config,
       messages: messages,
-      tools: tools,
-      thinking: thinking,
-      forceToolName: forceToolName,
       cancelToken: cancelToken,
     );
+    final stream = config.useServerWebSearch
+        ? _responses.streamChat(
+            config: config,
+            messages: resolved,
+            tools: tools,
+            thinking: thinking,
+            forceToolName: forceToolName,
+            cancelToken: cancelToken,
+          )
+        : _chat.streamChat(
+            config: config,
+            messages: resolved,
+            tools: tools,
+            thinking: thinking,
+            forceToolName: forceToolName,
+            cancelToken: cancelToken,
+          );
+    yield* stream;
   }
 }

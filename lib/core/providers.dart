@@ -16,9 +16,11 @@ import '../domain/context/context_window_manager.dart';
 import '../domain/cache/app_cache_service.dart';
 import '../domain/llm/llm_provider.dart';
 import '../domain/llm/long_task_gateway_client.dart';
+import '../domain/llm/model_usage_store.dart';
 import '../domain/gateway/gateway_client.dart';
 import '../domain/gateway/gateway_auth_service.dart';
 import '../domain/llm/routing_llm_provider.dart';
+import '../domain/llm/usage_tracking_llm_provider.dart';
 import '../domain/media/openai_compatible_media_provider.dart';
 import '../domain/memory/memory_backup_file.dart';
 import '../domain/memory/memory_candidate_service.dart';
@@ -82,7 +84,48 @@ final memoryRepositoryProvider = Provider<MemoryRepository>(
   (ref) => MemoryRepository(ref.read(memoryStoreProvider)),
 );
 
-final llmProvider = Provider<LlmProvider>((ref) => RoutingLlmProvider());
+final modelUsageStoreProvider = Provider<ModelUsageStore>(
+  (ref) => ModelUsageStore(ref.read(sharedPrefsProvider)),
+);
+
+class ModelUsageController extends Notifier<List<ModelUsageRecord>> {
+  ModelUsageStore get _store => ref.read(modelUsageStoreProvider);
+
+  @override
+  List<ModelUsageRecord> build() => _store.records;
+
+  void record(LlmConfig config, LlmUsage usage) {
+    _store.record(endpoint: config.baseUrl, model: config.model, usage: usage);
+    state = _store.records;
+  }
+
+  Future<void> clear({String? endpoint}) async {
+    await _store.clear(endpoint: endpoint);
+    state = _store.records;
+  }
+
+  ModelUsageRecord? find({required String endpoint, required String model}) =>
+      _store.find(endpoint: endpoint, model: model);
+
+  List<ModelUsageRecord> forEndpoint(String endpoint) =>
+      _store.forEndpoint(endpoint);
+
+  ModelUsageRecord totals({String? endpoint}) =>
+      _store.totals(endpoint: endpoint);
+}
+
+final modelUsageControllerProvider =
+    NotifierProvider<ModelUsageController, List<ModelUsageRecord>>(
+      ModelUsageController.new,
+    );
+
+final llmProvider = Provider<LlmProvider>((ref) {
+  final usageController = ref.read(modelUsageControllerProvider.notifier);
+  return UsageTrackingLlmProvider(
+    delegate: RoutingLlmProvider(),
+    onUsage: usageController.record,
+  );
+});
 
 final longTaskGatewayClientProvider = Provider<LongTaskGatewayClient>(
   (ref) => LongTaskGatewayClient(),

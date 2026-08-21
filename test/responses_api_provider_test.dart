@@ -11,14 +11,20 @@ import 'package:expert_chat/domain/llm/openai_compatible_provider.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  test('deepseek-v4-flash advertises server web search; pro does not', () {
+  test('DeepSeek V4 models advertise server web search', () {
     expect(
       ModelCapabilities.resolve('deepseek-v4-flash').supportsServerWebSearch,
       isTrue,
     );
     expect(
       ModelCapabilities.resolve('deepseek-v4-pro').supportsServerWebSearch,
-      isFalse,
+      isTrue,
+    );
+    expect(
+      ModelCapabilities.resolve(
+        'deepseek-v4-flash-vision-exp',
+      ).supportsServerWebSearch,
+      isTrue,
     );
   });
 
@@ -53,13 +59,45 @@ data: {"type":"response.completed","response":{"id":"r1","status":"completed","o
     expect(adapter.path, endsWith('/responses'));
     expect(adapter.body['stream'], isTrue);
     final tools = adapter.body['tools'] as List<dynamic>;
-    expect(
-      tools.any((t) => t is Map && t['type'] == 'web_search'),
-      isTrue,
-    );
+    expect(tools.any((t) => t is Map && t['type'] == 'web_search'), isTrue);
     expect(adapter.body['tool_choice'], 'auto');
     expect(chunks.map((c) => c.contentDelta).whereType<String>(), ['hello']);
     expect(chunks.last.finishReason, 'stop');
+  });
+
+  test('parses Responses token usage details', () async {
+    final adapter = _RecordingAdapter(
+      sse: '''
+event: response.completed
+data: {"type":"response.completed","response":{"id":"r1","status":"completed","usage":{"input_tokens":240,"output_tokens":60,"total_tokens":300,"input_tokens_details":{"cached_tokens":160},"output_tokens_details":{"reasoning_tokens":25}},"output":[]}}
+
+''',
+    );
+    final dio = Dio()..httpClientAdapter = adapter;
+    final provider = ResponsesApiProvider(dio: dio);
+
+    final chunks = await provider
+        .streamChat(
+          config: const LlmConfig(
+            baseUrl: 'https://api.deepseek.com',
+            apiKey: 'k',
+            model: 'deepseek-v4-flash',
+            serverWebSearch: true,
+          ),
+          messages: const [
+            LlmRequestMessage(role: MessageRole.user, content: 'hi'),
+          ],
+        )
+        .toList();
+
+    final usage = chunks
+        .map((chunk) => chunk.usage)
+        .whereType<LlmUsage>()
+        .single;
+    expect(usage.inputTokens, 240);
+    expect(usage.outputTokens, 60);
+    expect(usage.cachedInputTokens, 160);
+    expect(usage.reasoningTokens, 25);
   });
 
   test('forceServerWebSearch sets tool_choice to web_search', () async {
@@ -90,6 +128,52 @@ data: {"type":"response.completed","response":{"id":"r1","status":"completed","o
 
     expect(adapter.body['tool_choice'], {'type': 'web_search'});
   });
+
+  test(
+    'forceToolName overrides hosted search with a function tool_choice',
+    () async {
+      final adapter = _RecordingAdapter(
+        sse: '''
+event: response.completed
+data: {"type":"response.completed","response":{"id":"r1","status":"completed","output":[]}}
+
+''',
+      );
+      final dio = Dio()..httpClientAdapter = adapter;
+      final provider = ResponsesApiProvider(dio: dio);
+
+      await provider
+          .streamChat(
+            config: const LlmConfig(
+              baseUrl: 'https://api.deepseek.com',
+              apiKey: 'k',
+              model: 'deepseek-v4-flash',
+              serverWebSearch: true,
+              forceServerWebSearch: true,
+            ),
+            messages: const [
+              LlmRequestMessage(role: MessageRole.user, content: 'draw'),
+            ],
+            tools: const [
+              ToolSpec(
+                name: 'generate_image',
+                description: 'draw',
+                parameters: {
+                  'type': 'object',
+                  'properties': <String, dynamic>{},
+                },
+              ),
+            ],
+            forceToolName: 'generate_image',
+          )
+          .toList();
+
+      expect(adapter.body['tool_choice'], {
+        'type': 'function',
+        'name': 'generate_image',
+      });
+    },
+  );
 
   test('parses reasoning, web_search activity and citations', () async {
     final adapter = _RecordingAdapter(
@@ -193,18 +277,19 @@ data: {"type":"response.completed","response":{"id":"r1","status":"completed","o
     expect(last.responseOutputItems!.single['type'], 'function_call');
   });
 
-  test('RoutingLlmProvider uses Responses only when server search is on',
-      () async {
-    final chatAdapter = _RecordingAdapter(
-      pathHint: 'chat',
-      sse: '''
+  test(
+    'RoutingLlmProvider uses Responses only when server search is on',
+    () async {
+      final chatAdapter = _RecordingAdapter(
+        pathHint: 'chat',
+        sse: '''
 data: {"choices":[{"delta":{"content":"chat"},"finish_reason":"stop"}]}
 data: [DONE]
 ''',
-    );
-    final responsesAdapter = _RecordingAdapter(
-      pathHint: 'responses',
-      sse: '''
+      );
+      final responsesAdapter = _RecordingAdapter(
+        pathHint: 'responses',
+        sse: '''
 event: response.output_text.delta
 data: {"type":"response.output_text.delta","delta":"resp"}
 
@@ -212,45 +297,50 @@ event: response.completed
 data: {"type":"response.completed","response":{"id":"r1","status":"completed","output":[]}}
 
 ''',
-    );
-    final chatDio = Dio()..httpClientAdapter = chatAdapter;
-    final respDio = Dio()..httpClientAdapter = responsesAdapter;
-    final router = RoutingLlmProvider(
-      chatCompletions: OpenAiCompatibleProvider(dio: chatDio),
-      responses: ResponsesApiProvider(dio: respDio),
-    );
+      );
+      final chatDio = Dio()..httpClientAdapter = chatAdapter;
+      final respDio = Dio()..httpClientAdapter = responsesAdapter;
+      final router = RoutingLlmProvider(
+        chatCompletions: OpenAiCompatibleProvider(dio: chatDio),
+        responses: ResponsesApiProvider(dio: respDio),
+      );
 
-    final chatChunks = await router
-        .streamChat(
-          config: const LlmConfig(
-            baseUrl: 'https://api.deepseek.com',
-            apiKey: 'k',
-            model: 'deepseek-v4-flash',
-          ),
-          messages: const [
-            LlmRequestMessage(role: MessageRole.user, content: 'a'),
-          ],
-        )
-        .toList();
-    expect(chatChunks.map((c) => c.contentDelta).whereType<String>(), ['chat']);
-    expect(chatAdapter.path, contains('chat/completions'));
+      final chatChunks = await router
+          .streamChat(
+            config: const LlmConfig(
+              baseUrl: 'https://api.deepseek.com',
+              apiKey: 'k',
+              model: 'deepseek-v4-flash',
+            ),
+            messages: const [
+              LlmRequestMessage(role: MessageRole.user, content: 'a'),
+            ],
+          )
+          .toList();
+      expect(chatChunks.map((c) => c.contentDelta).whereType<String>(), [
+        'chat',
+      ]);
+      expect(chatAdapter.path, contains('chat/completions'));
 
-    final respChunks = await router
-        .streamChat(
-          config: const LlmConfig(
-            baseUrl: 'https://api.deepseek.com',
-            apiKey: 'k',
-            model: 'deepseek-v4-flash',
-            serverWebSearch: true,
-          ),
-          messages: const [
-            LlmRequestMessage(role: MessageRole.user, content: 'b'),
-          ],
-        )
-        .toList();
-    expect(respChunks.map((c) => c.contentDelta).whereType<String>(), ['resp']);
-    expect(responsesAdapter.path, endsWith('/responses'));
-  });
+      final respChunks = await router
+          .streamChat(
+            config: const LlmConfig(
+              baseUrl: 'https://api.deepseek.com',
+              apiKey: 'k',
+              model: 'deepseek-v4-flash',
+              serverWebSearch: true,
+            ),
+            messages: const [
+              LlmRequestMessage(role: MessageRole.user, content: 'b'),
+            ],
+          )
+          .toList();
+      expect(respChunks.map((c) => c.contentDelta).whereType<String>(), [
+        'resp',
+      ]);
+      expect(responsesAdapter.path, endsWith('/responses'));
+    },
+  );
 
   test('thinking maps to reasoning.effort', () async {
     final adapter = _RecordingAdapter(
@@ -280,13 +370,85 @@ data: {"type":"response.completed","response":{"id":"r1","status":"completed","o
 
     expect(adapter.body['reasoning'], {'effort': 'high'});
   });
+
+  test('user images serialize as Responses input_image parts', () async {
+    final adapter = _RecordingAdapter(
+      sse: '''
+event: response.completed
+data: {"type":"response.completed","response":{"id":"r1","status":"completed","output":[]}}
+
+''',
+    );
+    final dio = Dio()..httpClientAdapter = adapter;
+    final provider = ResponsesApiProvider(dio: dio);
+
+    await provider
+        .streamChat(
+          config: const LlmConfig(
+            baseUrl: 'https://api.deepseek.com',
+            apiKey: 'k',
+            model: 'deepseek-v4-flash',
+            serverWebSearch: true,
+          ),
+          messages: const [
+            LlmRequestMessage(
+              role: MessageRole.user,
+              content: '这张图片里有什么？',
+              imageDataUrls: ['data:image/png;base64,AAAA'],
+            ),
+          ],
+        )
+        .toList();
+
+    final input = adapter.body['input'] as List<dynamic>;
+    final content = (input.single as Map)['content'] as List<dynamic>;
+    expect(content.first, {'type': 'input_text', 'text': '这张图片里有什么？'});
+    expect(content.last, {
+      'type': 'input_image',
+      'image_url': 'data:image/png;base64,AAAA',
+    });
+  });
+
+  test(
+    'user Files API ids serialize as Responses input_image file_id',
+    () async {
+      final adapter = _RecordingAdapter(
+        sse: '''
+event: response.completed
+data: {"type":"response.completed","response":{"id":"r1","status":"completed","output":[]}}
+
+''',
+      );
+      final dio = Dio()..httpClientAdapter = adapter;
+      final provider = ResponsesApiProvider(dio: dio);
+
+      await provider
+          .streamChat(
+            config: const LlmConfig(
+              baseUrl: 'https://api.deepseek.com',
+              apiKey: 'k',
+              model: 'deepseek-v4-flash-vision-exp',
+              serverWebSearch: true,
+            ),
+            messages: const [
+              LlmRequestMessage(
+                role: MessageRole.user,
+                content: '这张图片里有什么？',
+                imageFileIds: ['file-api-abc'],
+              ),
+            ],
+          )
+          .toList();
+
+      final input = adapter.body['input'] as List<dynamic>;
+      final content = (input.single as Map)['content'] as List<dynamic>;
+      expect(content.last, {'type': 'input_image', 'file_id': 'file-api-abc'});
+    },
+  );
 }
 
 class _RecordingAdapter implements HttpClientAdapter {
-  _RecordingAdapter({
-    required this.sse,
-    this.pathHint,
-  });
+  _RecordingAdapter({required this.sse, this.pathHint});
 
   final String sse;
   final String? pathHint;

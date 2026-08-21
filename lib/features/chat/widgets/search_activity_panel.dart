@@ -72,9 +72,17 @@ class _SearchActivityPanelState extends State<SearchActivityPanel>
         (a) => a.status == SearchActivityStatus.running,
         orElse: () => widget.activities.last,
       );
-      return running.kind == SearchActivityKind.fetch
-          ? '正在读取网页…'
-          : '正在搜索：${running.query}';
+      return switch (running.kind) {
+        SearchActivityKind.fetch => '正在读取网页…',
+        SearchActivityKind.vision => '正在识图：${running.query}',
+        SearchActivityKind.search => '正在搜索：${running.query}',
+      };
+    }
+    final visionOnly = widget.activities.every(
+      (a) => a.kind == SearchActivityKind.vision,
+    );
+    if (visionOnly) {
+      return '已识图 · ${widget.activities.length} 张';
     }
     final sources = _sourceCount;
     if (sources > 0) return '已联网搜索 · $sources 个来源';
@@ -188,20 +196,29 @@ class _ActivityRow extends StatelessWidget {
     return switch (a.status) {
       SearchActivityStatus.running =>
         showSpinner
-            ? (a.kind == SearchActivityKind.fetch
-                  ? '正在读取 $target'
-                  : '正在搜索：$target')
-            : (a.kind == SearchActivityKind.fetch
-                  ? '读取中断：$target'
-                  : '搜索中断：$target'),
-      SearchActivityStatus.done =>
-        a.kind == SearchActivityKind.fetch
-            ? '已读取 $target'
-            : '搜索"$target"：${a.resultCount} 条结果',
-      SearchActivityStatus.failed =>
-        a.kind == SearchActivityKind.fetch
-            ? '读取失败 $target${a.error == null ? '' : '（${a.error}）'}'
-            : '搜索"$target"失败${a.error == null ? '' : '：${a.error}'}',
+            ? switch (a.kind) {
+                SearchActivityKind.fetch => '正在读取 $target',
+                SearchActivityKind.vision => '正在识图：$target',
+                SearchActivityKind.search => '正在搜索：$target',
+              }
+            : switch (a.kind) {
+                SearchActivityKind.fetch => '读取中断：$target',
+                SearchActivityKind.vision => '识图中断：$target',
+                SearchActivityKind.search => '搜索中断：$target',
+              },
+      SearchActivityStatus.done => switch (a.kind) {
+        SearchActivityKind.fetch => '已读取 $target',
+        SearchActivityKind.vision => '已识图 $target',
+        SearchActivityKind.search => '搜索"$target"：${a.resultCount} 条结果',
+      },
+      SearchActivityStatus.failed => switch (a.kind) {
+        SearchActivityKind.fetch =>
+          '读取失败 $target${a.error == null ? '' : '（${a.error}）'}',
+        SearchActivityKind.vision =>
+          '识图失败 $target${a.error == null ? '' : '（${a.error}）'}',
+        SearchActivityKind.search =>
+          '搜索"$target"失败${a.error == null ? '' : '：${a.error}'}',
+      },
     };
   }
 
@@ -215,6 +232,7 @@ class _ActivityRow extends StatelessWidget {
   IconData get _icon => switch (activity.kind) {
     SearchActivityKind.search => Icons.search,
     SearchActivityKind.fetch => Icons.public,
+    SearchActivityKind.vision => Icons.visibility_outlined,
   };
 
   @override

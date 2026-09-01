@@ -2,8 +2,10 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
+import 'package:mime/mime.dart';
 
 import '../../data/gateway_config.dart';
+import '../mcp/mcp_client.dart';
 import 'document_patch.dart';
 
 class DocumentEditResult {
@@ -29,11 +31,12 @@ class DocumentServiceException implements Exception {
   String toString() => message;
 }
 
-/// Document capability client hosted by the unified Expert Chat Gateway.
+/// Document capability client hosted by the standalone Expert Chat MCP Server.
 class DocumentServiceClient {
-  DocumentServiceClient({Dio? dio}) : _dio = dio ?? Dio();
+  DocumentServiceClient({Dio? dio}) : _mcp = McpClient(dio: dio);
 
-  final Dio _dio;
+  static const _uploadChunkBytes = 1024 * 1024;
+  final McpClient _mcp;
 
   Future<DocumentEditResult> edit({
     required GatewayConnection connection,
@@ -51,24 +54,66 @@ class DocumentServiceClient {
         code: 'patch_invalid',
       );
     }
-    final form = FormData.fromMap({
-      'file': MultipartFile.fromBytes(
-        fileBytes,
-        filename: filename.trim().isEmpty ? 'input.xlsx' : filename.trim(),
-      ),
-      'patch': patchJson,
-      'filename': filename.trim().isEmpty ? 'input.xlsx' : filename.trim(),
-    });
-    return _postFile(
-      connection: connection,
-      requiredCapability: GatewayCapabilityIds.documentEdit,
-      fileBytes: fileBytes,
-      path: '/v1/documents/edit',
-      form: form,
-      fallbackName: patch.outputFilename ?? _defaultEditedName(filename),
-      errorVerb: '编辑',
-      cancelToken: cancelToken,
-    );
+    _validateRequest(connection, GatewayCapabilityIds.documentEdit, fileBytes);
+    try {
+      final sourceId = await _upload(
+        connection: connection,
+        fileBytes: fileBytes,
+        filename: filename,
+        cancelToken: cancelToken,
+      );
+      final called = await _mcp.callTool(
+        connection: connection,
+        name: 'edit_document',
+        arguments: {
+          'file_id': sourceId,
+          'patch': patch.toJson(),
+          if (patch.outputFilename?.trim().isNotEmpty == true)
+            'output_filename': patch.outputFilename!.trim(),
+        },
+        cancelToken: cancelToken,
+      );
+      return _downloadResult(
+        connection: connection,
+        result: called,
+        fallbackName: patch.outputFilename ?? _defaultEditedName(filename),
+        cancelToken: cancelToken,
+      );
+    } on McpClientException catch (error) {
+      throw DocumentServiceException(error.message, code: error.code);
+    }
+  }
+
+  Future<({String text, DocumentEditResult? file})> callDiscoveredTool({
+    required GatewayConnection connection,
+    required String name,
+    required Map<String, dynamic> arguments,
+    CancelToken? cancelToken,
+  }) async {
+    if (!connection.config.isConfigured) {
+      throw const DocumentServiceException('Expert Chat MCP Server 尚未启用或配置');
+    }
+    try {
+      final called = await _mcp.callTool(
+        connection: connection,
+        name: name,
+        arguments: arguments,
+        cancelToken: cancelToken,
+      );
+      DocumentEditResult? file;
+      final resources = called.structuredContent['resources'];
+      if (resources is Map && resources['binary'] != null) {
+        file = await _downloadResult(
+          connection: connection,
+          result: called,
+          fallbackName: '$name.bin',
+          cancelToken: cancelToken,
+        );
+      }
+      return (text: called.text, file: file);
+    } on McpClientException catch (error) {
+      throw DocumentServiceException(error.message, code: error.code);
+    }
   }
 
   Future<DocumentEditResult> convert({
@@ -83,103 +128,153 @@ class DocumentServiceClient {
       RegExp(r'^\.'),
       '',
     );
-    final form = FormData.fromMap({
-      'file': MultipartFile.fromBytes(
-        fileBytes,
-        filename: filename.trim().isEmpty ? 'input.bin' : filename.trim(),
-      ),
-      'target_format': tgt,
-      'filename': filename.trim().isEmpty ? 'input.bin' : filename.trim(),
-      if (outputFilename != null && outputFilename.trim().isNotEmpty)
-        'output_filename': outputFilename.trim(),
-    });
-    return _postFile(
-      connection: connection,
-      requiredCapability: GatewayCapabilityIds.documentConvert,
-      fileBytes: fileBytes,
-      path: '/v1/documents/convert',
-      form: form,
-      fallbackName: outputFilename?.trim().isNotEmpty == true
-          ? outputFilename!.trim()
-          : _defaultConvertedName(filename, tgt),
-      errorVerb: '转换',
-      cancelToken: cancelToken,
+    _validateRequest(
+      connection,
+      GatewayCapabilityIds.documentConvert,
+      fileBytes,
     );
+    try {
+      final sourceId = await _upload(
+        connection: connection,
+        fileBytes: fileBytes,
+        filename: filename,
+        cancelToken: cancelToken,
+      );
+      final called = await _mcp.callTool(
+        connection: connection,
+        name: 'convert_document',
+        arguments: {
+          'file_id': sourceId,
+          'target_format': tgt,
+          if (outputFilename?.trim().isNotEmpty == true)
+            'output_filename': outputFilename!.trim(),
+        },
+        cancelToken: cancelToken,
+      );
+      return _downloadResult(
+        connection: connection,
+        result: called,
+        fallbackName: outputFilename?.trim().isNotEmpty == true
+            ? outputFilename!.trim()
+            : _defaultConvertedName(filename, tgt),
+        cancelToken: cancelToken,
+      );
+    } on McpClientException catch (error) {
+      throw DocumentServiceException(error.message, code: error.code);
+    }
   }
 
-  Future<DocumentEditResult> _postFile({
-    required GatewayConnection connection,
-    required String requiredCapability,
-    required Uint8List fileBytes,
-    required String path,
-    required FormData form,
-    required String fallbackName,
-    required String errorVerb,
-    CancelToken? cancelToken,
-  }) async {
-    final config = connection.config;
-    if (!config.isConfigured) {
-      throw const DocumentServiceException('Expert Chat Gateway 尚未启用或配置');
+  static void _validateRequest(
+    GatewayConnection connection,
+    String capability,
+    Uint8List fileBytes,
+  ) {
+    if (!connection.config.isConfigured) {
+      throw const DocumentServiceException('Expert Chat MCP Server 尚未启用或配置');
     }
-    if (!config.supports(requiredCapability)) {
-      throw const DocumentServiceException('当前 Gateway 未提供所需文档能力');
+    if (!connection.config.supports(capability)) {
+      throw const DocumentServiceException('当前 MCP Server 未提供所需文档工具');
     }
     if (fileBytes.isEmpty) {
       throw const DocumentServiceException('文件为空', code: 'patch_invalid');
     }
+  }
+
+  Future<String> _upload({
+    required GatewayConnection connection,
+    required Uint8List fileBytes,
+    required String filename,
+    CancelToken? cancelToken,
+  }) async {
+    final safeName = filename.trim().isEmpty ? 'input.bin' : filename.trim();
+    String? uploadId;
     try {
-      final token = await connection.resolveApiToken();
-      final r = await _dio.post<List<int>>(
-        '${config.normalizedBaseUrl}$path',
-        data: form,
-        options: Options(
-          headers: {
-            if (token.isNotEmpty) 'Authorization': 'Bearer $token',
-            'Accept': '*/*',
-          },
-          responseType: ResponseType.bytes,
-          receiveTimeout: config.requestTimeout,
-          sendTimeout: config.requestTimeout,
-          validateStatus: (s) => s != null && s < 500,
-        ),
+      final started = await _mcp.callTool(
+        connection: connection,
+        name: 'begin_upload',
+        arguments: {
+          'filename': safeName,
+          'mime_type': lookupMimeType(safeName) ?? 'application/octet-stream',
+          'size_bytes': fileBytes.length,
+        },
         cancelToken: cancelToken,
       );
-
-      final status = r.statusCode ?? 0;
-      if (status == 401 || status == 403) {
-        throw const DocumentServiceException(
-          'Gateway 文档能力鉴权失败：请检查 Token',
-          code: 'unauthorized',
+      uploadId = started.structuredContent['upload_id']?.toString();
+      if (uploadId == null || uploadId.isEmpty) {
+        throw const McpClientException('MCP Server 没有返回 upload_id');
+      }
+      var offset = 0;
+      while (offset < fileBytes.length) {
+        final end = (offset + _uploadChunkBytes).clamp(0, fileBytes.length);
+        await _mcp.callTool(
+          connection: connection,
+          name: 'append_upload',
+          arguments: {
+            'upload_id': uploadId,
+            'chunk_base64': base64Encode(fileBytes.sublist(offset, end)),
+            'offset': offset,
+          },
+          cancelToken: cancelToken,
         );
+        offset = end;
       }
-      if (status >= 400) {
-        throw DocumentServiceException(
-          _messageFromErrorBody(r.data) ?? '文档$errorVerb失败（$status）',
-          code: _codeFromErrorBody(r.data) ?? 'internal',
-        );
-      }
-
-      final bytes = r.data;
-      if (bytes == null || bytes.isEmpty) {
-        throw const DocumentServiceException('Gateway 文档能力返回空文件');
-      }
-      // Never trust Content-Disposition blindly (path traversal / control
-      // chars). Fall back to the client-side name when the header is hostile.
-      final outName = sanitizeDownloadFilename(
-        _filenameFromDisposition(r.headers.value('content-disposition')),
-        fallback: fallbackName,
+      final finished = await _mcp.callTool(
+        connection: connection,
+        name: 'finish_upload',
+        arguments: {'upload_id': uploadId},
+        cancelToken: cancelToken,
       );
-      return DocumentEditResult(
-        bytes: Uint8List.fromList(bytes),
-        filename: outName,
-        contentType:
-            r.headers.value(Headers.contentTypeHeader) ??
-            'application/octet-stream',
-      );
-    } on DioException catch (e) {
-      if (CancelToken.isCancel(e)) rethrow;
-      throw DocumentServiceException(_humanize(e));
+      final fileId = finished.structuredContent['file_id']?.toString();
+      if (fileId == null || fileId.isEmpty) {
+        throw const McpClientException('MCP Server 没有返回 file_id');
+      }
+      return fileId;
+    } catch (_) {
+      if (uploadId != null && uploadId.isNotEmpty) {
+        try {
+          await _mcp.callTool(
+            connection: connection,
+            name: 'abort_upload',
+            arguments: {'upload_id': uploadId},
+          );
+        } catch (_) {}
+      }
+      rethrow;
     }
+  }
+
+  Future<DocumentEditResult> _downloadResult({
+    required GatewayConnection connection,
+    required McpToolResult result,
+    required String fallbackName,
+    CancelToken? cancelToken,
+  }) async {
+    final structured = result.structuredContent;
+    final resources = structured['resources'];
+    final resourceMap = resources is Map
+        ? Map<String, dynamic>.from(resources)
+        : const <String, dynamic>{};
+    final uri = resourceMap['binary']?.toString();
+    if (uri == null || uri.isEmpty) {
+      throw const McpClientException('MCP 工具结果缺少 binary Resource URI');
+    }
+    final bytes = await _mcp.readBinaryResource(
+      connection: connection,
+      uri: uri,
+      cancelToken: cancelToken,
+    );
+    if (bytes.isEmpty) {
+      throw const McpClientException('MCP Server 返回了空文件');
+    }
+    return DocumentEditResult(
+      bytes: bytes,
+      filename: sanitizeDownloadFilename(
+        structured['filename']?.toString(),
+        fallback: fallbackName,
+      ),
+      contentType:
+          structured['mime_type']?.toString() ?? 'application/octet-stream',
+    );
   }
 
   static String _defaultEditedName(String raw) {
@@ -235,78 +330,5 @@ class DocumentServiceClient {
       name = name.substring(0, DocumentPatch.maxOutputFilenameLength);
     }
     return name;
-  }
-
-  static String? _filenameFromDisposition(String? raw) {
-    if (raw == null || raw.isEmpty) return null;
-    final star = RegExp(
-      r"filename\*=UTF-8''([^;]+)",
-      caseSensitive: false,
-    ).firstMatch(raw);
-    if (star != null) {
-      try {
-        return Uri.decodeComponent(star.group(1)!.trim());
-      } on FormatException {
-        return null;
-      }
-    }
-    final plain = RegExp(
-      r'filename="([^"]+)"|filename=([^;]+)',
-      caseSensitive: false,
-    ).firstMatch(raw);
-    if (plain != null) {
-      return (plain.group(1) ?? plain.group(2) ?? '').trim();
-    }
-    return null;
-  }
-
-  static String? _messageFromErrorBody(Object? data) {
-    final map = _asErrorMap(data);
-    final err = map?['error'];
-    if (err is Map && err['message'] is String) {
-      return err['message'] as String;
-    }
-    return null;
-  }
-
-  static String? _codeFromErrorBody(Object? data) {
-    final map = _asErrorMap(data);
-    final err = map?['error'];
-    if (err is Map && err['code'] is String) return err['code'] as String;
-    return null;
-  }
-
-  static Map<String, dynamic>? _asErrorMap(Object? data) {
-    if (data is Map<String, dynamic>) return data;
-    if (data is Map) return Map<String, dynamic>.from(data);
-    if (data is List<int>) {
-      try {
-        final decoded = jsonDecode(utf8.decode(data));
-        if (decoded is Map) return Map<String, dynamic>.from(decoded);
-      } catch (_) {}
-    }
-    if (data is String) {
-      try {
-        final decoded = jsonDecode(data);
-        if (decoded is Map) return Map<String, dynamic>.from(decoded);
-      } catch (_) {}
-    }
-    return null;
-  }
-
-  static String _humanize(DioException e) {
-    if (e.type == DioExceptionType.connectionTimeout ||
-        e.type == DioExceptionType.receiveTimeout ||
-        e.type == DioExceptionType.sendTimeout) {
-      return 'Gateway 文档处理超时：请检查网络或增大超时时间';
-    }
-    if (e.type == DioExceptionType.connectionError) {
-      return '无法连接 Gateway：请检查 Base URL 与网络';
-    }
-    final fromBody = _messageFromErrorBody(e.response?.data);
-    if (fromBody != null) return fromBody;
-    final status = e.response?.statusCode;
-    if (status != null) return 'Gateway 文档请求失败（$status）';
-    return 'Gateway 文档请求失败：${e.message ?? e.type.name}';
   }
 }

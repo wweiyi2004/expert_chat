@@ -2,7 +2,7 @@ import 'package:expert_chat/data/chat_skill.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  test('factory catalog has five enabled skills and one fallback', () {
+  test('factory catalog has six enabled skills and one fallback', () {
     final catalog = ChatSkillCatalog.factory();
     expect(catalog.skills.map((s) => s.id).toList(), [
       'general',
@@ -10,10 +10,12 @@ void main() {
       'code',
       'translate',
       'summarize',
+      'image-prompt',
     ]);
     expect(catalog.fallback.id, 'general');
     expect(catalog.fallback.fallback, isTrue);
-    expect(catalog.enabled, hasLength(5));
+    expect(catalog.enabled, hasLength(6));
+    expect(catalog.skillById('image-prompt')?.prefix, '/生图提示');
   });
 
   test('decode empty uses factory; legacy systemPrompt fills general', () {
@@ -57,6 +59,26 @@ void main() {
 
     expect(catalog.skillById('general')!.prompt, contains('R18'));
     expect(catalog.skillById('writing')!.prompt, contains('无需自动淡出'));
+    expect(catalog.skillById('image-prompt')?.prefix, '/生图提示');
+  });
+
+  test('decode of a previous factory catalog adds image-prompt', () {
+    final raw = ChatSkillCatalog([
+      for (final skill in ChatSkillCatalog.factory().skills)
+        if (skill.id != 'image-prompt') skill,
+    ]).encode();
+
+    final catalog = ChatSkillCatalog.decode(raw);
+
+    expect(catalog.skillById('image-prompt')?.prefix, '/生图提示');
+    expect(catalog.skills.map((s) => s.id).toList(), [
+      'general',
+      'writing',
+      'code',
+      'translate',
+      'summarize',
+      'image-prompt',
+    ]);
   });
 
   test('decode preserves a user-edited built-in prompt', () {
@@ -83,13 +105,30 @@ void main() {
     final fixed = broken.sanitize();
     expect(fixed.fallback.id, 'general');
     expect(fixed.skills.where((s) => s.fallback).length, 1);
+    expect(fixed.skillById('image-prompt'), isNotNull);
   });
+
+  test(
+    'sanitize merges missing factory built-ins without overwriting edits',
+    () {
+      final broken = ChatSkillCatalog([
+        for (final skill in ChatSkillCatalog.factory().skills)
+          if (skill.id != 'image-prompt')
+            skill.id == 'writing' ? skill.copyWith(prompt: '我改过的写作') : skill,
+      ]);
+      final fixed = broken.sanitize();
+      expect(fixed.skillById('writing')!.prompt, '我改过的写作');
+      expect(fixed.skillById('image-prompt')!.builtIn, isTrue);
+      expect(fixed.skillById('image-prompt')!.prompt, contains('无需自动淡出'));
+    },
+  );
 
   test('matchPrefix prefers the longest enabled prefix', () {
     final catalog = ChatSkillCatalog.factory();
     expect(catalog.matchPrefix('/代码 重构这段')?.id, 'code');
     expect(catalog.matchPrefix('/代码重构这段')?.id, 'code');
     expect(catalog.matchPrefix('/代码\r\n重构这段')?.id, 'code');
+    expect(catalog.matchPrefix('/生图提示 一只猫')?.id, 'image-prompt');
     expect(catalog.matchPrefix('重构这段'), isNull);
   });
 

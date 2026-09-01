@@ -1,17 +1,20 @@
 import 'package:dio/dio.dart';
 
 import '../../data/gateway_config.dart';
+import '../mcp/mcp_client.dart';
 
 class GatewayCapabilities {
   const GatewayCapabilities({
     required this.protocolVersion,
     required this.gatewayVersion,
     required this.modules,
+    this.tools = const [],
   });
 
   final int protocolVersion;
   final String gatewayVersion;
   final Map<String, Map<String, dynamic>> modules;
+  final List<DiscoveredMcpTool> tools;
 
   List<String> get ids => modules.keys.toList(growable: false);
 
@@ -31,66 +34,54 @@ class GatewayException implements Exception {
 }
 
 class GatewayClient {
-  GatewayClient({Dio? dio}) : _dio = dio ?? Dio();
+  GatewayClient({Dio? dio}) : _mcp = McpClient(dio: dio);
 
-  final Dio _dio;
+  final McpClient _mcp;
 
   Future<GatewayCapabilities> discover({
     required GatewayConnection connection,
     CancelToken? cancelToken,
   }) async {
     final base = connection.config.normalizedBaseUrl;
-    if (base.isEmpty) throw const GatewayException('未配置 Gateway Base URL');
+    if (base.isEmpty) throw const GatewayException('未配置 MCP Server URL');
     try {
-      final headers = await _headers(connection);
-      final response = await _dio.get<Map<String, dynamic>>(
-        '$base/v1/capabilities',
-        options: Options(
-          headers: headers,
-          // Without a connect timeout a firewalled (black-holed) address
-          // stalls until the OS-level TCP timeout, far past the intended
-          // request budget for a "test connection" action.
-          connectTimeout: connection.config.requestTimeout,
-          receiveTimeout: connection.config.requestTimeout,
-          sendTimeout: connection.config.requestTimeout,
-        ),
+      final server = await _mcp.discover(
+        connection: connection,
         cancelToken: cancelToken,
       );
-      final data = response.data;
-      if (data == null) throw const GatewayException('Gateway 返回了空能力清单');
-      final protocolVersion = (data['protocol_version'] as num?)?.toInt() ?? 0;
-      if (protocolVersion != 1) {
-        throw GatewayException('不支持的 Gateway 协议版本：$protocolVersion');
-      }
-      final rawModules = data['capabilities'];
-      if (rawModules is! Map) {
-        throw const GatewayException('Gateway 能力清单格式无效');
-      }
-      final modules = <String, Map<String, dynamic>>{};
-      for (final entry in rawModules.entries) {
-        final id = entry.key.toString().trim();
-        if (id.isEmpty) continue;
-        final metadata = entry.value;
-        modules[id] = metadata is Map
-            ? Map<String, dynamic>.from(metadata)
-            : <String, dynamic>{};
-      }
+      final names = {for (final tool in server.tools) tool.name};
+      final modules = <String, Map<String, dynamic>>{
+        if (names.contains('edit_document'))
+          GatewayCapabilityIds.documentEdit: {
+            'transport': 'mcp',
+            'tool': 'edit_document',
+          },
+        if (names.contains('convert_document'))
+          GatewayCapabilityIds.documentConvert: {
+            'transport': 'mcp',
+            'tool': 'convert_document',
+          },
+      };
       return GatewayCapabilities(
-        protocolVersion: protocolVersion,
-        gatewayVersion: data['gateway_version']?.toString() ?? '?',
+        protocolVersion: 1,
+        gatewayVersion: server.version,
         modules: modules,
+        tools: [
+          for (final tool in server.tools)
+            if (tool.name.isNotEmpty)
+              DiscoveredMcpTool(
+                name: tool.name,
+                description: tool.description,
+                inputSchema: tool.inputSchema,
+              ),
+        ],
       );
+    } on McpClientException catch (error) {
+      throw GatewayException(error.message, code: error.code);
     } on DioException catch (error) {
       if (CancelToken.isCancel(error)) rethrow;
       throw GatewayException(_humanize(error));
     }
-  }
-
-  static Future<Map<String, String>> _headers(
-    GatewayConnection connection,
-  ) async {
-    final token = await connection.resolveApiToken();
-    return {if (token.isNotEmpty) 'Authorization': 'Bearer $token'};
   }
 
   static String _humanize(DioException error) {
@@ -104,16 +95,16 @@ class GatewayClient {
         detail = (raw['error'] as Map)['message']?.toString();
       }
     }
-    if (status == 401 || status == 403) return 'Gateway Token 无效或无权限';
-    if (status == 404) return '服务器不是兼容的 Expert Chat Gateway（缺少能力发现接口）';
+    if (status == 401 || status == 403) return 'MCP Token 无效或无权限';
+    if (status == 404) return '服务器没有提供 /mcp Endpoint';
     if (status != null) {
-      return 'Gateway 请求失败（$status）${detail == null ? '' : '：$detail'}';
+      return 'MCP 请求失败（$status）${detail == null ? '' : '：$detail'}';
     }
     if (error.type == DioExceptionType.connectionTimeout ||
         error.type == DioExceptionType.receiveTimeout ||
         error.type == DioExceptionType.sendTimeout) {
-      return 'Gateway 连接超时，请检查地址和网络';
+      return 'MCP 连接超时，请检查地址和网络';
     }
-    return '无法连接 Gateway：${error.message ?? error.type.name}';
+    return '无法连接 MCP Server：${error.message ?? error.type.name}';
   }
 }

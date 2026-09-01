@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:expert_chat/core/providers.dart';
 import 'package:expert_chat/data/chat_skill.dart';
+import 'package:expert_chat/data/composer_modes.dart';
 import 'package:expert_chat/data/gateway_config.dart';
 import 'package:expert_chat/data/media_api_config.dart';
 import 'package:expert_chat/data/provider_profile.dart';
@@ -16,6 +17,48 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  test('composer search and image modes default to auto and persist', () async {
+    SharedPreferences.setMockInitialValues({});
+    FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
+      {},
+    );
+    addTearDown(() {
+      FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
+        {},
+      );
+    });
+
+    final prefs = await SharedPreferences.getInstance();
+    final container = ProviderContainer(
+      overrides: [
+        sharedPrefsProvider.overrideWithValue(prefs),
+        secureStorageProvider.overrideWithValue(const FlutterSecureStorage()),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    final state = await container.read(settingsControllerProvider.future);
+    expect(state.searchMode, SearchMode.auto);
+    expect(state.imageGenMode, ImageGenMode.auto);
+
+    await container
+        .read(settingsControllerProvider.notifier)
+        .setSearchMode(SearchMode.off);
+    await container
+        .read(settingsControllerProvider.notifier)
+        .setImageGenMode(ImageGenMode.always);
+    expect(prefs.getString('composerSearchMode'), 'off');
+    expect(prefs.getString('composerImageGenMode'), 'always');
+    expect(
+      container.read(settingsControllerProvider).value!.searchMode,
+      SearchMode.off,
+    );
+    expect(
+      container.read(settingsControllerProvider).value!.imageGenMode,
+      ImageGenMode.always,
+    );
+  });
+
   test(
     'split document and long-task settings migrate into one Gateway',
     () async {
@@ -60,8 +103,11 @@ void main() {
       expect(state.gateway.requestTimeoutSeconds, 240);
       expect(state.gatewayToken, 'unified-token');
       expect(state.gateway.capabilitiesDiscovered, isFalse);
-      expect(state.gateway.supports(GatewayCapabilityIds.longTasks), isTrue);
-      expect(state.gateway.supports(GatewayCapabilityIds.documentEdit), isTrue);
+      expect(state.gateway.supports(GatewayCapabilityIds.longTasks), isFalse);
+      expect(
+        state.gateway.supports(GatewayCapabilityIds.documentEdit),
+        isFalse,
+      );
       expect(prefs.getString('expertChatGateway'), isNotNull);
       expect(secureData['expert_chat_gateway_token'], 'unified-token');
     },
@@ -374,6 +420,35 @@ void main() {
     expect(state.chatSkills.skillById('writing'), isNotNull);
     expect(state.systemPrompt, '你是专业助手');
     expect(prefs.getString('chatSkills'), isNotNull);
+  });
+
+  test('load persists a newly shipped built-in skill', () async {
+    final previous = ChatSkillCatalog([
+      for (final skill in ChatSkillCatalog.factory().skills)
+        if (skill.id != 'image-prompt') skill,
+    ]);
+    SharedPreferences.setMockInitialValues({'chatSkills': previous.encode()});
+    FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
+      {},
+    );
+    addTearDown(() {
+      FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
+        {},
+      );
+    });
+    final prefs = await SharedPreferences.getInstance();
+    final container = ProviderContainer(
+      overrides: [
+        sharedPrefsProvider.overrideWithValue(prefs),
+        secureStorageProvider.overrideWithValue(const FlutterSecureStorage()),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    final state = await container.read(settingsControllerProvider.future);
+    expect(state.chatSkills.skillById('image-prompt')?.prefix, '/生图提示');
+    final stored = ChatSkillCatalog.decode(prefs.getString('chatSkills'));
+    expect(stored.skillById('image-prompt')?.prefix, '/生图提示');
   });
 
   test(

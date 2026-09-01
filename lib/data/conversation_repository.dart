@@ -5,6 +5,120 @@ import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:path_provider/path_provider.dart';
 
 import 'models.dart';
+import 'story_models.dart';
+
+/// List-row metadata without message bodies or attachments.
+class ConversationSummary {
+  const ConversationSummary({
+    required this.id,
+    required this.title,
+    required this.updatedAt,
+    required this.mode,
+    this.characterId,
+    this.participantIds = const [],
+    this.localCast = const [],
+    this.worldInfoIds = const [],
+    this.customMcpServerIds = const [],
+    this.outline = '',
+    this.authorNote = '',
+    this.plotCursor = 0,
+    this.venue = '',
+    this.nextSpeakerIndex = 0,
+    this.targetTotalChars = 0,
+    this.workMode = false,
+    this.activeChildren = const {},
+    this.hasActiveLongTask = false,
+  });
+
+  factory ConversationSummary.fromConversation(Conversation conversation) =>
+      ConversationSummary(
+        id: conversation.id,
+        title: conversation.title,
+        updatedAt: conversation.updatedAt,
+        mode: conversation.mode,
+        characterId: conversation.characterId,
+        participantIds: conversation.participantIds,
+        localCast: conversation.localCast,
+        worldInfoIds: conversation.worldInfoIds,
+        customMcpServerIds: conversation.customMcpServerIds,
+        outline: conversation.outline,
+        authorNote: conversation.authorNote,
+        plotCursor: conversation.plotCursor,
+        venue: conversation.venue,
+        nextSpeakerIndex: conversation.nextSpeakerIndex,
+        targetTotalChars: conversation.targetTotalChars,
+        workMode: conversation.workMode,
+        activeChildren: conversation.activeChildren,
+        hasActiveLongTask: conversation.messages.any(
+          (message) => message.longTask?.isActive == true,
+        ),
+      );
+
+  final String id;
+  final String title;
+  final DateTime updatedAt;
+  final ConversationMode mode;
+  final String? characterId;
+  final List<String> participantIds;
+  final List<CharacterCard> localCast;
+  final List<String> worldInfoIds;
+  final List<String> customMcpServerIds;
+  final String outline;
+  final String authorNote;
+  final int plotCursor;
+  final String venue;
+  final int nextSpeakerIndex;
+  final int targetTotalChars;
+  final bool workMode;
+  final Map<String, String> activeChildren;
+  final bool hasActiveLongTask;
+
+  Conversation toPlaceholder() => Conversation(
+    id: id,
+    title: title,
+    messages: const [],
+    activeChildren: activeChildren,
+    updatedAt: updatedAt,
+    mode: mode,
+    characterId: characterId,
+    participantIds: participantIds,
+    localCast: localCast,
+    worldInfoIds: worldInfoIds,
+    customMcpServerIds: customMcpServerIds,
+    outline: outline,
+    authorNote: authorNote,
+    plotCursor: plotCursor,
+    venue: venue,
+    nextSpeakerIndex: nextSpeakerIndex,
+    targetTotalChars: targetTotalChars,
+    workMode: workMode,
+    messagesLoaded: false,
+  );
+}
+
+/// One title/content match from [ConversationRepository.searchMessages].
+class SearchHit {
+  const SearchHit({
+    required this.convoId,
+    required this.messageId,
+    required this.snippet,
+    this.title = '',
+  });
+
+  final String convoId;
+  final String messageId;
+  final String snippet;
+  final String title;
+}
+
+String searchSnippetAround(String content, int index, int queryLen) {
+  final from = (index - 16).clamp(0, content.length);
+  final to = (index + queryLen + 36).clamp(0, content.length);
+  var snip = content.substring(from, to).replaceAll(RegExp(r'\s+'), ' ').trim();
+  if (from > 0) snip = '…$snip';
+  if (to < content.length) snip = '$snip…';
+  return snip;
+}
 
 /// Persists conversations to disk. M1 uses a single JSON file; the interface is
 /// kept narrow so it can be swapped for a drift/SQLite implementation later
@@ -19,6 +133,73 @@ abstract class ConversationRepository {
 
   /// Remove a single conversation (and its messages).
   Future<void> deleteConversation(String id);
+
+  /// Conversation headers only — does not read the messages table.
+  Future<List<ConversationSummary>> loadSummaries();
+
+  /// One conversation header plus its messages.
+  Future<Conversation> loadConversation(String id);
+
+  /// SQL/in-memory search over titles and message bodies. Empty query
+  /// returns no hits (it must not load the full archive).
+  Future<List<SearchHit>> searchMessages(String query);
+}
+
+/// Test/legacy helper: derive the on-demand APIs from [loadAll].
+mixin ConversationRepositoryViaLoadAll implements ConversationRepository {
+  @override
+  Future<List<ConversationSummary>> loadSummaries() async {
+    final all = await loadAll();
+    return [
+      for (final conversation in all)
+        ConversationSummary.fromConversation(conversation),
+    ];
+  }
+
+  @override
+  Future<Conversation> loadConversation(String id) async {
+    final all = await loadAll();
+    for (final conversation in all) {
+      if (conversation.id == id) return conversation;
+    }
+    throw StateError('Conversation $id not found');
+  }
+
+  @override
+  Future<List<SearchHit>> searchMessages(String query) async {
+    final q = query.trim();
+    if (q.isEmpty) return const [];
+    final lower = q.toLowerCase();
+    final all = await loadAll();
+    final hits = <SearchHit>[];
+    for (final conversation in all) {
+      var matched = conversation.title.toLowerCase().contains(lower);
+      for (final message in conversation.messages) {
+        final idx = message.content.toLowerCase().indexOf(lower);
+        if (idx < 0) continue;
+        matched = true;
+        hits.add(
+          SearchHit(
+            convoId: conversation.id,
+            messageId: message.id,
+            snippet: searchSnippetAround(message.content, idx, q.length),
+            title: conversation.title,
+          ),
+        );
+      }
+      if (matched && !hits.any((hit) => hit.convoId == conversation.id)) {
+        hits.add(
+          SearchHit(
+            convoId: conversation.id,
+            messageId: '',
+            snippet: conversation.title,
+            title: conversation.title,
+          ),
+        );
+      }
+    }
+    return hits;
+  }
 }
 
 /// Thrown by [JsonConversationRepository.loadAll] when the history file exists
@@ -34,7 +215,11 @@ class JsonHistoryCorruptedException implements Exception {
   String toString() => 'JsonHistoryCorruptedException: $path is corrupt';
 }
 
-class JsonConversationRepository implements ConversationRepository {
+/// JSON file store used by legacy migration and tests. New on-demand APIs
+/// are derived from [loadAll] (the whole file is one blob).
+class JsonConversationRepository
+    with ConversationRepositoryViaLoadAll
+    implements ConversationRepository {
   JsonConversationRepository({File? file}) : _injectedFile = file;
 
   /// Explicit file override (tests); production resolves the support directory.

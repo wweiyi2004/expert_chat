@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:dio/dio.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -18,17 +19,22 @@ import '../../data/custom_tts_voices.dart';
 import '../../data/gateway_config.dart';
 import '../../data/provider_profile.dart';
 import '../../data/media_api_config.dart';
+import '../../data/settings_bundle.dart';
 import '../../data/ui_prefs.dart';
+import '../../domain/llm/deepseek_balance_client.dart';
 import '../../domain/llm/llm_provider.dart';
 import '../../domain/speech/custom_tts_voice_installer.dart';
 import '../../domain/tools/search_provider.dart';
 import '../../domain/update/shorebird_patch.dart';
 import '../../domain/update/shorebird_ui.dart';
 import '../../domain/update/update_ui.dart';
+import '../../state/chat_controller.dart';
 import '../../state/memory_controller.dart';
 import '../../state/research_mode_fx.dart';
 import '../../state/research_terminal_controller.dart';
 import '../../state/settings_controller.dart';
+import '../chat/widgets/previewable_code_block.dart';
+import '../chat/widgets/streaming_markdown.dart';
 import '../memory/memory_page.dart';
 import '../shell/shell_tab.dart';
 
@@ -59,6 +65,247 @@ String _gatewayCapabilityLabel(String id) => switch (id) {
   GatewayCapabilityIds.documentConvert => '格式转换',
   _ => id,
 };
+
+class _CustomMcpEditorDialog extends StatefulWidget {
+  const _CustomMcpEditorDialog({
+    required this.name,
+    required this.url,
+    required this.token,
+  });
+
+  final String name;
+  final String url;
+  final String token;
+
+  @override
+  State<_CustomMcpEditorDialog> createState() => _CustomMcpEditorDialogState();
+}
+
+class _CustomMcpEditorDialogState extends State<_CustomMcpEditorDialog> {
+  late final TextEditingController _name = TextEditingController(
+    text: widget.name,
+  );
+  late final TextEditingController _url = TextEditingController(
+    text: widget.url,
+  );
+  late final TextEditingController _token = TextEditingController(
+    text: widget.token,
+  );
+  bool _obscure = true;
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _url.dispose();
+    _token.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.name.isEmpty ? '添加 MCP 服务器' : '编辑 MCP 服务器'),
+      content: SizedBox(
+        width: 420,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: _name,
+                decoration: const InputDecoration(labelText: '名称'),
+                textInputAction: TextInputAction.next,
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _url,
+                autocorrect: false,
+                enableSuggestions: false,
+                keyboardType: TextInputType.url,
+                decoration: const InputDecoration(
+                  labelText: 'Server URL',
+                  helperText: 'Streamable HTTP，例如 https://example.com/mcp',
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _token,
+                obscureText: _obscure,
+                autocorrect: false,
+                enableSuggestions: false,
+                decoration: InputDecoration(
+                  labelText: 'Bearer Token（可选）',
+                  suffixIcon: IconButton(
+                    tooltip: _obscure ? '显示 Token' : '隐藏 Token',
+                    icon: Icon(
+                      _obscure ? Icons.visibility : Icons.visibility_off,
+                    ),
+                    onPressed: () => setState(() => _obscure = !_obscure),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: () {
+            final nextName = _name.text.trim();
+            final nextUrl = _url.text.trim();
+            if (nextName.isEmpty ||
+                GatewayConfig.normalizeBaseUrl(nextUrl).isEmpty) {
+              return;
+            }
+            Navigator.of(
+              context,
+            ).pop((name: nextName, url: nextUrl, token: _token.text.trim()));
+          },
+          child: const Text('保存'),
+        ),
+      ],
+    );
+  }
+}
+
+class _CustomMcpServerCard extends StatelessWidget {
+  const _CustomMcpServerCard({
+    required this.server,
+    required this.token,
+    required this.discovering,
+    required this.onEnabled,
+    required this.onDiscover,
+    required this.onEdit,
+    required this.onDelete,
+  });
+
+  final CustomMcpServer server;
+  final String token;
+  final bool discovering;
+  final ValueChanged<bool> onEnabled;
+  final VoidCallback onDiscover;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final status = discovering
+        ? '发现工具中…'
+        : server.lastError != null
+        ? '错误'
+        : !server.enabled
+        ? '已关闭'
+        : server.toolsDiscovered
+        ? '已连接'
+        : '未发现';
+    final statusColor = discovering
+        ? scheme.primary
+        : server.lastError != null
+        ? scheme.error
+        : server.enabled && server.toolsDiscovered
+        ? scheme.primary
+        : scheme.onSurfaceVariant;
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 8, 8, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: Text(server.name),
+              subtitle: Text(
+                server.baseUrl,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              value: server.enabled,
+              onChanged: onEnabled,
+            ),
+            Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                Text(
+                  status,
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodySmall?.copyWith(color: statusColor),
+                ),
+                if (token.isNotEmpty)
+                  Text(
+                    '已保存 Token',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                if (server.serverVersion != null)
+                  Text(
+                    'v${server.serverVersion}',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+              ],
+            ),
+            if (server.lastError != null) ...[
+              const SizedBox(height: 6),
+              Text(
+                server.lastError!,
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: scheme.error),
+              ),
+            ],
+            if (server.toolsDiscovered && server.tools.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 6,
+                children: [
+                  for (final tool in server.tools)
+                    Chip(
+                      avatar: const Icon(Icons.build_outlined, size: 17),
+                      label: Text(tool.name),
+                    ),
+                ],
+              ),
+            ],
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: discovering ? null : onDiscover,
+                  icon: discovering
+                      ? const SizedBox.square(
+                          dimension: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.hub_outlined, size: 18),
+                  label: Text(discovering ? '发现中…' : '连接并发现'),
+                ),
+                IconButton(
+                  tooltip: '编辑',
+                  onPressed: onEdit,
+                  icon: const Icon(Icons.edit_outlined),
+                ),
+                IconButton(
+                  tooltip: '删除',
+                  onPressed: onDelete,
+                  icon: const Icon(Icons.delete_outline),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
 
 class _SettingsCategoryBar extends StatelessWidget {
   const _SettingsCategoryBar({
@@ -108,12 +355,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   final _apiKey = TextEditingController();
   final _searchKey = TextEditingController();
   final _gatewayUrl = TextEditingController();
-  final _gatewayUploadUrl = TextEditingController();
-  final _gatewayAuthUrl = TextEditingController();
-  final _gatewayOidcClientId = TextEditingController();
-  final _gatewayOidcRedirectUri = TextEditingController();
   final _gatewayToken = TextEditingController();
-  final _gatewayTaskModel = TextEditingController();
   bool _obscure = true;
   bool _obscureSearch = true;
   bool _obscureGatewayToken = true;
@@ -121,12 +363,13 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   bool _searchKeySynced = false;
   bool _gatewaySynced = false;
   bool _clearingCache = false;
+  bool _exportingSettings = false;
+  bool _importingSettings = false;
   bool _testingSearch = false;
   bool _testingGateway = false;
-  bool _signingGatewayIn = false;
+  String? _discoveringCustomMcpId;
   String? _searchTestResult;
   String? _gatewayTestResult;
-  String? _gatewayAuthResult;
   _SettingsCategory _category = _SettingsCategory.model;
 
   @override
@@ -154,12 +397,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     }
     if (!_gatewaySynced) {
       _gatewayUrl.text = s.gateway.baseUrl;
-      _gatewayUploadUrl.text = s.gateway.uploadBaseUrl;
-      _gatewayAuthUrl.text = s.gateway.authServiceUrl;
-      _gatewayOidcClientId.text = s.gateway.oidcClientId;
-      _gatewayOidcRedirectUri.text = s.gateway.oidcRedirectUri;
       _gatewayToken.text = s.gatewayLegacyToken;
-      _gatewayTaskModel.text = s.gateway.taskModel;
       _gatewaySynced = true;
     }
   }
@@ -169,12 +407,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     _apiKey.dispose();
     _searchKey.dispose();
     _gatewayUrl.dispose();
-    _gatewayUploadUrl.dispose();
-    _gatewayAuthUrl.dispose();
-    _gatewayOidcClientId.dispose();
-    _gatewayOidcRedirectUri.dispose();
     _gatewayToken.dispose();
-    _gatewayTaskModel.dispose();
     super.dispose();
   }
 
@@ -195,12 +428,13 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           .setGatewayCapabilities(
             capabilities: capabilities.ids,
             serverVersion: capabilities.gatewayVersion,
+            mcpTools: capabilities.tools,
           );
       if (!mounted) return;
       setState(() {
         _gatewayTestResult =
-            '连通正常：Gateway ${capabilities.gatewayVersion}，'
-            '发现 ${capabilities.ids.length} 项能力。';
+            '连通正常：MCP ${capabilities.gatewayVersion}，'
+            '发现 ${capabilities.tools.length} 个 Tools。';
       });
     } catch (e) {
       if (!mounted) return;
@@ -210,27 +444,98 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     }
   }
 
-  Future<void> _signInGateway() async {
-    if (_signingGatewayIn) return;
-    setState(() {
-      _signingGatewayIn = true;
-      _gatewayAuthResult = null;
-    });
+  Future<void> _addCustomMcp() async {
+    final result = await _showCustomMcpEditor();
+    if (result == null || !mounted) return;
+    await ref
+        .read(settingsControllerProvider.notifier)
+        .addCustomMcpServer(
+          id: const Uuid().v4(),
+          name: result.name,
+          baseUrl: result.url,
+          token: result.token,
+        );
+  }
+
+  Future<void> _editCustomMcp(CustomMcpServer server) async {
+    final current = ref.read(settingsControllerProvider).value;
+    final result = await _showCustomMcpEditor(
+      name: server.name,
+      url: server.baseUrl,
+      token: current?.customMcpTokens[server.id] ?? '',
+    );
+    if (result == null || !mounted) return;
+    final controller = ref.read(settingsControllerProvider.notifier);
+    await controller.updateCustomMcpServer(
+      id: server.id,
+      name: result.name,
+      baseUrl: result.url,
+    );
+    await controller.setCustomMcpToken(server.id, result.token);
+  }
+
+  Future<void> _deleteCustomMcp(CustomMcpServer server) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('删除自定义 MCP 服务器？'),
+        content: Text('“${server.name}”的配置、Token 和已缓存的工具列表都会删除。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await ref
+        .read(settingsControllerProvider.notifier)
+        .deleteCustomMcpServer(server.id);
+  }
+
+  Future<void> _discoverCustomMcp(CustomMcpServer server) async {
+    final s = ref.read(settingsControllerProvider).value;
+    if (s == null || _discoveringCustomMcpId != null) return;
+    setState(() => _discoveringCustomMcpId = server.id);
+    final controller = ref.read(settingsControllerProvider.notifier);
     try {
-      await ref.read(settingsControllerProvider.notifier).signInGateway();
+      final capabilities = await ref
+          .read(gatewayClientProvider)
+          .discover(
+            connection: s.gateway.connectionForCustom(
+              server,
+              s.customMcpTokens[server.id] ?? '',
+            ),
+          );
       if (!mounted) return;
-      setState(() => _gatewayAuthResult = '登录成功，Gateway 将自动刷新访问令牌。');
+      await controller.setCustomMcpDiscovered(
+        server.id,
+        tools: capabilities.tools,
+        serverVersion: capabilities.gatewayVersion,
+      );
     } catch (error) {
       if (!mounted) return;
-      setState(() => _gatewayAuthResult = '登录失败：$error');
+      await controller.setCustomMcpError(server.id, error.toString());
     } finally {
-      if (mounted) setState(() => _signingGatewayIn = false);
+      if (mounted) setState(() => _discoveringCustomMcpId = null);
     }
   }
 
-  Future<void> _signOutGateway() async {
-    await ref.read(settingsControllerProvider.notifier).signOutGateway();
-    if (mounted) setState(() => _gatewayAuthResult = '已退出 AuthService 账户。');
+  Future<({String name, String url, String token})?> _showCustomMcpEditor({
+    String name = '',
+    String url = '',
+    String token = '',
+  }) {
+    return showDialog<({String name, String url, String token})>(
+      context: context,
+      builder: (dialogContext) =>
+          _CustomMcpEditorDialog(name: name, url: url, token: token),
+    );
   }
 
   /// Fires one real search against the configured backend so the user learns
@@ -389,6 +694,18 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                   : controller.apply(selectedModel: v),
                             ),
                             const SizedBox(height: 20),
+                            if (LlmConfig(
+                              baseUrl: s.baseUrl,
+                              apiKey: s.apiKey,
+                              model: s.model,
+                            ).isOfficialDeepSeek) ...[
+                              _DeepSeekBalanceCard(
+                                baseUrl: s.baseUrl,
+                                apiKey: s.apiKey,
+                                model: s.model,
+                              ),
+                              const SizedBox(height: 16),
+                            ],
                             _ModelUsageCard(
                               endpoint: s.baseUrl,
                               selectedModel: s.model,
@@ -790,6 +1107,38 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                               ),
                             ),
                             const SizedBox(height: 12),
+                            Text(
+                              'Markdown 渲染',
+                              style: Theme.of(context).textTheme.labelLarge
+                                  ?.copyWith(
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.onSurfaceVariant,
+                                  ),
+                            ),
+                            const SizedBox(height: 8),
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              children: [
+                                for (final v in MarkdownStylePref.values)
+                                  ChoiceChip(
+                                    label: Text(v.label),
+                                    selected: s.ui.markdownStyle == v,
+                                    onSelected: (_) => controller.setUiPrefs(
+                                      s.ui.copyWith(markdownStyle: v),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              s.ui.markdownStyle.description,
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                            const SizedBox(height: 10),
+                            _MarkdownStylePreview(style: s.ui.markdownStyle),
+                            const SizedBox(height: 12),
                             _PrefRow(
                               label: '内容宽度',
                               child: SegmentedButton<ContentWidthPref>(
@@ -982,16 +1331,15 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                               trailing: Text('${s.searchMaxResults} 条'),
                             ),
                             const SizedBox(height: 32),
-                            const _SectionTitle('Expert Chat Gateway'),
+                            const _SectionTitle('Expert Chat MCP Server'),
                             Text(
-                              '统一承载文件长任务、文档编辑与格式转换。这里只配置一套地址和 '
-                              'Token；新增服务端能力会通过能力发现自动接入，不再重复增加 Gateway 设置。',
+                              '软件直接连接服务端 MCP；文档上传、编辑、转换和下载都通过 MCP Tools/Resources 完成。',
                               style: Theme.of(context).textTheme.bodySmall,
                             ),
                             const SizedBox(height: 12),
                             SwitchListTile(
                               contentPadding: EdgeInsets.zero,
-                              title: const Text('启用 Gateway'),
+                              title: const Text('启用 MCP Server'),
                               value: s.gateway.enabled,
                               onChanged: (v) => controller.setGatewayConfig(
                                 s.gateway.copyWith(enabled: v),
@@ -1003,8 +1351,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                               enableSuggestions: false,
                               keyboardType: TextInputType.url,
                               decoration: const InputDecoration(
-                                labelText: 'Gateway Base URL',
-                                helperText: '例如 http://192.168.1.10:8790',
+                                labelText: 'MCP Server URL',
+                                helperText:
+                                    '例如 http://192.168.1.10:8790；也可直接填写以 /mcp 结尾的地址',
                               ),
                               onChanged: (v) => controller.setGatewayConfig(
                                 s.gateway.copyWith(baseUrl: v),
@@ -1012,172 +1361,13 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                             ),
                             const SizedBox(height: 12),
                             TextField(
-                              controller: _gatewayUploadUrl,
-                              autocorrect: false,
-                              enableSuggestions: false,
-                              keyboardType: TextInputType.url,
-                              decoration: const InputDecoration(
-                                labelText: '文件上传地址（可选）',
-                                helperText: '仅 POST /v1/files 使用；留空则走主 Gateway',
-                              ),
-                              onChanged: (v) => controller.setGatewayConfig(
-                                s.gateway.copyWith(uploadBaseUrl: v),
-                              ),
-                            ),
-                            const SizedBox(height: 12),
-                            Text(
-                              '账户登录',
-                              style: Theme.of(context).textTheme.titleSmall,
-                            ),
-                            const SizedBox(height: 8),
-                            TextField(
-                              controller: _gatewayAuthUrl,
-                              autocorrect: false,
-                              enableSuggestions: false,
-                              keyboardType: TextInputType.url,
-                              decoration: const InputDecoration(
-                                labelText: 'AuthService 地址',
-                                hintText: 'https://auth.example.com',
-                                helperText: '使用浏览器完成 OIDC + PKCE 登录；必须使用 HTTPS',
-                              ),
-                              onChanged: (v) => controller.setGatewayConfig(
-                                s.gateway.copyWith(authServiceUrl: v),
-                              ),
-                            ),
-                            const SizedBox(height: 12),
-                            Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Expanded(
-                                  child: TextField(
-                                    controller: _gatewayOidcClientId,
-                                    autocorrect: false,
-                                    enableSuggestions: false,
-                                    decoration: const InputDecoration(
-                                      labelText: 'OIDC Client ID',
-                                      helperText:
-                                          'AuthService 中创建的 Public Client',
-                                    ),
-                                    onChanged: (v) =>
-                                        controller.setGatewayConfig(
-                                          s.gateway.copyWith(oidcClientId: v),
-                                        ),
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: TextField(
-                                    controller: _gatewayOidcRedirectUri,
-                                    autocorrect: false,
-                                    enableSuggestions: false,
-                                    decoration: const InputDecoration(
-                                      labelText: '回调地址',
-                                      helperText:
-                                          '默认 expertchat://auth/callback',
-                                    ),
-                                    onChanged: (v) =>
-                                        controller.setGatewayConfig(
-                                          s.gateway.copyWith(
-                                            oidcRedirectUri: v,
-                                          ),
-                                        ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 12),
-                            if (s.gatewaySignedIn)
-                              Card(
-                                margin: EdgeInsets.zero,
-                                child: ListTile(
-                                  leading: CircleAvatar(
-                                    child: Text(
-                                      (s.gatewayAuthSession!.displayName
-                                                  .trim()
-                                                  .isEmpty
-                                              ? s.gatewayAuthSession!.subject
-                                              : s
-                                                    .gatewayAuthSession!
-                                                    .displayName)
-                                          .characters
-                                          .first
-                                          .toUpperCase(),
-                                    ),
-                                  ),
-                                  title: Text(
-                                    s.gatewayAuthSession!.displayName
-                                            .trim()
-                                            .isEmpty
-                                        ? '已登录'
-                                        : s.gatewayAuthSession!.displayName,
-                                  ),
-                                  subtitle: Text(
-                                    '账户 ${s.gatewayAuthSession!.subject}\n'
-                                    '访问令牌到期前会自动刷新',
-                                  ),
-                                  isThreeLine: true,
-                                  trailing: TextButton(
-                                    onPressed: _signOutGateway,
-                                    child: const Text('退出'),
-                                  ),
-                                ),
-                              )
-                            else
-                              FilledButton.icon(
-                                onPressed:
-                                    s.gateway.authServiceConfigured &&
-                                        !_signingGatewayIn
-                                    ? _signInGateway
-                                    : null,
-                                icon: _signingGatewayIn
-                                    ? const SizedBox.square(
-                                        dimension: 16,
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 2,
-                                        ),
-                                      )
-                                    : const Icon(Icons.login, size: 18),
-                                label: Text(
-                                  _signingGatewayIn
-                                      ? '正在打开登录…'
-                                      : '使用 AuthService 登录',
-                                ),
-                              ),
-                            if (_gatewayAuthResult != null) ...[
-                              const SizedBox(height: 8),
-                              Text(
-                                _gatewayAuthResult!,
-                                style: Theme.of(context).textTheme.bodySmall
-                                    ?.copyWith(
-                                      color:
-                                          _gatewayAuthResult!.startsWith('登录失败')
-                                          ? Theme.of(context).colorScheme.error
-                                          : Theme.of(
-                                              context,
-                                            ).colorScheme.onSurfaceVariant,
-                                    ),
-                              ),
-                            ],
-                            const SizedBox(height: 20),
-                            Text(
-                              '旧 Token 兼容',
-                              style: Theme.of(context).textTheme.titleSmall,
-                            ),
-                            const SizedBox(height: 6),
-                            Text(
-                              '仅用于迁移期或单用户部署；登录 AuthService 后会优先使用账户令牌。',
-                              style: Theme.of(context).textTheme.bodySmall,
-                            ),
-                            const SizedBox(height: 8),
-                            TextField(
                               controller: _gatewayToken,
                               obscureText: _obscureGatewayToken,
                               autocorrect: false,
                               enableSuggestions: false,
                               decoration: InputDecoration(
-                                labelText: 'Gateway Token',
-                                helperText:
-                                    '对应服务器 GATEWAY_API_TOKEN；完成多账户迁移后可留空',
+                                labelText: 'MCP Token',
+                                helperText: '对应服务端 MCP_API_TOKEN',
                                 suffixIcon: IconButton(
                                   tooltip: _obscureGatewayToken
                                       ? '显示 Token'
@@ -1195,44 +1385,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                               ),
                               onChanged: controller.setGatewayToken,
                             ),
-                            const SizedBox(height: 12),
-                            TextField(
-                              controller: _gatewayTaskModel,
-                              autocorrect: false,
-                              enableSuggestions: false,
-                              decoration: const InputDecoration(
-                                labelText: '长任务模型覆盖（可选）',
-                                helperText: '只影响长文档任务；留空使用服务器默认模型',
-                              ),
-                              onChanged: (v) => controller.setGatewayConfig(
-                                s.gateway.copyWith(taskModel: v),
-                              ),
-                            ),
-                            const SizedBox(height: 8),
                             ListTile(
                               contentPadding: EdgeInsets.zero,
-                              title: const Text('长任务状态同步间隔'),
-                              subtitle: Slider(
-                                value: s.gateway.taskPollSeconds.toDouble(),
-                                min: GatewayConfig.minTaskPollSeconds
-                                    .toDouble(),
-                                max: GatewayConfig.maxTaskPollSeconds
-                                    .toDouble(),
-                                divisions:
-                                    GatewayConfig.maxTaskPollSeconds -
-                                    GatewayConfig.minTaskPollSeconds,
-                                label: '${s.gateway.taskPollSeconds}s',
-                                onChanged: (v) => controller.setGatewayConfig(
-                                  s.gateway.copyWith(
-                                    taskPollSeconds: v.round(),
-                                  ),
-                                ),
-                              ),
-                              trailing: Text('${s.gateway.taskPollSeconds}s'),
-                            ),
-                            ListTile(
-                              contentPadding: EdgeInsets.zero,
-                              title: const Text('文件处理请求超时'),
+                              title: const Text('MCP 请求超时'),
                               subtitle: Slider(
                                 value: s.gateway.requestTimeoutSeconds
                                     .toDouble(),
@@ -1265,11 +1420,10 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                         strokeWidth: 2,
                                       ),
                                     )
-                                  : const Icon(
-                                      Icons.cloud_done_outlined,
-                                      size: 18,
-                                    ),
-                              label: Text(_testingGateway ? '发现中…' : '连接并发现能力'),
+                                  : const Icon(Icons.hub_outlined, size: 18),
+                              label: Text(
+                                _testingGateway ? '发现中…' : '连接并发现 MCP Tools',
+                              ),
                             ),
                             if (_gatewayTestResult != null) ...[
                               const SizedBox(height: 8),
@@ -1300,9 +1454,46 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                       ),
                                       label: Text(_gatewayCapabilityLabel(id)),
                                     ),
+                                  for (final tool in s.modelDocumentMcpTools)
+                                    Chip(
+                                      avatar: const Icon(
+                                        Icons.build_outlined,
+                                        size: 17,
+                                      ),
+                                      label: Text(tool.name),
+                                    ),
                                 ],
                               ),
                             ],
+                            const SizedBox(height: 32),
+                            const _SectionTitle('自定义 MCP 服务器'),
+                            Text(
+                              '像 ChatGPT Connectors 一样添加远程 Streamable HTTP MCP。'
+                              '已启用且发现成功的工具会在对话中提供给模型；工具列表缓存在本地，不会每轮重新发现。',
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                            const SizedBox(height: 12),
+                            for (final server
+                                in s.gateway.customMcpServers) ...[
+                              _CustomMcpServerCard(
+                                server: server,
+                                token: s.customMcpTokens[server.id] ?? '',
+                                discovering:
+                                    _discoveringCustomMcpId == server.id,
+                                onEnabled: (enabled) => ref
+                                    .read(settingsControllerProvider.notifier)
+                                    .setCustomMcpEnabled(server.id, enabled),
+                                onDiscover: () => _discoverCustomMcp(server),
+                                onEdit: () => _editCustomMcp(server),
+                                onDelete: () => _deleteCustomMcp(server),
+                              ),
+                              const SizedBox(height: 12),
+                            ],
+                            OutlinedButton.icon(
+                              onPressed: _addCustomMcp,
+                              icon: const Icon(Icons.add, size: 18),
+                              label: const Text('添加 MCP 服务器'),
+                            ),
                             const SizedBox(height: 32),
                             const _SectionTitle('实验功能'),
                             _StudyModeCard(
@@ -1334,6 +1525,55 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                             const SizedBox(height: 32),
                           ],
                           if (_category == _SettingsCategory.data) ...[
+                            const _SectionTitle('配置迁移'),
+                            Card(
+                              child: Column(
+                                children: [
+                                  ListTile(
+                                    leading: const Icon(
+                                      Icons.file_download_outlined,
+                                    ),
+                                    title: const Text('导出 API 配置'),
+                                    subtitle: const Text(
+                                      '下载为 JSON，可拿到其他设备导入。文件含密钥，不要提交到 Git。',
+                                    ),
+                                    trailing: _exportingSettings
+                                        ? const SizedBox.square(
+                                            dimension: 20,
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                            ),
+                                          )
+                                        : const Icon(Icons.chevron_right),
+                                    onTap: _exportingSettings
+                                        ? null
+                                        : _exportSettings,
+                                  ),
+                                  const Divider(height: 1),
+                                  ListTile(
+                                    leading: const Icon(
+                                      Icons.file_upload_outlined,
+                                    ),
+                                    title: const Text('导入 API 配置'),
+                                    subtitle: const Text(
+                                      '从 JSON 覆盖本机的服务商、密钥、网关和多媒体设置。',
+                                    ),
+                                    trailing: _importingSettings
+                                        ? const SizedBox.square(
+                                            dimension: 20,
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                            ),
+                                          )
+                                        : const Icon(Icons.chevron_right),
+                                    onTap: _importingSettings
+                                        ? null
+                                        : _importSettings,
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(height: 32),
                             const _SectionTitle('长期记忆'),
                             _MemorySettingsCard(
                               enabled: s.memoryEnabled,
@@ -1509,6 +1749,95 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     }
     await ref.read(researchTerminalProvider.notifier).releaseAll();
     await controller.setResearchModeEnabled(false);
+  }
+
+  Future<void> _exportSettings() async {
+    if (_exportingSettings) return;
+    setState(() => _exportingSettings = true);
+    try {
+      final json = await ref
+          .read(settingsControllerProvider.notifier)
+          .exportSettingsJson();
+      final path = await ref
+          .read(settingsBundleFileServiceProvider)
+          .exportJson(json: json, fileName: SettingsBundle.fileName);
+      if (!mounted || path == null) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('已导出配置：$path'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('导出失败：$e'), behavior: SnackBarBehavior.floating),
+      );
+    } finally {
+      if (mounted) setState(() => _exportingSettings = false);
+    }
+  }
+
+  Future<void> _importSettings() async {
+    if (_importingSettings) return;
+    try {
+      final raw = await ref.read(settingsBundleFileServiceProvider).pickJson();
+      if (raw == null || !mounted) return;
+      SettingsBundle.decode(raw);
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          icon: const Icon(Icons.file_upload_outlined),
+          title: const Text('导入 API 配置？'),
+          content: const Text(
+            '会覆盖本机的服务商、API Key、网关、搜索和多媒体配置。'
+            '聊天记录、素材库和长期记忆不会改动。',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('导入'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true || !mounted) return;
+      setState(() => _importingSettings = true);
+      _syncedForProfile = null;
+      _searchKeySynced = false;
+      _gatewaySynced = false;
+      await ref
+          .read(settingsControllerProvider.notifier)
+          .importSettingsJson(raw);
+      final imported = ref.read(settingsControllerProvider).value;
+      if (imported != null) {
+        ref
+            .read(chatControllerProvider.notifier)
+            .applyComposerPrefs(
+              searchMode: imported.searchMode,
+              imageGenMode: imported.imageGenMode,
+              reasoningEffort: imported.reasoningEffort,
+            );
+      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('已导入配置。'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('导入失败：$e'), behavior: SnackBarBehavior.floating),
+      );
+    } finally {
+      if (mounted) setState(() => _importingSettings = false);
+    }
   }
 
   Future<void> _clearCache() async {
@@ -2954,6 +3283,209 @@ class _ProfileSelector extends StatelessWidget {
   }
 }
 
+class _DeepSeekBalanceCard extends ConsumerStatefulWidget {
+  const _DeepSeekBalanceCard({
+    required this.baseUrl,
+    required this.apiKey,
+    required this.model,
+  });
+
+  final String baseUrl;
+  final String apiKey;
+  final String model;
+
+  @override
+  ConsumerState<_DeepSeekBalanceCard> createState() =>
+      _DeepSeekBalanceCardState();
+}
+
+class _DeepSeekBalanceCardState extends ConsumerState<_DeepSeekBalanceCard> {
+  DeepSeekBalance? _balance;
+  Object? _error;
+  var _loading = false;
+  CancelToken? _cancel;
+
+  LlmConfig get _config => LlmConfig(
+    baseUrl: widget.baseUrl,
+    apiKey: widget.apiKey,
+    model: widget.model,
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.apiKey.trim().isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _refresh();
+      });
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _DeepSeekBalanceCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.apiKey != widget.apiKey ||
+        oldWidget.baseUrl != widget.baseUrl) {
+      if (widget.apiKey.trim().isEmpty) {
+        _cancel?.cancel();
+        setState(() {
+          _balance = null;
+          _error = null;
+          _loading = false;
+        });
+        return;
+      }
+      _refresh();
+    }
+  }
+
+  @override
+  void dispose() {
+    _cancel?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _refresh() async {
+    if (widget.apiKey.trim().isEmpty) return;
+    _cancel?.cancel();
+    final cancel = CancelToken();
+    _cancel = cancel;
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final balance = await ref
+          .read(deepSeekBalanceClientProvider)
+          .fetch(config: _config, cancelToken: cancel);
+      if (!mounted || cancel.isCancelled) return;
+      setState(() {
+        _balance = balance;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted || cancel.isCancelled) return;
+      setState(() {
+        _error = e;
+        _loading = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final hasKey = widget.apiKey.trim().isNotEmpty;
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 6, 16, 14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(
+                Icons.account_balance_wallet_outlined,
+                color: scheme.primary,
+              ),
+              title: const Text('DeepSeek 余额'),
+              subtitle: Text(
+                '官方账户可用额度，查询不会消耗 Token',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              trailing: IconButton(
+                tooltip: '刷新余额',
+                onPressed: !hasKey || _loading ? null : _refresh,
+                icon: _loading
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.refresh),
+              ),
+            ),
+            if (!hasKey)
+              Text(
+                '填写 API Key 后可查询官方账户余额。',
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+              )
+            else if (_error != null)
+              Text(
+                '$_error'.replaceFirst('Exception: ', ''),
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: scheme.error),
+              )
+            else if (_balance == null)
+              Text(
+                _loading ? '正在查询余额…' : '点刷新查询官方账户余额。',
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+              )
+            else ...[
+              if (!_balance!.isAvailable)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Text(
+                    '余额不足，暂时无法调用 API。',
+                    style: Theme.of(
+                      context,
+                    ).textTheme.bodySmall?.copyWith(color: scheme.error),
+                  ),
+                ),
+              for (final info in _balance!.infos) ...[
+                if (_balance!.infos.length > 1)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Text(
+                      info.currencyLabel,
+                      style: Theme.of(context).textTheme.labelMedium,
+                    ),
+                  ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _UsageMetric(
+                        label: '可用',
+                        value: info.format(info.totalBalance),
+                      ),
+                    ),
+                    Expanded(
+                      child: _UsageMetric(
+                        label: '充值',
+                        value: info.format(info.toppedUpBalance),
+                      ),
+                    ),
+                    Expanded(
+                      child: _UsageMetric(
+                        label: '赠金',
+                        value: info.format(info.grantedBalance),
+                      ),
+                    ),
+                  ],
+                ),
+                if (info != _balance!.infos.last) const SizedBox(height: 12),
+              ],
+              if (_balance!.infos.isEmpty)
+                Text(
+                  '账户可用，但未返回余额明细。',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _ModelUsageCard extends ConsumerWidget {
   const _ModelUsageCard({required this.endpoint, required this.selectedModel});
 
@@ -3676,6 +4208,46 @@ class _Dot extends StatelessWidget {
         border: Border.all(
           color: Colors.white.withValues(alpha: 0.7),
           width: 0.8,
+        ),
+      ),
+    );
+  }
+}
+
+class _MarkdownStylePreview extends StatelessWidget {
+  const _MarkdownStylePreview({required this.style});
+
+  final MarkdownStylePref style;
+
+  static const _sample = '''
+# 标题
+一段正文，内含 `inline code` 与 [链接](https://example.com)。
+
+| 列 A | 列 B |
+| --- | --- |
+| 1 | 2 |
+''';
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.7)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+        child: StreamingGptMarkdown(
+          _sample,
+          markdownStyle: style,
+          codeBuilder: (context, name, code, closed) => PreviewableCodeBlock(
+            name: name,
+            code: code,
+            closed: closed,
+            markdownStyle: style,
+          ),
         ),
       ),
     );

@@ -7,29 +7,59 @@ import 'package:expert_chat/domain/gateway/gateway_client.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  test('discovers versioned modules through the unified connection', () async {
-    final adapter = _GatewayManifestAdapter();
+  test('discovers document tools from the MCP server', () async {
+    final adapter = _McpAdapter();
     final client = GatewayClient(dio: Dio()..httpClientAdapter = adapter);
     const connection = GatewayConnection(
-      config: GatewayConfig(
-        enabled: true,
-        baseUrl: 'https://gateway.example.com/',
-      ),
+      config: GatewayConfig(enabled: true, baseUrl: 'https://mcp.example.com/'),
       apiToken: 'shared-token',
     );
 
     final manifest = await client.discover(connection: connection);
 
-    expect(adapter.path, '/v1/capabilities');
+    expect(adapter.paths, ['/mcp', '/mcp']);
+    expect(adapter.methods, ['server/discover', 'tools/list']);
     expect(adapter.authorization, 'Bearer shared-token');
+    expect(adapter.protocolVersion, '2026-07-28');
     expect(manifest.protocolVersion, 1);
-    expect(manifest.gatewayVersion, '0.2.0');
-    expect(manifest.supports(GatewayCapabilityIds.longTasks), isTrue);
+    expect(manifest.gatewayVersion, '1.0.0');
+    expect(manifest.supports(GatewayCapabilityIds.longTasks), isFalse);
     expect(manifest.supports(GatewayCapabilityIds.documentEdit), isTrue);
-    expect(manifest.metadata(GatewayCapabilityIds.documentEdit)['formats'], [
-      'xlsx',
-      'docx',
+    expect(
+      manifest.metadata(GatewayCapabilityIds.documentEdit)['transport'],
+      'mcp',
+    );
+    expect(manifest.tools.map((tool) => tool.name), [
+      'begin_upload',
+      'edit_document',
+      'convert_document',
+      'list_documents',
     ]);
+  });
+
+  test('discovered MCP tools survive JSON round trip', () {
+    const config = GatewayConfig(
+      enabled: true,
+      baseUrl: 'https://mcp.example.com',
+      capabilitiesDiscovered: true,
+      capabilities: [GatewayCapabilityIds.documentEdit],
+      mcpTools: [
+        DiscoveredMcpTool(
+          name: 'list_documents',
+          description: '列出文档',
+          inputSchema: {
+            'type': 'object',
+            'properties': {
+              'limit': {'type': 'integer'},
+            },
+          },
+        ),
+      ],
+    );
+    final restored = GatewayConfig.fromJson(config.toJson());
+    expect(restored.mcpTools, hasLength(1));
+    expect(restored.mcpTools.single.name, 'list_documents');
+    expect(restored.mcpTools.single.inputSchema['type'], 'object');
   });
 
   test('discovered capability list is authoritative', () {
@@ -37,7 +67,7 @@ void main() {
       enabled: true,
       baseUrl: 'https://gateway.example.com',
     );
-    expect(undiscovered.supports(GatewayCapabilityIds.documentEdit), isTrue);
+    expect(undiscovered.supports(GatewayCapabilityIds.documentEdit), isFalse);
 
     final discovered = undiscovered.copyWith(
       capabilitiesDiscovered: true,
@@ -72,9 +102,11 @@ void main() {
   });
 }
 
-class _GatewayManifestAdapter implements HttpClientAdapter {
-  String? path;
+class _McpAdapter implements HttpClientAdapter {
+  final paths = <String>[];
+  final methods = <String>[];
   String? authorization;
+  String? protocolVersion;
 
   @override
   Future<ResponseBody> fetch(
@@ -82,20 +114,53 @@ class _GatewayManifestAdapter implements HttpClientAdapter {
     Stream<Uint8List>? requestStream,
     Future<void>? cancelFuture,
   ) async {
-    path = options.uri.path;
+    paths.add(options.uri.path);
     authorization = options.headers['Authorization']?.toString();
-    return ResponseBody.fromString(
-      jsonEncode({
-        'protocol_version': 1,
-        'gateway_version': '0.2.0',
-        'capabilities': {
-          'long_tasks': {'version': 1},
-          'document_edit': {
-            'version': 1,
-            'formats': ['xlsx', 'docx'],
+    protocolVersion = options.headers['MCP-Protocol-Version']?.toString();
+    final body = jsonDecode(await utf8.decodeStream(requestStream!));
+    final method = (body as Map<String, dynamic>)['method'] as String;
+    methods.add(method);
+    final result = switch (method) {
+      'server/discover' => {
+        'resultType': 'complete',
+        'supportedVersions': ['2026-07-28'],
+        'capabilities': {'tools': {}, 'resources': {}},
+        '_meta': {
+          'io.modelcontextprotocol/serverInfo': {
+            'name': 'Expert Chat MCP',
+            'version': '1.0.0',
           },
         },
-      }),
+      },
+      'tools/list' => {
+        'resultType': 'complete',
+        'tools': [
+          {
+            'name': 'begin_upload',
+            'description': '开始上传',
+            'inputSchema': {'type': 'object'},
+          },
+          {
+            'name': 'edit_document',
+            'description': '编辑文档',
+            'inputSchema': {'type': 'object'},
+          },
+          {
+            'name': 'convert_document',
+            'description': '转换文档',
+            'inputSchema': {'type': 'object'},
+          },
+          {
+            'name': 'list_documents',
+            'description': '列出文档',
+            'inputSchema': {'type': 'object'},
+          },
+        ],
+      },
+      _ => throw StateError('unexpected MCP method: $method'),
+    };
+    return ResponseBody.fromString(
+      jsonEncode({'jsonrpc': '2.0', 'id': body['id'], 'result': result}),
       200,
       headers: {
         Headers.contentTypeHeader: ['application/json'],

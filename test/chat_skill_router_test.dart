@@ -12,6 +12,7 @@ class _DripLlm implements LlmProvider {
     required List<LlmRequestMessage> messages,
     List<ToolSpec>? tools,
     bool? thinking,
+    ReasoningEffort? reasoningEffort,
     String? forceToolName,
     CancelToken? cancelToken,
   }) async* {
@@ -36,6 +37,7 @@ class _FakeLlm implements LlmProvider {
     required List<LlmRequestMessage> messages,
     List<ToolSpec>? tools,
     bool? thinking,
+    ReasoningEffort? reasoningEffort,
     String? forceToolName,
     CancelToken? cancelToken,
   }) async* {
@@ -56,6 +58,7 @@ class _ThrowingLlm implements LlmProvider {
     required List<LlmRequestMessage> messages,
     List<ToolSpec>? tools,
     bool? thinking,
+    ReasoningEffort? reasoningEffort,
     String? forceToolName,
     CancelToken? cancelToken,
   }) async* {
@@ -84,6 +87,27 @@ void main() {
     expect(route.skill.id, 'code');
     expect(route.source, ChatSkillSource.prefix);
     expect(llm.calls, 0);
+  });
+
+  test('image-prompt prefix skips the classifier', () async {
+    final llm = _FakeLlm('{"skill":"writing","confidence":0.99}');
+    final route = await router.route(
+      userText: '/生图提示 一只猫坐在窗边',
+      recent: const [],
+      catalog: catalog,
+      llm: llm,
+      config: config,
+    );
+    expect(route.skill.id, 'image-prompt');
+    expect(route.source, ChatSkillSource.prefix);
+    expect(llm.calls, 0);
+  });
+
+  test('classifier prompt lists image-prompt', () {
+    final system = router.classifierSystemPrompt(catalog);
+    expect(system, contains('image-prompt'));
+    expect(system, contains('而不是直接生成图片'));
+    expect(system, isNot(contains('无需自动淡出')));
   });
 
   test('valid classifier json selects that skill', () async {

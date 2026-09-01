@@ -239,7 +239,9 @@ void main() {
   });
 }
 
-class _RecordingRepository implements ConversationRepository {
+class _RecordingRepository
+    with ConversationRepositoryViaLoadAll
+    implements ConversationRepository {
   _RecordingRepository({
     required this.name,
     required this.delegate,
@@ -270,7 +272,9 @@ class _RecordingRepository implements ConversationRepository {
   Future<void> deleteConversation(String id) => delegate.deleteConversation(id);
 }
 
-class _MemoryRepository implements ConversationRepository {
+class _MemoryRepository
+    with ConversationRepositoryViaLoadAll
+    implements ConversationRepository {
   _MemoryRepository({
     required this.name,
     List<Conversation>? conversations,

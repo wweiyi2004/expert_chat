@@ -1,3 +1,4 @@
+import asyncio
 import concurrent.futures
 import importlib
 import json
@@ -567,6 +568,272 @@ class GatewayFlowTest(unittest.TestCase):
                     "WHERE owner_sub = 'user-race'"
                 ).fetchone()["total"]
             self.assertEqual(total, 1)
+
+
+class GatewayMcpTest(unittest.TestCase):
+    def test_document_tools_and_resources_use_standard_mcp(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+            os.environ,
+            {
+                "GATEWAY_DATA_DIR": temp_dir,
+                "GATEWAY_AUTH_MODE": "legacy",
+                "GATEWAY_API_TOKEN": "mcp-test-token",
+                "GATEWAY_MCP_PUBLIC_URL": "http://127.0.0.1:8790/mcp",
+                "GATEWAY_MCP_ALLOWED_HOSTS": "127.0.0.1:*,testserver",
+            },
+        ):
+            import httpx2
+            from mcp import Client
+            from mcp.client.streamable_http import streamable_http_client
+            from mcp.types import BlobResourceContents, ResourceLink
+
+            from gateway.app import main
+
+            importlib.reload(main)
+            headers = {"Authorization": "Bearer mcp-test-token"}
+
+            with TestClient(main.app) as rest:
+                unauthenticated = rest.post("/mcp", json={})
+                self.assertEqual(unauthenticated.status_code, 401)
+                protected_resource = rest.get(
+                    "/.well-known/oauth-protected-resource/mcp"
+                )
+                self.assertEqual(
+                    protected_resource.status_code,
+                    200,
+                    protected_resource.text,
+                )
+                self.assertEqual(
+                    protected_resource.json()["resource"],
+                    "http://127.0.0.1:8790/mcp",
+                )
+
+                uploaded = rest.post(
+                    "/v1/files",
+                    headers=headers,
+                    files={"file": ("draft.txt", "统一前的文本", "text/plain")},
+                )
+                self.assertEqual(uploaded.status_code, 200, uploaded.text)
+                source_id = uploaded.json()["id"]
+                discovered = rest.get("/v1/capabilities", headers=headers)
+                self.assertIn("document_mcp", discovered.json()["capabilities"])
+
+                async def exercise_protocol() -> None:
+                    url = "http://127.0.0.1:8790/mcp"
+                    transport = httpx2.ASGITransport(app=main.app)
+                    async with httpx2.AsyncClient(
+                        transport=transport,
+                        base_url="http://127.0.0.1:8790",
+                        headers=headers,
+                        follow_redirects=True,
+                    ) as http_client:
+                        async with Client(
+                            streamable_http_client(url, http_client=http_client)
+                        ) as client:
+                            tools = await client.list_tools()
+                            tool_names = {tool.name for tool in tools.tools}
+                            self.assertEqual(
+                                tool_names,
+                                {
+                                    "list_documents",
+                                    "inspect_document",
+                                    "edit_document",
+                                    "convert_document",
+                                },
+                            )
+                            edit_schema = next(
+                                tool.input_schema
+                                for tool in tools.tools
+                                if tool.name == "edit_document"
+                            )
+                            serialized_schema = json.dumps(edit_schema)
+                            self.assertIn("set_cells", serialized_schema)
+                            self.assertIn("replace_text", serialized_schema)
+                            self.assertIn("set_shape_text", serialized_schema)
+
+                            templates = await client.list_resource_templates()
+                            template_uris = {
+                                str(item.uri_template) for item in templates.resource_templates
+                            }
+                            self.assertIn(
+                                "expert-chat://documents/{file_id}/text",
+                                template_uris,
+                            )
+                            self.assertIn(
+                                "expert-chat://documents/{file_id}/binary",
+                                template_uris,
+                            )
+
+                            listed = await client.call_tool("list_documents", {})
+                            self.assertFalse(listed.is_error)
+                            listed_ids = {
+                                item["file_id"]
+                                for item in listed.structured_content["documents"]
+                            }
+                            self.assertIn(source_id, listed_ids)
+
+                            inspected = await client.call_tool(
+                                "inspect_document",
+                                {"file_id": source_id},
+                            )
+                            self.assertFalse(inspected.is_error)
+                            self.assertIn(
+                                "统一前的文本",
+                                inspected.structured_content["text"],
+                            )
+
+                            edited = await client.call_tool(
+                                "edit_document",
+                                {
+                                    "file_id": source_id,
+                                    "output_filename": "edited.txt",
+                                    "patch": {
+                                        "schema_version": 1,
+                                        "format": "txt",
+                                        "ops": [
+                                            {
+                                                "op": "replace_text",
+                                                "find": "统一前",
+                                                "replace": "统一后",
+                                            }
+                                        ],
+                                    },
+                                },
+                            )
+                            self.assertFalse(edited.is_error, edited.content)
+                            edited_id = edited.structured_content["file_id"]
+                            self.assertNotEqual(edited_id, source_id)
+                            self.assertEqual(
+                                edited.structured_content["filename"],
+                                "edited.txt",
+                            )
+                            self.assertTrue(
+                                any(isinstance(block, ResourceLink) for block in edited.content)
+                            )
+
+                            text_resource = await client.read_resource(
+                                f"expert-chat://documents/{edited_id}/text"
+                            )
+                            self.assertEqual(text_resource.contents[0].text, "统一后的文本")
+                            binary_resource = await client.read_resource(
+                                f"expert-chat://documents/{edited_id}/binary"
+                            )
+                            self.assertIsInstance(
+                                binary_resource.contents[0],
+                                BlobResourceContents,
+                            )
+
+                            converted = await client.call_tool(
+                                "convert_document",
+                                {
+                                    "file_id": edited_id,
+                                    "target_format": "md",
+                                    "output_filename": "edited.md",
+                                },
+                            )
+                            self.assertFalse(converted.is_error, converted.content)
+                            self.assertEqual(
+                                converted.structured_content["filename"],
+                                "edited.md",
+                            )
+
+                asyncio.run(exercise_protocol())
+
+    def test_mcp_preserves_account_isolation_and_entitlements(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+            os.environ,
+            {
+                "GATEWAY_DATA_DIR": temp_dir,
+                "GATEWAY_AUTH_MODE": "hybrid",
+                "GATEWAY_API_TOKEN": "migration-token",
+                "GATEWAY_MCP_PUBLIC_URL": "http://127.0.0.1:8790/mcp",
+                "GATEWAY_MCP_ALLOWED_HOSTS": "127.0.0.1:*",
+            },
+        ):
+            import httpx2
+            from mcp import Client, MCPError
+            from mcp.client.streamable_http import streamable_http_client
+
+            from gateway.app import main
+            from gateway.app.auth import Principal
+
+            importlib.reload(main)
+
+            def authenticate(value):
+                token = (value or "").removeprefix("Bearer ")
+                if token not in {"user-a", "user-b"}:
+                    raise HTTPException(status_code=401, detail="invalid")
+                return Principal(
+                    subject=token,
+                    display_name=token,
+                    scopes=frozenset(),
+                    auth_kind="oidc",
+                )
+
+            with patch.object(main.AUTH, "authenticate", authenticate), TestClient(
+                main.app
+            ) as rest:
+                source = rest.post(
+                    "/v1/files",
+                    headers={"Authorization": "Bearer user-a"},
+                    files={"file": ("private.txt", "仅用户 A 可见", "text/plain")},
+                )
+                self.assertEqual(source.status_code, 200, source.text)
+                source_id = source.json()["id"]
+                rest.get("/v1/me", headers={"Authorization": "Bearer user-b"})
+                with main._db() as db:
+                    db.execute(
+                        "UPDATE user_entitlements SET permissions_json = ? "
+                        "WHERE owner_sub = ?",
+                        (json.dumps(["gateway.use"]), "user-b"),
+                    )
+
+                async def exercise_denials() -> None:
+                    url = "http://127.0.0.1:8790/mcp"
+                    transport = httpx2.ASGITransport(app=main.app)
+                    async with httpx2.AsyncClient(
+                        transport=transport,
+                        base_url="http://127.0.0.1:8790",
+                        headers={"Authorization": "Bearer user-b"},
+                        follow_redirects=True,
+                    ) as http_client:
+                        async with Client(
+                            streamable_http_client(url, http_client=http_client)
+                        ) as client:
+                            listed = await client.call_tool("list_documents", {})
+                            self.assertEqual(
+                                listed.structured_content["documents"],
+                                [],
+                            )
+                            inspected = await client.call_tool(
+                                "inspect_document",
+                                {"file_id": source_id},
+                            )
+                            self.assertTrue(inspected.is_error)
+                            edited = await client.call_tool(
+                                "edit_document",
+                                {
+                                    "file_id": source_id,
+                                    "patch": {
+                                        "schema_version": 1,
+                                        "format": "txt",
+                                        "ops": [
+                                            {
+                                                "op": "replace_text",
+                                                "find": "A",
+                                                "replace": "B",
+                                            }
+                                        ],
+                                    },
+                                },
+                            )
+                            self.assertTrue(edited.is_error)
+                            with self.assertRaises(MCPError):
+                                await client.read_resource(
+                                    f"expert-chat://documents/{source_id}/text"
+                                )
+
+                asyncio.run(exercise_denials())
 
 
 class StandaloneDocEditAuthTest(unittest.TestCase):

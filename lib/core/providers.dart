@@ -7,6 +7,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../data/character_repository.dart';
 import '../data/conversation_repository.dart';
 import '../data/db/app_database.dart';
+import '../data/library_file_store.dart';
+import '../data/library_repository.dart';
 import '../data/drift_conversation_repository.dart';
 import '../data/memory_file_store.dart';
 import '../data/memory_repository.dart';
@@ -14,6 +16,7 @@ import '../data/study_repository.dart';
 import '../data/world_info_repository.dart';
 import '../domain/context/context_window_manager.dart';
 import '../domain/cache/app_cache_service.dart';
+import '../domain/llm/deepseek_balance_client.dart';
 import '../domain/llm/llm_provider.dart';
 import '../domain/llm/long_task_gateway_client.dart';
 import '../domain/llm/model_usage_store.dart';
@@ -23,6 +26,7 @@ import '../domain/llm/routing_llm_provider.dart';
 import '../domain/llm/usage_tracking_llm_provider.dart';
 import '../domain/media/openai_compatible_media_provider.dart';
 import '../domain/memory/memory_backup_file.dart';
+import '../domain/settings/settings_bundle_file.dart';
 import '../domain/memory/memory_candidate_service.dart';
 import '../domain/memory/memory_transfer.dart';
 import '../domain/speech/mimo_speech_input_service.dart';
@@ -63,6 +67,17 @@ final conversationRepositoryProvider = Provider<ConversationRepository>(
 
 final characterRepositoryProvider = Provider<CharacterRepository>(
   (ref) => CharacterRepository(ref.read(appDatabaseProvider)),
+);
+
+final libraryFileStoreProvider = Provider<LibraryFileStore>(
+  (ref) => LibraryFileStore(),
+);
+
+final libraryRepositoryProvider = Provider<LibraryRepository>(
+  (ref) => LibraryRepository(
+    ref.read(appDatabaseProvider),
+    ref.read(libraryFileStoreProvider),
+  ),
 );
 
 final worldInfoRepositoryProvider = Provider<WorldInfoRepository>(
@@ -127,6 +142,10 @@ final llmProvider = Provider<LlmProvider>((ref) {
   );
 });
 
+final deepSeekBalanceClientProvider = Provider<DeepSeekBalanceClient>(
+  (ref) => DeepSeekBalanceClient(),
+);
+
 final longTaskGatewayClientProvider = Provider<LongTaskGatewayClient>(
   (ref) => LongTaskGatewayClient(),
 );
@@ -147,6 +166,10 @@ final memoryTransferServiceProvider = Provider<MemoryTransferService>(
 
 final memoryBackupFileServiceProvider = Provider<MemoryBackupFileService>(
   (ref) => MemoryBackupFileService(),
+);
+
+final settingsBundleFileServiceProvider = Provider<SettingsBundleFileService>(
+  (ref) => SettingsBundleFileService(),
 );
 
 final mediaApiProvider = Provider<OpenAiCompatibleMediaProvider>(

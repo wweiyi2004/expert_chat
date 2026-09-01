@@ -243,8 +243,8 @@ class MediaApiConfig {
   int get maxImageEditReferences =>
       supportsMultiReferenceImages ? maxGptImageEditReferences : 1;
 
-  /// Upper bound for multi-ref GPT Image edits (matches attachment slot cap).
-  static const maxGptImageEditReferences = 5;
+  /// Upper bound for multi-ref GPT Image edits (`gpt-image-*` allows 16).
+  static const maxGptImageEditReferences = 16;
 
   static bool supportsMultiReferenceImageModel(String model) {
     final m = model.toLowerCase().split('/').last;

@@ -1,6 +1,6 @@
 # 文档编辑契约 v1
 
-App 与 Expert Chat Gateway 的文档能力共用。`schema_version` 必须为 `1`。
+App 与独立 Expert Chat MCP Server 共用此文档补丁协议。`schema_version` 必须为 `1`；旧 Gateway REST 入口仅保留兼容。
 
 ## 1. LLM Tool：`edit_document`
 
@@ -203,5 +203,21 @@ LLM Tool：`convert_document`（`attachment_name?`, `target_format`, `output_fil
 |------|------|
 | Patch 模型与校验 | `lib/domain/document/document_patch.dart` |
 | ToolSpec | `lib/domain/document/document_edit_tools.dart` |
-| 统一 Gateway | `server/gateway/` |
-| 文档能力模块 | `server/doc_edit/` |
+| 独立 MCP Server | `server/mcp_server/` |
+| 文档处理核心 | `server/doc_edit/` |
+
+## 5. MCP Server 映射
+
+独立服务在 `/mcp` 暴露标准 MCP Streamable HTTP。文件上传使用 `begin_upload`、`append_upload`、`finish_upload` 分块 Tools；编辑、转换和 Resource 下载不再依赖 Gateway REST。
+
+| MCP 原语 | 契约 |
+|---|---|
+| `list_documents` Tool | 列出当前 `sub` 拥有的持久文件及 Resource URI |
+| `inspect_document` Tool | 按 `file_id` 返回文本预览、长度和截断状态 |
+| `edit_document` Tool | `file_id + DocumentPatch v1 + output_filename?` |
+| `convert_document` Tool | `file_id + target_format + output_filename?` |
+| Metadata Resource | `expert-chat://documents/{file_id}/metadata` |
+| Text Resource | `expert-chat://documents/{file_id}/text` |
+| Binary Resource | `expert-chat://documents/{file_id}/binary` |
+
+编辑/转换结果是新文件，Tool Result 同时返回结构化 `file_id` 和标准 `resource_link`。MCP 客户端在每个请求携带 `MCP_API_TOKEN`；单用户服务仍在 SQL 边界匹配 `file_id + owner_sub`，避免错误引用其他存储记录。

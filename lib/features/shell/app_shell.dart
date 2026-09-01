@@ -172,7 +172,6 @@ class _AppShellState extends ConsumerState<AppShell>
                       width: _desktopSidebarExpanded ? 288 : 64,
                       child: _desktopSidebarExpanded
                           ? ChatWorkspaceSidebar(
-                              asyncState: ref.watch(chatControllerProvider),
                               onCollapse: () => setState(
                                 () => _desktopSidebarExpanded = false,
                               ),

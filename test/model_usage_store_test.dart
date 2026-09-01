@@ -97,6 +97,7 @@ class _FakeProvider implements LlmProvider {
     required List<LlmRequestMessage> messages,
     List<ToolSpec>? tools,
     bool? thinking,
+    ReasoningEffort? reasoningEffort,
     String? forceToolName,
     dynamic cancelToken,
   }) async* {

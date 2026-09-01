@@ -86,7 +86,7 @@ void main() {
       ),
     );
 
-    expect(find.text('已深度思考 4 秒'), findsOneWidget);
+    expect(find.text('已思考 (用时 4 秒)'), findsOneWidget);
     expect(
       tester
           .widget<AnimatedCrossFade>(find.byType(AnimatedCrossFade))
@@ -94,7 +94,7 @@ void main() {
       CrossFadeState.showFirst,
     );
 
-    await tester.tap(find.text('已深度思考 4 秒'));
+    await tester.tap(find.text('已思考 (用时 4 秒)'));
     await tester.pumpAndSettle();
 
     expect(
@@ -105,6 +105,116 @@ void main() {
     );
     expect(find.text('这里是可展开的思考过程'), findsOneWidget);
     expect(find.text('最终回答'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('tool calls without reasoning still open the thinking chain', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: MessageBubble(
+            message: ChatMessage(
+              role: MessageRole.assistant,
+              content: '已经改好文档。',
+              searchActivities: [
+                SearchActivity(
+                  kind: SearchActivityKind.mcp,
+                  query: 'list_files',
+                  status: SearchActivityStatus.done,
+                  resultCount: 1,
+                ),
+                SearchActivity(
+                  kind: SearchActivityKind.document,
+                  query: 'edit_document',
+                  status: SearchActivityStatus.done,
+                  resultCount: 1,
+                  items: const [SearchActivityItem(title: '报告.docx')],
+                ),
+              ],
+            ),
+            isStreaming: false,
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('已思考'), findsOneWidget);
+    expect(find.text('已调用 list_files'), findsOneWidget);
+    expect(find.text('已编辑文档'), findsOneWidget);
+    expect(find.text('报告.docx'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('thinking process hides the leftover sources bar', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: MessageBubble(
+            message: ChatMessage(
+              role: MessageRole.assistant,
+              content: '华科图书馆是红砖建筑。',
+              citations: const [
+                Citation(
+                  index: 1,
+                  title: '华中科技大学',
+                  url: 'https://www.hust.edu.cn',
+                ),
+              ],
+              searchActivities: [
+                SearchActivity(
+                  kind: SearchActivityKind.search,
+                  query: '华科图书馆',
+                  status: SearchActivityStatus.done,
+                  resultCount: 1,
+                  items: const [
+                    SearchActivityItem(
+                      title: '华中科技大学',
+                      url: 'https://www.hust.edu.cn',
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            isStreaming: false,
+          ),
+        ),
+      ),
+    );
+
+    expect(find.textContaining('来源'), findsNothing);
+    expect(find.text('搜索到 1 个网页'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('legacy citations still show when there is no thinking process', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: MessageBubble(
+            message: ChatMessage(
+              role: MessageRole.assistant,
+              content: '华科图书馆是红砖建筑。',
+              citations: const [
+                Citation(
+                  index: 1,
+                  title: '华中科技大学',
+                  url: 'https://www.hust.edu.cn',
+                ),
+              ],
+            ),
+            isStreaming: false,
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('来源 · 1'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

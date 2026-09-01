@@ -1,0 +1,49 @@
+{
+  "format": "expert-chat-settings",
+  "version": 1,
+  "profiles": [
+    {
+      "name": "DeepSeek",
+      "baseUrl": "https://api.deepseek.com",
+      "chatModel": "deepseek-v4-flash",
+      "reasonerModel": "deepseek-v4-pro",
+      "models": [
+        "deepseek-v4-flash",
+        "deepseek-v4-pro"
+      ],
+      "apiKey": ""
+    }
+  ],
+  "search": {
+    "backend": "duckduckgo",
+    "apiKey": "",
+    "mode": "auto"
+  },
+  "imageGenMode": "auto",
+  "vision": {
+    "baseUrl": "",
+    "model": "",
+    "apiKey": ""
+  },
+  "imageGeneration": {
+    "baseUrl": "",
+    "model": "",
+    "apiKey": ""
+  },
+  "tts": {
+    "baseUrl": "",
+    "model": "",
+    "apiKey": ""
+  },
+  "asr": {
+    "baseUrl": "",
+    "model": "",
+    "apiKey": ""
+  },
+  "gateway": {
+    "enabled": false,
+    "baseUrl": "http://127.0.0.1:8790",
+    "token": ""
+  },
+  "customMcpTokens": {}
+}

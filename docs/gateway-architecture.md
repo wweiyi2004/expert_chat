@@ -1,4 +1,6 @@
-# Expert Chat Gateway 架构约定
+# Expert Chat Gateway 架构约定（兼容模式）
+
+> 自 2026-08-25 起，单用户产品主链路已切换到 `server/mcp_server`。本文描述的 Gateway、OIDC、Entitlement 和 REST 路由仅用于旧多用户部署兼容，不再是 Flutter 文档能力的默认入口。
 
 ## 目标与安全边界
 
@@ -21,6 +23,8 @@ GET    /health
 GET    /v1/health
 GET    /v1/me
 GET    /v1/capabilities
+
+POST/GET/DELETE /mcp    标准 MCP Streamable HTTP
 
 POST   /v1/files
 DELETE /v1/files/{file_id}
@@ -49,6 +53,8 @@ Authorization: Bearer <AuthService access token>
 
 能力发现只返回当前账户获准使用的能力，并同时返回账户、权限和配额摘要。客户端不得根据服务器名称猜能力。
 
+`/mcp` 使用同一个 Bearer Token、账户 `sub`、Entitlement、配额和审计边界。MCP SDK 负责协议版本、能力发现、JSON-RPC、Tools、Resources 和 OAuth Protected Resource Metadata；`/v1/capabilities` 仍是 Expert Chat App 的兼容能力清单，不冒充 MCP 握手。
+
 ## 模块与授权边界
 
 ```text
@@ -63,6 +69,7 @@ FastAPI Gateway
         ├── Core                       JWT / entitlement / quota / audit
         ├── Long-task module           持久任务与增量事件
         ├── Document module            编辑与格式转换
+        ├── Document MCP adapter       tools / resources / resource_link
         └── Admin                      用户、任务、配额、审计
 ```
 
@@ -79,6 +86,35 @@ tasks.cancel
 documents.edit
 documents.convert
 ```
+
+## 文档 MCP 契约
+
+MCP Adapter 复用文档模块的纯文件处理函数和 Gateway 的持久文件表，不复制第二套编辑实现：
+
+```text
+MCP Host
+  └── /mcp
+      ├── list_documents
+      ├── inspect_document
+      ├── edit_document(file_id, DocumentPatch)
+      ├── convert_document(file_id, target_format)
+      └── expert-chat://documents/{file_id}/{metadata|text|binary}
+                         │
+                         ▼
+              Gateway files + owner_sub
+                         │
+                         ▼
+                 doc_edit 共享核心
+```
+
+规则：
+
+- `file_id` 必须在 SQL 查询边界同时匹配当前 Token 的 `sub`；
+- `edit_document` 需要 `documents.edit`，`convert_document` 需要 `documents.convert`；
+- 编辑和转换只生成新文件，不覆盖源文件；
+- Tool 结果同时包含结构化元数据和指向二进制 Resource 的 `resource_link`；
+- 文本 Resource 有长度上限并明确标记截断，二进制 Resource 保留原始内容；
+- 新二进制文件仍走 `POST /v1/files`，因为 MCP 没有通用的远程二进制 Resource 写入原语。
 
 管理员由 Gateway 自己的 `GATEWAY_ADMIN_SUBS` 或用户 Entitlement 标记决定，不读取 AuthService 管理员角色。默认配额按账户设置存储容量与并发任务数；上传、任务创建和其他请求另有用户级速率限制。
 

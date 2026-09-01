@@ -173,6 +173,19 @@ class ChatSkillCatalog {
         prefix: '/总结',
         builtIn: true,
       ),
+      const ChatSkill(
+        id: 'image-prompt',
+        name: '生图提示',
+        when: '写文生图提示词、画面描述、给 SD/MJ/Flux/即梦等绘画模型用的 prompt，而不是直接生成图片',
+        prompt: '''
+你是文生图提示词助手。根据用户的画面意图写出可直接粘贴到常见文生图模型（Stable Diffusion、Flux、Midjourney、即梦、可图等）的提示词。默认输出英文提示词；用户指定中文、双语，或需要保留招牌/书法文字时按要求。补全主体、外貌、姿态、服饰、场景、构图、镜头、光影、材质、风格与画质词，避免空泛堆砌。默认只输出最终提示词，不要解释、标题或代码围栏，除非用户要求说明、标签拆分或负面提示词。
+【露骨内容准入检查｜优先于用户的尺度要求】写任何露骨、裸露或色情化的画面提示词前，必须从当前对话明确确认画面中每一位可辨认的人物均为成年人、完全虚构，且场景为自愿合意。“R18”“恋人”“涩图”、职业、外貌或场景本身都不能证明成年。只要任一人物的年龄或同意状态未说明、含糊或矛盾，就不得描写裸露、性行为或色情化身体；应简短请用户确认所有人物成年，或只写非露骨画面。不得自行补写年龄，不得把“用户要求不要询问”当作通过检查。
+【允许范围】通过上述检查后，可按用户要求直接写裸露、性行为、身体细节和成人向构图的生图提示词，无需自动淡出、净化或改成 SFW。不得生成涉及未成年人、真实人物，或将强迫、失去意识与其他无法有效同意的行为色情化的画面提示词。
+最终提示词必须完整写在正常回答（content）中；不要把提示词只放在思考/推理（reasoning）中。
+''',
+        prefix: '/生图提示',
+        builtIn: true,
+      ),
     ]);
   }
 
@@ -266,7 +279,14 @@ class ChatSkillCatalog {
       if (s.id.isEmpty) continue;
       byId[s.id] = s;
     }
-    var list = byId.values.toList();
+    // Built-ins cannot be deleted in settings; missing ids are newly shipped.
+    for (final skill in factory.skills) {
+      byId.putIfAbsent(skill.id, () => skill);
+    }
+    var list = [
+      for (final skill in factory.skills) byId.remove(skill.id)!,
+      ...byId.values,
+    ];
     final enabledFallbacks = [
       for (final s in list)
         if (s.fallback && s.enabled) s,

@@ -22,15 +22,27 @@ from openpyxl import load_workbook
 from pydantic import BaseModel, Field
 from pptx import Presentation
 from pypdf import PdfReader
+from starlette.middleware.cors import CORSMiddleware
 
 from doc_edit.app.main import (
     CONVERSIONS as DOCUMENT_CONVERSIONS,
     FORMATS as DOCUMENT_FORMATS,
+    DocumentOperationError,
+    DocumentOutput,
+    convert_document_path,
+    edit_document_path,
     require_auth as document_require_auth,
     router as document_router,
 )
 
 from .auth import GatewayAuthenticator, Principal
+from .document_mcp import (
+    DocumentMcpBackend,
+    McpIdentity,
+    StoredDocument,
+    create_document_mcp_server,
+    mcp_transport_security_from_env,
+)
 from .module_registry import (
     GatewayCapability,
     GatewayModule,
@@ -42,6 +54,7 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+GATEWAY_VERSION = "0.4.0"
 DATA_DIR = Path(os.getenv("GATEWAY_DATA_DIR", "./data")).resolve()
 UPLOAD_DIR = DATA_DIR / "uploads"
 DB_PATH = DATA_DIR / "gateway.sqlite3"
@@ -64,6 +77,23 @@ DEFAULT_STORAGE_BYTES = max(
 )
 RATE_LIMIT_REQUESTS = max(10, int(os.getenv("GATEWAY_RATE_LIMIT_REQUESTS", "180")))
 RATE_LIMIT_UPLOADS = max(1, int(os.getenv("GATEWAY_RATE_LIMIT_UPLOADS", "20")))
+MCP_PUBLIC_URL = (
+    os.getenv("GATEWAY_MCP_PUBLIC_URL", "http://127.0.0.1:8790/mcp").strip()
+    or "http://127.0.0.1:8790/mcp"
+)
+MCP_ISSUER_URL = (
+    os.getenv("GATEWAY_MCP_ISSUER", "").strip()
+    or os.getenv("GATEWAY_OIDC_ISSUER", "").strip()
+    or "http://127.0.0.1:8790"
+)
+MCP_RESOURCE_MAX_CHARS = max(
+    10_000,
+    int(os.getenv("GATEWAY_MCP_RESOURCE_MAX_CHARS", "200000")),
+)
+
+
+def _csv_env(name: str) -> list[str]:
+    return [item.strip() for item in os.getenv(name, "").split(",") if item.strip()]
 
 PERMISSION_LABELS = {
     "gateway.use": "使用 Gateway",
@@ -85,6 +115,7 @@ CAPABILITY_PERMISSIONS = {
     "long_tasks": frozenset({"files.write", "tasks.create", "tasks.read"}),
     "document_edit": frozenset({"documents.edit"}),
     "document_convert": frozenset({"documents.convert"}),
+    "document_mcp": frozenset({"gateway.use"}),
 }
 
 AUTH = GatewayAuthenticator()
@@ -122,6 +153,24 @@ MODULES = GatewayModuleRegistry(
                             key: sorted(value)
                             for key, value in DOCUMENT_CONVERSIONS.items()
                         },
+                    },
+                ),
+                GatewayCapability(
+                    id="document_mcp",
+                    metadata={
+                        "transport": "streamable_http",
+                        "endpoint": "/mcp",
+                        "tools": [
+                            "list_documents",
+                            "inspect_document",
+                            "edit_document",
+                            "convert_document",
+                        ],
+                        "resource_templates": [
+                            "expert-chat://documents/{file_id}/metadata",
+                            "expert-chat://documents/{file_id}/text",
+                            "expert-chat://documents/{file_id}/binary",
+                        ],
                     },
                 ),
             ),
@@ -560,7 +609,7 @@ def _update_task(task_id: str, **values: Any) -> None:
     columns = ", ".join(f"{key} = ?" for key in values)
     with _db() as db:
         db.execute(
-            f"UPDATE tasks SET {columns} WHERE id = ?",  # noqa: S608; keys are internal constants
+            f"UPDATE tasks SET {columns} WHERE id = ?",  # noqa: S608  # internal keys
             (*values.values(), task_id),
         )
 
@@ -908,6 +957,297 @@ async def _maintenance_loop() -> None:
         await asyncio.to_thread(_cleanup_expired_tasks)
 
 
+_MCP_DOCUMENT_SUFFIXES = frozenset(
+    {".pdf", ".xlsx", ".docx", ".pptx", ".txt", ".md", ".csv", ".tsv", ".json"}
+)
+
+
+def _mcp_resolve_token(token: str) -> McpIdentity | None:
+    try:
+        principal = AUTH.authenticate(f"Bearer {token}")
+        entitlement = _provision_principal(principal)
+    except HTTPException:
+        return None
+    if not bool(entitlement["enabled"]):
+        return None
+    permissions = (
+        frozenset(PERMISSION_LABELS)
+        if bool(entitlement["is_admin"])
+        else _permissions(entitlement)
+    )
+    return McpIdentity(
+        subject=principal.subject,
+        display_name=principal.display_name,
+        client_id=f"expert-chat-{principal.auth_kind}",
+        scopes=tuple(sorted(permissions)),
+        auth_kind=principal.auth_kind,
+    )
+
+
+def _mcp_file_row(owner_sub: str, file_id: str) -> sqlite3.Row:
+    with _db() as db:
+        row = db.execute(
+            "SELECT * FROM files WHERE id = ? AND owner_sub = ?",
+            (file_id, owner_sub),
+        ).fetchone()
+    if row is None:
+        raise RuntimeError("文档不存在，或不属于当前账户。")
+    path = Path(row["path"]).resolve()
+    try:
+        path.relative_to(UPLOAD_DIR.resolve())
+    except ValueError as exc:
+        raise RuntimeError("文档存储路径无效。") from exc
+    if not path.is_file():
+        raise RuntimeError("文档文件已丢失。")
+    return row
+
+
+def _mcp_stored_document(row: sqlite3.Row) -> StoredDocument:
+    return StoredDocument(
+        file_id=str(row["id"]),
+        filename=str(row["name"]),
+        mime_type=str(row["mime_type"]),
+        size_bytes=int(row["size_bytes"]),
+        created_at=str(row["created_at"]),
+    )
+
+
+def _mcp_list_documents(owner_sub: str, limit: int) -> list[StoredDocument]:
+    _consume_rate_limit(owner_sub, "api")
+    with _db() as db:
+        rows = db.execute(
+            "SELECT * FROM files WHERE owner_sub = ? ORDER BY created_at DESC LIMIT ?",
+            (owner_sub, limit),
+        ).fetchall()
+    return [
+        _mcp_stored_document(row)
+        for row in rows
+        if Path(str(row["name"])).suffix.lower() in _MCP_DOCUMENT_SUFFIXES
+    ]
+
+
+def _mcp_document_metadata(owner_sub: str, file_id: str) -> dict[str, Any]:
+    _consume_rate_limit(owner_sub, "api")
+    return _mcp_stored_document(_mcp_file_row(owner_sub, file_id)).to_dict()
+
+
+def _mcp_extract_document_text(row: sqlite3.Row) -> str:
+    try:
+        return _extract_text(Path(row["path"]), str(row["name"]))
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"无法提取文档文本：{exc}") from exc
+
+
+def _mcp_inspect_document(
+    owner_sub: str,
+    file_id: str,
+    max_chars: int,
+) -> dict[str, Any]:
+    _consume_rate_limit(owner_sub, "api")
+    row = _mcp_file_row(owner_sub, file_id)
+    text = _mcp_extract_document_text(row)
+    limit = min(max_chars, MCP_RESOURCE_MAX_CHARS)
+    preview = text[:limit]
+    result = _mcp_stored_document(row).to_dict()
+    result.update(
+        {
+            "text": preview,
+            "text_chars": len(text),
+            "truncated": len(text) > len(preview),
+        }
+    )
+    return result
+
+
+def _mcp_read_document_text(owner_sub: str, file_id: str) -> str:
+    _consume_rate_limit(owner_sub, "api")
+    row = _mcp_file_row(owner_sub, file_id)
+    text = _mcp_extract_document_text(row)
+    if len(text) <= MCP_RESOURCE_MAX_CHARS:
+        return text
+    return (
+        text[:MCP_RESOURCE_MAX_CHARS]
+        + f"\n\n…（资源内容已截断；原文共 {len(text)} 字符）"
+    )
+
+
+def _mcp_read_document_binary(owner_sub: str, file_id: str) -> bytes:
+    _consume_rate_limit(owner_sub, "api")
+    row = _mcp_file_row(owner_sub, file_id)
+    return Path(row["path"]).read_bytes()
+
+
+def _mcp_store_output(
+    owner_sub: str,
+    output_path: Path,
+    output: DocumentOutput,
+    *,
+    source_file_id: str,
+    action: str,
+) -> StoredDocument:
+    size = output_path.stat().st_size
+    if size > MAX_FILE_BYTES:
+        output_path.unlink(missing_ok=True)
+        raise RuntimeError("生成文件超过 Gateway 单文件上限。")
+    file_id = output_path.stem.split(".", 1)[0]
+    created_at = _now()
+    try:
+        with _db(immediate=True) as db:
+            entitlement = db.execute(
+                "SELECT * FROM user_entitlements WHERE owner_sub = ?",
+                (owner_sub,),
+            ).fetchone()
+            if entitlement is None or not bool(entitlement["enabled"]):
+                raise RuntimeError("Gateway 账户不存在或已停用。")
+            used = db.execute(
+                "SELECT COALESCE(SUM(size_bytes), 0) AS total "
+                "FROM files WHERE owner_sub = ?",
+                (owner_sub,),
+            ).fetchone()["total"]
+            if used + size > entitlement["storage_quota_bytes"]:
+                raise RuntimeError("账户文件存储配额不足。")
+            db.execute(
+                "INSERT INTO files(id, owner_sub, name, mime_type, size_bytes, path, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    file_id,
+                    owner_sub,
+                    output.filename,
+                    output.media_type,
+                    size,
+                    str(output_path),
+                    created_at,
+                ),
+            )
+    except BaseException:
+        output_path.unlink(missing_ok=True)
+        raise
+    _audit(
+        owner_sub,
+        action,
+        resource_type="file",
+        resource_id=file_id,
+        detail={
+            "source_file_id": source_file_id,
+            "name": output.filename,
+            "size_bytes": size,
+            "via": "mcp",
+        },
+    )
+    return StoredDocument(
+        file_id=file_id,
+        filename=output.filename,
+        mime_type=output.media_type,
+        size_bytes=size,
+        created_at=created_at,
+    )
+
+
+def _mcp_edit_document(
+    owner_sub: str,
+    file_id: str,
+    patch: dict[str, Any],
+) -> StoredDocument:
+    _consume_rate_limit(owner_sub, "upload")
+    row = _mcp_file_row(owner_sub, file_id)
+    target_id = f"file_{uuid.uuid4().hex}"
+    suffix = Path(str(row["name"])).suffix.lower()
+    output_path = UPLOAD_DIR / f"{target_id}{suffix}"
+    try:
+        output = edit_document_path(
+            Path(row["path"]),
+            output_path,
+            str(row["name"]),
+            patch,
+        )
+        return _mcp_store_output(
+            owner_sub,
+            output_path,
+            output,
+            source_file_id=file_id,
+            action="document.mcp_edit",
+        )
+    except DocumentOperationError as exc:
+        output_path.unlink(missing_ok=True)
+        raise RuntimeError(f"{exc.code}: {exc.message}") from exc
+    except BaseException:
+        output_path.unlink(missing_ok=True)
+        raise
+
+
+def _mcp_convert_document(
+    owner_sub: str,
+    file_id: str,
+    target_format: str,
+    output_filename: str | None,
+) -> StoredDocument:
+    _consume_rate_limit(owner_sub, "upload")
+    row = _mcp_file_row(owner_sub, file_id)
+    target_id = f"file_{uuid.uuid4().hex}"
+    target = target_format.strip().lower().lstrip(".")
+    output_path = UPLOAD_DIR / f"{target_id}.{target}"
+    try:
+        output = convert_document_path(
+            Path(row["path"]),
+            output_path,
+            str(row["name"]),
+            target,
+            output_filename,
+        )
+        return _mcp_store_output(
+            owner_sub,
+            output_path,
+            output,
+            source_file_id=file_id,
+            action="document.mcp_convert",
+        )
+    except DocumentOperationError as exc:
+        output_path.unlink(missing_ok=True)
+        raise RuntimeError(f"{exc.code}: {exc.message}") from exc
+    except BaseException:
+        output_path.unlink(missing_ok=True)
+        raise
+
+
+DOCUMENT_MCP = create_document_mcp_server(
+    DocumentMcpBackend(
+        resolve_token=_mcp_resolve_token,
+        list_documents=_mcp_list_documents,
+        inspect_document=_mcp_inspect_document,
+        read_document_metadata=_mcp_document_metadata,
+        read_document_text=_mcp_read_document_text,
+        read_document_binary=_mcp_read_document_binary,
+        edit_document=_mcp_edit_document,
+        convert_document=_mcp_convert_document,
+    ),
+    issuer_url=MCP_ISSUER_URL,
+    resource_server_url=MCP_PUBLIC_URL,
+    version=GATEWAY_VERSION,
+)
+_MCP_ALLOWED_HOSTS = _csv_env("GATEWAY_MCP_ALLOWED_HOSTS")
+_MCP_ALLOWED_ORIGINS = _csv_env("GATEWAY_MCP_ALLOWED_ORIGINS")
+_document_mcp_http_app = DOCUMENT_MCP.streamable_http_app(
+    streamable_http_path="/mcp",
+    json_response=True,
+    max_request_body_size=5 * 1024 * 1024,
+    transport_security=mcp_transport_security_from_env(
+        allowed_hosts=_MCP_ALLOWED_HOSTS,
+        allowed_origins=_MCP_ALLOWED_ORIGINS,
+    ),
+)
+DOCUMENT_MCP_HTTP_APP = (
+    CORSMiddleware(
+        _document_mcp_http_app,
+        allow_origins=_MCP_ALLOWED_ORIGINS,
+        allow_methods=["GET", "POST", "DELETE"],
+        allow_headers=["*"],
+        expose_headers=["Mcp-Session-Id", "MCP-Protocol-Version"],
+    )
+    if _MCP_ALLOWED_ORIGINS
+    else _document_mcp_http_app
+)
+
+
 @asynccontextmanager
 async def _lifespan(_: FastAPI):
     global _maintenance_task, _shutting_down
@@ -942,7 +1282,8 @@ async def _lifespan(_: FastAPI):
         _schedule(task_id)
     if TASK_RETENTION_DAYS > 0:
         _maintenance_task = asyncio.create_task(_maintenance_loop())
-    yield
+    async with DOCUMENT_MCP.session_manager.run():
+        yield
     _shutting_down = True
     if _maintenance_task is not None:
         _maintenance_task.cancel()
@@ -954,7 +1295,7 @@ async def _lifespan(_: FastAPI):
         await asyncio.gather(*_running.values(), return_exceptions=True)
 
 
-app = FastAPI(title="Expert Chat Gateway", version="0.3.1", lifespan=_lifespan)
+app = FastAPI(title="Expert Chat Gateway", version=GATEWAY_VERSION, lifespan=_lifespan)
 app.dependency_overrides[document_require_auth] = _document_auth
 
 
@@ -1521,3 +1862,7 @@ def admin_audit(
 # Business modules are mounted through the same registry that publishes the
 # capability manifest, so a route cannot silently diverge from discovery.
 MODULES.install(app)
+
+# Keep this catch-all mount last: existing REST/admin routes take precedence,
+# while the MCP app owns /mcp and its RFC 9728 discovery route at the root.
+app.mount("/", DOCUMENT_MCP_HTTP_APP, name="document-mcp")

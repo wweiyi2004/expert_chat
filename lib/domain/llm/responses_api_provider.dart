@@ -33,6 +33,7 @@ class ResponsesApiProvider implements LlmProvider {
     required List<LlmRequestMessage> messages,
     List<ToolSpec>? tools,
     bool? thinking,
+    ReasoningEffort? reasoningEffort,
     String? forceToolName,
     CancelToken? cancelToken,
   }) async* {
@@ -43,6 +44,7 @@ class ResponsesApiProvider implements LlmProvider {
       messages: messages,
       tools: tools,
       thinking: thinking,
+      reasoningEffort: reasoningEffort,
       forceToolName: forceToolName,
     );
 
@@ -230,6 +232,7 @@ class ResponsesApiProvider implements LlmProvider {
     required List<LlmRequestMessage> messages,
     List<ToolSpec>? tools,
     bool? thinking,
+    ReasoningEffort? reasoningEffort,
     String? forceToolName,
   }) {
     final instructions = StringBuffer();
@@ -309,7 +312,15 @@ class ResponsesApiProvider implements LlmProvider {
     };
 
     if (thinking != null) {
-      body['reasoning'] = {'effort': thinking ? 'high' : 'none'};
+      if (thinking) {
+        final effort = (reasoningEffort ?? ReasoningEffort.high).wire;
+        body['reasoning'] = {'effort': effort};
+        if (config.capabilities.sendThinkingField) {
+          body['output_config'] = {'effort': effort};
+        }
+      } else {
+        body['reasoning'] = {'effort': 'none'};
+      }
     }
 
     final toolList = <Map<String, dynamic>>[];

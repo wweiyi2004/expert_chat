@@ -36,27 +36,173 @@ class DriftConversationRepository implements ConversationRepository {
 
     return [
       for (final c in convoRows)
-        Conversation(
-          id: c.id,
-          title: c.title,
-          updatedAt: c.updatedAt,
-          activeChildren: _decodeActiveChildren(c.activeChildrenJson),
+        _fromConvoRow(
+          c,
           messages: [
             for (final m in byConvo[c.id] ?? const <Message>[]) _toMessage(m),
           ],
+        ),
+    ];
+  }
+
+  @override
+  Future<List<ConversationSummary>> loadSummaries() async {
+    final convoRows = await (_db.select(
+      _db.conversations,
+    )..orderBy([(c) => OrderingTerm.desc(c.updatedAt)])).get();
+    final taskRows = await (_db.select(
+      _db.messages,
+    )..where((m) => m.longTaskJson.isNotNull())).get();
+    final activeIds = <String>{};
+    for (final row in taskRows) {
+      if (_longTaskJsonIsActive(row.longTaskJson)) {
+        activeIds.add(row.convoId);
+      }
+    }
+    return [
+      for (final c in convoRows)
+        ConversationSummary(
+          id: c.id,
+          title: c.title,
+          updatedAt: c.updatedAt,
           mode: ConversationMode.fromWire(c.mode),
           characterId: c.characterId,
           participantIds: _decodeStringList(c.participantIdsJson),
           localCast: _decodeList(c.localCastJson, CharacterCard.fromJson),
           worldInfoIds: _decodeStringList(c.worldInfoIdsJson),
+          customMcpServerIds: _decodeStringList(c.customMcpServerIdsJson),
           outline: c.outline,
           authorNote: c.authorNote,
           plotCursor: c.plotCursor,
           venue: c.venue,
           nextSpeakerIndex: c.nextSpeakerIndex,
           targetTotalChars: c.targetTotalChars,
+          workMode: c.workMode,
+          activeChildren: _decodeActiveChildren(c.activeChildrenJson),
+          hasActiveLongTask: activeIds.contains(c.id),
         ),
     ];
+  }
+
+  @override
+  Future<Conversation> loadConversation(String id) async {
+    final row = await (_db.select(
+      _db.conversations,
+    )..where((c) => c.id.equals(id))).getSingleOrNull();
+    if (row == null) {
+      throw StateError('Conversation $id not found');
+    }
+    final msgRows =
+        await (_db.select(_db.messages)
+              ..where((m) => m.convoId.equals(id))
+              ..orderBy([(m) => OrderingTerm.asc(m.seq)]))
+            .get();
+    return _fromConvoRow(
+      row,
+      messages: [for (final m in msgRows) _toMessage(m)],
+    );
+  }
+
+  @override
+  Future<List<SearchHit>> searchMessages(String query) async {
+    final q = query.trim();
+    if (q.isEmpty) return const [];
+    final escaped = q
+        .toLowerCase()
+        .replaceAll(r'\', r'\\')
+        .replaceAll('%', r'\%')
+        .replaceAll('_', r'\_');
+    final like = '%$escaped%';
+    final titleRows = await (_db.select(
+      _db.conversations,
+    )..where((c) => c.title.lower().like(like, escapeChar: r'\'))).get();
+    final msgRows = await (_db.select(
+      _db.messages,
+    )..where((m) => m.content.lower().like(like, escapeChar: r'\'))).get();
+    final titleById = {for (final c in titleRows) c.id: c.title};
+    if (titleById.isEmpty && msgRows.isEmpty) return const [];
+
+    final missingTitleIds = <String>{
+      for (final m in msgRows)
+        if (!titleById.containsKey(m.convoId)) m.convoId,
+    };
+    if (missingTitleIds.isNotEmpty) {
+      final extra = await (_db.select(
+        _db.conversations,
+      )..where((c) => c.id.isIn(missingTitleIds.toList()))).get();
+      for (final c in extra) {
+        titleById[c.id] = c.title;
+      }
+    }
+
+    final hits = <SearchHit>[];
+    final matchedConvoIds = <String>{};
+    final needle = q.toLowerCase();
+    for (final m in msgRows) {
+      final idx = m.content.toLowerCase().indexOf(needle);
+      if (idx < 0) continue;
+      matchedConvoIds.add(m.convoId);
+      hits.add(
+        SearchHit(
+          convoId: m.convoId,
+          messageId: m.id,
+          snippet: searchSnippetAround(m.content, idx, q.length),
+          title: titleById[m.convoId] ?? '',
+        ),
+      );
+    }
+    for (final c in titleRows) {
+      if (matchedConvoIds.contains(c.id)) continue;
+      hits.add(
+        SearchHit(
+          convoId: c.id,
+          messageId: '',
+          snippet: c.title,
+          title: c.title,
+        ),
+      );
+    }
+    return hits;
+  }
+
+  Conversation _fromConvoRow(
+    dynamic c, {
+    required List<ChatMessage> messages,
+    bool messagesLoaded = true,
+  }) => Conversation(
+    id: c.id as String,
+    title: c.title as String,
+    updatedAt: c.updatedAt as DateTime,
+    activeChildren: _decodeActiveChildren(c.activeChildrenJson as String?),
+    messages: messages,
+    mode: ConversationMode.fromWire(c.mode as String),
+    characterId: c.characterId as String?,
+    participantIds: _decodeStringList(c.participantIdsJson as String?),
+    localCast: _decodeList(c.localCastJson as String?, CharacterCard.fromJson),
+    worldInfoIds: _decodeStringList(c.worldInfoIdsJson as String?),
+    customMcpServerIds: _decodeStringList(c.customMcpServerIdsJson as String?),
+    outline: c.outline as String,
+    authorNote: c.authorNote as String,
+    plotCursor: c.plotCursor as int,
+    venue: c.venue as String,
+    nextSpeakerIndex: c.nextSpeakerIndex as int,
+    targetTotalChars: c.targetTotalChars as int,
+    workMode: c.workMode as bool,
+    messagesLoaded: messagesLoaded,
+  );
+
+  bool _longTaskJsonIsActive(String? raw) {
+    if (raw == null || raw.isEmpty) return false;
+    try {
+      final map = jsonDecode(raw) as Map<String, dynamic>;
+      final status = map['status'] as String?;
+      return status == 'preparing' ||
+          status == 'uploading' ||
+          status == 'queued' ||
+          status == 'running';
+    } catch (_) {
+      return false;
+    }
   }
 
   Map<String, String> _decodeActiveChildren(String? raw) {
@@ -116,6 +262,9 @@ class DriftConversationRepository implements ConversationRepository {
     final worldInfoIdsJson = convo.worldInfoIds.isEmpty
         ? null
         : jsonEncode(convo.worldInfoIds);
+    final customMcpServerIdsJson = convo.customMcpServerIds.isEmpty
+        ? null
+        : jsonEncode(convo.customMcpServerIds);
     final participantIdsJson = convo.participantIds.isEmpty
         ? null
         : jsonEncode(convo.participantIds);
@@ -126,13 +275,15 @@ class DriftConversationRepository implements ConversationRepository {
       _db.conversations,
     )..where((c) => c.id.equals(convo.id))).getSingleOrNull();
 
-    if (storedConvo == null ||
+    final headerChanged =
+        storedConvo == null ||
         storedConvo.title != convo.title ||
         !_matchesStoredTimestamp(storedConvo.updatedAt, convo.updatedAt) ||
         storedConvo.activeChildrenJson != activeChildrenJson ||
         storedConvo.mode != convo.mode.wire ||
         storedConvo.characterId != convo.characterId ||
         storedConvo.worldInfoIdsJson != worldInfoIdsJson ||
+        storedConvo.customMcpServerIdsJson != customMcpServerIdsJson ||
         storedConvo.participantIdsJson != participantIdsJson ||
         storedConvo.localCastJson != localCastJson ||
         storedConvo.outline != convo.outline ||
@@ -140,7 +291,9 @@ class DriftConversationRepository implements ConversationRepository {
         storedConvo.plotCursor != convo.plotCursor ||
         storedConvo.venue != convo.venue ||
         storedConvo.nextSpeakerIndex != convo.nextSpeakerIndex ||
-        storedConvo.targetTotalChars != convo.targetTotalChars) {
+        storedConvo.targetTotalChars != convo.targetTotalChars ||
+        storedConvo.workMode != convo.workMode;
+    if (headerChanged) {
       await _db
           .into(_db.conversations)
           .insertOnConflictUpdate(
@@ -152,6 +305,7 @@ class DriftConversationRepository implements ConversationRepository {
               mode: Value(convo.mode.wire),
               characterId: Value(convo.characterId),
               worldInfoIdsJson: Value(worldInfoIdsJson),
+              customMcpServerIdsJson: Value(customMcpServerIdsJson),
               participantIdsJson: Value(participantIdsJson),
               localCastJson: Value(localCastJson),
               outline: Value(convo.outline),
@@ -160,9 +314,11 @@ class DriftConversationRepository implements ConversationRepository {
               venue: Value(convo.venue),
               nextSpeakerIndex: Value(convo.nextSpeakerIndex),
               targetTotalChars: Value(convo.targetTotalChars),
+              workMode: Value(convo.workMode),
             ),
           );
     }
+    if (!convo.messagesLoaded) return;
 
     final storedMessages = await (_db.select(
       _db.messages,
@@ -237,13 +393,14 @@ class DriftConversationRepository implements ConversationRepository {
       value.millisecondsSinceEpoch ~/ Duration.millisecondsPerSecond;
 
   /// Returns conversations whose title or any message content matches [query]
-  /// (case-insensitive LIKE). Empty query returns everything.
+  /// (case-insensitive LIKE). Empty query returns nothing — it must not
+  /// decode the full archive.
   ///
   /// Only matching conversation rows (+ their messages) are loaded — not the
   /// full archive via [loadAll].
   Future<List<Conversation>> search(String query) async {
     final q = query.trim();
-    if (q.isEmpty) return loadAll();
+    if (q.isEmpty) return const [];
     // Escape LIKE wildcards so user input is matched literally — searching
     // "100%" must not match every row via the wildcard.
     final escaped = q
@@ -298,12 +455,14 @@ class DriftConversationRepository implements ConversationRepository {
           participantIds: _decodeStringList(c.participantIdsJson),
           localCast: _decodeList(c.localCastJson, CharacterCard.fromJson),
           worldInfoIds: _decodeStringList(c.worldInfoIdsJson),
+          customMcpServerIds: _decodeStringList(c.customMcpServerIdsJson),
           outline: c.outline,
           authorNote: c.authorNote,
           plotCursor: c.plotCursor,
           venue: c.venue,
           nextSpeakerIndex: c.nextSpeakerIndex,
           targetTotalChars: c.targetTotalChars,
+          workMode: c.workMode,
         ),
     ];
   }

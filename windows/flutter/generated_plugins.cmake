@@ -6,6 +6,7 @@ list(APPEND FLUTTER_PLUGIN_LIST
   desktop_webview_window
   flutter_secure_storage_windows
   just_audio_windows
+  pasteboard
   record_windows
   share_plus
   speech_to_text_windows

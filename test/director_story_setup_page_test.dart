@@ -67,6 +67,7 @@ class _ScriptedLlmProvider implements LlmProvider {
     required List<LlmRequestMessage> messages,
     List<ToolSpec>? tools,
     bool? thinking,
+    ReasoningEffort? reasoningEffort,
     String? forceToolName,
     CancelToken? cancelToken,
   }) async* {
@@ -80,7 +81,9 @@ class _ScriptedLlmProvider implements LlmProvider {
   }
 }
 
-class _MemoryConversationRepository implements ConversationRepository {
+class _MemoryConversationRepository
+    with ConversationRepositoryViaLoadAll
+    implements ConversationRepository {
   final List<Conversation> conversations = [];
   Object? saveError;
   int saveCalls = 0;

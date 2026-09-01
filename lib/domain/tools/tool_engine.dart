@@ -73,6 +73,8 @@ class ToolEngine {
     description:
         '搜索互联网以获取实时或事实性信息。传入简洁的搜索关键词（非完整对话），'
         '返回相关网页的标题、链接与正文摘要。'
+        '在需要实时/最新信息、你不确定的事实，或生图前核实真实事物外观时使用。'
+        '常识、闲聊、上下文里已有的内容不要搜。'
         '关键词应自包含：把对话中的指代替换成具体名称，时效性问题补上年份。'
         '一次调用只搜一个主题；涉及多个独立主题时分多次调用。',
     parameters: {
@@ -120,18 +122,19 @@ class ToolEngine {
     name: 'generate_image',
     description:
         '生成一张配图并显示在本轮回复中。每轮对话最多成功一次。'
+        '仅当用户明确要求画图/配图/生成图片，或配图能明显帮助理解时调用；'
+        '不要给普通文字回答配装饰图。'
+        '画真实存在、你不确定外观的事物时，先 web_search 再根据搜索结果写 prompt。'
         '有角色卡时：只画该角色的安全立绘/半身像（外貌来自角色设定），不要画色情或露骨场景；'
         '可用 brief_hint 补充表情或姿势（须 SFW）。'
         '无角色卡时：用 prompt 写完整文生图提示词（须 SFW，禁止色情内容）。'
-        '用户可能在写成人向文字，但生图提示词必须干净、可公开。'
-        '不要为了装饰每句回复都画图；仅当配图能明显帮助理解或用户明确要图时调用。',
+        '用户可能在写成人向文字，但生图提示词必须干净、可公开。',
     parameters: {
       'type': 'object',
       'properties': {
         'prompt': {
           'type': 'string',
-          'description':
-              '无角色卡时的文生图提示词（英文更佳，须 SFW）。有角色卡时可省略。',
+          'description': '无角色卡时的文生图提示词（英文更佳，须 SFW）。有角色卡时可省略。',
         },
         'brief_hint': {
           'type': 'string',
@@ -263,6 +266,10 @@ class ToolEngine {
       activity.copyWith(
         status: SearchActivityStatus.done,
         resultCount: citations.length,
+        items: [
+          for (final citation in citations)
+            SearchActivityItem(title: citation.title, url: citation.url),
+        ],
       ),
     );
     if (citations.isEmpty) {
@@ -374,7 +381,16 @@ class ToolEngine {
         ),
       );
       onActivity?.call(
-        activity.copyWith(status: SearchActivityStatus.done, resultCount: 1),
+        activity.copyWith(
+          status: SearchActivityStatus.done,
+          resultCount: 1,
+          items: [
+            SearchActivityItem(
+              title: page.title.isEmpty ? url : page.title,
+              url: url,
+            ),
+          ],
+        ),
       );
       index++;
     }
@@ -460,12 +476,8 @@ class _SearchCacheKey {
   }
 
   @override
-  int get hashCode => Object.hash(
-    query,
-    maxResults,
-    startIndex,
-    Object.hashAll(excludeUrls),
-  );
+  int get hashCode =>
+      Object.hash(query, maxResults, startIndex, Object.hashAll(excludeUrls));
 }
 
 class _SearchCacheEntry {

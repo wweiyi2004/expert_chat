@@ -29,6 +29,7 @@ class RoutingLlmProvider implements LlmProvider {
     required List<LlmRequestMessage> messages,
     List<ToolSpec>? tools,
     bool? thinking,
+    ReasoningEffort? reasoningEffort,
     String? forceToolName,
     CancelToken? cancelToken,
   }) async* {
@@ -43,6 +44,7 @@ class RoutingLlmProvider implements LlmProvider {
             messages: resolved,
             tools: tools,
             thinking: thinking,
+            reasoningEffort: reasoningEffort,
             forceToolName: forceToolName,
             cancelToken: cancelToken,
           )
@@ -51,6 +53,7 @@ class RoutingLlmProvider implements LlmProvider {
             messages: resolved,
             tools: tools,
             thinking: thinking,
+            reasoningEffort: reasoningEffort,
             forceToolName: forceToolName,
             cancelToken: cancelToken,
           );

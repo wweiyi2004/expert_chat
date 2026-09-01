@@ -15,9 +15,12 @@ import 'package:share_plus/share_plus.dart';
 import '../../core/mode_style.dart';
 import '../../core/providers.dart';
 import '../../core/workspace_layout.dart';
+import '../../data/conversation_repository.dart';
+import '../../data/library_models.dart';
 import '../../data/models.dart';
 import '../../data/story_models.dart';
 import '../../data/ui_prefs.dart';
+import '../../domain/clipboard/clipboard_media.dart';
 import '../../domain/chat/conversation_outline.dart';
 import '../../domain/context/context_window_manager.dart';
 import '../../domain/export/conversation_export.dart';
@@ -46,8 +49,213 @@ import 'jump_to_message.dart';
 import 'widgets/attachment_chip.dart';
 import 'widgets/conversation_outline_panel.dart';
 import 'widgets/image_pick_confirm_bar.dart';
+import 'widgets/library_picker_sheet.dart';
 import 'widgets/message_bubble.dart';
 import 'widgets/recent_photo_sheet.dart';
+
+class _FileIngestSource {
+  const _FileIngestSource({
+    required this.name,
+    this.extension,
+    this.path,
+    this.bytes,
+    this.reportedSize,
+    this.stream,
+  });
+
+  final String name;
+  final String? extension;
+  final String? path;
+  final Uint8List? bytes;
+  final int? reportedSize;
+  final Stream<List<int>>? stream;
+}
+
+/// Page-chrome fields that stay stable while an assistant reply streams.
+/// Message content is subscribed separately by [_ChatPageState._buildMessageList].
+@immutable
+class _ChatScaffoldSlice {
+  const _ChatScaffoldSlice({
+    required this.isLoading,
+    required this.hasError,
+    this.loadError,
+    this.currentId,
+    this.hasCurrent = false,
+    this.isStreaming = false,
+    this.error,
+    this.errorConvoId,
+    this.retryConversationId,
+    this.deepThink = false,
+    this.reasoningEffort = ReasoningEffort.high,
+    this.searchMode = SearchMode.auto,
+    this.imageGenMode = ImageGenMode.auto,
+    this.title = '',
+    this.mode = ConversationMode.chat,
+    this.isStory = false,
+    this.isEnsemble = false,
+    this.isStudy = false,
+    this.hasLocalCast = false,
+    this.hasUserActivity = false,
+    this.plotCursor = 0,
+    this.outline = '',
+    this.authorNote = '',
+    this.venue = '',
+    this.characterId,
+    this.localCastLength = 0,
+    this.worldInfoCount = 0,
+    this.nextSpeakerIndex = 0,
+    this.targetTotalChars = 0,
+    this.customMcpServerIds = '',
+    this.workMode = false,
+    this.conversationIds = '',
+  });
+
+  factory _ChatScaffoldSlice.from(AsyncValue<ChatState> async) {
+    final s = async.value;
+    final current = s?.current;
+    return _ChatScaffoldSlice(
+      isLoading: async.isLoading && !async.hasValue,
+      hasError: async.hasError && !async.hasValue,
+      loadError: async.error,
+      currentId: s?.currentId,
+      hasCurrent: current != null,
+      isStreaming: s?.isStreaming ?? false,
+      error: s?.error,
+      errorConvoId: s?.errorConvoId,
+      retryConversationId: s?.retryOperation?.conversationId,
+      deepThink: s?.deepThink ?? false,
+      reasoningEffort: s?.reasoningEffort ?? ReasoningEffort.high,
+      searchMode: s?.searchMode ?? SearchMode.auto,
+      imageGenMode: s?.imageGenMode ?? ImageGenMode.auto,
+      title: current?.title ?? '',
+      mode: current?.mode ?? ConversationMode.chat,
+      isStory: current?.isStory ?? false,
+      isEnsemble: current?.isEnsemble ?? false,
+      isStudy: current?.isStudy ?? false,
+      hasLocalCast: current?.localCast.isNotEmpty ?? false,
+      hasUserActivity: current?.hasUserActivity ?? false,
+      plotCursor: current?.plotCursor ?? 0,
+      outline: current?.outline ?? '',
+      authorNote: current?.authorNote ?? '',
+      venue: current?.venue ?? '',
+      characterId: current?.characterId,
+      localCastLength: current?.localCast.length ?? 0,
+      worldInfoCount: current?.worldInfoIds.length ?? 0,
+      nextSpeakerIndex: current?.nextSpeakerIndex ?? 0,
+      targetTotalChars: current?.targetTotalChars ?? 0,
+      customMcpServerIds: (current?.customMcpServerIds ?? const []).join(','),
+      workMode: current?.workMode ?? false,
+      conversationIds: [
+        for (final c in s?.conversations ?? const <Conversation>[]) c.id,
+      ].join(','),
+    );
+  }
+
+  final bool isLoading;
+  final bool hasError;
+  final Object? loadError;
+  final String? currentId;
+  final bool hasCurrent;
+  final bool isStreaming;
+  final String? error;
+  final String? errorConvoId;
+  final String? retryConversationId;
+  final bool deepThink;
+  final ReasoningEffort reasoningEffort;
+  final SearchMode searchMode;
+  final ImageGenMode imageGenMode;
+  final String title;
+  final ConversationMode mode;
+  final bool isStory;
+  final bool isEnsemble;
+  final bool isStudy;
+  final bool hasLocalCast;
+  final bool hasUserActivity;
+  final int plotCursor;
+  final String outline;
+  final String authorNote;
+  final String venue;
+  final String? characterId;
+  final int localCastLength;
+  final int worldInfoCount;
+  final int nextSpeakerIndex;
+  final int targetTotalChars;
+  final String customMcpServerIds;
+  final bool workMode;
+  final String conversationIds;
+
+  @override
+  bool operator ==(Object other) =>
+      other is _ChatScaffoldSlice &&
+      isLoading == other.isLoading &&
+      hasError == other.hasError &&
+      loadError == other.loadError &&
+      currentId == other.currentId &&
+      hasCurrent == other.hasCurrent &&
+      isStreaming == other.isStreaming &&
+      error == other.error &&
+      errorConvoId == other.errorConvoId &&
+      retryConversationId == other.retryConversationId &&
+      deepThink == other.deepThink &&
+      reasoningEffort == other.reasoningEffort &&
+      searchMode == other.searchMode &&
+      imageGenMode == other.imageGenMode &&
+      title == other.title &&
+      mode == other.mode &&
+      isStory == other.isStory &&
+      isEnsemble == other.isEnsemble &&
+      isStudy == other.isStudy &&
+      hasLocalCast == other.hasLocalCast &&
+      hasUserActivity == other.hasUserActivity &&
+      plotCursor == other.plotCursor &&
+      outline == other.outline &&
+      authorNote == other.authorNote &&
+      venue == other.venue &&
+      characterId == other.characterId &&
+      localCastLength == other.localCastLength &&
+      worldInfoCount == other.worldInfoCount &&
+      nextSpeakerIndex == other.nextSpeakerIndex &&
+      targetTotalChars == other.targetTotalChars &&
+      customMcpServerIds == other.customMcpServerIds &&
+      workMode == other.workMode &&
+      conversationIds == other.conversationIds;
+
+  @override
+  int get hashCode => Object.hashAll([
+    isLoading,
+    hasError,
+    loadError,
+    currentId,
+    hasCurrent,
+    isStreaming,
+    error,
+    errorConvoId,
+    retryConversationId,
+    deepThink,
+    reasoningEffort,
+    searchMode,
+    imageGenMode,
+    title,
+    mode,
+    isStory,
+    isEnsemble,
+    isStudy,
+    hasLocalCast,
+    hasUserActivity,
+    plotCursor,
+    outline,
+    authorNote,
+    venue,
+    characterId,
+    localCastLength,
+    worldInfoCount,
+    nextSpeakerIndex,
+    targetTotalChars,
+    customMcpServerIds,
+    workMode,
+    conversationIds,
+  ]);
+}
 
 class ChatPage extends ConsumerStatefulWidget {
   const ChatPage({super.key, this.desktopShell = false});
@@ -104,9 +312,22 @@ class _ChatPageState extends ConsumerState<ChatPage>
   // Keep an accidental multi-select from consuming the device's memory,
   // context window, or API request budget. The parser additionally enforces
   // format-specific limits before it extracts content.
-  static const int _maxAttachments = 5;
+  static const int _maxAttachments = 8;
   static const int _maxAttachmentBytes = 10 * 1024 * 1024;
-  static const int _maxTotalAttachmentBytes = 20 * 1024 * 1024;
+  static const int _maxTotalAttachmentBytes = 48 * 1024 * 1024;
+
+  int get _imageRefCap =>
+      ref
+          .read(settingsControllerProvider)
+          .value
+          ?.imageGenerationApi
+          .maxImageEditReferences ??
+      1;
+
+  int _slotCap({required bool forImageGeneration, required bool imagesOnly}) {
+    if (forImageGeneration && imagesOnly) return _imageRefCap;
+    return _maxAttachments;
+  }
 
   /// Whether the view should keep following new content (stick-to-bottom). Set
   /// false the moment the user scrolls up, so streaming output no longer yanks
@@ -662,7 +883,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
     final settings = ref.read(settingsControllerProvider).value;
     if (forceDocumentEdit) {
       if (settings == null || !settings.supportsDocumentEdit) {
-        _showAttachmentNotice('请先配置支持文档编辑能力的 Expert Chat Gateway');
+        _showAttachmentNotice('请先在设置中连接并发现支持文档编辑的 MCP Tools');
         return;
       }
       if (!_attachments.any((a) => a.isEditableDocument)) {
@@ -692,7 +913,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
       _showAttachmentNotice(
         (settings?.supportsLongTasks ?? false)
             ? '长任务只支持文档附件，请移除图片后再发送。'
-            : '请先在设置中启用并配置 Expert Chat Gateway（文件长任务能力）。',
+            : '当前 MCP Server 未提供文件长任务；该能力仅在旧 Gateway 部署中可用。',
       );
       return;
     }
@@ -770,6 +991,60 @@ class _ChatPageState extends ConsumerState<ChatPage>
     forImageGeneration: _imageMode,
   );
 
+  Future<void> _openLibraryPicker() async {
+    if (_picking) return;
+    final forImageGeneration = _imageMode;
+    final imagesOnly = _imageMode;
+    final maxSlots = _slotCap(
+      forImageGeneration: forImageGeneration,
+      imagesOnly: imagesOnly,
+    );
+    final remaining = forImageGeneration && imagesOnly
+        ? (maxSlots - _attachments.where((a) => a.isImage).length).clamp(
+            0,
+            maxSlots,
+          )
+        : _maxAttachments - _attachments.length;
+    if (remaining <= 0) {
+      _showAttachmentNotice(
+        forImageGeneration
+            ? '图生图最多 $maxSlots 张参考图，请先移除部分图片。'
+            : '最多可添加 $_maxAttachments 个附件。',
+      );
+      return;
+    }
+    final picked = await showLibraryPicker(
+      context,
+      repository: ref.read(libraryRepositoryProvider),
+      maxCount: remaining,
+      kind: imagesOnly ? LibraryItemKind.image : null,
+    );
+    if (!mounted || picked == null || picked.isEmpty) return;
+    if (imagesOnly) {
+      _attachImagesDirectly(
+        picked,
+        forImageGeneration: forImageGeneration,
+        maxSlots: remaining,
+      );
+    } else {
+      setState(() => _attachments.addAll(picked.take(remaining)));
+    }
+  }
+
+  Future<void> _rememberInLibrary(Iterable<Attachment> attachments) async {
+    final repo = ref.read(libraryRepositoryProvider);
+    for (final attachment in attachments) {
+      if (!attachment.hasDownloadableBytes) continue;
+      try {
+        await repo.importBytes(
+          name: attachment.name,
+          mimeType: attachment.mimeType,
+          bytes: Uint8List.fromList(base64Decode(attachment.imageBase64!)),
+        );
+      } catch (_) {}
+    }
+  }
+
   Future<void> _pickFiles({
     required bool imagesOnly,
     bool forImageGeneration = false,
@@ -798,11 +1073,10 @@ class _ChatPageState extends ConsumerState<ChatPage>
         return;
       }
       // 图生图：gpt-image-* 可多参考；其它 edits 网关仍 1 张。
-      final maxImageEditRefs =
-          settings?.imageGenerationApi.maxImageEditReferences ?? 1;
-      final maxSlots = forImageGeneration && imagesOnly
-          ? maxImageEditRefs.clamp(1, _maxAttachments)
-          : _maxAttachments;
+      final maxSlots = _slotCap(
+        forImageGeneration: forImageGeneration,
+        imagesOnly: imagesOnly,
+      );
 
       // Mobile: recent album sheet first; desktop / web keep system picker.
       if (imagesOnly && supportsRecentPhotoSheet && mounted) {
@@ -864,26 +1138,206 @@ class _ChatPageState extends ConsumerState<ChatPage>
         return;
       }
 
-      final parser = ref.read(fileParserProvider);
-      final additions = <Attachment>[];
-      var runningTotal = _attachments.fold<int>(
-        0,
-        (total, attachment) => total + attachment.sizeBytes,
+      await _ingestFileSources(
+        [
+          for (final f in result.files)
+            _FileIngestSource(
+              name: f.name,
+              extension: f.extension,
+              path: f.path,
+              reportedSize: f.size,
+              stream: f.readStream,
+            ),
+        ],
+        imagesOnly: imagesOnly,
+        forImageGeneration: forImageGeneration,
+        confirmImages: true,
+        slots: slots,
       );
-      var tooMany = 0;
-      var tooLarge = 0;
-      var overTotal = 0;
-      var unreadable = 0;
-      for (final f in result.files) {
-        if (additions.length >= slots) {
-          tooMany++;
-          continue;
-        }
-        if (f.size > _maxAttachmentBytes) {
-          tooLarge++;
-          continue;
-        }
-        final stream = f.readStream ?? openLocalFileReadStream(f.path);
+    } finally {
+      if (mounted) setState(() => _picking = false);
+    }
+  }
+
+  Future<void> _handleComposerPaste() async {
+    if (_picking || _speechListening) return;
+    final streaming =
+        ref.read(chatControllerProvider).value?.isStreaming ?? false;
+    if (streaming) {
+      await _pasteTextIntoComposer();
+      return;
+    }
+
+    ClipboardMedia media = const ClipboardMedia();
+    try {
+      media = await readClipboardMedia();
+    } catch (_) {}
+    if (!mounted) return;
+    if (!media.hasAttachable) {
+      await _pasteTextIntoComposer();
+      return;
+    }
+
+    final settings = ref.read(settingsControllerProvider).value;
+    final visionOk =
+        settings?.canAttachImages(
+          deepThink: ref.read(chatControllerProvider).value?.deepThink ?? false,
+        ) ??
+        false;
+    final imageGenOk = settings?.imageGenerationConfigured ?? false;
+    final forImageGeneration = _imageMode;
+    if (forImageGeneration && !imageGenOk) {
+      _showAttachmentNotice('请先在设置中配置图片生成 API。');
+      return;
+    }
+
+    final sources = <_FileIngestSource>[
+      for (final path in media.filePaths)
+        _FileIngestSource(
+          name: fileNameFromPath(path),
+          extension: extensionOfName(fileNameFromPath(path)),
+          path: path,
+        ),
+    ];
+    if (sources.isEmpty && media.hasImage) {
+      final identity = clipboardImageIdentity(media.imageBytes!);
+      sources.add(
+        _FileIngestSource(
+          name: identity.name,
+          extension: identity.extension,
+          bytes: media.imageBytes,
+          reportedSize: media.imageBytes!.lengthInBytes,
+        ),
+      );
+    }
+    if (sources.isEmpty) {
+      await _pasteTextIntoComposer();
+      return;
+    }
+
+    final imageExts = _imageExtensions.toSet();
+    final docExts = _documentExtensions.toSet();
+    final allowImages = forImageGeneration || visionOk;
+    final usable = [
+      for (final source in sources)
+        if ((imageExts.contains(source.extension) && allowImages) ||
+            (docExts.contains(source.extension) && !forImageGeneration))
+          source,
+    ];
+    final skippedUnsupported = sources.length - usable.length;
+    if (usable.isEmpty) {
+      if (!allowImages &&
+          sources.every((s) => imageExts.contains(s.extension))) {
+        _showAttachmentNotice(
+          '当前模型不支持看图。请选用视觉模型（如 ${KnownModels.vision}），'
+          '或在设置中配置独立视觉 API。',
+        );
+      } else if (forImageGeneration) {
+        _showAttachmentNotice('生图模式只能粘贴图片作为参考图。');
+      } else {
+        _showAttachmentNotice('剪贴板里没有可附加的文件或图片。');
+      }
+      return;
+    }
+
+    if (_picking) return;
+    setState(() => _picking = true);
+    try {
+      final imagesOnly = usable.every((s) => imageExts.contains(s.extension));
+      await _ingestFileSources(
+        usable,
+        imagesOnly: imagesOnly,
+        forImageGeneration: forImageGeneration,
+        confirmImages: false,
+        extraNotice: skippedUnsupported > 0
+            ? '跳过 $skippedUnsupported 个不支持的文件'
+            : null,
+      );
+    } finally {
+      if (mounted) setState(() => _picking = false);
+    }
+  }
+
+  Future<void> _pasteTextIntoComposer() async {
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    final text = data?.text;
+    if (text == null || text.isEmpty || !mounted) return;
+    _insertTextIntoComposer(text);
+  }
+
+  void _insertTextIntoComposer(String text) {
+    final value = _input.value;
+    final selection = value.selection.isValid
+        ? value.selection
+        : TextSelection.collapsed(offset: value.text.length);
+    final start = selection.start;
+    final end = selection.end;
+    final next = value.text.replaceRange(start, end, text);
+    _input.value = TextEditingValue(
+      text: next,
+      selection: TextSelection.collapsed(offset: start + text.length),
+      composing: TextRange.empty,
+    );
+  }
+
+  Future<void> _ingestFileSources(
+    List<_FileIngestSource> sources, {
+    required bool imagesOnly,
+    bool forImageGeneration = false,
+    bool confirmImages = true,
+    int? slots,
+    String? extraNotice,
+  }) async {
+    if (sources.isEmpty) return;
+    final settings = ref.read(settingsControllerProvider).value;
+    final maxSlots = _slotCap(
+      forImageGeneration: forImageGeneration,
+      imagesOnly: imagesOnly,
+    );
+    final remaining =
+        slots ??
+        (forImageGeneration && imagesOnly
+            ? (maxSlots - _attachments.where((a) => a.isImage).length).clamp(
+                0,
+                maxSlots,
+              )
+            : _maxAttachments - _attachments.length);
+    if (remaining <= 0) {
+      _showAttachmentNotice(
+        forImageGeneration && imagesOnly
+            ? (maxSlots <= 1
+                  ? '图生图每次仅支持 1 张参考图，请先移除当前图片。'
+                  : '图生图最多 $maxSlots 张参考图，请先移除部分图片。')
+            : '最多可添加 $_maxAttachments 个附件。',
+      );
+      return;
+    }
+
+    final parser = ref.read(fileParserProvider);
+    final additions = <Attachment>[];
+    var runningTotal = _attachments.fold<int>(
+      0,
+      (total, attachment) => total + attachment.sizeBytes,
+    );
+    var tooMany = 0;
+    var tooLarge = 0;
+    var overTotal = 0;
+    var unreadable = 0;
+    for (final source in sources) {
+      if (additions.length >= remaining) {
+        tooMany++;
+        continue;
+      }
+      final reported = source.reportedSize ?? 0;
+      if (reported > _maxAttachmentBytes) {
+        tooLarge++;
+        continue;
+      }
+      final Uint8List bytes;
+      if (source.bytes != null) {
+        bytes = source.bytes!;
+      } else {
+        final stream = source.stream ?? openLocalFileReadStream(source.path);
         if (stream == null) {
           unreadable++;
           continue;
@@ -896,7 +1350,6 @@ class _ChatPageState extends ConsumerState<ChatPage>
         final readLimit = remainingTotal < _maxAttachmentBytes
             ? remainingTotal
             : _maxAttachmentBytes;
-        final Uint8List bytes;
         try {
           bytes = await FileParser.readBytesWithLimit(
             stream,
@@ -913,113 +1366,130 @@ class _ChatPageState extends ConsumerState<ChatPage>
           unreadable++;
           continue;
         }
-        // Prefer the actual bytes when a platform picker reports an inaccurate
-        // size (or a provider returns a synthetic file).
-        final sizeBytes = f.size > bytes.lengthInBytes
-            ? f.size
-            : bytes.lengthInBytes;
-        if (sizeBytes > _maxAttachmentBytes) {
-          tooLarge++;
-          continue;
-        }
-        if (runningTotal + sizeBytes > _maxTotalAttachmentBytes) {
-          overTotal++;
-          continue;
-        }
-        final mimeType = _mimeFor(f.extension);
-        final Attachment attachment;
-        final int attachedSize;
-        if (mimeType.startsWith('image/')) {
-          // Pre-scale at pick time on the UI isolate (target-bound decode, no
-          // full-size buffer) so the stored base64 is already ≤1536px: the
-          // img2img send path then needs no decode, and DB rows stay small.
-          final built = await _buildImageAttachment(
-            name: f.name,
-            mimeType: mimeType,
-            sizeBytes: sizeBytes,
-            bytes: bytes,
-          );
-          attachment = built;
-          attachedSize = built.sizeBytes;
-        } else {
-          attachment = await parser.parseAsync(
-            name: f.name,
-            mimeType: mimeType,
-            sizeBytes: sizeBytes,
-            bytes: bytes,
-          );
-          attachedSize = sizeBytes;
-        }
-        if (!mounted) return;
-        additions.add(attachment);
-        runningTotal += attachedSize;
       }
-      final notices = <String>[];
-      if (tooMany > 0) {
-        final cap = forImageGeneration && imagesOnly
-            ? (settings?.imageGenerationApi.maxImageEditReferences ?? 1)
-            : _maxAttachments;
-        notices.add(
-          forImageGeneration && imagesOnly
-              ? '跳过 $tooMany 个（图生图最多 $cap 张参考图）'
-              : '跳过 $tooMany 个（最多 $_maxAttachments 个）',
+      final sizeBytes = reported > bytes.lengthInBytes
+          ? reported
+          : bytes.lengthInBytes;
+      if (sizeBytes > _maxAttachmentBytes) {
+        tooLarge++;
+        continue;
+      }
+      if (runningTotal + sizeBytes > _maxTotalAttachmentBytes) {
+        overTotal++;
+        continue;
+      }
+      final mimeType = _mimeFor(source.extension);
+      final Attachment attachment;
+      final int attachedSize;
+      if (mimeType.startsWith('image/')) {
+        final built = await _buildImageAttachment(
+          name: source.name,
+          mimeType: mimeType,
+          sizeBytes: sizeBytes,
+          bytes: bytes,
         );
+        attachment = built;
+        attachedSize = built.sizeBytes;
+      } else {
+        attachment = await parser.parseAsync(
+          name: source.name,
+          mimeType: mimeType,
+          sizeBytes: sizeBytes,
+          bytes: bytes,
+        );
+        attachedSize = sizeBytes;
       }
-      if (tooLarge > 0) {
-        notices.add('跳过 $tooLarge 个（单个最大 10 MB）');
-      }
-      if (overTotal > 0) notices.add('跳过 $overTotal 个（总计最大 20 MB）');
-      if (unreadable > 0) notices.add('跳过 $unreadable 个（无法读取）');
-
-      if (additions.isNotEmpty && mounted) {
-        if (imagesOnly) {
-          // Image path: confirm strip (scroll + checkbox) before attaching.
-          final usable = [
-            for (final a in additions)
-              if (a.parseError == null && a.hasImageData) a,
-          ];
-          final broken = additions.length - usable.length;
-          if (broken > 0) {
-            notices.add('跳过 $broken 个无效图片');
-          }
-          if (usable.isEmpty) {
-            notices.add('没有可用的图片');
-          } else {
-            setState(() {
-              _pendingImageForGen = forImageGeneration;
-              _pendingImageMaxSlots = slots;
-              _pendingImagePicks = [
-                for (var i = 0; i < usable.length; i++)
-                  PendingImagePick(
-                    attachment: usable[i],
-                    // Pre-check within remaining slots; single-slot = first only.
-                    selected: slots <= 1 ? i == 0 : i < slots,
-                  ),
-              ];
-            });
-          }
-        } else {
-          setState(() {
-            _attachments.addAll(additions);
-            // Local parsing marks a prefix-only attachment as truncated. Route
-            // it to the server-side file path by default, while still letting
-            // the user turn the chip off for a quick ordinary question.
-            if (additions.any((a) => a.truncated) &&
-                (ref
-                        .read(settingsControllerProvider)
-                        .value
-                        ?.supportsLongTasks ??
-                    false)) {
-              _longTaskMode = true;
-            }
-          });
-          notices.insert(0, '已添加 ${additions.length} 个附件');
-        }
-      }
-      if (notices.isNotEmpty) _showAttachmentNotice(notices.join('；'));
-    } finally {
-      if (mounted) setState(() => _picking = false);
+      if (!mounted) return;
+      additions.add(attachment);
+      runningTotal += attachedSize;
     }
+    final notices = <String>[];
+    if (tooMany > 0) {
+      final cap = forImageGeneration && imagesOnly
+          ? (settings?.imageGenerationApi.maxImageEditReferences ?? 1)
+          : _maxAttachments;
+      notices.add(
+        forImageGeneration && imagesOnly
+            ? '跳过 $tooMany 个（图生图最多 $cap 张参考图）'
+            : '跳过 $tooMany 个（最多 $_maxAttachments 个）',
+      );
+    }
+    if (tooLarge > 0) {
+      notices.add('跳过 $tooLarge 个（单个最大 10 MB）');
+    }
+    if (overTotal > 0) notices.add('跳过 $overTotal 个（总计最大 48 MB）');
+    if (unreadable > 0) notices.add('跳过 $unreadable 个（无法读取）');
+    if (extraNotice != null && extraNotice.isNotEmpty) notices.add(extraNotice);
+
+    if (additions.isNotEmpty && mounted) {
+      if (imagesOnly) {
+        final usable = [
+          for (final a in additions)
+            if (a.parseError == null && a.hasImageData) a,
+        ];
+        final broken = additions.length - usable.length;
+        if (broken > 0) {
+          notices.add('跳过 $broken 个无效图片');
+        }
+        if (usable.isEmpty) {
+          notices.add('没有可用的图片');
+        } else if (confirmImages) {
+          setState(() {
+            _pendingImageForGen = forImageGeneration;
+            _pendingImageMaxSlots = remaining;
+            _pendingImagePicks = [
+              for (var i = 0; i < usable.length; i++)
+                PendingImagePick(
+                  attachment: usable[i],
+                  selected: remaining <= 1 ? i == 0 : i < remaining,
+                ),
+            ];
+          });
+        } else {
+          _attachImagesDirectly(
+            usable,
+            forImageGeneration: forImageGeneration,
+            maxSlots: remaining,
+          );
+        }
+      } else {
+        setState(() {
+          _attachments.addAll(additions);
+          if (additions.any((a) => a.truncated) &&
+              (ref.read(settingsControllerProvider).value?.supportsLongTasks ??
+                  false)) {
+            _longTaskMode = true;
+          }
+        });
+        unawaited(_rememberInLibrary(additions));
+      }
+    }
+    if (notices.isNotEmpty) _showAttachmentNotice(notices.join('；'));
+  }
+
+  void _attachImagesDirectly(
+    List<Attachment> images, {
+    required bool forImageGeneration,
+    required int maxSlots,
+  }) {
+    final take = images.take(maxSlots.clamp(1, 64)).toList();
+    if (take.isEmpty) return;
+    final singleRefReplace =
+        forImageGeneration &&
+        (ref
+                    .read(settingsControllerProvider)
+                    .value
+                    ?.imageGenerationApi
+                    .maxImageEditReferences ??
+                1) <=
+            1;
+    setState(() {
+      if (singleRefReplace) {
+        _attachments.removeWhere((a) => a.isImage);
+      }
+      _attachments.addAll(take);
+    });
+    unawaited(_rememberInLibrary(take));
   }
 
   /// Turn album [AssetEntity]s into the same pending confirm strip as file pick.
@@ -1178,9 +1648,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
       return;
     }
     // [_pendingImageMaxSlots] is remaining capacity computed at pick time.
-    final take = chosen
-        .take(_pendingImageMaxSlots.clamp(1, _maxAttachments))
-        .toList();
+    final take = chosen.take(_pendingImageMaxSlots.clamp(1, 64)).toList();
     final forGen = _pendingImageForGen;
     final singleRefReplace =
         forGen &&
@@ -1199,12 +1667,75 @@ class _ChatPageState extends ConsumerState<ChatPage>
       _pendingImagePicks = null;
       _pendingImageForGen = false;
     });
-    final n = take.length;
-    _showAttachmentNotice(
-      forGen || _imageMode
-          ? (n > 1 ? '已添加 $n 张参考图（图生图）' : '已添加参考图（图生图）')
-          : (n > 1 ? '已添加 $n 张图片' : '已添加图片'),
+    unawaited(_rememberInLibrary(take));
+  }
+
+  Future<void> _openConversationMcpPicker() async {
+    final settings = ref.read(settingsControllerProvider).value;
+    final current = ref.read(chatControllerProvider).value?.current;
+    if (settings == null || current == null) return;
+    final choices = settings.availableMcpServers;
+    if (choices.isEmpty) return;
+    final selected = current.customMcpServerIds.toSet();
+    final result = await showModalBottomSheet<List<String>>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) {
+        var next = {...selected};
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            return SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      '这个对话使用的 MCP',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      '只把勾选的服务器工具交给模型。新对话默认不勾选。',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    const SizedBox(height: 8),
+                    for (final choice in choices)
+                      CheckboxListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: Text(choice.name),
+                        subtitle: Text(
+                          choice.toolsDiscovered ? '已发现工具' : '尚未发现工具，先在设置里连接',
+                        ),
+                        value: next.contains(choice.id),
+                        onChanged: (checked) {
+                          setSheetState(() {
+                            if (checked == true) {
+                              next.add(choice.id);
+                            } else {
+                              next.remove(choice.id);
+                            }
+                          });
+                        },
+                      ),
+                    FilledButton(
+                      onPressed: () => Navigator.pop(sheetContext, [
+                        for (final choice in choices)
+                          if (next.contains(choice.id)) choice.id,
+                      ]),
+                      child: const Text('完成'),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
     );
+    if (result == null || !mounted) return;
+    ref.read(chatControllerProvider.notifier).setCustomMcpServerIds(result);
   }
 
   void _toggleImageMode() {
@@ -1486,13 +2017,16 @@ class _ChatPageState extends ConsumerState<ChatPage>
   }
 
   String? _characterNameFor(Conversation? convo) {
-    if (convo == null || !convo.isStory || convo.characterId == null) {
-      return null;
-    }
+    if (convo == null || !convo.isStory) return null;
+    return _characterNameForId(convo.characterId);
+  }
+
+  String? _characterNameForId(String? characterId) {
+    if (characterId == null) return null;
     final cards = ref.watch(characterCardsProvider).value;
     if (cards == null) return null;
     for (final c in cards) {
-      if (c.id == convo.characterId) return c.name;
+      if (c.id == characterId) return c.name;
     }
     return null;
   }
@@ -1539,9 +2073,10 @@ class _ChatPageState extends ConsumerState<ChatPage>
 
   @override
   Widget build(BuildContext context) {
-    final asyncState = ref.watch(chatControllerProvider);
+    final slice = ref.watch(
+      chatControllerProvider.select(_ChatScaffoldSlice.from),
+    );
     final controller = ref.read(chatControllerProvider.notifier);
-    final current = asyncState.value?.current;
 
     // Auto-scroll as content streams in (only while stuck to the bottom).
     // Switching conversations resumes following and snaps to the latest turn.
@@ -1637,6 +2172,10 @@ class _ChatPageState extends ConsumerState<ChatPage>
             controller.newConversation,
         const SingleActivator(LogicalKeyboardKey.keyN, meta: true):
             controller.newConversation,
+        const SingleActivator(LogicalKeyboardKey.keyV, control: true):
+            _handleComposerPaste,
+        const SingleActivator(LogicalKeyboardKey.keyV, meta: true):
+            _handleComposerPaste,
       },
       child: Focus(
         autofocus: true,
@@ -1647,127 +2186,171 @@ class _ChatPageState extends ConsumerState<ChatPage>
                 constraints.maxWidth >= WorkspaceBreakpoints.dualPane;
             final triplePane =
                 constraints.maxWidth >= WorkspaceBreakpoints.triplePane;
-            final storyLike =
-                current != null && (current.isStory || current.isEnsemble);
+            final storyLike = slice.isStory || slice.isEnsemble;
             final showHistory =
                 ownsWorkspaceSidebar && dualPane && _historyOpen;
             final showTools = triplePane && storyLike && _toolsOpen;
             final showOutline =
-                dualPane && _outlineOpen && current != null && !showTools;
+                dualPane && _outlineOpen && slice.hasCurrent && !showTools;
             final scheme = Theme.of(context).colorScheme;
-            final speakerName = _characterNameFor(current);
-            final mode = current?.mode ?? ConversationMode.chat;
+            final speakerName = _characterNameForId(
+              slice.isStory ? slice.characterId : null,
+            );
+            final mode = slice.mode;
             final modeColor = ModeStyle.color(mode);
-            final titleText = current?.isEnsemble == true
-                ? (current?.title ?? '角色大乱斗')
-                : current?.isStory == true
-                ? (speakerName ?? current?.title ?? '故事')
-                : (current?.title.isNotEmpty == true
-                      ? current!.title
-                      : 'Expert Chat');
-            final beats = current?.outlineBeats ?? const <String>[];
-            final beatProgress = current == null || !current.isStory
+            final titleText = slice.isEnsemble
+                ? (slice.title.isNotEmpty ? slice.title : '角色大乱斗')
+                : slice.isStory
+                ? (speakerName ?? (slice.title.isNotEmpty ? slice.title : '故事'))
+                : (slice.title.isNotEmpty ? slice.title : 'Expert Chat');
+            final beats = parseOutlineBeats(slice.outline);
+            final beatProgress = !slice.hasCurrent || !slice.isStory
                 ? null
                 : beats.isEmpty
                 ? null
-                : '节拍 ${current.plotCursor.clamp(0, beats.length)}/${beats.length}';
+                : '节拍 ${slice.plotCursor.clamp(0, beats.length)}/${beats.length}';
             final settings = ref.watch(settingsControllerProvider).value;
             final contextEnabled = settings?.context.enabled ?? false;
             final canShowMemoryCandidates =
-                current != null &&
-                !storyLike &&
-                current.activePath.any(
-                  (message) => message.role == MessageRole.user,
-                );
+                slice.hasCurrent && !storyLike && slice.hasUserActivity;
             final canExtractMemoryCandidates =
                 canShowMemoryCandidates &&
                 settings?.memoryEnabled == true &&
-                asyncState.value?.isStreaming != true &&
+                !slice.isStreaming &&
                 !_extractingMemoryCandidates;
-            final contextReport = current == null
+            final contextReport = slice.currentId == null
                 ? null
-                : asyncState.value?.contextReports[current.id];
+                : ref.watch(
+                    chatControllerProvider.select(
+                      (async) => async.value?.contextReports,
+                    ),
+                  )?[slice.currentId!];
             final contextInputBudget = settings?.context.inputBudgetTokens ?? 0;
+            final showWorkMode =
+                slice.hasCurrent &&
+                !slice.isStory &&
+                !slice.isEnsemble &&
+                !slice.isStudy;
             return Scaffold(
               appBar: AppBar(
                 titleSpacing: dualPane ? 20 : 8,
-                title: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: 32,
-                      height: 32,
-                      decoration: BoxDecoration(
-                        color: modeColor.withValues(alpha: 0.14),
-                        borderRadius: BorderRadius.circular(11),
-                        border: Border.all(
-                          color: modeColor.withValues(alpha: 0.28),
-                        ),
-                      ),
-                      child: Icon(
-                        ModeStyle.icon(mode, outlined: false),
-                        size: 17,
-                        color: modeColor,
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Flexible(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisSize: MainAxisSize.min,
+                title: LayoutBuilder(
+                  builder: (context, constraints) {
+                    return SizedBox(
+                      width: constraints.maxWidth,
+                      height: constraints.maxHeight.isFinite
+                          ? constraints.maxHeight
+                          : 56,
+                      child: Stack(
+                        alignment: Alignment.center,
                         children: [
-                          Text(titleText, overflow: TextOverflow.ellipsis),
-                          if (current != null && storyLike)
-                            Padding(
-                              padding: const EdgeInsets.only(top: 2),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  _ModePill(
-                                    label: current.localCast.isNotEmpty
-                                        ? '导演故事'
-                                        : ModeStyle.label(mode),
-                                    color: modeColor,
-                                    icon: ModeStyle.icon(mode),
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: Row(
+                              children: [
+                                Container(
+                                  width: 32,
+                                  height: 32,
+                                  decoration: BoxDecoration(
+                                    color: modeColor.withValues(alpha: 0.14),
+                                    borderRadius: BorderRadius.circular(11),
+                                    border: Border.all(
+                                      color: modeColor.withValues(alpha: 0.28),
+                                    ),
                                   ),
-                                  if (beatProgress != null) ...[
-                                    const SizedBox(width: 8),
-                                    Text(
-                                      beatProgress,
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .labelSmall
-                                          ?.copyWith(
-                                            color: scheme.onSurfaceVariant,
+                                  child: Icon(
+                                    ModeStyle.icon(mode, outlined: false),
+                                    size: 17,
+                                    color: modeColor,
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                Flexible(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(
+                                        titleText,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      if (slice.hasCurrent && storyLike)
+                                        Padding(
+                                          padding: const EdgeInsets.only(
+                                            top: 2,
                                           ),
-                                    ),
-                                  ],
-                                  if (storyLike) ...[
-                                    const SizedBox(width: 6),
-                                    GestureDetector(
-                                      onTap: () => _openPlot(
-                                        current,
-                                        canPinTools: triplePane,
-                                      ),
-                                      child: Text(
-                                        '情节',
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .labelSmall
-                                            ?.copyWith(
-                                              color: modeColor,
-                                              fontWeight: FontWeight.w700,
-                                            ),
-                                      ),
-                                    ),
-                                  ],
-                                ],
-                              ),
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              _ModePill(
+                                                label: slice.hasLocalCast
+                                                    ? '导演故事'
+                                                    : ModeStyle.label(mode),
+                                                color: modeColor,
+                                                icon: ModeStyle.icon(mode),
+                                              ),
+                                              if (beatProgress != null) ...[
+                                                const SizedBox(width: 8),
+                                                Text(
+                                                  beatProgress,
+                                                  style: Theme.of(context)
+                                                      .textTheme
+                                                      .labelSmall
+                                                      ?.copyWith(
+                                                        color: scheme
+                                                            .onSurfaceVariant,
+                                                      ),
+                                                ),
+                                              ],
+                                              if (storyLike) ...[
+                                                const SizedBox(width: 6),
+                                                GestureDetector(
+                                                  onTap: () {
+                                                    final convo = ref
+                                                        .read(
+                                                          chatControllerProvider,
+                                                        )
+                                                        .value
+                                                        ?.current;
+                                                    if (convo != null) {
+                                                      _openPlot(
+                                                        convo,
+                                                        canPinTools: triplePane,
+                                                      );
+                                                    }
+                                                  },
+                                                  child: Text(
+                                                    '情节',
+                                                    style: Theme.of(context)
+                                                        .textTheme
+                                                        .labelSmall
+                                                        ?.copyWith(
+                                                          color: modeColor,
+                                                          fontWeight:
+                                                              FontWeight.w700,
+                                                        ),
+                                                  ),
+                                                ),
+                                              ],
+                                            ],
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          if (showWorkMode)
+                            _ComposerWorkModeSwitch(
+                              workMode: slice.workMode,
+                              onChanged: controller.setWorkMode,
                             ),
                         ],
                       ),
-                    ),
-                  ],
+                    );
+                  },
                 ),
                 bottom: PreferredSize(
                   preferredSize: const Size.fromHeight(1),
@@ -1798,7 +2381,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
                       onPressed: () =>
                           setState(() => _historyOpen = !_historyOpen),
                     ),
-                  if (current != null && dualPane)
+                  if (slice.hasCurrent && dualPane)
                     IconButton(
                       tooltip: _outlineOpen ? '隐藏大纲' : '大纲',
                       icon: Icon(
@@ -1887,16 +2470,20 @@ class _ChatPageState extends ConsumerState<ChatPage>
                     tooltip: '更多',
                     icon: const Icon(Icons.more_horiz),
                     onSelected: (v) {
+                      final current = ref
+                          .read(chatControllerProvider)
+                          .value
+                          ?.current;
                       if (v == 'outline') {
                         _toggleOutline(wide: dualPane);
                       } else if (v == 'export') {
-                        _export(current);
+                        unawaited(_export(current));
                       } else if (v == 'memory_candidates' && current != null) {
                         unawaited(_extractMemoryCandidates(current));
                       }
                     },
                     itemBuilder: (_) => [
-                      if (current != null)
+                      if (slice.hasCurrent)
                         const PopupMenuItem(
                           value: 'outline',
                           child: ListTile(
@@ -1938,7 +2525,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
                             subtitle: Text(
                               settings?.memoryEnabled != true
                                   ? '请先在设置中开启长期记忆'
-                                  : asyncState.value?.isStreaming == true
+                                  : slice.isStreaming
                                   ? '当前回复完成后可用'
                                   : '从当前会话提取，确认后才写入',
                             ),
@@ -1949,14 +2536,14 @@ class _ChatPageState extends ConsumerState<ChatPage>
                 ],
               ),
               drawer: ownsWorkspaceSidebar && !dualPane
-                  ? _HistoryDrawer(asyncState: asyncState)
+                  ? const _HistoryDrawer()
                   : null,
               body: Row(
                 children: [
                   if (showHistory) ...[
                     SizedBox(
                       width: _historyWidth,
-                      child: ChatWorkspaceSidebar(asyncState: asyncState),
+                      child: const ChatWorkspaceSidebar(),
                     ),
                     _PaneResizeHandle(
                       onDrag: (dx) {
@@ -1970,16 +2557,15 @@ class _ChatPageState extends ConsumerState<ChatPage>
                     ),
                   ],
                   Expanded(
-                    child: asyncState.when(
-                      loading: () =>
-                          const Center(child: CircularProgressIndicator()),
-                      error: (e, _) => Center(child: Text('出错了：$e')),
-                      data: (state) => _chatColumn(
-                        state,
-                        controller,
-                        canPinTools: triplePane,
-                      ),
-                    ),
+                    child: slice.isLoading
+                        ? const Center(child: CircularProgressIndicator())
+                        : slice.hasError
+                        ? Center(child: Text('出错了：${slice.loadError}'))
+                        : _chatColumn(
+                            slice,
+                            controller,
+                            canPinTools: triplePane,
+                          ),
                   ),
                   if (showOutline) ...[
                     _PaneResizeHandle(
@@ -1994,10 +2580,21 @@ class _ChatPageState extends ConsumerState<ChatPage>
                     ),
                     SizedBox(
                       width: _outlineWidth,
-                      child: ConversationOutlinePanel(
-                        entries: buildConversationOutline(current.activePath),
-                        onJump: _jumpToOutline,
-                        onClose: () => setState(() => _outlineOpen = false),
+                      child: Consumer(
+                        builder: (context, ref, _) {
+                          final path =
+                              ref.watch(
+                                chatControllerProvider.select(
+                                  (async) => async.value?.current?.activePath,
+                                ),
+                              ) ??
+                              const <ChatMessage>[];
+                          return ConversationOutlinePanel(
+                            entries: buildConversationOutline(path),
+                            onJump: _jumpToOutline,
+                            onClose: () => setState(() => _outlineOpen = false),
+                          );
+                        },
                       ),
                     ),
                   ],
@@ -2015,8 +2612,8 @@ class _ChatPageState extends ConsumerState<ChatPage>
                     SizedBox(
                       width: _toolsWidth,
                       child: StoryPanelBody(
-                        key: ValueKey('tools-${current.id}'),
-                        conversationId: current.id,
+                        key: ValueKey('tools-${slice.currentId}'),
+                        conversationId: slice.currentId!,
                         embedded: true,
                         onClose: () => setState(() => _toolsOpen = false),
                       ),
@@ -2032,21 +2629,182 @@ class _ChatPageState extends ConsumerState<ChatPage>
   }
 
   Widget _chatColumn(
-    ChatState state,
+    _ChatScaffoldSlice slice,
     ChatController controller, {
     required bool canPinTools,
   }) {
-    final convo = state.current;
-    final messages = convo?.activePath ?? const <ChatMessage>[];
-    // Whether the in-flight generation (if any) belongs to THIS conversation;
-    // another conversation's stream must not light up bubbles here.
-    final streamingHere = convo != null && state.streamingConvoId == convo.id;
+    final convo = ref.read(chatControllerProvider).value?.current;
     final speakerName = _characterNameFor(convo);
-    final showError = state.errorVisibleFor(convo?.id);
+    final showError =
+        slice.error != null &&
+        (slice.errorConvoId == null || slice.errorConvoId == slice.currentId);
     final needsSetup =
-        showError && state.error != null && state.error!.contains('API Key');
+        showError && slice.error != null && slice.error!.contains('API Key');
     final settings = ref.watch(settingsControllerProvider).value;
     final ui = settings?.ui ?? const UiPrefs();
+    return Column(
+      children: [
+        if (showError && slice.error != null)
+          _ErrorBanner(
+            message: slice.error!,
+            onRetry:
+                slice.isStreaming ||
+                    slice.retryConversationId == null ||
+                    slice.retryConversationId != slice.currentId
+                ? null
+                : () => controller.retryLast(),
+            onOpenSettings: needsSetup
+                ? () => openShellTab(ref, ShellTab.settings)
+                : null,
+          ),
+        if (convo != null && slice.isStory)
+          _StorySessionBar(
+            conversation: convo,
+            characterName: slice.hasLocalCast
+                ? '导演模式 · ${slice.localCastLength} 位角色'
+                : speakerName,
+            onOpenPlot: () => _openPlot(convo, canPinTools: canPinTools),
+            onAdvance: slice.isStreaming ? null : controller.advancePlot,
+            onContinue: slice.isStreaming || !slice.hasLocalCast
+                ? null
+                : controller.continueCurrentScene,
+            onNudgeBack: () => controller.adjustPlotCursor(-1),
+            onNudgeForward: () => controller.adjustPlotCursor(1),
+          ),
+        if (convo != null && slice.isEnsemble)
+          _EnsembleSessionBar(
+            conversation: convo,
+            busy: slice.isStreaming,
+            onNext: slice.isStreaming ? null : controller.ensembleNextTurn,
+            onAuto: slice.isStreaming
+                ? null
+                : () => controller.ensembleAutoPlay(rounds: 6),
+            onOpenPlot: () => _openPlot(convo, canPinTools: canPinTools),
+          ),
+        Expanded(
+          child: Consumer(
+            builder: (context, ref, _) => _buildMessageList(ref, ui),
+          ),
+        ),
+        if (_selecting)
+          _SelectionShareBar(
+            count: _selectedIds.length,
+            onCancel: _exitSelect,
+            onCopy: () {
+              final current = ref.read(chatControllerProvider).value?.current;
+              _copySelectedMarkdown(
+                current?.activePath ?? const <ChatMessage>[],
+                current,
+              );
+            },
+            onShare: () {
+              final current = ref.read(chatControllerProvider).value?.current;
+              _shareSelected(
+                current?.activePath ?? const <ChatMessage>[],
+                current,
+              );
+            },
+          ),
+        if (!_selecting &&
+            _pendingImagePicks != null &&
+            _pendingImagePicks!.isNotEmpty)
+          ImagePickConfirmBar(
+            candidates: _pendingImagePicks!,
+            maxSelectable: _pendingImageMaxSlots.clamp(1, 64),
+            onChanged: () => setState(() {}),
+            onCancel: _cancelPendingImages,
+            onConfirm: _confirmPendingImages,
+          ),
+        if (!_selecting && convo != null && convo.isStudy)
+          StudySessionActions(conversation: convo),
+        if (!_selecting)
+          ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(context).height * 0.55,
+            ),
+            child: CustomScrollView(
+              shrinkWrap: true,
+              slivers: [
+                SliverToBoxAdapter(
+                  child: _Composer(
+                    controller: _input,
+                    isStreaming: slice.isStreaming,
+                    deepThink: slice.deepThink,
+                    reasoningEffort: slice.reasoningEffort,
+                    supportsReasoningEffort:
+                        settings?.config.capabilities.supportsReasoningEffort ??
+                        false,
+                    searchMode: slice.searchMode,
+                    imageGenMode: slice.imageGenMode,
+                    attachments: _attachments,
+                    picking: _picking,
+                    storyLike: slice.isStory || slice.isEnsemble,
+                    isStudy: slice.isStudy,
+                    directorMode: slice.hasLocalCast,
+                    canAttachImages:
+                        settings?.canAttachImages(deepThink: slice.deepThink) ??
+                        false,
+                    imageGenerationConfigured:
+                        settings?.imageGenerationConfigured ?? false,
+                    imageMode:
+                        _imageMode &&
+                        (settings?.imageGenerationConfigured ?? false),
+                    longTaskMode: _longTaskMode,
+                    longTaskAvailable:
+                        (settings?.supportsLongTasks ?? false) &&
+                        attachmentsAreDocuments(_attachments) &&
+                        !_imageMode,
+                    maxImageEditReferences:
+                        settings?.imageGenerationApi.maxImageEditReferences ??
+                        1,
+                    documentEditAvailable:
+                        (settings?.supportsDocumentEdit ?? false) &&
+                        _attachments.any((a) => a.isEditableDocument) &&
+                        !_imageMode,
+                    speechBusy: _speechBusy,
+                    speechListening: _speechListening,
+                    speechUsesCloudAsr: _usingMimoAsr,
+                    onToggleDeepThink: controller.toggleDeepThink,
+                    onReasoningEffortChanged: controller.setReasoningEffort,
+                    mcpAvailable:
+                        (settings?.availableMcpServers.isNotEmpty ?? false) &&
+                        !slice.isStory &&
+                        !slice.isEnsemble &&
+                        !slice.isStudy,
+                    mcpSelectedCount: slice.customMcpServerIds.isEmpty
+                        ? 0
+                        : slice.customMcpServerIds.split(',').length,
+                    onToggleSearch: controller.toggleSearch,
+                    onPickMcpServers: _openConversationMcpPicker,
+                    onToggleImageGenMode: controller.toggleImageGenMode,
+                    onToggleImageMode: _toggleImageMode,
+                    onToggleLongTask: () =>
+                        setState(() => _longTaskMode = !_longTaskMode),
+                    onPickDocuments: _pickDocuments,
+                    onPickImages: _pickImages,
+                    onPickLibrary: _openLibraryPicker,
+                    onPaste: _handleComposerPaste,
+                    onRemoveAttachment: _removeAttachment,
+                    onToggleSpeech: _toggleSpeech,
+                    onSend: () => _send(),
+                    onDocumentEdit: () => _send(forceDocumentEdit: true),
+                    onStop: controller.stop,
+                  ),
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildMessageList(WidgetRef ref, UiPrefs ui) {
+    final state = ref.watch(chatControllerProvider).value;
+    final convo = state?.current;
+    final messages = convo?.activePath ?? const <ChatMessage>[];
+    final streamingHere = convo != null && state?.streamingConvoId == convo.id;
+    final speakerName = _characterNameFor(convo);
+    final settings = ref.watch(settingsControllerProvider).value;
     final memory = settings?.memoryEnabled == true
         ? ref.watch(memoryControllerProvider).value
         : null;
@@ -2058,239 +2816,108 @@ class _ChatPageState extends ConsumerState<ChatPage>
     final densityPad = ui.density == DensityPref.compact
         ? const EdgeInsets.fromLTRB(16, 12, 16, 20)
         : const EdgeInsets.fromLTRB(24, 18, 24, 28);
-    return Column(
+    final controller = ref.read(chatControllerProvider.notifier);
+    if (messages.isEmpty) return const _EmptyState();
+    return Stack(
       children: [
-        if (showError && state.error != null)
-          _ErrorBanner(
-            message: state.error!,
-            onRetry:
-                state.isStreaming ||
-                    state.retryOperation == null ||
-                    state.retryOperation!.conversationId != convo?.id
-                ? null
-                : () => controller.retryLast(),
-            onOpenSettings: needsSetup
-                ? () => openShellTab(ref, ShellTab.settings)
-                : null,
+        Center(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxWidth: contentMax),
+            child: ListView.builder(
+              controller: _scroll,
+              padding: densityPad,
+              itemCount: messages.length,
+              itemBuilder: (context, i) {
+                final m = messages[i];
+                final isLast = i == messages.length - 1;
+                final isLastAssistant =
+                    isLast && m.role == MessageRole.assistant;
+                final (bIdx, bCount) = convo!.branchInfo(m.id);
+                final ttsForMessage = _ttsPlayback.isFor(m.id);
+                return KeyedSubtree(
+                  key: _keyForMessage(m.id),
+                  child: MessageBubble(
+                    key: ValueKey(m.id),
+                    message: m,
+                    isStreaming: streamingHere && isLastAssistant,
+                    speakerName: m.role == MessageRole.assistant
+                        ? (m.speakerName ?? speakerName)
+                        : null,
+                    userLabel: convo.localCast.isNotEmpty ? '导演' : null,
+                    onRegenerate:
+                        (isLastAssistant &&
+                            state?.isStreaming != true &&
+                            !_selecting &&
+                            m.kind != MessageKind.generatedImage &&
+                            m.longTask == null)
+                        ? controller.regenerate
+                        : null,
+                    onCancelLongTask:
+                        m.longTask?.isActive == true && !_selecting
+                        ? () => unawaited(
+                            controller.cancelLongTask(convo.id, m.id),
+                          )
+                        : null,
+                    onRetryLongTask: m.longTask?.canRetry == true && !_selecting
+                        ? () => unawaited(
+                            controller.retryLongTask(convo.id, m.id),
+                          )
+                        : null,
+                    onEdit:
+                        (m.role == MessageRole.user &&
+                            state?.isStreaming != true &&
+                            !_selecting)
+                        ? (text) => controller.editMessage(m.id, text)
+                        : null,
+                    onSpeak:
+                        (m.role == MessageRole.assistant &&
+                            m.content.trim().isNotEmpty &&
+                            !_selecting)
+                        ? () => _toggleTextToSpeech(m, settings)
+                        : null,
+                    isSpeechLoading:
+                        ttsForMessage &&
+                        _ttsPlayback.phase == TextToSpeechPhase.loading,
+                    isSpeaking:
+                        ttsForMessage &&
+                        _ttsPlayback.phase == TextToSpeechPhase.speaking,
+                    onRemember:
+                        settings?.memoryEnabled == true &&
+                            !_selecting &&
+                            state?.isStreaming != true &&
+                            m.content.trim().isNotEmpty
+                        ? () => _rememberMessage(convo, m)
+                        : null,
+                    isRemembered: rememberedMessageIds.contains(m.id),
+                    branchIndex: bIdx,
+                    branchCount: bCount,
+                    onPrevBranch: () => controller.switchBranch(m.id, -1),
+                    onNextBranch: () => controller.switchBranch(m.id, 1),
+                    messageStyle: ui.messageStyle,
+                    markdownStyle: ui.markdownStyle,
+                    liveMarkdown: ui.liveMarkdown,
+                    onThinkingExpandedChanged: isLastAssistant
+                        ? (expanded) {
+                            _thinkingExpanded = expanded;
+                            _reportStreamView();
+                          }
+                        : null,
+                    selectionMode: _selecting,
+                    selected: _selectedIds.contains(m.id),
+                    onToggleSelect: () => _toggleSelect(m.id),
+                    onStartSelect: () => _enterSelect(m.id),
+                  ),
+                );
+              },
+            ),
           ),
-        if (convo != null && convo.isStory)
-          _StorySessionBar(
-            conversation: convo,
-            characterName: convo.localCast.isNotEmpty
-                ? '导演模式 · ${convo.localCast.length} 位角色'
-                : speakerName,
-            onOpenPlot: () => _openPlot(convo, canPinTools: canPinTools),
-            onAdvance: state.isStreaming ? null : controller.advancePlot,
-            onContinue: state.isStreaming || convo.localCast.isEmpty
-                ? null
-                : controller.continueCurrentScene,
-            onNudgeBack: () => controller.adjustPlotCursor(-1),
-            onNudgeForward: () => controller.adjustPlotCursor(1),
-          ),
-        if (convo != null && convo.isEnsemble)
-          _EnsembleSessionBar(
-            conversation: convo,
-            busy: state.isStreaming,
-            onNext: state.isStreaming ? null : controller.ensembleNextTurn,
-            onAuto: state.isStreaming
-                ? null
-                : () => controller.ensembleAutoPlay(rounds: 6),
-            onOpenPlot: () => _openPlot(convo, canPinTools: canPinTools),
-          ),
-        Expanded(
-          child: messages.isEmpty
-              ? const _EmptyState()
-              : Stack(
-                  children: [
-                    Center(
-                      child: ConstrainedBox(
-                        constraints: BoxConstraints(maxWidth: contentMax),
-                        child: ListView.builder(
-                          controller: _scroll,
-                          padding: densityPad,
-                          itemCount: messages.length,
-                          itemBuilder: (context, i) {
-                            final m = messages[i];
-                            final isLast = i == messages.length - 1;
-                            final isLastAssistant =
-                                isLast && m.role == MessageRole.assistant;
-                            final (bIdx, bCount) = convo!.branchInfo(m.id);
-                            final ttsForMessage = _ttsPlayback.isFor(m.id);
-                            return KeyedSubtree(
-                              key: _keyForMessage(m.id),
-                              child: MessageBubble(
-                                // Keyed by message id: bubbles hold local edit
-                                // state that must not leak across messages when
-                                // the list shifts (branch switch, new turns).
-                                key: ValueKey(m.id),
-                                message: m,
-                                isStreaming: streamingHere && isLastAssistant,
-                                speakerName: m.role == MessageRole.assistant
-                                    ? (m.speakerName ?? speakerName)
-                                    : null,
-                                userLabel: convo.localCast.isNotEmpty
-                                    ? '导演'
-                                    : null,
-                                onRegenerate:
-                                    (isLastAssistant &&
-                                        !state.isStreaming &&
-                                        !_selecting &&
-                                        m.kind != MessageKind.generatedImage &&
-                                        m.longTask == null)
-                                    ? controller.regenerate
-                                    : null,
-                                onCancelLongTask:
-                                    m.longTask?.isActive == true && !_selecting
-                                    ? () => unawaited(
-                                        controller.cancelLongTask(
-                                          convo.id,
-                                          m.id,
-                                        ),
-                                      )
-                                    : null,
-                                onRetryLongTask:
-                                    m.longTask?.canRetry == true && !_selecting
-                                    ? () => unawaited(
-                                        controller.retryLongTask(
-                                          convo.id,
-                                          m.id,
-                                        ),
-                                      )
-                                    : null,
-                                onEdit:
-                                    (m.role == MessageRole.user &&
-                                        !state.isStreaming &&
-                                        !_selecting)
-                                    ? (text) =>
-                                          controller.editMessage(m.id, text)
-                                    : null,
-                                onSpeak:
-                                    (m.role == MessageRole.assistant &&
-                                        m.content.trim().isNotEmpty &&
-                                        !_selecting)
-                                    ? () => _toggleTextToSpeech(m, settings)
-                                    : null,
-                                isSpeechLoading:
-                                    ttsForMessage &&
-                                    _ttsPlayback.phase ==
-                                        TextToSpeechPhase.loading,
-                                isSpeaking:
-                                    ttsForMessage &&
-                                    _ttsPlayback.phase ==
-                                        TextToSpeechPhase.speaking,
-                                onRemember:
-                                    settings?.memoryEnabled == true &&
-                                        !_selecting &&
-                                        !state.isStreaming &&
-                                        m.content.trim().isNotEmpty
-                                    ? () => _rememberMessage(convo, m)
-                                    : null,
-                                isRemembered: rememberedMessageIds.contains(
-                                  m.id,
-                                ),
-                                branchIndex: bIdx,
-                                branchCount: bCount,
-                                onPrevBranch: () =>
-                                    controller.switchBranch(m.id, -1),
-                                onNextBranch: () =>
-                                    controller.switchBranch(m.id, 1),
-                                messageStyle: ui.messageStyle,
-                                liveMarkdown: ui.liveMarkdown,
-                                onThinkingExpandedChanged: isLastAssistant
-                                    ? (expanded) {
-                                        _thinkingExpanded = expanded;
-                                        _reportStreamView();
-                                      }
-                                    : null,
-                                selectionMode: _selecting,
-                                selected: _selectedIds.contains(m.id),
-                                onToggleSelect: () => _toggleSelect(m.id),
-                                onStartSelect: () => _enterSelect(m.id),
-                              ),
-                            );
-                          },
-                        ),
-                      ),
-                    ),
-                    // Shown only when the user has scrolled away from the
-                    // bottom; tapping resumes follow + snaps to the latest.
-                    if (!_stick && !_selecting)
-                      Positioned(
-                        left: 0,
-                        right: 0,
-                        bottom: 12,
-                        child: Center(
-                          child: _JumpToBottomButton(onTap: _jumpToBottom),
-                        ),
-                      ),
-                  ],
-                ),
         ),
-        if (_selecting)
-          _SelectionShareBar(
-            count: _selectedIds.length,
-            onCancel: _exitSelect,
-            onCopy: () => _copySelectedMarkdown(messages, convo),
-            onShare: () => _shareSelected(messages, convo),
-          ),
-        if (!_selecting &&
-            _pendingImagePicks != null &&
-            _pendingImagePicks!.isNotEmpty)
-          ImagePickConfirmBar(
-            candidates: _pendingImagePicks!,
-            maxSelectable: _pendingImageMaxSlots.clamp(1, _maxAttachments),
-            onChanged: () => setState(() {}),
-            onCancel: _cancelPendingImages,
-            onConfirm: _confirmPendingImages,
-          ),
-        if (!_selecting && convo != null && convo.isStudy)
-          StudySessionActions(conversation: convo),
-        if (!_selecting)
-          _Composer(
-            controller: _input,
-            isStreaming: state.isStreaming,
-            deepThink: state.deepThink,
-            searchMode: state.searchMode,
-            imageGenMode: state.imageGenMode,
-            isSearching: state.isSearching,
-            isGeneratingImage: state.isGeneratingImage,
-            attachments: _attachments,
-            picking: _picking,
-            storyLike: convo != null && (convo.isStory || convo.isEnsemble),
-            directorMode: convo?.localCast.isNotEmpty ?? false,
-            canAttachImages:
-                settings?.canAttachImages(deepThink: state.deepThink) ?? false,
-            imageGenerationConfigured:
-                settings?.imageGenerationConfigured ?? false,
-            imageMode:
-                _imageMode && (settings?.imageGenerationConfigured ?? false),
-            longTaskMode: _longTaskMode,
-            longTaskAvailable:
-                (settings?.supportsLongTasks ?? false) &&
-                attachmentsAreDocuments(_attachments) &&
-                !_imageMode,
-            maxImageEditReferences:
-                settings?.imageGenerationApi.maxImageEditReferences ?? 1,
-            documentEditAvailable:
-                (settings?.supportsDocumentEdit ?? false) &&
-                _attachments.any((a) => a.isEditableDocument) &&
-                !_imageMode,
-            speechBusy: _speechBusy,
-            speechListening: _speechListening,
-            speechUsesCloudAsr: _usingMimoAsr,
-            onToggleDeepThink: controller.toggleDeepThink,
-            onToggleSearch: controller.toggleSearch,
-            onToggleImageGenMode: controller.toggleImageGenMode,
-            onToggleImageMode: _toggleImageMode,
-            onToggleLongTask: () =>
-                setState(() => _longTaskMode = !_longTaskMode),
-            onPickDocuments: _pickDocuments,
-            onPickImages: _pickImages,
-            onRemoveAttachment: _removeAttachment,
-            onToggleSpeech: _toggleSpeech,
-            onSend: () => _send(),
-            onDocumentEdit: () => _send(forceDocumentEdit: true),
-            onStop: controller.stop,
+        if (!_stick && !_selecting)
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 12,
+            child: Center(child: _JumpToBottomButton(onTap: _jumpToBottom)),
           ),
       ],
     );
@@ -2357,13 +2984,14 @@ class _Composer extends StatefulWidget {
     required this.controller,
     required this.isStreaming,
     required this.deepThink,
+    this.reasoningEffort = ReasoningEffort.high,
+    this.supportsReasoningEffort = false,
     required this.searchMode,
     required this.imageGenMode,
-    required this.isSearching,
-    required this.isGeneratingImage,
     required this.attachments,
     required this.picking,
     required this.storyLike,
+    this.isStudy = false,
     required this.directorMode,
     required this.canAttachImages,
     required this.imageGenerationConfigured,
@@ -2376,12 +3004,18 @@ class _Composer extends StatefulWidget {
     required this.speechListening,
     required this.speechUsesCloudAsr,
     required this.onToggleDeepThink,
+    this.onReasoningEffortChanged,
     required this.onToggleSearch,
+    this.mcpAvailable = false,
+    this.mcpSelectedCount = 0,
+    this.onPickMcpServers,
     required this.onToggleImageGenMode,
     required this.onToggleImageMode,
     required this.onToggleLongTask,
     required this.onPickDocuments,
     required this.onPickImages,
+    required this.onPickLibrary,
+    required this.onPaste,
     required this.onRemoveAttachment,
     required this.onToggleSpeech,
     required this.onSend,
@@ -2392,13 +3026,14 @@ class _Composer extends StatefulWidget {
   final TextEditingController controller;
   final bool isStreaming;
   final bool deepThink;
+  final ReasoningEffort reasoningEffort;
+  final bool supportsReasoningEffort;
   final SearchMode searchMode;
   final ImageGenMode imageGenMode;
-  final bool isSearching;
-  final bool isGeneratingImage;
   final List<Attachment> attachments;
   final bool picking;
   final bool storyLike;
+  final bool isStudy;
   final bool directorMode;
   final bool canAttachImages;
   final bool imageGenerationConfigured;
@@ -2411,12 +3046,18 @@ class _Composer extends StatefulWidget {
   final bool speechListening;
   final bool speechUsesCloudAsr;
   final VoidCallback onToggleDeepThink;
+  final ValueChanged<ReasoningEffort>? onReasoningEffortChanged;
   final VoidCallback onToggleSearch;
+  final bool mcpAvailable;
+  final int mcpSelectedCount;
+  final VoidCallback? onPickMcpServers;
   final VoidCallback onToggleImageGenMode;
   final VoidCallback onToggleImageMode;
   final VoidCallback onToggleLongTask;
   final VoidCallback onPickDocuments;
   final VoidCallback onPickImages;
+  final VoidCallback onPickLibrary;
+  final Future<void> Function() onPaste;
   final ValueChanged<String> onRemoveAttachment;
   final VoidCallback onToggleSpeech;
   final VoidCallback onSend;
@@ -2430,6 +3071,35 @@ class _Composer extends StatefulWidget {
 class _ComposerState extends State<_Composer> {
   /// DeepSeek-style expandable “+” tray for upload / image actions.
   bool _plusOpen = false;
+  late final FocusNode _focusNode;
+
+  @override
+  void initState() {
+    super.initState();
+    _focusNode = FocusNode();
+    HardwareKeyboard.instance.addHandler(_onHardwareKey);
+  }
+
+  @override
+  void dispose() {
+    HardwareKeyboard.instance.removeHandler(_onHardwareKey);
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  bool _onHardwareKey(KeyEvent event) {
+    if (event is! KeyDownEvent) return false;
+    if (!_focusNode.hasFocus) return false;
+    if (widget.controller.value.composing.isValid) return false;
+    if (event.logicalKey != LogicalKeyboardKey.keyV) return false;
+    if (HardwareKeyboard.instance.isAltPressed) return false;
+    if (!HardwareKeyboard.instance.isControlPressed &&
+        !HardwareKeyboard.instance.isMetaPressed) {
+      return false;
+    }
+    widget.onPaste();
+    return true;
+  }
 
   void _togglePlus() {
     if (widget.isStreaming) return;
@@ -2500,8 +3170,8 @@ class _ComposerState extends State<_Composer> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // Model-capability chips stay on the top strip; media actions
-                  // live in the expandable “+” tray (DeepSeek-style).
+                  // 深度思考 stays on the strip. 对话|任务 lives in the top bar.
+                  // Tool toggles live in the “+” tray.
                   SingleChildScrollView(
                     scrollDirection: Axis.horizontal,
                     child: Row(
@@ -2512,56 +3182,12 @@ class _ComposerState extends State<_Composer> {
                           label: '深度思考',
                           onSelected: widget.onToggleDeepThink,
                         ),
-                        const SizedBox(width: 6),
-                        _ComposerToggleChip(
-                          selected: widget.searchMode != SearchMode.off,
-                          icon: Icons.travel_explore,
-                          label: widget.searchMode.composerLabel,
-                          onSelected: widget.onToggleSearch,
-                        ),
-                        if (widget.longTaskAvailable) ...[
-                          const SizedBox(width: 6),
-                          _ComposerToggleChip(
-                            selected: widget.longTaskMode,
-                            icon: Icons.schedule_send_outlined,
-                            label: '长任务',
-                            onSelected: widget.onToggleLongTask,
-                          ),
-                        ],
-                        if (widget.imageGenerationConfigured &&
-                            !widget.imageMode) ...[
-                          const SizedBox(width: 6),
-                          _ComposerToggleChip(
-                            selected: widget.imageGenMode != ImageGenMode.off,
-                            icon: Icons.image_outlined,
-                            label: widget.imageGenMode.composerLabel,
-                            onSelected: widget.onToggleImageGenMode,
-                          ),
-                        ],
-                        if (widget.imageMode) ...[
-                          const SizedBox(width: 6),
-                          _ComposerToggleChip(
-                            selected: true,
-                            icon: Icons.auto_awesome,
-                            label: '生图中',
-                            onSelected: widget.onToggleImageMode,
-                          ),
-                        ],
-                        if (widget.isSearching)
-                          const _ComposerStatusChip(label: '正在联网搜索'),
-                        if (widget.isGeneratingImage)
-                          const _ComposerStatusChip(label: '正在生成图片'),
-                        if (widget.documentEditAvailable &&
-                            !widget.isStreaming) ...[
-                          const SizedBox(width: 6),
-                          _ComposerToggleChip(
-                            selected: false,
-                            icon: Icons.edit_document,
-                            label: '改文档',
-                            onSelected: () {
-                              _closePlus();
-                              widget.onDocumentEdit?.call();
-                            },
+                        if (widget.deepThink &&
+                            widget.supportsReasoningEffort) ...[
+                          const SizedBox(width: 8),
+                          _ReasoningEffortSlider(
+                            value: widget.reasoningEffort,
+                            onChanged: widget.onReasoningEffortChanged,
                           ),
                         ],
                       ],
@@ -2579,16 +3205,50 @@ class _ComposerState extends State<_Composer> {
                                   widget.imageGenerationConfigured,
                               imageMode: widget.imageMode,
                               picking: widget.picking,
+                              searchMode: widget.searchMode,
+                              imageGenMode: widget.imageGenMode,
+                              mcpAvailable: widget.mcpAvailable,
+                              mcpSelectedCount: widget.mcpSelectedCount,
+                              documentEditAvailable:
+                                  widget.documentEditAvailable &&
+                                  !widget.isStreaming,
+                              longTaskAvailable: widget.longTaskAvailable,
+                              longTaskMode: widget.longTaskMode,
                               onPickDocuments: canAttachDocs
                                   ? () => _runAndClose(widget.onPickDocuments)
                                   : null,
                               onPickImages: canAttachImages
                                   ? () => _runAndClose(widget.onPickImages)
                                   : null,
+                              onPickLibrary: widget.isStreaming
+                                  ? null
+                                  : () => _runAndClose(widget.onPickLibrary),
                               onToggleImageMode: widget.isStreaming
                                   ? null
                                   : () =>
                                         _runAndClose(widget.onToggleImageMode),
+                              onToggleSearch: widget.storyLike || widget.isStudy
+                                  ? null
+                                  : widget.onToggleSearch,
+                              onToggleImageGenMode:
+                                  widget.imageGenerationConfigured &&
+                                      !widget.imageMode &&
+                                      !widget.isStudy
+                                  ? widget.onToggleImageGenMode
+                                  : null,
+                              onPickMcpServers: widget.mcpAvailable
+                                  ? () => _runAndClose(
+                                      widget.onPickMcpServers ?? () {},
+                                    )
+                                  : null,
+                              onDocumentEdit: widget.documentEditAvailable
+                                  ? () => _runAndClose(
+                                      widget.onDocumentEdit ?? () {},
+                                    )
+                                  : null,
+                              onToggleLongTask: widget.longTaskAvailable
+                                  ? widget.onToggleLongTask
+                                  : null,
                             ),
                           )
                         : const SizedBox.shrink(),
@@ -2705,11 +3365,34 @@ class _ComposerState extends State<_Composer> {
                                 child: TextField(
                                   key: const ValueKey('composer-text-field'),
                                   controller: widget.controller,
+                                  focusNode: _focusNode,
                                   minLines: 1,
                                   maxLines: compactHeight ? 3 : 5,
                                   readOnly: widget.speechListening,
                                   textInputAction: TextInputAction.newline,
                                   onTap: _closePlus,
+                                  contextMenuBuilder: (context, editableTextState) {
+                                    return AdaptiveTextSelectionToolbar.buttonItems(
+                                      anchors:
+                                          editableTextState.contextMenuAnchors,
+                                      buttonItems: [
+                                        for (final item
+                                            in editableTextState
+                                                .contextMenuButtonItems)
+                                          if (item.type ==
+                                              ContextMenuButtonType.paste)
+                                            ContextMenuButtonItem(
+                                              onPressed: () {
+                                                editableTextState.hideToolbar();
+                                                widget.onPaste();
+                                              },
+                                              type: ContextMenuButtonType.paste,
+                                            )
+                                          else
+                                            item,
+                                      ],
+                                    );
+                                  },
                                   decoration: InputDecoration(
                                     hintText: hint,
                                     filled: false,
@@ -2892,21 +3575,114 @@ class _ComposerPlusTray extends StatelessWidget {
     required this.imageGenerationConfigured,
     required this.imageMode,
     required this.picking,
+    required this.searchMode,
+    required this.imageGenMode,
+    required this.mcpAvailable,
+    required this.mcpSelectedCount,
+    required this.documentEditAvailable,
+    required this.longTaskAvailable,
+    required this.longTaskMode,
     required this.onPickDocuments,
     required this.onPickImages,
+    required this.onPickLibrary,
     required this.onToggleImageMode,
+    required this.onToggleSearch,
+    required this.onToggleImageGenMode,
+    required this.onPickMcpServers,
+    required this.onDocumentEdit,
+    required this.onToggleLongTask,
   });
 
   final bool imageGenerationConfigured;
   final bool imageMode;
   final bool picking;
+  final SearchMode searchMode;
+  final ImageGenMode imageGenMode;
+  final bool mcpAvailable;
+  final int mcpSelectedCount;
+  final bool documentEditAvailable;
+  final bool longTaskAvailable;
+  final bool longTaskMode;
   final VoidCallback? onPickDocuments;
   final VoidCallback? onPickImages;
+  final VoidCallback? onPickLibrary;
   final VoidCallback? onToggleImageMode;
+  final VoidCallback? onToggleSearch;
+  final VoidCallback? onToggleImageGenMode;
+  final VoidCallback? onPickMcpServers;
+  final VoidCallback? onDocumentEdit;
+  final VoidCallback? onToggleLongTask;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final actions = <Widget>[
+      _ComposerPlusAction(
+        icon: Icons.folder_open_outlined,
+        label: '上传文件',
+        enabled: onPickDocuments != null && !picking,
+        onTap: onPickDocuments,
+      ),
+      _ComposerPlusAction(
+        icon: Icons.image_outlined,
+        label: imageMode ? '参考图' : '上传图片',
+        enabled: onPickImages != null && !picking,
+        onTap: onPickImages,
+      ),
+      _ComposerPlusAction(
+        icon: Icons.photo_library_outlined,
+        label: '素材库',
+        enabled: onPickLibrary != null && !picking,
+        onTap: onPickLibrary,
+      ),
+      if (imageGenerationConfigured)
+        _ComposerPlusAction(
+          icon: imageMode ? Icons.auto_awesome : Icons.auto_awesome_outlined,
+          label: imageMode ? '退出生图' : '图片生成',
+          selected: imageMode,
+          enabled: onToggleImageMode != null,
+          onTap: onToggleImageMode,
+        ),
+      if (onToggleSearch != null)
+        _ComposerPlusAction(
+          icon: Icons.travel_explore,
+          label: searchMode.composerLabel,
+          selected: searchMode != SearchMode.off,
+          enabled: true,
+          onTap: onToggleSearch,
+        ),
+      if (onToggleImageGenMode != null)
+        _ComposerPlusAction(
+          icon: Icons.image_outlined,
+          label: imageGenMode.composerLabel,
+          selected: imageGenMode != ImageGenMode.off,
+          enabled: true,
+          onTap: onToggleImageGenMode,
+        ),
+      if (mcpAvailable)
+        _ComposerPlusAction(
+          icon: Icons.extension_outlined,
+          label: mcpSelectedCount == 0 ? 'MCP' : 'MCP·$mcpSelectedCount',
+          selected: mcpSelectedCount > 0,
+          enabled: onPickMcpServers != null,
+          onTap: onPickMcpServers,
+        ),
+      if (documentEditAvailable)
+        _ComposerPlusAction(
+          icon: Icons.edit_document,
+          label: '改文档',
+          enabled: onDocumentEdit != null,
+          onTap: onDocumentEdit,
+        ),
+      if (longTaskAvailable)
+        _ComposerPlusAction(
+          icon: Icons.schedule_send_outlined,
+          label: '长任务',
+          selected: longTaskMode,
+          enabled: onToggleLongTask != null,
+          onTap: onToggleLongTask,
+        ),
+    ];
     return Container(
       key: const ValueKey('composer-plus-tray'),
       padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
@@ -2917,40 +3693,20 @@ class _ComposerPlusTray extends StatelessWidget {
           color: scheme.outlineVariant.withValues(alpha: 0.85),
         ),
       ),
-      child: Row(
-        children: [
-          Expanded(
-            child: _ComposerPlusAction(
-              icon: Icons.folder_open_outlined,
-              label: '上传文件',
-              enabled: onPickDocuments != null && !picking,
-              onTap: onPickDocuments,
-            ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: _ComposerPlusAction(
-              icon: Icons.image_outlined,
-              label: imageMode ? '参考图' : '上传图片',
-              enabled: onPickImages != null && !picking,
-              onTap: onPickImages,
-            ),
-          ),
-          if (imageGenerationConfigured) ...[
-            const SizedBox(width: 8),
-            Expanded(
-              child: _ComposerPlusAction(
-                icon: imageMode
-                    ? Icons.auto_awesome
-                    : Icons.auto_awesome_outlined,
-                label: imageMode ? '退出生图' : '图片生成',
-                selected: imageMode,
-                enabled: onToggleImageMode != null,
-                onTap: onToggleImageMode,
-              ),
-            ),
-          ],
-        ],
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          const gap = 8.0;
+          const columns = 4;
+          final width = (constraints.maxWidth - gap * (columns - 1)) / columns;
+          return Wrap(
+            spacing: gap,
+            runSpacing: gap,
+            children: [
+              for (final action in actions)
+                SizedBox(width: width, child: action),
+            ],
+          );
+        },
       ),
     );
   }
@@ -2994,29 +3750,29 @@ class _ComposerPlusAction extends StatelessWidget {
           onTap: enabled ? onTap : null,
           borderRadius: BorderRadius.circular(14),
           child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+            padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 6),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Container(
-                  width: 44,
-                  height: 44,
+                  width: 36,
+                  height: 36,
                   decoration: BoxDecoration(
                     color: selected
                         ? scheme.primary.withValues(alpha: 0.14)
                         : scheme.surfaceContainerHighest,
-                    borderRadius: BorderRadius.circular(14),
+                    borderRadius: BorderRadius.circular(12),
                   ),
-                  child: Icon(icon, size: 22, color: fg),
+                  child: Icon(icon, size: 20, color: fg),
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 6),
                 Text(
                   label,
                   textAlign: TextAlign.center,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    fontSize: 12,
+                    fontSize: 11,
                     fontWeight: FontWeight.w600,
                     color: fg,
                   ),
@@ -3128,44 +3884,109 @@ class _ContextUsageChip extends StatelessWidget {
   }
 }
 
-class _ComposerStatusChip extends StatelessWidget {
-  const _ComposerStatusChip({required this.label});
+class _ReasoningEffortSlider extends StatelessWidget {
+  const _ReasoningEffortSlider({required this.value, this.onChanged});
 
-  final String label;
+  final ReasoningEffort value;
+  final ValueChanged<ReasoningEffort>? onChanged;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.only(left: 6),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
-        decoration: BoxDecoration(
-          color: scheme.primaryContainer.withValues(alpha: 0.55),
-          borderRadius: BorderRadius.circular(999),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            SizedBox(
-              width: 12,
-              height: 12,
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                color: scheme.primary,
+    return Semantics(
+      label: '思考强度 ${value.label}',
+      slider: true,
+      value: value.label,
+      child: Material(
+        color: scheme.primaryContainer.withValues(alpha: 0.75),
+        borderRadius: BorderRadius.circular(999),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(10, 2, 10, 2),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '强度',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: scheme.primary,
+                ),
               ),
-            ),
-            const SizedBox(width: 6),
-            Text(
-              label,
-              style: TextStyle(
-                fontSize: 12,
-                color: scheme.onPrimaryContainer,
-                fontWeight: FontWeight.w600,
+              SizedBox(
+                width: 108,
+                child: SliderTheme(
+                  data: SliderTheme.of(context).copyWith(
+                    trackHeight: 2,
+                    thumbShape: const RoundSliderThumbShape(
+                      enabledThumbRadius: 6,
+                    ),
+                    overlayShape: const RoundSliderOverlayShape(
+                      overlayRadius: 12,
+                    ),
+                  ),
+                  child: Slider(
+                    min: 0,
+                    max: 2,
+                    divisions: 2,
+                    value: value.index.toDouble(),
+                    label: value.label,
+                    onChanged: onChanged == null
+                        ? null
+                        : (v) => onChanged!(ReasoningEffort.values[v.round()]),
+                  ),
+                ),
               ),
-            ),
-          ],
+              Text(
+                value.label,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: scheme.primary,
+                ),
+              ),
+            ],
+          ),
         ),
+      ),
+    );
+  }
+}
+
+class _ComposerWorkModeSwitch extends StatelessWidget {
+  const _ComposerWorkModeSwitch({required this.workMode, this.onChanged});
+
+  final bool workMode;
+  final ValueChanged<bool>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      key: const ValueKey('chat-work-mode-switch'),
+      label: workMode ? '任务模式' : '对话模式',
+      child: SegmentedButton<bool>(
+        showSelectedIcon: false,
+        style: ButtonStyle(
+          visualDensity: VisualDensity.compact,
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          padding: const WidgetStatePropertyAll(
+            EdgeInsets.symmetric(horizontal: 10),
+          ),
+          textStyle: WidgetStatePropertyAll(
+            Theme.of(
+              context,
+            ).textTheme.labelMedium?.copyWith(fontWeight: FontWeight.w600),
+          ),
+        ),
+        segments: const [
+          ButtonSegment<bool>(value: false, label: Text('对话')),
+          ButtonSegment<bool>(value: true, label: Text('任务')),
+        ],
+        selected: {workMode},
+        onSelectionChanged: onChanged == null
+            ? null
+            : (selection) => onChanged!(selection.first),
+        emptySelectionAllowed: false,
       ),
     );
   }
@@ -3264,26 +4085,66 @@ class _ModePill extends StatelessWidget {
 }
 
 class _HistoryDrawer extends StatelessWidget {
-  const _HistoryDrawer({required this.asyncState});
-  final AsyncValue<ChatState> asyncState;
+  const _HistoryDrawer();
 
   @override
   Widget build(BuildContext context) =>
-      Drawer(child: ChatWorkspaceSidebar(asyncState: asyncState));
+      const Drawer(child: ChatWorkspaceSidebar());
 }
 
 /// Unified desktop workspace navigation and conversation history.
 ///
 /// This is public so [AppShell] can own a single left sidebar instead of
 /// stacking a navigation rail beside a second history pane.
-class ChatWorkspaceSidebar extends ConsumerStatefulWidget {
-  const ChatWorkspaceSidebar({
-    super.key,
-    required this.asyncState,
-    this.onCollapse,
+@immutable
+class _HistoryListSlice {
+  const _HistoryListSlice({required this.currentId, required this.items});
+
+  final String? currentId;
+  final List<_HistoryItemSlice> items;
+
+  @override
+  bool operator ==(Object other) {
+    if (other is! _HistoryListSlice) return false;
+    if (currentId != other.currentId || items.length != other.items.length) {
+      return false;
+    }
+    for (var i = 0; i < items.length; i++) {
+      if (items[i] != other.items[i]) return false;
+    }
+    return true;
+  }
+
+  @override
+  int get hashCode => Object.hash(currentId, Object.hashAll(items));
+}
+
+@immutable
+class _HistoryItemSlice {
+  const _HistoryItemSlice({
+    required this.id,
+    required this.title,
+    required this.mode,
   });
 
-  final AsyncValue<ChatState> asyncState;
+  final String id;
+  final String title;
+  final ConversationMode mode;
+
+  @override
+  bool operator ==(Object other) =>
+      other is _HistoryItemSlice &&
+      id == other.id &&
+      title == other.title &&
+      mode == other.mode;
+
+  @override
+  int get hashCode => Object.hash(id, title, mode);
+}
+
+class ChatWorkspaceSidebar extends ConsumerStatefulWidget {
+  const ChatWorkspaceSidebar({super.key, this.onCollapse});
+
   final VoidCallback? onCollapse;
 
   @override
@@ -3293,6 +4154,7 @@ class ChatWorkspaceSidebar extends ConsumerStatefulWidget {
 
 class _ChatWorkspaceSidebarState extends ConsumerState<ChatWorkspaceSidebar> {
   String _query = '';
+  List<SearchHit> _searchHits = const [];
 
   /// null = all modes.
   ConversationMode? _modeFilter;
@@ -3310,55 +4172,34 @@ class _ChatWorkspaceSidebarState extends ConsumerState<ChatWorkspaceSidebar> {
   void _scheduleSearch(String value) {
     _searchDebounce?.cancel();
     _searchDebounce = Timer(const Duration(milliseconds: 250), () {
-      if (mounted) setState(() => _query = value.trim());
+      unawaited(_runSearch(value.trim()));
+    });
+  }
+
+  Future<void> _runSearch(String query) async {
+    if (query.isEmpty) {
+      if (mounted) {
+        setState(() {
+          _query = '';
+          _searchHits = const [];
+        });
+      }
+      return;
+    }
+    final hits = await ref
+        .read(conversationRepositoryProvider)
+        .searchMessages(query);
+    if (!mounted) return;
+    setState(() {
+      _query = query;
+      _searchHits = hits;
     });
   }
 
   bool _matches(Conversation c, String q) {
     if (_modeFilter != null && c.mode != _modeFilter) return false;
     if (q.isEmpty) return true;
-    final lower = q.toLowerCase();
-    if (c.title.toLowerCase().contains(lower)) return true;
-    return c.messages.any((m) => m.content.toLowerCase().contains(lower));
-  }
-
-  /// Best content hit for search preview + jump target.
-  ///
-  /// Only active-path hits are jumpable ([messageId] non-null). Inactive branch
-  /// matches still return a snippet so the user can see why the title matched,
-  /// but must not claim「可定位」for rows that never appear in the list.
-  ({String? messageId, String snippet}) _searchHit(Conversation c, String q) {
-    if (q.isEmpty) return (messageId: null, snippet: '');
-    final lower = q.toLowerCase();
-    for (final m in c.activePath) {
-      final idx = m.content.toLowerCase().indexOf(lower);
-      if (idx < 0) continue;
-      return (
-        messageId: m.id,
-        snippet: _snippetAround(m.content, idx, q.length),
-      );
-    }
-    for (final m in c.messages) {
-      final idx = m.content.toLowerCase().indexOf(lower);
-      if (idx < 0) continue;
-      return (
-        messageId: null,
-        snippet: _snippetAround(m.content, idx, q.length),
-      );
-    }
-    return (messageId: null, snippet: '');
-  }
-
-  String _snippetAround(String content, int index, int queryLen) {
-    final from = (index - 16).clamp(0, content.length);
-    final to = (index + queryLen + 36).clamp(0, content.length);
-    var snip = content
-        .substring(from, to)
-        .replaceAll(RegExp(r'\s+'), ' ')
-        .trim();
-    if (from > 0) snip = '…$snip';
-    if (to < content.length) snip = '$snip…';
-    return snip;
+    return _searchHits.any((hit) => hit.convoId == c.id);
   }
 
   void _startRename(Conversation c) {
@@ -3418,7 +4259,19 @@ class _ChatWorkspaceSidebarState extends ConsumerState<ChatWorkspaceSidebar> {
   Widget build(BuildContext context) {
     final controller = ref.read(chatControllerProvider.notifier);
     final scheme = Theme.of(context).colorScheme;
-    final state = widget.asyncState.value;
+    ref.watch(
+      chatControllerProvider.select((async) {
+        final s = async.value;
+        return _HistoryListSlice(
+          currentId: s?.currentId,
+          items: [
+            for (final c in s?.conversations ?? const <Conversation>[])
+              _HistoryItemSlice(id: c.id, title: c.title, mode: c.mode),
+          ],
+        );
+      }),
+    );
+    final state = ref.read(chatControllerProvider).value;
     final settings = ref.watch(settingsControllerProvider).value;
     final selectedTab = ref.watch(shellTabProvider);
     final workspaceTabs = ShellTab.visible(
@@ -3642,10 +4495,20 @@ class _ChatWorkspaceSidebarState extends ConsumerState<ChatWorkspaceSidebar> {
                           );
                         }
                         final selected = c.id == state?.currentId;
-                        final ({String? messageId, String snippet}) hit =
-                            _query.isEmpty
-                            ? (messageId: null, snippet: '')
-                            : _searchHit(c, _query);
+                        final hit = _query.isEmpty
+                            ? const SearchHit(
+                                convoId: '',
+                                messageId: '',
+                                snippet: '',
+                              )
+                            : _searchHits.firstWhere(
+                                (h) => h.convoId == c.id,
+                                orElse: () => const SearchHit(
+                                  convoId: '',
+                                  messageId: '',
+                                  snippet: '',
+                                ),
+                              );
                         final preview = hit.snippet.isNotEmpty
                             ? hit.snippet
                             : _conversationPreview(c);
@@ -3663,7 +4526,7 @@ class _ChatWorkspaceSidebarState extends ConsumerState<ChatWorkspaceSidebar> {
                               onTap: () {
                                 controller.selectConversation(c.id);
                                 openShellTab(ref, ShellTab.chat);
-                                if (hit.messageId != null) {
+                                if (hit.messageId.isNotEmpty) {
                                   ref
                                       .read(
                                         pendingJumpMessageIdProvider.notifier,

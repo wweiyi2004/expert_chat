@@ -16,7 +16,7 @@ class DocumentEditTools {
     name: editDocumentToolName,
     description:
         '按结构化补丁修改用户本轮上传的可编辑文件，'
-        '由客户端提交到 Expert Chat Gateway 并回传可下载的新文件。'
+        '由客户端调用 Expert Chat MCP Server 并回传可下载的新文件。'
         '支持：.xlsx / .docx / .pptx / .txt / .md / .csv / .tsv。'
         '仅在用户明确要求改文件/导出/回传，或点击「改文档」时必须调用。'
         'patch 必须是完整 DocumentPatch（schema_version=1, format, ops）。'
@@ -93,7 +93,7 @@ class DocumentEditTools {
   static final convertDocumentTool = ToolSpec(
     name: convertDocumentToolName,
     description:
-        '将用户本轮上传的可编辑文件转换为另一种格式，由客户端提交到 Expert Chat Gateway 并回传下载。'
+        '将用户本轮上传的可编辑文件转换为另一种格式，由客户端调用 Expert Chat MCP Server 并回传下载。'
         '在用户要求「转成 / 导出为 / 转换格式」时调用（例如 txt→docx、csv→xlsx、docx→md）。'
         '不要用 edit_document 做跨格式转换。'
         '支持矩阵：${DocumentConvert.matrixSummary()}。'
@@ -121,11 +121,17 @@ class DocumentEditTools {
 
   static const inspectDocumentTool = ToolSpec(
     name: inspectDocumentToolName,
-    description: '查看本轮上传的可编辑附件结构提示，便于编写 edit_document 补丁。',
+    description:
+        '查看本轮上传的可编辑附件结构提示，便于编写 edit_document / convert_document 参数。'
+        '返回文件名、format、是否截断以及已提取文本预览；不上传服务器。'
+        '改 xlsx 前应先 inspect，确认工作表名和单元格后再写 set_cells / set_range。',
     parameters: {
       'type': 'object',
       'properties': {
-        'attachment_name': {'type': 'string'},
+        'attachment_name': {
+          'type': 'string',
+          'description': '要检查的附件文件名（含扩展名）。本轮仅一个可编辑文件时可省略。',
+        },
       },
     },
   );
@@ -259,6 +265,58 @@ class DocumentEditTools {
       outputFilename: outputFilename,
     );
   }
+
+  static InspectDocumentArgs parseInspectDocumentArgs(String argumentsJson) {
+    late final Object? decoded;
+    try {
+      final trimmed = argumentsJson.trim();
+      decoded = trimmed.isEmpty ? <String, dynamic>{} : jsonDecode(trimmed);
+    } on FormatException catch (e) {
+      throw DocumentPatchException(
+        'inspect_document 参数不是合法 JSON：${e.message}',
+        code: 'patch_invalid',
+      );
+    }
+    if (decoded is! Map) {
+      throw const DocumentPatchException(
+        'inspect_document 参数必须是对象',
+        code: 'patch_invalid',
+      );
+    }
+    final map = Map<String, dynamic>.from(decoded);
+    final attachmentName = map['attachment_name'] ?? map['attachmentName'];
+    return InspectDocumentArgs(
+      attachmentName:
+          attachmentName is String && attachmentName.trim().isNotEmpty
+          ? attachmentName.trim()
+          : null,
+    );
+  }
+
+  /// Local inspect payload for the model. Uses already-extracted attachment
+  /// text so the host does not need a second MCP round-trip before editing.
+  static String describeAttachmentForInspect({
+    required String name,
+    required String? format,
+    required String mimeType,
+    required int sizeBytes,
+    required bool truncated,
+    required bool hasBytes,
+    required String text,
+  }) {
+    final preview = text.trim().isEmpty ? '（无提取文本）' : text.trim();
+    return [
+      '附件：$name',
+      'format: ${format ?? 'unknown'}',
+      'mime_type: $mimeType',
+      'size_bytes: $sizeBytes',
+      'truncated: ${truncated ? 'yes' : 'no'}',
+      'has_original_bytes: ${hasBytes ? 'yes' : 'no'}',
+      if (truncated) '注意：提取文本已截断，禁止 set_text 整文件覆写；请用 replace_text 或缩小文件后重试。',
+      'text_preview:',
+      preview,
+    ].join('\n');
+  }
 }
 
 class EditDocumentArgs {
@@ -278,4 +336,10 @@ class ConvertDocumentArgs {
   final String? attachmentName;
   final String targetFormat;
   final String? outputFilename;
+}
+
+class InspectDocumentArgs {
+  const InspectDocumentArgs({this.attachmentName});
+
+  final String? attachmentName;
 }

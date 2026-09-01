@@ -174,6 +174,32 @@ class $ConversationsTable extends Conversations
     requiredDuringInsert: false,
     defaultValue: const Constant(0),
   );
+  static const VerificationMeta _customMcpServerIdsJsonMeta =
+      const VerificationMeta('customMcpServerIdsJson');
+  @override
+  late final GeneratedColumn<String> customMcpServerIdsJson =
+      GeneratedColumn<String>(
+        'custom_mcp_server_ids_json',
+        aliasedName,
+        true,
+        type: DriftSqlType.string,
+        requiredDuringInsert: false,
+      );
+  static const VerificationMeta _workModeMeta = const VerificationMeta(
+    'workMode',
+  );
+  @override
+  late final GeneratedColumn<bool> workMode = GeneratedColumn<bool>(
+    'work_mode',
+    aliasedName,
+    false,
+    type: DriftSqlType.bool,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'CHECK ("work_mode" IN (0, 1))',
+    ),
+    defaultValue: const Constant(false),
+  );
   @override
   List<GeneratedColumn> get $columns => [
     id,
@@ -191,6 +217,8 @@ class $ConversationsTable extends Conversations
     nextSpeakerIndex,
     localCastJson,
     targetTotalChars,
+    customMcpServerIdsJson,
+    workMode,
   ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -316,6 +344,21 @@ class $ConversationsTable extends Conversations
         ),
       );
     }
+    if (data.containsKey('custom_mcp_server_ids_json')) {
+      context.handle(
+        _customMcpServerIdsJsonMeta,
+        customMcpServerIdsJson.isAcceptableOrUnknown(
+          data['custom_mcp_server_ids_json']!,
+          _customMcpServerIdsJsonMeta,
+        ),
+      );
+    }
+    if (data.containsKey('work_mode')) {
+      context.handle(
+        _workModeMeta,
+        workMode.isAcceptableOrUnknown(data['work_mode']!, _workModeMeta),
+      );
+    }
     return context;
   }
 
@@ -385,6 +428,14 @@ class $ConversationsTable extends Conversations
         DriftSqlType.int,
         data['${effectivePrefix}target_total_chars'],
       )!,
+      customMcpServerIdsJson: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}custom_mcp_server_ids_json'],
+      ),
+      workMode: attachedDatabase.typeMapping.read(
+        DriftSqlType.bool,
+        data['${effectivePrefix}work_mode'],
+      )!,
     );
   }
 
@@ -410,6 +461,8 @@ class Conversation extends DataClass implements Insertable<Conversation> {
   final int nextSpeakerIndex;
   final String? localCastJson;
   final int targetTotalChars;
+  final String? customMcpServerIdsJson;
+  final bool workMode;
   const Conversation({
     required this.id,
     required this.title,
@@ -426,6 +479,8 @@ class Conversation extends DataClass implements Insertable<Conversation> {
     required this.nextSpeakerIndex,
     this.localCastJson,
     required this.targetTotalChars,
+    this.customMcpServerIdsJson,
+    required this.workMode,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -455,6 +510,12 @@ class Conversation extends DataClass implements Insertable<Conversation> {
       map['local_cast_json'] = Variable<String>(localCastJson);
     }
     map['target_total_chars'] = Variable<int>(targetTotalChars);
+    if (!nullToAbsent || customMcpServerIdsJson != null) {
+      map['custom_mcp_server_ids_json'] = Variable<String>(
+        customMcpServerIdsJson,
+      );
+    }
+    map['work_mode'] = Variable<bool>(workMode);
     return map;
   }
 
@@ -485,6 +546,10 @@ class Conversation extends DataClass implements Insertable<Conversation> {
           ? const Value.absent()
           : Value(localCastJson),
       targetTotalChars: Value(targetTotalChars),
+      customMcpServerIdsJson: customMcpServerIdsJson == null && nullToAbsent
+          ? const Value.absent()
+          : Value(customMcpServerIdsJson),
+      workMode: Value(workMode),
     );
   }
 
@@ -513,6 +578,10 @@ class Conversation extends DataClass implements Insertable<Conversation> {
       nextSpeakerIndex: serializer.fromJson<int>(json['nextSpeakerIndex']),
       localCastJson: serializer.fromJson<String?>(json['localCastJson']),
       targetTotalChars: serializer.fromJson<int>(json['targetTotalChars']),
+      customMcpServerIdsJson: serializer.fromJson<String?>(
+        json['customMcpServerIdsJson'],
+      ),
+      workMode: serializer.fromJson<bool>(json['workMode']),
     );
   }
   @override
@@ -534,6 +603,10 @@ class Conversation extends DataClass implements Insertable<Conversation> {
       'nextSpeakerIndex': serializer.toJson<int>(nextSpeakerIndex),
       'localCastJson': serializer.toJson<String?>(localCastJson),
       'targetTotalChars': serializer.toJson<int>(targetTotalChars),
+      'customMcpServerIdsJson': serializer.toJson<String?>(
+        customMcpServerIdsJson,
+      ),
+      'workMode': serializer.toJson<bool>(workMode),
     };
   }
 
@@ -553,6 +626,8 @@ class Conversation extends DataClass implements Insertable<Conversation> {
     int? nextSpeakerIndex,
     Value<String?> localCastJson = const Value.absent(),
     int? targetTotalChars,
+    Value<String?> customMcpServerIdsJson = const Value.absent(),
+    bool? workMode,
   }) => Conversation(
     id: id ?? this.id,
     title: title ?? this.title,
@@ -577,6 +652,10 @@ class Conversation extends DataClass implements Insertable<Conversation> {
         ? localCastJson.value
         : this.localCastJson,
     targetTotalChars: targetTotalChars ?? this.targetTotalChars,
+    customMcpServerIdsJson: customMcpServerIdsJson.present
+        ? customMcpServerIdsJson.value
+        : this.customMcpServerIdsJson,
+    workMode: workMode ?? this.workMode,
   );
   Conversation copyWithCompanion(ConversationsCompanion data) {
     return Conversation(
@@ -613,6 +692,10 @@ class Conversation extends DataClass implements Insertable<Conversation> {
       targetTotalChars: data.targetTotalChars.present
           ? data.targetTotalChars.value
           : this.targetTotalChars,
+      customMcpServerIdsJson: data.customMcpServerIdsJson.present
+          ? data.customMcpServerIdsJson.value
+          : this.customMcpServerIdsJson,
+      workMode: data.workMode.present ? data.workMode.value : this.workMode,
     );
   }
 
@@ -633,7 +716,9 @@ class Conversation extends DataClass implements Insertable<Conversation> {
           ..write('venue: $venue, ')
           ..write('nextSpeakerIndex: $nextSpeakerIndex, ')
           ..write('localCastJson: $localCastJson, ')
-          ..write('targetTotalChars: $targetTotalChars')
+          ..write('targetTotalChars: $targetTotalChars, ')
+          ..write('customMcpServerIdsJson: $customMcpServerIdsJson, ')
+          ..write('workMode: $workMode')
           ..write(')'))
         .toString();
   }
@@ -655,6 +740,8 @@ class Conversation extends DataClass implements Insertable<Conversation> {
     nextSpeakerIndex,
     localCastJson,
     targetTotalChars,
+    customMcpServerIdsJson,
+    workMode,
   );
   @override
   bool operator ==(Object other) =>
@@ -674,7 +761,9 @@ class Conversation extends DataClass implements Insertable<Conversation> {
           other.venue == this.venue &&
           other.nextSpeakerIndex == this.nextSpeakerIndex &&
           other.localCastJson == this.localCastJson &&
-          other.targetTotalChars == this.targetTotalChars);
+          other.targetTotalChars == this.targetTotalChars &&
+          other.customMcpServerIdsJson == this.customMcpServerIdsJson &&
+          other.workMode == this.workMode);
 }
 
 class ConversationsCompanion extends UpdateCompanion<Conversation> {
@@ -693,6 +782,8 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
   final Value<int> nextSpeakerIndex;
   final Value<String?> localCastJson;
   final Value<int> targetTotalChars;
+  final Value<String?> customMcpServerIdsJson;
+  final Value<bool> workMode;
   final Value<int> rowid;
   const ConversationsCompanion({
     this.id = const Value.absent(),
@@ -710,6 +801,8 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
     this.nextSpeakerIndex = const Value.absent(),
     this.localCastJson = const Value.absent(),
     this.targetTotalChars = const Value.absent(),
+    this.customMcpServerIdsJson = const Value.absent(),
+    this.workMode = const Value.absent(),
     this.rowid = const Value.absent(),
   });
   ConversationsCompanion.insert({
@@ -728,6 +821,8 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
     this.nextSpeakerIndex = const Value.absent(),
     this.localCastJson = const Value.absent(),
     this.targetTotalChars = const Value.absent(),
+    this.customMcpServerIdsJson = const Value.absent(),
+    this.workMode = const Value.absent(),
     this.rowid = const Value.absent(),
   }) : id = Value(id),
        updatedAt = Value(updatedAt);
@@ -747,6 +842,8 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
     Expression<int>? nextSpeakerIndex,
     Expression<String>? localCastJson,
     Expression<int>? targetTotalChars,
+    Expression<String>? customMcpServerIdsJson,
+    Expression<bool>? workMode,
     Expression<int>? rowid,
   }) {
     return RawValuesInsertable({
@@ -767,6 +864,9 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
       if (nextSpeakerIndex != null) 'next_speaker_index': nextSpeakerIndex,
       if (localCastJson != null) 'local_cast_json': localCastJson,
       if (targetTotalChars != null) 'target_total_chars': targetTotalChars,
+      if (customMcpServerIdsJson != null)
+        'custom_mcp_server_ids_json': customMcpServerIdsJson,
+      if (workMode != null) 'work_mode': workMode,
       if (rowid != null) 'rowid': rowid,
     });
   }
@@ -787,6 +887,8 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
     Value<int>? nextSpeakerIndex,
     Value<String?>? localCastJson,
     Value<int>? targetTotalChars,
+    Value<String?>? customMcpServerIdsJson,
+    Value<bool>? workMode,
     Value<int>? rowid,
   }) {
     return ConversationsCompanion(
@@ -805,6 +907,9 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
       nextSpeakerIndex: nextSpeakerIndex ?? this.nextSpeakerIndex,
       localCastJson: localCastJson ?? this.localCastJson,
       targetTotalChars: targetTotalChars ?? this.targetTotalChars,
+      customMcpServerIdsJson:
+          customMcpServerIdsJson ?? this.customMcpServerIdsJson,
+      workMode: workMode ?? this.workMode,
       rowid: rowid ?? this.rowid,
     );
   }
@@ -857,6 +962,14 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
     if (targetTotalChars.present) {
       map['target_total_chars'] = Variable<int>(targetTotalChars.value);
     }
+    if (customMcpServerIdsJson.present) {
+      map['custom_mcp_server_ids_json'] = Variable<String>(
+        customMcpServerIdsJson.value,
+      );
+    }
+    if (workMode.present) {
+      map['work_mode'] = Variable<bool>(workMode.value);
+    }
     if (rowid.present) {
       map['rowid'] = Variable<int>(rowid.value);
     }
@@ -881,6 +994,8 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
           ..write('nextSpeakerIndex: $nextSpeakerIndex, ')
           ..write('localCastJson: $localCastJson, ')
           ..write('targetTotalChars: $targetTotalChars, ')
+          ..write('customMcpServerIdsJson: $customMcpServerIdsJson, ')
+          ..write('workMode: $workMode, ')
           ..write('rowid: $rowid')
           ..write(')'))
         .toString();
@@ -3989,6 +4104,568 @@ class StudySessionsCompanion extends UpdateCompanion<StudySessionRow> {
   }
 }
 
+class $LibraryItemsTable extends LibraryItems
+    with TableInfo<$LibraryItemsTable, LibraryItemRow> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $LibraryItemsTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _idMeta = const VerificationMeta('id');
+  @override
+  late final GeneratedColumn<String> id = GeneratedColumn<String>(
+    'id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _nameMeta = const VerificationMeta('name');
+  @override
+  late final GeneratedColumn<String> name = GeneratedColumn<String>(
+    'name',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _kindMeta = const VerificationMeta('kind');
+  @override
+  late final GeneratedColumn<String> kind = GeneratedColumn<String>(
+    'kind',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _mimeTypeMeta = const VerificationMeta(
+    'mimeType',
+  );
+  @override
+  late final GeneratedColumn<String> mimeType = GeneratedColumn<String>(
+    'mime_type',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _sizeBytesMeta = const VerificationMeta(
+    'sizeBytes',
+  );
+  @override
+  late final GeneratedColumn<int> sizeBytes = GeneratedColumn<int>(
+    'size_bytes',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(0),
+  );
+  static const VerificationMeta _relativePathMeta = const VerificationMeta(
+    'relativePath',
+  );
+  @override
+  late final GeneratedColumn<String> relativePath = GeneratedColumn<String>(
+    'relative_path',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _sha256Meta = const VerificationMeta('sha256');
+  @override
+  late final GeneratedColumn<String> sha256 = GeneratedColumn<String>(
+    'sha256',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _createdAtMeta = const VerificationMeta(
+    'createdAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> createdAt = GeneratedColumn<DateTime>(
+    'created_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _lastUsedAtMeta = const VerificationMeta(
+    'lastUsedAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> lastUsedAt = GeneratedColumn<DateTime>(
+    'last_used_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: true,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    id,
+    name,
+    kind,
+    mimeType,
+    sizeBytes,
+    relativePath,
+    sha256,
+    createdAt,
+    lastUsedAt,
+  ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'library_items';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<LibraryItemRow> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('id')) {
+      context.handle(_idMeta, id.isAcceptableOrUnknown(data['id']!, _idMeta));
+    } else if (isInserting) {
+      context.missing(_idMeta);
+    }
+    if (data.containsKey('name')) {
+      context.handle(
+        _nameMeta,
+        name.isAcceptableOrUnknown(data['name']!, _nameMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_nameMeta);
+    }
+    if (data.containsKey('kind')) {
+      context.handle(
+        _kindMeta,
+        kind.isAcceptableOrUnknown(data['kind']!, _kindMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_kindMeta);
+    }
+    if (data.containsKey('mime_type')) {
+      context.handle(
+        _mimeTypeMeta,
+        mimeType.isAcceptableOrUnknown(data['mime_type']!, _mimeTypeMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_mimeTypeMeta);
+    }
+    if (data.containsKey('size_bytes')) {
+      context.handle(
+        _sizeBytesMeta,
+        sizeBytes.isAcceptableOrUnknown(data['size_bytes']!, _sizeBytesMeta),
+      );
+    }
+    if (data.containsKey('relative_path')) {
+      context.handle(
+        _relativePathMeta,
+        relativePath.isAcceptableOrUnknown(
+          data['relative_path']!,
+          _relativePathMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_relativePathMeta);
+    }
+    if (data.containsKey('sha256')) {
+      context.handle(
+        _sha256Meta,
+        sha256.isAcceptableOrUnknown(data['sha256']!, _sha256Meta),
+      );
+    } else if (isInserting) {
+      context.missing(_sha256Meta);
+    }
+    if (data.containsKey('created_at')) {
+      context.handle(
+        _createdAtMeta,
+        createdAt.isAcceptableOrUnknown(data['created_at']!, _createdAtMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_createdAtMeta);
+    }
+    if (data.containsKey('last_used_at')) {
+      context.handle(
+        _lastUsedAtMeta,
+        lastUsedAt.isAcceptableOrUnknown(
+          data['last_used_at']!,
+          _lastUsedAtMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_lastUsedAtMeta);
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {id};
+  @override
+  LibraryItemRow map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return LibraryItemRow(
+      id: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}id'],
+      )!,
+      name: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}name'],
+      )!,
+      kind: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}kind'],
+      )!,
+      mimeType: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}mime_type'],
+      )!,
+      sizeBytes: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}size_bytes'],
+      )!,
+      relativePath: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}relative_path'],
+      )!,
+      sha256: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}sha256'],
+      )!,
+      createdAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}created_at'],
+      )!,
+      lastUsedAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}last_used_at'],
+      )!,
+    );
+  }
+
+  @override
+  $LibraryItemsTable createAlias(String alias) {
+    return $LibraryItemsTable(attachedDatabase, alias);
+  }
+}
+
+class LibraryItemRow extends DataClass implements Insertable<LibraryItemRow> {
+  final String id;
+  final String name;
+  final String kind;
+  final String mimeType;
+  final int sizeBytes;
+  final String relativePath;
+  final String sha256;
+  final DateTime createdAt;
+  final DateTime lastUsedAt;
+  const LibraryItemRow({
+    required this.id,
+    required this.name,
+    required this.kind,
+    required this.mimeType,
+    required this.sizeBytes,
+    required this.relativePath,
+    required this.sha256,
+    required this.createdAt,
+    required this.lastUsedAt,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['id'] = Variable<String>(id);
+    map['name'] = Variable<String>(name);
+    map['kind'] = Variable<String>(kind);
+    map['mime_type'] = Variable<String>(mimeType);
+    map['size_bytes'] = Variable<int>(sizeBytes);
+    map['relative_path'] = Variable<String>(relativePath);
+    map['sha256'] = Variable<String>(sha256);
+    map['created_at'] = Variable<DateTime>(createdAt);
+    map['last_used_at'] = Variable<DateTime>(lastUsedAt);
+    return map;
+  }
+
+  LibraryItemsCompanion toCompanion(bool nullToAbsent) {
+    return LibraryItemsCompanion(
+      id: Value(id),
+      name: Value(name),
+      kind: Value(kind),
+      mimeType: Value(mimeType),
+      sizeBytes: Value(sizeBytes),
+      relativePath: Value(relativePath),
+      sha256: Value(sha256),
+      createdAt: Value(createdAt),
+      lastUsedAt: Value(lastUsedAt),
+    );
+  }
+
+  factory LibraryItemRow.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return LibraryItemRow(
+      id: serializer.fromJson<String>(json['id']),
+      name: serializer.fromJson<String>(json['name']),
+      kind: serializer.fromJson<String>(json['kind']),
+      mimeType: serializer.fromJson<String>(json['mimeType']),
+      sizeBytes: serializer.fromJson<int>(json['sizeBytes']),
+      relativePath: serializer.fromJson<String>(json['relativePath']),
+      sha256: serializer.fromJson<String>(json['sha256']),
+      createdAt: serializer.fromJson<DateTime>(json['createdAt']),
+      lastUsedAt: serializer.fromJson<DateTime>(json['lastUsedAt']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'id': serializer.toJson<String>(id),
+      'name': serializer.toJson<String>(name),
+      'kind': serializer.toJson<String>(kind),
+      'mimeType': serializer.toJson<String>(mimeType),
+      'sizeBytes': serializer.toJson<int>(sizeBytes),
+      'relativePath': serializer.toJson<String>(relativePath),
+      'sha256': serializer.toJson<String>(sha256),
+      'createdAt': serializer.toJson<DateTime>(createdAt),
+      'lastUsedAt': serializer.toJson<DateTime>(lastUsedAt),
+    };
+  }
+
+  LibraryItemRow copyWith({
+    String? id,
+    String? name,
+    String? kind,
+    String? mimeType,
+    int? sizeBytes,
+    String? relativePath,
+    String? sha256,
+    DateTime? createdAt,
+    DateTime? lastUsedAt,
+  }) => LibraryItemRow(
+    id: id ?? this.id,
+    name: name ?? this.name,
+    kind: kind ?? this.kind,
+    mimeType: mimeType ?? this.mimeType,
+    sizeBytes: sizeBytes ?? this.sizeBytes,
+    relativePath: relativePath ?? this.relativePath,
+    sha256: sha256 ?? this.sha256,
+    createdAt: createdAt ?? this.createdAt,
+    lastUsedAt: lastUsedAt ?? this.lastUsedAt,
+  );
+  LibraryItemRow copyWithCompanion(LibraryItemsCompanion data) {
+    return LibraryItemRow(
+      id: data.id.present ? data.id.value : this.id,
+      name: data.name.present ? data.name.value : this.name,
+      kind: data.kind.present ? data.kind.value : this.kind,
+      mimeType: data.mimeType.present ? data.mimeType.value : this.mimeType,
+      sizeBytes: data.sizeBytes.present ? data.sizeBytes.value : this.sizeBytes,
+      relativePath: data.relativePath.present
+          ? data.relativePath.value
+          : this.relativePath,
+      sha256: data.sha256.present ? data.sha256.value : this.sha256,
+      createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
+      lastUsedAt: data.lastUsedAt.present
+          ? data.lastUsedAt.value
+          : this.lastUsedAt,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('LibraryItemRow(')
+          ..write('id: $id, ')
+          ..write('name: $name, ')
+          ..write('kind: $kind, ')
+          ..write('mimeType: $mimeType, ')
+          ..write('sizeBytes: $sizeBytes, ')
+          ..write('relativePath: $relativePath, ')
+          ..write('sha256: $sha256, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('lastUsedAt: $lastUsedAt')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    id,
+    name,
+    kind,
+    mimeType,
+    sizeBytes,
+    relativePath,
+    sha256,
+    createdAt,
+    lastUsedAt,
+  );
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is LibraryItemRow &&
+          other.id == this.id &&
+          other.name == this.name &&
+          other.kind == this.kind &&
+          other.mimeType == this.mimeType &&
+          other.sizeBytes == this.sizeBytes &&
+          other.relativePath == this.relativePath &&
+          other.sha256 == this.sha256 &&
+          other.createdAt == this.createdAt &&
+          other.lastUsedAt == this.lastUsedAt);
+}
+
+class LibraryItemsCompanion extends UpdateCompanion<LibraryItemRow> {
+  final Value<String> id;
+  final Value<String> name;
+  final Value<String> kind;
+  final Value<String> mimeType;
+  final Value<int> sizeBytes;
+  final Value<String> relativePath;
+  final Value<String> sha256;
+  final Value<DateTime> createdAt;
+  final Value<DateTime> lastUsedAt;
+  final Value<int> rowid;
+  const LibraryItemsCompanion({
+    this.id = const Value.absent(),
+    this.name = const Value.absent(),
+    this.kind = const Value.absent(),
+    this.mimeType = const Value.absent(),
+    this.sizeBytes = const Value.absent(),
+    this.relativePath = const Value.absent(),
+    this.sha256 = const Value.absent(),
+    this.createdAt = const Value.absent(),
+    this.lastUsedAt = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  LibraryItemsCompanion.insert({
+    required String id,
+    required String name,
+    required String kind,
+    required String mimeType,
+    this.sizeBytes = const Value.absent(),
+    required String relativePath,
+    required String sha256,
+    required DateTime createdAt,
+    required DateTime lastUsedAt,
+    this.rowid = const Value.absent(),
+  }) : id = Value(id),
+       name = Value(name),
+       kind = Value(kind),
+       mimeType = Value(mimeType),
+       relativePath = Value(relativePath),
+       sha256 = Value(sha256),
+       createdAt = Value(createdAt),
+       lastUsedAt = Value(lastUsedAt);
+  static Insertable<LibraryItemRow> custom({
+    Expression<String>? id,
+    Expression<String>? name,
+    Expression<String>? kind,
+    Expression<String>? mimeType,
+    Expression<int>? sizeBytes,
+    Expression<String>? relativePath,
+    Expression<String>? sha256,
+    Expression<DateTime>? createdAt,
+    Expression<DateTime>? lastUsedAt,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (id != null) 'id': id,
+      if (name != null) 'name': name,
+      if (kind != null) 'kind': kind,
+      if (mimeType != null) 'mime_type': mimeType,
+      if (sizeBytes != null) 'size_bytes': sizeBytes,
+      if (relativePath != null) 'relative_path': relativePath,
+      if (sha256 != null) 'sha256': sha256,
+      if (createdAt != null) 'created_at': createdAt,
+      if (lastUsedAt != null) 'last_used_at': lastUsedAt,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  LibraryItemsCompanion copyWith({
+    Value<String>? id,
+    Value<String>? name,
+    Value<String>? kind,
+    Value<String>? mimeType,
+    Value<int>? sizeBytes,
+    Value<String>? relativePath,
+    Value<String>? sha256,
+    Value<DateTime>? createdAt,
+    Value<DateTime>? lastUsedAt,
+    Value<int>? rowid,
+  }) {
+    return LibraryItemsCompanion(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      kind: kind ?? this.kind,
+      mimeType: mimeType ?? this.mimeType,
+      sizeBytes: sizeBytes ?? this.sizeBytes,
+      relativePath: relativePath ?? this.relativePath,
+      sha256: sha256 ?? this.sha256,
+      createdAt: createdAt ?? this.createdAt,
+      lastUsedAt: lastUsedAt ?? this.lastUsedAt,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (id.present) {
+      map['id'] = Variable<String>(id.value);
+    }
+    if (name.present) {
+      map['name'] = Variable<String>(name.value);
+    }
+    if (kind.present) {
+      map['kind'] = Variable<String>(kind.value);
+    }
+    if (mimeType.present) {
+      map['mime_type'] = Variable<String>(mimeType.value);
+    }
+    if (sizeBytes.present) {
+      map['size_bytes'] = Variable<int>(sizeBytes.value);
+    }
+    if (relativePath.present) {
+      map['relative_path'] = Variable<String>(relativePath.value);
+    }
+    if (sha256.present) {
+      map['sha256'] = Variable<String>(sha256.value);
+    }
+    if (createdAt.present) {
+      map['created_at'] = Variable<DateTime>(createdAt.value);
+    }
+    if (lastUsedAt.present) {
+      map['last_used_at'] = Variable<DateTime>(lastUsedAt.value);
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('LibraryItemsCompanion(')
+          ..write('id: $id, ')
+          ..write('name: $name, ')
+          ..write('kind: $kind, ')
+          ..write('mimeType: $mimeType, ')
+          ..write('sizeBytes: $sizeBytes, ')
+          ..write('relativePath: $relativePath, ')
+          ..write('sha256: $sha256, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('lastUsedAt: $lastUsedAt, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
 abstract class _$AppDatabase extends GeneratedDatabase {
   _$AppDatabase(QueryExecutor e) : super(e);
   $AppDatabaseManager get managers => $AppDatabaseManager(this);
@@ -4000,6 +4677,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
   );
   late final $StudyEntitiesTable studyEntities = $StudyEntitiesTable(this);
   late final $StudySessionsTable studySessions = $StudySessionsTable(this);
+  late final $LibraryItemsTable libraryItems = $LibraryItemsTable(this);
   @override
   Iterable<TableInfo<Table, Object?>> get allTables =>
       allSchemaEntities.whereType<TableInfo<Table, Object?>>();
@@ -4011,6 +4689,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     worldInfoEntries,
     studyEntities,
     studySessions,
+    libraryItems,
   ];
   @override
   StreamQueryUpdateRules get streamUpdateRules => const StreamQueryUpdateRules([
@@ -4048,6 +4727,8 @@ typedef $$ConversationsTableCreateCompanionBuilder =
       Value<int> nextSpeakerIndex,
       Value<String?> localCastJson,
       Value<int> targetTotalChars,
+      Value<String?> customMcpServerIdsJson,
+      Value<bool> workMode,
       Value<int> rowid,
     });
 typedef $$ConversationsTableUpdateCompanionBuilder =
@@ -4067,6 +4748,8 @@ typedef $$ConversationsTableUpdateCompanionBuilder =
       Value<int> nextSpeakerIndex,
       Value<String?> localCastJson,
       Value<int> targetTotalChars,
+      Value<String?> customMcpServerIdsJson,
+      Value<bool> workMode,
       Value<int> rowid,
     });
 
@@ -4200,6 +4883,16 @@ class $$ConversationsTableFilterComposer
 
   ColumnFilters<int> get targetTotalChars => $composableBuilder(
     column: $table.targetTotalChars,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get customMcpServerIdsJson => $composableBuilder(
+    column: $table.customMcpServerIdsJson,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<bool> get workMode => $composableBuilder(
+    column: $table.workMode,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -4337,6 +5030,16 @@ class $$ConversationsTableOrderingComposer
     column: $table.targetTotalChars,
     builder: (column) => ColumnOrderings(column),
   );
+
+  ColumnOrderings<String> get customMcpServerIdsJson => $composableBuilder(
+    column: $table.customMcpServerIdsJson,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<bool> get workMode => $composableBuilder(
+    column: $table.workMode,
+    builder: (column) => ColumnOrderings(column),
+  );
 }
 
 class $$ConversationsTableAnnotationComposer
@@ -4410,6 +5113,14 @@ class $$ConversationsTableAnnotationComposer
     column: $table.targetTotalChars,
     builder: (column) => column,
   );
+
+  GeneratedColumn<String> get customMcpServerIdsJson => $composableBuilder(
+    column: $table.customMcpServerIdsJson,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<bool> get workMode =>
+      $composableBuilder(column: $table.workMode, builder: (column) => column);
 
   Expression<T> messagesRefs<T extends Object>(
     Expression<T> Function($$MessagesTableAnnotationComposer a) f,
@@ -4505,6 +5216,8 @@ class $$ConversationsTableTableManager
                 Value<int> nextSpeakerIndex = const Value.absent(),
                 Value<String?> localCastJson = const Value.absent(),
                 Value<int> targetTotalChars = const Value.absent(),
+                Value<String?> customMcpServerIdsJson = const Value.absent(),
+                Value<bool> workMode = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => ConversationsCompanion(
                 id: id,
@@ -4522,6 +5235,8 @@ class $$ConversationsTableTableManager
                 nextSpeakerIndex: nextSpeakerIndex,
                 localCastJson: localCastJson,
                 targetTotalChars: targetTotalChars,
+                customMcpServerIdsJson: customMcpServerIdsJson,
+                workMode: workMode,
                 rowid: rowid,
               ),
           createCompanionCallback:
@@ -4541,6 +5256,8 @@ class $$ConversationsTableTableManager
                 Value<int> nextSpeakerIndex = const Value.absent(),
                 Value<String?> localCastJson = const Value.absent(),
                 Value<int> targetTotalChars = const Value.absent(),
+                Value<String?> customMcpServerIdsJson = const Value.absent(),
+                Value<bool> workMode = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => ConversationsCompanion.insert(
                 id: id,
@@ -4558,6 +5275,8 @@ class $$ConversationsTableTableManager
                 nextSpeakerIndex: nextSpeakerIndex,
                 localCastJson: localCastJson,
                 targetTotalChars: targetTotalChars,
+                customMcpServerIdsJson: customMcpServerIdsJson,
+                workMode: workMode,
                 rowid: rowid,
               ),
           withReferenceMapper: (p0) => p0
@@ -6408,6 +7127,286 @@ typedef $$StudySessionsTableProcessedTableManager =
       StudySessionRow,
       PrefetchHooks Function({bool conversationId})
     >;
+typedef $$LibraryItemsTableCreateCompanionBuilder =
+    LibraryItemsCompanion Function({
+      required String id,
+      required String name,
+      required String kind,
+      required String mimeType,
+      Value<int> sizeBytes,
+      required String relativePath,
+      required String sha256,
+      required DateTime createdAt,
+      required DateTime lastUsedAt,
+      Value<int> rowid,
+    });
+typedef $$LibraryItemsTableUpdateCompanionBuilder =
+    LibraryItemsCompanion Function({
+      Value<String> id,
+      Value<String> name,
+      Value<String> kind,
+      Value<String> mimeType,
+      Value<int> sizeBytes,
+      Value<String> relativePath,
+      Value<String> sha256,
+      Value<DateTime> createdAt,
+      Value<DateTime> lastUsedAt,
+      Value<int> rowid,
+    });
+
+class $$LibraryItemsTableFilterComposer
+    extends Composer<_$AppDatabase, $LibraryItemsTable> {
+  $$LibraryItemsTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<String> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get name => $composableBuilder(
+    column: $table.name,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get kind => $composableBuilder(
+    column: $table.kind,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get mimeType => $composableBuilder(
+    column: $table.mimeType,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get sizeBytes => $composableBuilder(
+    column: $table.sizeBytes,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get relativePath => $composableBuilder(
+    column: $table.relativePath,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get sha256 => $composableBuilder(
+    column: $table.sha256,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get lastUsedAt => $composableBuilder(
+    column: $table.lastUsedAt,
+    builder: (column) => ColumnFilters(column),
+  );
+}
+
+class $$LibraryItemsTableOrderingComposer
+    extends Composer<_$AppDatabase, $LibraryItemsTable> {
+  $$LibraryItemsTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<String> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get name => $composableBuilder(
+    column: $table.name,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get kind => $composableBuilder(
+    column: $table.kind,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get mimeType => $composableBuilder(
+    column: $table.mimeType,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get sizeBytes => $composableBuilder(
+    column: $table.sizeBytes,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get relativePath => $composableBuilder(
+    column: $table.relativePath,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get sha256 => $composableBuilder(
+    column: $table.sha256,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get lastUsedAt => $composableBuilder(
+    column: $table.lastUsedAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+}
+
+class $$LibraryItemsTableAnnotationComposer
+    extends Composer<_$AppDatabase, $LibraryItemsTable> {
+  $$LibraryItemsTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<String> get id =>
+      $composableBuilder(column: $table.id, builder: (column) => column);
+
+  GeneratedColumn<String> get name =>
+      $composableBuilder(column: $table.name, builder: (column) => column);
+
+  GeneratedColumn<String> get kind =>
+      $composableBuilder(column: $table.kind, builder: (column) => column);
+
+  GeneratedColumn<String> get mimeType =>
+      $composableBuilder(column: $table.mimeType, builder: (column) => column);
+
+  GeneratedColumn<int> get sizeBytes =>
+      $composableBuilder(column: $table.sizeBytes, builder: (column) => column);
+
+  GeneratedColumn<String> get relativePath => $composableBuilder(
+    column: $table.relativePath,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get sha256 =>
+      $composableBuilder(column: $table.sha256, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get createdAt =>
+      $composableBuilder(column: $table.createdAt, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get lastUsedAt => $composableBuilder(
+    column: $table.lastUsedAt,
+    builder: (column) => column,
+  );
+}
+
+class $$LibraryItemsTableTableManager
+    extends
+        RootTableManager<
+          _$AppDatabase,
+          $LibraryItemsTable,
+          LibraryItemRow,
+          $$LibraryItemsTableFilterComposer,
+          $$LibraryItemsTableOrderingComposer,
+          $$LibraryItemsTableAnnotationComposer,
+          $$LibraryItemsTableCreateCompanionBuilder,
+          $$LibraryItemsTableUpdateCompanionBuilder,
+          (
+            LibraryItemRow,
+            BaseReferences<_$AppDatabase, $LibraryItemsTable, LibraryItemRow>,
+          ),
+          LibraryItemRow,
+          PrefetchHooks Function()
+        > {
+  $$LibraryItemsTableTableManager(_$AppDatabase db, $LibraryItemsTable table)
+    : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$LibraryItemsTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$LibraryItemsTableOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $$LibraryItemsTableAnnotationComposer($db: db, $table: table),
+          updateCompanionCallback:
+              ({
+                Value<String> id = const Value.absent(),
+                Value<String> name = const Value.absent(),
+                Value<String> kind = const Value.absent(),
+                Value<String> mimeType = const Value.absent(),
+                Value<int> sizeBytes = const Value.absent(),
+                Value<String> relativePath = const Value.absent(),
+                Value<String> sha256 = const Value.absent(),
+                Value<DateTime> createdAt = const Value.absent(),
+                Value<DateTime> lastUsedAt = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => LibraryItemsCompanion(
+                id: id,
+                name: name,
+                kind: kind,
+                mimeType: mimeType,
+                sizeBytes: sizeBytes,
+                relativePath: relativePath,
+                sha256: sha256,
+                createdAt: createdAt,
+                lastUsedAt: lastUsedAt,
+                rowid: rowid,
+              ),
+          createCompanionCallback:
+              ({
+                required String id,
+                required String name,
+                required String kind,
+                required String mimeType,
+                Value<int> sizeBytes = const Value.absent(),
+                required String relativePath,
+                required String sha256,
+                required DateTime createdAt,
+                required DateTime lastUsedAt,
+                Value<int> rowid = const Value.absent(),
+              }) => LibraryItemsCompanion.insert(
+                id: id,
+                name: name,
+                kind: kind,
+                mimeType: mimeType,
+                sizeBytes: sizeBytes,
+                relativePath: relativePath,
+                sha256: sha256,
+                createdAt: createdAt,
+                lastUsedAt: lastUsedAt,
+                rowid: rowid,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .toList(),
+          prefetchHooksCallback: null,
+        ),
+      );
+}
+
+typedef $$LibraryItemsTableProcessedTableManager =
+    ProcessedTableManager<
+      _$AppDatabase,
+      $LibraryItemsTable,
+      LibraryItemRow,
+      $$LibraryItemsTableFilterComposer,
+      $$LibraryItemsTableOrderingComposer,
+      $$LibraryItemsTableAnnotationComposer,
+      $$LibraryItemsTableCreateCompanionBuilder,
+      $$LibraryItemsTableUpdateCompanionBuilder,
+      (
+        LibraryItemRow,
+        BaseReferences<_$AppDatabase, $LibraryItemsTable, LibraryItemRow>,
+      ),
+      LibraryItemRow,
+      PrefetchHooks Function()
+    >;
 
 class $AppDatabaseManager {
   final _$AppDatabase _db;
@@ -6424,4 +7423,6 @@ class $AppDatabaseManager {
       $$StudyEntitiesTableTableManager(_db, _db.studyEntities);
   $$StudySessionsTableTableManager get studySessions =>
       $$StudySessionsTableTableManager(_db, _db.studySessions);
+  $$LibraryItemsTableTableManager get libraryItems =>
+      $$LibraryItemsTableTableManager(_db, _db.libraryItems);
 }

@@ -74,6 +74,18 @@ scripts/use_e_drive.ps1
 
 # Local Python env for running gateway tests
 server/.venv/
+server/dist/
+server/build/
+
+# Local scratch / screenshots
+/tmp/
+
+# Portable API/settings export (contains secrets). Copy
+# config/settings.example.json → config/local-settings.json and fill keys.
+/expert-chat-settings.json
+/*.expert-chat-settings.json
+/config/*.json
+!/config/settings.example.json
 
 # Self-hosted AuthService/Gateway runtime secrets and state
 server/authservice/.env

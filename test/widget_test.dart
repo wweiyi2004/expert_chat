@@ -6,6 +6,7 @@ import 'package:dio/dio.dart';
 import 'package:drift/native.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:expert_chat/core/providers.dart';
 import 'package:expert_chat/data/character_repository.dart';
 import 'package:expert_chat/data/chat_skill.dart';
@@ -29,6 +30,7 @@ import 'package:expert_chat/domain/speech/speech_input_service.dart';
 import 'package:expert_chat/domain/speech/text_to_speech_service.dart';
 import 'package:expert_chat/domain/story/story_length_budget.dart';
 import 'package:expert_chat/domain/story/story_prompt_assembler.dart';
+import 'package:expert_chat/domain/clipboard/clipboard_media.dart';
 import 'package:expert_chat/domain/tools/file_parser.dart';
 import 'package:expert_chat/domain/tools/vision_tools.dart';
 import 'package:expert_chat/domain/tools/search_provider.dart';
@@ -59,6 +61,7 @@ class FakeLlmProvider implements LlmProvider {
   String? lastForceToolName;
   final List<String?> forceToolNames = [];
   bool? lastThinking;
+  ReasoningEffort? lastReasoningEffort;
   int callCount = 0;
 
   @override
@@ -67,6 +70,7 @@ class FakeLlmProvider implements LlmProvider {
     required List<LlmRequestMessage> messages,
     List<ToolSpec>? tools,
     bool? thinking,
+    ReasoningEffort? reasoningEffort,
     String? forceToolName,
     CancelToken? cancelToken,
   }) async* {
@@ -79,6 +83,7 @@ class FakeLlmProvider implements LlmProvider {
     lastForceToolName = forceToolName;
     forceToolNames.add(forceToolName);
     lastThinking = thinking;
+    lastReasoningEffort = reasoningEffort;
     final scripts = scriptedChunks;
     final scriptIndex = scripts == null
         ? 0
@@ -100,6 +105,7 @@ class DelayedFailingLlmProvider implements LlmProvider {
     required List<LlmRequestMessage> messages,
     List<ToolSpec>? tools,
     bool? thinking,
+    ReasoningEffort? reasoningEffort,
     String? forceToolName,
     CancelToken? cancelToken,
   }) async* {
@@ -109,7 +115,9 @@ class DelayedFailingLlmProvider implements LlmProvider {
   }
 }
 
-class InMemoryRepo implements ConversationRepository {
+class InMemoryRepo
+    with ConversationRepositoryViaLoadAll
+    implements ConversationRepository {
   List<Conversation> store = [];
   @override
   Future<List<Conversation>> loadAll() async => store;
@@ -262,6 +270,12 @@ class FakeSettings extends SettingsController {
         enabled: true,
         baseUrl: 'https://gateway.example.com',
         uploadBaseUrl: 'https://upload.example.com',
+        capabilitiesDiscovered: true,
+        capabilities: [
+          GatewayCapabilityIds.longTasks,
+          GatewayCapabilityIds.documentEdit,
+          GatewayCapabilityIds.documentConvert,
+        ],
       ),
       gatewayToken: 'gateway-token',
     );
@@ -355,6 +369,7 @@ class _FailOnceLlm implements LlmProvider {
     required List<LlmRequestMessage> messages,
     List<ToolSpec>? tools,
     bool? thinking,
+    ReasoningEffort? reasoningEffort,
     String? forceToolName,
     CancelToken? cancelToken,
   }) async* {
@@ -377,6 +392,7 @@ class _DelayedChunkProvider implements LlmProvider {
     required List<LlmRequestMessage> messages,
     List<ToolSpec>? tools,
     bool? thinking,
+    ReasoningEffort? reasoningEffort,
     String? forceToolName,
     CancelToken? cancelToken,
   }) async* {
@@ -400,6 +416,7 @@ class _DisposeMidStreamLlm implements LlmProvider {
     required List<LlmRequestMessage> messages,
     List<ToolSpec>? tools,
     bool? thinking,
+    ReasoningEffort? reasoningEffort,
     String? forceToolName,
     CancelToken? cancelToken,
   }) async* {
@@ -842,47 +859,54 @@ void main() {
     expect(restored.citations.single.url, 'https://x');
   });
 
-  test('deepThink on DeepSeek V4 stays on flash and enables thinking', () async {
-    final llm = FakeLlmProvider([
-      const ChatChunk(reasoningDelta: 'pondering'),
-      const ChatChunk(contentDelta: 'answer'),
-    ]);
-    final c = _container(llm, InMemoryRepo());
-    addTearDown(c.dispose);
+  test(
+    'deepThink on DeepSeek V4 stays on flash and enables thinking',
+    () async {
+      final llm = FakeLlmProvider([
+        const ChatChunk(reasoningDelta: 'pondering'),
+        const ChatChunk(contentDelta: 'answer'),
+      ]);
+      final c = _container(llm, InMemoryRepo());
+      addTearDown(c.dispose);
 
-    final ctrl = c.read(chatControllerProvider.notifier);
-    await c.read(chatControllerProvider.future);
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
 
-    ctrl.toggleDeepThink();
-    await ctrl.sendMessage('hi');
+      ctrl.toggleDeepThink();
+      await ctrl.sendMessage('hi');
 
-    expect(llm.lastConfig?.model, KnownModels.chat);
-    expect(llm.lastThinking, isTrue);
-    final convo = c.read(chatControllerProvider).value!.current!;
-    final assistant = convo.activePath.last;
-    expect(assistant.model, KnownModels.chat);
-    expect(assistant.content, 'answer');
-    expect(assistant.reasoning, 'pondering');
-  });
+      expect(llm.lastConfig?.model, KnownModels.chat);
+      expect(llm.lastThinking, isTrue);
+      expect(llm.lastReasoningEffort, ReasoningEffort.high);
+      final convo = c.read(chatControllerProvider).value!.current!;
+      final assistant = convo.activePath.last;
+      expect(assistant.model, KnownModels.chat);
+      expect(assistant.content, 'answer');
+      expect(assistant.reasoning, 'pondering');
+    },
+  );
 
-  test('deepThink on a dual-model profile still switches to the reasoner', () async {
-    final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'answer')]);
-    final c = _container(
-      llm,
-      InMemoryRepo(),
-      settingsBuilder: FakeVisionSettings.new,
-    );
-    addTearDown(c.dispose);
+  test(
+    'deepThink on a dual-model profile still switches to the reasoner',
+    () async {
+      final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'answer')]);
+      final c = _container(
+        llm,
+        InMemoryRepo(),
+        settingsBuilder: FakeVisionSettings.new,
+      );
+      addTearDown(c.dispose);
 
-    final ctrl = c.read(chatControllerProvider.notifier);
-    await c.read(chatControllerProvider.future);
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
 
-    ctrl.toggleDeepThink();
-    await ctrl.sendMessage('hi');
+      ctrl.toggleDeepThink();
+      await ctrl.sendMessage('hi');
 
-    expect(llm.lastConfig?.model, 'o3-mini');
-    expect(llm.lastThinking, isTrue);
-  });
+      expect(llm.lastConfig?.model, 'o3-mini');
+      expect(llm.lastThinking, isTrue);
+    },
+  );
 
   test('reasoning-only completion is promoted to the visible answer', () async {
     final llm = FakeLlmProvider([
@@ -1204,7 +1228,6 @@ void main() {
     final ctrl = c.read(chatControllerProvider.notifier);
     await c.read(chatControllerProvider.future);
 
-    ctrl.toggleSearch();
     await ctrl.sendMessage('What should I use?');
 
     expect(search.calls, 1);
@@ -1241,7 +1264,10 @@ void main() {
     await ctrl.sendMessage('普通离线问题');
 
     expect(llm.callCount, 1);
-    expect(llm.toolCalls.single, isNull);
+    expect(
+      llm.toolCalls.single?.any((t) => t.name == 'fetch_url') ?? false,
+      isFalse,
+    );
   });
 
   test(
@@ -1273,7 +1299,7 @@ void main() {
       await c.read(chatControllerProvider.future);
       await ctrl.sendMessage('请读取 https://allowed.example/page');
 
-      expect(llm.toolCalls.first?.single.name, 'fetch_url');
+      expect(llm.toolCalls.first?.any((t) => t.name == 'fetch_url'), isTrue);
       expect(
         llm.calls[1].any(
           (m) =>
@@ -1418,7 +1444,6 @@ void main() {
 
     final ctrl = c.read(chatControllerProvider.notifier);
     await c.read(chatControllerProvider.future);
-    ctrl.toggleSearch();
     await ctrl.sendMessage('search safely');
 
     expect(search.calls, 3);
@@ -1478,7 +1503,6 @@ void main() {
 
       final ctrl = c.read(chatControllerProvider.notifier);
       await c.read(chatControllerProvider.future);
-      ctrl.toggleSearch();
       await ctrl.sendMessage('stubborn model');
 
       final state = c.read(chatControllerProvider).value!;
@@ -1526,7 +1550,6 @@ void main() {
 
     final ctrl = c.read(chatControllerProvider.notifier);
     await c.read(chatControllerProvider.future);
-    ctrl.toggleSearch();
     await ctrl.sendMessage('two rounds of thinking');
 
     final assistant = c
@@ -2450,7 +2473,6 @@ void main() {
       final ctrl = c.read(chatControllerProvider.notifier);
       await c.read(chatControllerProvider.future);
 
-      ctrl.toggleSearch(); // auto
       ctrl.toggleSearch(); // always: tool-less models still pre-search
       await ctrl.sendMessage('what is the weather?');
 
@@ -2478,7 +2500,6 @@ void main() {
 
       final ctrl = c.read(chatControllerProvider.notifier);
       await c.read(chatControllerProvider.future);
-      ctrl.toggleSearch();
       ctrl.toggleSearch(); // always
       await ctrl.sendMessage('what is the weather?');
 
@@ -2520,7 +2541,6 @@ void main() {
     final ctrl = c.read(chatControllerProvider.notifier);
     await c.read(chatControllerProvider.future);
 
-    ctrl.toggleSearch(); // auto: the model decides whether to search
     await ctrl.sendMessage('what is the weather?');
 
     final state = c.read(chatControllerProvider).value!;
@@ -2803,6 +2823,9 @@ void main() {
     expect(SearchMode.off.composerLabel, '联网');
     expect(SearchMode.auto.composerLabel, '联网·自动');
     expect(SearchMode.always.composerLabel, '联网·强制');
+    expect(SearchModeInfo.fromWire(null), SearchMode.auto);
+    expect(SearchModeInfo.fromWire('off'), SearchMode.off);
+    expect(ImageGenModeInfo.fromWire(null), ImageGenMode.auto);
   });
 
   test(
@@ -3515,7 +3538,7 @@ void main() {
     expect(path.last.attachments, isNotEmpty);
   });
 
-  test('toggleImageGenMode cycles off → auto → always → off', () async {
+  test('toggleImageGenMode cycles auto → always → off → auto', () async {
     final c = _container(FakeLlmProvider(const []), InMemoryRepo());
     addTearDown(c.dispose);
     final ctrl = c.read(chatControllerProvider.notifier);
@@ -3523,13 +3546,9 @@ void main() {
 
     expect(
       c.read(chatControllerProvider).value!.imageGenMode,
-      ImageGenMode.off,
-    );
-    ctrl.toggleImageGenMode();
-    expect(
-      c.read(chatControllerProvider).value!.imageGenMode,
       ImageGenMode.auto,
     );
+    expect(c.read(chatControllerProvider).value!.searchMode, SearchMode.auto);
     ctrl.toggleImageGenMode();
     expect(
       c.read(chatControllerProvider).value!.imageGenMode,
@@ -3539,6 +3558,11 @@ void main() {
     expect(
       c.read(chatControllerProvider).value!.imageGenMode,
       ImageGenMode.off,
+    );
+    ctrl.toggleImageGenMode();
+    expect(
+      c.read(chatControllerProvider).value!.imageGenMode,
+      ImageGenMode.auto,
     );
   });
 
@@ -3574,7 +3598,6 @@ void main() {
     final ctrl = c.read(chatControllerProvider.notifier);
     await c.read(chatControllerProvider.future);
 
-    ctrl.toggleImageGenMode(); // auto
     ctrl.toggleImageGenMode(); // always
     expect(
       c.read(chatControllerProvider).value!.imageGenMode,
@@ -3639,7 +3662,6 @@ void main() {
       // Portrait resolution loads the card from the character library.
       await c.read(characterRepositoryProvider).save(card);
       await ctrl.newStoryConversation(card, worldInfoIds: const []);
-      ctrl.toggleImageGenMode();
       ctrl.toggleImageGenMode(); // always
 
       await ctrl.sendMessage('他们激烈做爱，场面不堪入目，继续写');
@@ -3658,6 +3680,12 @@ void main() {
           .activePath
           .last;
       expect(assistant.attachments, hasLength(1));
+      expect(
+        llm.toolCalls.any(
+          (tools) => tools?.any((t) => t.name == 'web_search') ?? false,
+        ),
+        isFalse,
+      );
     },
   );
 
@@ -4022,6 +4050,39 @@ void main() {
       expect(llm.callCount, 0); // never reached the LLM
       expect(find.text('请先在设置中填写 API Key。'), findsOneWidget);
       expect(find.text('重试'), findsNothing);
+    });
+
+    testWidgets('Ctrl+V pastes a clipboard image as an attachment', (
+      tester,
+    ) async {
+      const pngB64 =
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+      clipboardMediaReader = () async =>
+          ClipboardMedia(imageBytes: base64Decode(pngB64));
+      addTearDown(debugResetClipboardMediaReader);
+
+      final c = _container(
+        FakeLlmProvider(const []),
+        InMemoryRepo(),
+        settingsBuilder: FakeVisionSettings.new,
+      );
+      addTearDown(c.dispose);
+      await _pumpChat(tester, c);
+
+      await tester.runAsync(() async {
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.keyV);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.keyV);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+      });
+      for (var i = 0; i < 20; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+        if (find.text('clipboard.png').evaluate().isNotEmpty) break;
+      }
+
+      expect(find.text('clipboard.png'), findsOneWidget);
+      expect(find.text('已添加图片'), findsNothing);
     });
   });
 }

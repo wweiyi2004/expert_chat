@@ -18,6 +18,7 @@ import re
 import shutil
 import tempfile
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +69,20 @@ MEDIA_TYPES = {
     ".csv": "text/csv; charset=utf-8",
     ".tsv": "text/tab-separated-values; charset=utf-8",
 }
+
+
+@dataclass(frozen=True)
+class DocumentOutput:
+    filename: str
+    media_type: str
+
+
+class DocumentOperationError(ValueError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
 
 router = APIRouter()
 app = FastAPI(title="Expert Chat Document Edit", version=APP_VERSION)
@@ -212,31 +227,19 @@ async def edit_document(
             ) from e
 
         try:
-            validated = _validate_patch(patch_obj, ext)
-        except ValueError as e:
-            raise HTTPException(
-                status_code=400,
-                detail=_err("patch_invalid", str(e)),
-            ) from e
-
-        def apply_patch() -> None:
-            if ext == ".xlsx":
-                _apply_xlsx(in_path, out_path, validated)
-            elif ext == ".docx":
-                _apply_docx(in_path, out_path, validated)
-            elif ext == ".pptx":
-                _apply_pptx(in_path, out_path, validated)
-            else:
-                _apply_text(in_path, out_path, validated)
-
-        try:
             # Office parsing/saving is CPU-bound; keep it off the event loop
             # (this router also runs mounted inside the Gateway process).
-            await asyncio.to_thread(apply_patch)
-        except ValueError as e:
+            output = await asyncio.to_thread(
+                edit_document_path,
+                in_path,
+                out_path,
+                raw_name,
+                patch_obj,
+            )
+        except DocumentOperationError as e:
             raise HTTPException(
                 status_code=400,
-                detail=_err("patch_invalid", str(e)),
+                detail=_err(e.code, e.message),
             ) from e
         except Exception as e:  # noqa: BLE001
             raise HTTPException(
@@ -244,11 +247,10 @@ async def edit_document(
                 detail=_err("internal", f"写入失败：{e}"),
             ) from e
 
-        out_name = validated.get("output_filename") or _default_out_name(raw_name, ext)
         return FileResponse(
             path=out_path,
-            filename=out_name,
-            media_type=MEDIA_TYPES[ext],
+            filename=output.filename,
+            media_type=output.media_type,
             background=BackgroundTask(cleanup),
         )
     except HTTPException:
@@ -304,7 +306,6 @@ async def convert_document(
                 ),
             )
 
-        out_name = _sanitize_output_filename(output_filename, raw_name, f".{tgt_fmt}")
         in_path = job_dir / f"input{src_ext}"
         out_path = job_dir / f"output.{tgt_fmt}"
         size = await _spool_upload(file, in_path)
@@ -314,24 +315,21 @@ async def convert_document(
                 detail=_err("patch_invalid", "上传文件为空"),
             )
 
-        def run_conversion() -> None:
-            if src_fmt == tgt_fmt:
-                if src_fmt in {"txt", "md", "csv", "tsv"}:
-                    # Normalize text encodings to UTF-8 on same-format pass-through.
-                    _write_text_file(out_path, _read_text_file(in_path))
-                else:
-                    shutil.copyfile(in_path, out_path)
-            else:
-                _convert_file(in_path, src_fmt, out_path, tgt_fmt)
-
         try:
             # Parsing/converting documents is CPU-bound; keep it off the event
             # loop (this router also runs mounted inside the Gateway process).
-            await asyncio.to_thread(run_conversion)
-        except ValueError as e:
+            output = await asyncio.to_thread(
+                convert_document_path,
+                in_path,
+                out_path,
+                raw_name,
+                tgt_fmt,
+                output_filename,
+            )
+        except DocumentOperationError as e:
             raise HTTPException(
                 status_code=400,
-                detail=_err("unsupported_format", str(e)),
+                detail=_err(e.code, e.message),
             ) from e
         except Exception as e:  # noqa: BLE001
             raise HTTPException(
@@ -341,8 +339,8 @@ async def convert_document(
 
         return FileResponse(
             path=out_path,
-            filename=out_name,
-            media_type=MEDIA_TYPES[f".{tgt_fmt}"],
+            filename=output.filename,
+            media_type=output.media_type,
             background=BackgroundTask(cleanup),
         )
     except HTTPException:
@@ -364,21 +362,117 @@ def _default_out_name(raw: str, ext: str) -> str:
 def _sanitize_output_filename(raw: Any, source_name: str, out_ext: str) -> str:
     if raw is not None and str(raw).strip():
         out_s = str(raw).strip()
-        if "/" in out_s or "\\" in out_s or ".." in out_s:
-            raise HTTPException(
-                status_code=400,
-                detail=_err("patch_invalid", "output_filename 非法"),
-            )
+        if (
+            "/" in out_s
+            or "\\" in out_s
+            or ".." in out_s
+            or any(ord(char) < 32 for char in out_s)
+        ):
+            raise DocumentOperationError("patch_invalid", "output_filename 非法")
         if len(out_s) > 180:
-            raise HTTPException(
-                status_code=400,
-                detail=_err("patch_invalid", "output_filename 过长"),
-            )
+            raise DocumentOperationError("patch_invalid", "output_filename 过长")
         if not out_s.lower().endswith(out_ext.lower()):
             out_s = f"{Path(out_s).stem}{out_ext}"
         return out_s
     base = Path(source_name).stem or "converted"
     return f"{base}{out_ext}"
+
+
+def edit_document_path(
+    in_path: Path,
+    out_path: Path,
+    source_name: str,
+    patch_obj: Any,
+) -> DocumentOutput:
+    """Apply DocumentPatch v1 without binding the operation to HTTP."""
+
+    ext = Path(source_name.lower()).suffix
+    if ext not in SUPPORTED:
+        raise DocumentOperationError(
+            "unsupported_format",
+            f"仅支持 {', '.join(sorted(SUPPORTED))}",
+        )
+    patch_bytes = len(
+        json.dumps(patch_obj, ensure_ascii=False, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    )
+    if patch_bytes > MAX_PATCH_JSON_BYTES:
+        raise DocumentOperationError(
+            "patch_invalid",
+            f"patch 过大（{patch_bytes} 字节，上限 {MAX_PATCH_JSON_BYTES}）",
+        )
+    try:
+        validated = _validate_patch(patch_obj, ext)
+        if ext == ".xlsx":
+            _apply_xlsx(in_path, out_path, validated)
+        elif ext == ".docx":
+            _apply_docx(in_path, out_path, validated)
+        elif ext == ".pptx":
+            _apply_pptx(in_path, out_path, validated)
+        else:
+            _apply_text(in_path, out_path, validated)
+    except DocumentOperationError:
+        raise
+    except ValueError as exc:
+        raise DocumentOperationError("patch_invalid", str(exc)) from exc
+    return DocumentOutput(
+        filename=validated.get("output_filename")
+        or _default_out_name(source_name, ext),
+        media_type=MEDIA_TYPES[ext],
+    )
+
+
+def convert_document_path(
+    in_path: Path,
+    out_path: Path,
+    source_name: str,
+    target_format: str,
+    output_filename: str | None = None,
+) -> DocumentOutput:
+    """Convert a document without binding the operation to HTTP."""
+
+    src_ext = Path(source_name.lower()).suffix
+    if src_ext not in SUPPORTED:
+        raise DocumentOperationError(
+            "unsupported_format",
+            f"仅支持 {', '.join(sorted(SUPPORTED))}",
+        )
+    src_fmt = src_ext.lstrip(".")
+    tgt_fmt = str(target_format or "").strip().lower().lstrip(".")
+    if tgt_fmt not in FORMATS:
+        raise DocumentOperationError(
+            "unsupported_format",
+            f'不支持的 target_format="{target_format}"',
+        )
+    allowed = CONVERSIONS.get(src_fmt, set())
+    if tgt_fmt not in allowed:
+        raise DocumentOperationError(
+            "unsupported_format",
+            f"不支持 {src_fmt} → {tgt_fmt}。"
+            f"可选：{', '.join(sorted(allowed)) or '无'}",
+        )
+    out_name = _sanitize_output_filename(
+        output_filename,
+        source_name,
+        f".{tgt_fmt}",
+    )
+    try:
+        if src_fmt == tgt_fmt:
+            if src_fmt in {"txt", "md", "csv", "tsv"}:
+                _write_text_file(out_path, _read_text_file(in_path))
+            else:
+                shutil.copyfile(in_path, out_path)
+        else:
+            _convert_file(in_path, src_fmt, out_path, tgt_fmt)
+    except DocumentOperationError:
+        raise
+    except ValueError as exc:
+        raise DocumentOperationError("unsupported_format", str(exc)) from exc
+    return DocumentOutput(
+        filename=out_name,
+        media_type=MEDIA_TYPES[f".{tgt_fmt}"],
+    )
 
 
 def _validate_patch(obj: Any, file_ext: str) -> dict[str, Any]:
@@ -401,7 +495,13 @@ def _validate_patch(obj: Any, file_ext: str) -> dict[str, Any]:
     out = obj.get("output_filename")
     if out is not None:
         out_s = str(out).strip()
-        if not out_s or "/" in out_s or "\\" in out_s or ".." in out_s:
+        if (
+            not out_s
+            or "/" in out_s
+            or "\\" in out_s
+            or ".." in out_s
+            or any(ord(char) < 32 for char in out_s)
+        ):
             raise ValueError("output_filename 非法")
         if len(out_s) > 180:
             raise ValueError("output_filename 过长")

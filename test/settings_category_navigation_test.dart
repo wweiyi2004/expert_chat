@@ -241,9 +241,47 @@ void main() {
 
     await tester.tap(find.text('数据'));
     await tester.pumpAndSettle();
+    expect(find.text('导出 API 配置'), findsOneWidget);
+    expect(find.text('导入 API 配置'), findsOneWidget);
     expect(find.text('启用长期记忆'), findsOneWidget);
     expect(find.text('管理记忆'), findsOneWidget);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('capabilities tab can add a custom MCP server', (tester) async {
+    final container = await pumpSettingsPage(tester, tall: true);
+    await tester.tap(find.text('能力'));
+    tester.view.physicalSize = const Size(480, 4000);
+    await tester.pumpAndSettle();
+
+    final addButton = find.text('添加 MCP 服务器', skipOffstage: false);
+    await tester.scrollUntilVisible(
+      addButton,
+      400,
+      scrollable: find.byType(Scrollable).last,
+    );
+    await tester.tap(addButton);
+    await tester.pumpAndSettle();
+
+    await tester.enterText(fieldWithLabel('名称'), 'GitHub');
+    await tester.enterText(
+      fieldWithLabel('Server URL'),
+      'https://mcp.github.example/mcp',
+    );
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('GitHub'), findsOneWidget);
+    expect(
+      container
+          .read(settingsControllerProvider)
+          .requireValue
+          .gateway
+          .customMcpServers
+          .single
+          .name,
+      'GitHub',
+    );
   });
 
   testWidgets(
@@ -326,7 +364,7 @@ void main() {
     },
   );
 
-  testWidgets('Gateway exposes a separately persisted file upload URL', (
+  testWidgets('MCP Server URL is persisted from the capabilities tab', (
     tester,
   ) async {
     final container = await pumpSettingsPage(tester, tall: true);
@@ -334,21 +372,21 @@ void main() {
     tester.view.physicalSize = const Size(480, 4000);
     await tester.pumpAndSettle();
 
-    final uploadUrl = find.byWidgetPredicate(
+    final serverUrl = find.byWidgetPredicate(
       (widget) =>
-          widget is TextField && widget.decoration?.labelText == '文件上传地址（可选）',
+          widget is TextField && widget.decoration?.labelText == 'MCP Server URL',
       skipOffstage: false,
     );
-    expect(uploadUrl, findsOneWidget);
-    await tester.enterText(uploadUrl, 'https://upload.example.com/');
+    expect(serverUrl, findsOneWidget);
+    await tester.ensureVisible(serverUrl);
+    await tester.enterText(serverUrl, 'https://mcp.example.com/mcp');
     await tester.pump();
 
     final gateway = container
         .read(settingsControllerProvider)
         .requireValue
         .gateway;
-    expect(gateway.uploadBaseUrl, 'https://upload.example.com/');
-    expect(gateway.effectiveUploadBaseUrl, 'https://upload.example.com');
+    expect(gateway.baseUrl, 'https://mcp.example.com/mcp');
   });
 
   testWidgets('cloud TTS configuration includes a persisted voice field', (

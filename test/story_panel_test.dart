@@ -10,7 +10,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-class _MemoryConversationRepository implements ConversationRepository {
+class _MemoryConversationRepository
+    with ConversationRepositoryViaLoadAll
+    implements ConversationRepository {
   _MemoryConversationRepository([List<Conversation>? seed])
     : _conversations = List.of(seed ?? const []);
 

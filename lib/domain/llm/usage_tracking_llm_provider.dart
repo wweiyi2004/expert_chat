@@ -18,6 +18,7 @@ class UsageTrackingLlmProvider implements LlmProvider {
     required List<LlmRequestMessage> messages,
     List<ToolSpec>? tools,
     bool? thinking,
+    ReasoningEffort? reasoningEffort,
     String? forceToolName,
     CancelToken? cancelToken,
   }) async* {
@@ -27,6 +28,7 @@ class UsageTrackingLlmProvider implements LlmProvider {
       messages: messages,
       tools: tools,
       thinking: thinking,
+      reasoningEffort: reasoningEffort,
       forceToolName: forceToolName,
       cancelToken: cancelToken,
     )) {

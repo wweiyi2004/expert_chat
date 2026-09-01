@@ -218,6 +218,15 @@ class _RecentPhotoSheetBodyState extends State<_RecentPhotoSheetBody> {
   }
 }
 
+final Map<String, Future<Uint8List?>> _thumbnailCache = {};
+
+Future<Uint8List?> _thumbnailFor(AssetEntity asset) {
+  return _thumbnailCache.putIfAbsent(
+    asset.id,
+    () => asset.thumbnailDataWithSize(const ThumbnailSize.square(200)),
+  );
+}
+
 class _AssetTile extends StatelessWidget {
   const _AssetTile({
     required this.asset,
@@ -238,9 +247,7 @@ class _AssetTile extends StatelessWidget {
         fit: StackFit.expand,
         children: [
           FutureBuilder<Uint8List?>(
-            future: asset.thumbnailDataWithSize(
-              const ThumbnailSize.square(200),
-            ),
+            future: _thumbnailFor(asset),
             builder: (context, snap) {
               final data = snap.data;
               if (data == null) {

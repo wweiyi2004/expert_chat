@@ -18,7 +18,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # of the product and file versions while build-number is used as the build suffix.
 # build-number must stay > any prior split-per-abi code (abi*1000 + old build).
 # v3.0.0 arm64 was 2015, x86_64 was 4015 — use 4100+ for clean upgrades.
-version: 3.4.0+4106
+version: 3.5.0+4107
 
 environment:
   sdk: ^3.12.0
@@ -91,6 +91,9 @@ dependencies:
   dartssh2: ^2.22.3
   xterm: ^4.0.0
   photo_manager: ^3.11.0
+  # Desktop clipboard files (Explorer copy) and bitmap/PNG screenshots.
+  pasteboard: ^0.5.0
+  ffi: ^2.1.3
 
 # Stock speech_to_text_windows 1.0.1 never calls SAPI SetInterest, so listen
 # appears to start but never yields transcripts. Use our patched copy.

@@ -1,6 +1,6 @@
 # Document capability module
 
-这里保留 Expert Chat Gateway 的文档编辑与格式转换实现。正式部署请运行统一的 [`server/gateway`](../gateway)，不要再为 App 配置第二套地址或 Token。
+这里提供文档编辑与格式转换的纯文件处理核心。当前正式部署运行独立 [`server/mcp_server`](../mcp_server)，由 MCP Tools 调用本模块；Gateway REST 入口仅保留兼容。
 
 模块仍可独立启动，主要用于兼容旧部署和开发调试：
 

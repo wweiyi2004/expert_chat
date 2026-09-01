@@ -89,6 +89,30 @@ data: [DONE]
     },
   );
 
+  test('DeepSeek V4 sends selected reasoning_effort', () async {
+    final adapter = _RecordingAdapter();
+    final dio = Dio()..httpClientAdapter = adapter;
+    final provider = OpenAiCompatibleProvider(dio: dio);
+
+    await provider
+        .streamChat(
+          config: const LlmConfig(
+            baseUrl: 'https://api.deepseek.com',
+            apiKey: 'k',
+            model: 'deepseek-v4-flash',
+          ),
+          messages: const [
+            LlmRequestMessage(role: MessageRole.user, content: 'hello'),
+          ],
+          thinking: true,
+          reasoningEffort: ReasoningEffort.max,
+        )
+        .toList();
+
+    expect(adapter.body['thinking'], {'type': 'enabled'});
+    expect(adapter.body['reasoning_effort'], 'max');
+  });
+
   test(
     'DeepSeek V4 disables thinking without sending reasoning_effort none',
     () async {

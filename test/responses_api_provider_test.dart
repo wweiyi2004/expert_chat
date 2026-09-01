@@ -369,6 +369,7 @@ data: {"type":"response.completed","response":{"id":"r1","status":"completed","o
         .toList();
 
     expect(adapter.body['reasoning'], {'effort': 'high'});
+    expect(adapter.body['output_config'], {'effort': 'high'});
   });
 
   test('user images serialize as Responses input_image parts', () async {

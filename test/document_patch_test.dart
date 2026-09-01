@@ -297,6 +297,34 @@ void main() {
       expect(args.outputFilename, 'a.docx');
     });
 
+    test('parseInspectDocumentArgs reads attachment_name', () {
+      final args = DocumentEditTools.parseInspectDocumentArgs(
+        jsonEncode({'attachment_name': 'sales.xlsx'}),
+      );
+      expect(args.attachmentName, 'sales.xlsx');
+      expect(
+        DocumentEditTools.parseInspectDocumentArgs('{}').attachmentName,
+        isNull,
+      );
+    });
+
+    test('describeAttachmentForInspect flags truncated files', () {
+      final text = DocumentEditTools.describeAttachmentForInspect(
+        name: 'notes.md',
+        format: 'md',
+        mimeType: 'text/markdown',
+        sizeBytes: 12,
+        truncated: true,
+        hasBytes: true,
+        text: 'hello',
+      );
+      expect(text, contains('附件：notes.md'));
+      expect(text, contains('format: md'));
+      expect(text, contains('truncated: yes'));
+      expect(text, contains('禁止 set_text'));
+      expect(text, contains('hello'));
+    });
+
     test('parseEditDocumentArgs validates nested patch', () {
       final args = DocumentEditTools.parseEditDocumentArgs(
         jsonEncode({

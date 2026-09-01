@@ -87,7 +87,9 @@ class _FakeFilePickerPlatform extends FilePickerPlatform {
   }) async => saveFilePath;
 }
 
-class _ConversationStore implements ConversationRepository {
+class _ConversationStore
+    with ConversationRepositoryViaLoadAll
+    implements ConversationRepository {
   final conversations = <Conversation>[];
 
   @override
@@ -146,6 +148,7 @@ class _RecordingLlm implements LlmProvider {
     required List<LlmRequestMessage> messages,
     List<ToolSpec>? tools,
     bool? thinking,
+    ReasoningEffort? reasoningEffort,
     String? forceToolName,
     CancelToken? cancelToken,
   }) async* {
@@ -167,6 +170,7 @@ class _CandidateLlm implements LlmProvider {
     required List<LlmRequestMessage> messages,
     List<ToolSpec>? tools,
     bool? thinking,
+    ReasoningEffort? reasoningEffort,
     String? forceToolName,
     CancelToken? cancelToken,
   }) async* {

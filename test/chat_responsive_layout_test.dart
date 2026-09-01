@@ -4,13 +4,14 @@ import 'package:expert_chat/data/conversation_repository.dart';
 import 'package:expert_chat/data/media_api_config.dart';
 import 'package:expert_chat/data/models.dart';
 import 'package:expert_chat/features/chat/chat_page.dart';
-import 'package:expert_chat/state/chat_controller.dart';
 import 'package:expert_chat/state/settings_controller.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-class _MemoryConversationRepository implements ConversationRepository {
+class _MemoryConversationRepository
+    with ConversationRepositoryViaLoadAll
+    implements ConversationRepository {
   @override
   Future<void> deleteConversation(String id) async {}
 
@@ -65,9 +66,7 @@ void main() {
             body: SizedBox(
               width: 288,
               child: Consumer(
-                builder: (context, ref, _) => ChatWorkspaceSidebar(
-                  asyncState: ref.watch(chatControllerProvider),
-                ),
+                builder: (context, ref, _) => const ChatWorkspaceSidebar(),
               ),
             ),
           ),
@@ -141,9 +140,20 @@ void main() {
       expect(contextCenter, greaterThan(appBarTop));
       expect(contextCenter, lessThan(appBarBottom));
 
-      // Model chips stay visible; media actions hide behind the “+” tray.
+      // Mode chips stay on the strip; tools/MCP live in the “+” tray.
       expect(find.text('深度思考'), findsOneWidget);
-      expect(find.text('联网'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('chat-work-mode-switch')),
+        findsOneWidget,
+      );
+      final workSwitchCenter = tester
+          .getCenter(find.byKey(const ValueKey('chat-work-mode-switch')))
+          .dy;
+      expect(workSwitchCenter, greaterThan(appBarTop));
+      expect(workSwitchCenter, lessThan(appBarBottom));
+      expect(find.text('联网'), findsNothing);
+      expect(find.text('配图'), findsNothing);
+      expect(find.text('MCP'), findsNothing);
       expect(
         find.byKey(const ValueKey('composer-plus-button')),
         findsOneWidget,
@@ -158,6 +168,8 @@ void main() {
       expect(find.text('上传文件'), findsOneWidget);
       expect(find.text('上传图片'), findsOneWidget);
       expect(find.text('图片生成'), findsOneWidget);
+      expect(find.text('联网·自动'), findsOneWidget);
+      expect(find.text('配图·自动'), findsOneWidget);
 
       const filterKeys = [
         ValueKey('conversation-mode-filter-all'),

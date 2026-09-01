@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../../data/ui_prefs.dart';
 import '../../../domain/html/html_snippet.dart';
 import 'html_preview_page.dart';
 
@@ -11,11 +12,13 @@ class PreviewableCodeBlock extends StatefulWidget {
     required this.name,
     required this.code,
     this.closed = true,
+    this.markdownStyle = MarkdownStylePref.standard,
   });
 
   final String name;
   final String code;
   final bool closed;
+  final MarkdownStylePref markdownStyle;
 
   @override
   State<PreviewableCodeBlock> createState() => _PreviewableCodeBlockState();
@@ -65,10 +68,35 @@ class _PreviewableCodeBlockState extends State<PreviewableCodeBlock> {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final label = widget.name.trim().isEmpty ? 'code' : widget.name.trim();
+    final skin = widget.markdownStyle;
+    final (Color fill, Color codeColor, double radius) = switch (skin) {
+      MarkdownStylePref.standard => (
+        scheme.onInverseSurface,
+        scheme.onSurface,
+        10.0,
+      ),
+      MarkdownStylePref.github => (
+        scheme.surfaceContainerHigh,
+        scheme.onSurface,
+        8.0,
+      ),
+      MarkdownStylePref.notion => (
+        scheme.surfaceContainerLow,
+        scheme.onSurface,
+        12.0,
+      ),
+      MarkdownStylePref.terminal => (
+        scheme.inverseSurface,
+        const Color(0xFF7EE787),
+        4.0,
+      ),
+    };
 
     return Material(
-      color: scheme.onInverseSurface,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      color: fill,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(radius),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -117,9 +145,9 @@ class _PreviewableCodeBlockState extends State<PreviewableCodeBlock> {
               widget.code,
               style: TextStyle(
                 fontFamily: 'monospace',
-                fontSize: 13,
+                fontSize: skin == MarkdownStylePref.terminal ? 12.5 : 13,
                 height: 1.45,
-                color: scheme.onSurface,
+                color: codeColor,
               ),
             ),
           ),

@@ -1,6 +1,6 @@
 # Expert Chat Gateway
 
-统一承载超长文件后台任务、文档编辑/转换、账户隔离、分类授权、配额和审计。它不是 OpenAI API 的复刻；上游只需提供兼容 `/chat/completions` 的模型接口。
+统一承载超长文件后台任务、文档编辑/转换、账户隔离、分类授权、配额和审计。文档能力同时通过现有 REST API 和标准 MCP Streamable HTTP 暴露；它不是 OpenAI API 的复刻。上游只需提供兼容 `/chat/completions` 的模型接口。
 
 完整模块规则见 [Gateway 架构约定](../../docs/gateway-architecture.md)。
 
@@ -23,6 +23,30 @@ uvicorn gateway.app.main:app --host 127.0.0.1 --port 8790 --workers 1
 ```
 
 本机开发可在软件设置中填写 `http://127.0.0.1:8790` 和相同旧 Token。生产环境应使用 HTTPS + AuthService OIDC。
+
+## MCP 文档服务
+
+- Endpoint：`http://127.0.0.1:8790/mcp`
+- Transport：MCP Streamable HTTP
+- Authorization：与 Gateway REST API 相同的 `Authorization: Bearer <token>`
+- Tools：`list_documents`、`inspect_document`、`edit_document`、`convert_document`
+- Resources：
+  - `expert-chat://documents/{file_id}/metadata`
+  - `expert-chat://documents/{file_id}/text`
+  - `expert-chat://documents/{file_id}/binary`
+
+MCP 工具使用 Gateway 的持久 `file_id`。新文件仍通过 `POST /v1/files` 上传；编辑和转换生成新的文件记录并返回标准 MCP `resource_link`，不会覆盖原文件。这样现有 Flutter REST 链路保持兼容，其他 MCP Host 也可以复用同一文档能力。
+
+本地 MCP 客户端配置示例：
+
+```json
+{
+  "url": "http://127.0.0.1:8790/mcp",
+  "headers": {
+    "Authorization": "Bearer change-me"
+  }
+}
+```
 
 ## 生产鉴权
 
@@ -47,13 +71,13 @@ GATEWAY_ADMIN_SUBS=<AuthService user sub，可逗号分隔>
 
 ```bash
 cd server
-docker build -f gateway/Dockerfile -t expert-chat-gateway:0.3.1 .
+docker build -f gateway/Dockerfile -t expert-chat-gateway:0.4.0 .
 docker run -d --name expert-chat-gateway \
   --restart unless-stopped --cpus 1 --memory 1536m \
   -p 127.0.0.1:8790:8790 \
   -v /data/expert-chat-gateway:/data \
   --env-file /etc/expert-chat-gateway.env \
-  expert-chat-gateway:0.3.1
+  expert-chat-gateway:0.4.0
 ```
 
 [`deploy.sh`](deploy.sh) 会先在线备份 SQLite 与环境文件，保留旧容器用于回滚，再健康检查新版本。公网只应开放 Nginx 的 80/443，8790 绑定回环地址。
@@ -88,8 +112,15 @@ docker run -d --name expert-chat-gateway \
 | `GATEWAY_CHUNK_CHARS` | `12000` | 文档分块字符数 |
 | `GATEWAY_CONCURRENCY` | `2` | 全局同时处理任务数 |
 | `GATEWAY_TASK_RETENTION_DAYS` | `30` | 终态任务保留天数；`0` 不清理 |
+| `GATEWAY_MCP_PUBLIC_URL` | `http://127.0.0.1:8790/mcp` | MCP 对外资源 URL；生产必须设为 HTTPS 公网地址 |
+| `GATEWAY_MCP_ISSUER` | OIDC Issuer 或本机地址 | MCP OAuth Protected Resource Metadata 中的授权服务器 |
+| `GATEWAY_MCP_ALLOWED_HOSTS` | 本机 Host | 生产 MCP Host 白名单，逗号分隔，如 `chat.example.com,chat.example.com:*` |
+| `GATEWAY_MCP_ALLOWED_ORIGINS` | 本机 Origin | 浏览器 MCP 客户端允许的 Origin，逗号分隔 |
+| `GATEWAY_MCP_RESOURCE_MAX_CHARS` | `200000` | 单次文本 Resource 返回的字符上限 |
 | `LLM_BASE_URL` | 空 | 上游兼容 API Base URL |
 | `LLM_API_KEY` | 空 | 仅服务器保存的上游密钥 |
 | `LLM_MODEL` | 空 | 长任务默认模型 |
 
 当前 Worker 内置于单进程，并使用 SQLite 恢复重启时未完成的任务，因此必须使用 `--workers 1`。
+
+生产环境反向代理 MCP 时必须显式设置 `GATEWAY_MCP_PUBLIC_URL`、`GATEWAY_MCP_ISSUER` 和 `GATEWAY_MCP_ALLOWED_HOSTS`。浏览器型 MCP Host 还需设置 `GATEWAY_MCP_ALLOWED_ORIGINS`；服务端客户端通常不发送 `Origin`。

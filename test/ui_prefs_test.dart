@@ -18,6 +18,7 @@ void main() {
       'textScale': 123,
       'density': 'compact',
       'messageStyle': true,
+      'markdownStyle': 0,
       'contentWidth': [1, 2],
       'liveMarkdown': 'yes',
       'ttsSpeed': 9,
@@ -26,8 +27,22 @@ void main() {
     expect(restored.textScale, TextScalePref.medium);
     expect(restored.density, DensityPref.compact);
     expect(restored.messageStyle, MessageStylePref.bubble);
+    expect(restored.markdownStyle, MarkdownStylePref.standard);
     expect(restored.contentWidth, ContentWidthPref.regular);
     expect(restored.liveMarkdown, isTrue);
     expect(restored.ttsSpeed, TtsSpeedPref.normal);
+  });
+
+  test('markdownStyle round-trips and defaults to standard', () {
+    final saved = const UiPrefs(
+      markdownStyle: MarkdownStylePref.github,
+    ).toJson();
+    expect(UiPrefs.fromJson(saved).markdownStyle, MarkdownStylePref.github);
+    expect(const UiPrefs().markdownStyle, MarkdownStylePref.standard);
+  });
+
+  test('legacy compact/article markdown styles map to the new skins', () {
+    expect(MarkdownStylePref.fromWire('compact'), MarkdownStylePref.terminal);
+    expect(MarkdownStylePref.fromWire('article'), MarkdownStylePref.notion);
   });
 }

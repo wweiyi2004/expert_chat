@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-image="${1:-expert-chat-gateway:0.3.1}"
+image="${1:-expert-chat-gateway:0.4.0}"
 container="expert-chat-gateway"
 # Loopback by default: the public edge is Nginx (80/443) only.
 # Override with GATEWAY_BIND_ADDRESS=0.0.0.0 only behind a private firewall.

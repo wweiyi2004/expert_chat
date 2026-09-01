@@ -7,13 +7,16 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/providers.dart';
 import '../data/chat_skill.dart';
+import '../data/composer_modes.dart';
 import '../data/context_prefs.dart';
 import '../data/gateway_config.dart';
 import '../data/media_api_config.dart';
 import '../data/provider_profile.dart';
+import '../data/settings_bundle.dart';
 import '../data/ui_prefs.dart';
 import '../domain/llm/llm_provider.dart';
 import '../domain/gateway/gateway_auth_service.dart';
+import '../domain/mcp/mcp_host_tools.dart';
 import '../domain/tools/search_provider.dart';
 
 /// Bounds / defaults for the web-search knobs surfaced in settings.
@@ -39,6 +42,9 @@ class SettingsState {
     this.searchBrainModel,
     this.searchMaxRounds = kDefaultSearchMaxRounds,
     this.searchMaxResults = kDefaultSearchMaxResults,
+    this.searchMode = SearchMode.auto,
+    this.imageGenMode = ImageGenMode.auto,
+    this.reasoningEffort = ReasoningEffort.high,
     this.systemPrompt = '',
     this.chatSkills = const ChatSkillCatalog([]),
     this.ui = const UiPrefs(),
@@ -56,6 +62,7 @@ class SettingsState {
     this.gatewayLegacyToken = '',
     this.gatewayAuthSession,
     this.gatewayTokenProvider,
+    this.customMcpTokens = const {},
     this.memoryEnabled = false,
     this.researchModeEnabled = false,
     this.studyModeEnabled = true,
@@ -86,6 +93,15 @@ class SettingsState {
   /// Results requested per search call.
   final int searchMaxResults;
 
+  /// Composer 联网 default (off / auto / always). Missing prefs → auto.
+  final SearchMode searchMode;
+
+  /// Composer 配图 default (off / auto / always). Missing prefs → auto.
+  final ImageGenMode imageGenMode;
+
+  /// DeepSeek/Grok thinking intensity while composer 深度思考 is on.
+  final ReasoningEffort reasoningEffort;
+
   /// User-authored general prompt. Empty on first install even though the
   /// chat catalog fallback has factory text. Synced with
   /// [chatSkills].fallback.prompt when the user edits general.
@@ -115,6 +131,9 @@ class SettingsState {
   final GatewayAuthSession? gatewayAuthSession;
   final Future<String> Function()? gatewayTokenProvider;
 
+  /// Bearer tokens for [GatewayConfig.customMcpServers], keyed by server id.
+  final Map<String, String> customMcpTokens;
+
   /// Local Markdown long-term memory. Off by default until the user opts in.
   final bool memoryEnabled;
 
@@ -136,6 +155,81 @@ class SettingsState {
       gateway.supports(GatewayCapabilityIds.documentEdit);
   bool get supportsDocumentConvert =>
       gateway.supports(GatewayCapabilityIds.documentConvert);
+  List<DiscoveredMcpTool> get modelDocumentMcpTools =>
+      gateway.capabilitiesDiscovered
+      ? McpHostTools.modelFacing(gateway.mcpTools)
+      : const [];
+  List<RoutedMcpTool> get routedMcpTools => McpHostTools.mergeForModel(
+    documentTools: modelDocumentMcpTools,
+    customServers: gateway.customMcpServers,
+  );
+  List<DiscoveredMcpTool> get modelMcpTools => [
+    for (final routed in routedMcpTools)
+      DiscoveredMcpTool(
+        name: routed.exposedName,
+        description: routed.tool.description,
+        inputSchema: routed.tool.inputSchema,
+      ),
+  ];
+
+  List<McpServerChoice> get availableMcpServers => [
+    if (gateway.isConfigured)
+      McpServerChoice(
+        id: McpHostTools.expertChatServerId,
+        name: '文档 MCP',
+        toolsDiscovered: gateway.capabilitiesDiscovered,
+      ),
+    for (final server in gateway.customMcpServers)
+      if (server.enabled)
+        McpServerChoice(
+          id: server.id,
+          name: server.name,
+          toolsDiscovered: server.toolsDiscovered,
+        ),
+  ];
+
+  List<DiscoveredMcpTool> modelMcpToolsFor(Iterable<String> selectedIds) {
+    final selected = selectedIds.toSet();
+    final routed = McpHostTools.mergeForModel(
+      documentTools: selected.contains(McpHostTools.expertChatServerId)
+          ? modelDocumentMcpTools
+          : const [],
+      customServers: [
+        for (final server in gateway.customMcpServers)
+          if (selected.contains(server.id)) server,
+      ],
+    );
+    return [
+      for (final tool in routed)
+        DiscoveredMcpTool(
+          name: tool.exposedName,
+          description: tool.tool.description,
+          inputSchema: tool.tool.inputSchema,
+        ),
+    ];
+  }
+
+  RoutedMcpTool? routedMcpTool(String name) {
+    for (final tool in routedMcpTools) {
+      if (tool.exposedName == name) return tool;
+    }
+    return null;
+  }
+
+  GatewayConnection connectionForRouted(RoutedMcpTool tool) {
+    final serverId = tool.serverId;
+    if (serverId == null) return gatewayConnection;
+    for (final server in gateway.customMcpServers) {
+      if (server.id == serverId) {
+        return gateway.connectionForCustom(
+          server,
+          customMcpTokens[server.id] ?? '',
+        );
+      }
+    }
+    return gatewayConnection;
+  }
+
   GatewayConnection get gatewayConnection => GatewayConnection(
     config: gateway,
     apiToken: gatewayToken,
@@ -206,6 +300,9 @@ class SettingsState {
     Object? searchBrainModel = _sentinel,
     int? searchMaxRounds,
     int? searchMaxResults,
+    SearchMode? searchMode,
+    ImageGenMode? imageGenMode,
+    ReasoningEffort? reasoningEffort,
     String? systemPrompt,
     ChatSkillCatalog? chatSkills,
     UiPrefs? ui,
@@ -223,6 +320,7 @@ class SettingsState {
     String? gatewayLegacyToken,
     Object? gatewayAuthSession = _sentinel,
     Future<String> Function()? gatewayTokenProvider,
+    Map<String, String>? customMcpTokens,
     bool? memoryEnabled,
     bool? researchModeEnabled,
     bool? studyModeEnabled,
@@ -242,6 +340,9 @@ class SettingsState {
         : searchBrainModel as String?,
     searchMaxRounds: searchMaxRounds ?? this.searchMaxRounds,
     searchMaxResults: searchMaxResults ?? this.searchMaxResults,
+    searchMode: searchMode ?? this.searchMode,
+    imageGenMode: imageGenMode ?? this.imageGenMode,
+    reasoningEffort: reasoningEffort ?? this.reasoningEffort,
     systemPrompt: systemPrompt ?? this.systemPrompt,
     chatSkills: chatSkills ?? this.chatSkills,
     ui: ui ?? this.ui,
@@ -261,6 +362,7 @@ class SettingsState {
         ? this.gatewayAuthSession
         : gatewayAuthSession as GatewayAuthSession?,
     gatewayTokenProvider: gatewayTokenProvider ?? this.gatewayTokenProvider,
+    customMcpTokens: customMcpTokens ?? this.customMcpTokens,
     memoryEnabled: memoryEnabled ?? this.memoryEnabled,
     researchModeEnabled: researchModeEnabled ?? this.researchModeEnabled,
     studyModeEnabled: studyModeEnabled ?? this.studyModeEnabled,
@@ -279,6 +381,9 @@ const _kSearchApiKeySecure = 'search_api_key';
 const _kSearchBrainModel = 'searchBrainModel';
 const _kSearchMaxRounds = 'searchMaxRounds';
 const _kSearchMaxResults = 'searchMaxResults';
+const _kComposerSearchMode = 'composerSearchMode';
+const _kComposerImageGenMode = 'composerImageGenMode';
+const _kReasoningEffort = 'reasoningEffort';
 const _kSystemPrompt = 'systemPrompt';
 const _kChatSkills = 'chatSkills';
 const _kUiPrefs = 'uiPrefs';
@@ -293,6 +398,7 @@ const _kAsrApiKeySecure = 'asr_api_key';
 const _kContextPrefs = 'contextPrefs';
 const _kGateway = 'expertChatGateway';
 const _kGatewayTokenSecure = 'expert_chat_gateway_token';
+String customMcpTokenStorageKey(String id) => 'custom_mcp_token_$id';
 const _kGatewayOidcAccessTokenSecure = 'expert_chat_gateway_oidc_access_token';
 const _kGatewayOidcRefreshTokenSecure =
     'expert_chat_gateway_oidc_refresh_token';
@@ -492,6 +598,12 @@ class SettingsController extends AsyncNotifier<SettingsState> {
         gateway.authServiceConfigured && gatewayAuthSession != null
         ? gatewayAuthSession.accessToken
         : gatewayLegacyToken;
+    final customMcpTokens = <String, String>{};
+    for (final server in gateway.customMcpServers) {
+      final token =
+          await secure.read(key: customMcpTokenStorageKey(server.id)) ?? '';
+      if (token.isNotEmpty) customMcpTokens[server.id] = token;
+    }
 
     // Drop a stored model override that no longer exists in the active
     // profile's model list (e.g. the profile was edited since), so requests
@@ -509,12 +621,14 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     }
 
     final storedSystemPrompt = prefs.getString(_kSystemPrompt) ?? '';
+    final storedSkills = prefs.getString(_kChatSkills);
     final catalog = ChatSkillCatalog.decode(
-      prefs.getString(_kChatSkills),
+      storedSkills,
       legacySystemPrompt: storedSystemPrompt,
     );
-    if (prefs.getString(_kChatSkills) == null) {
-      await prefs.setString(_kChatSkills, catalog.encode());
+    final encodedSkills = catalog.encode();
+    if (storedSkills != encodedSkills) {
+      await prefs.setString(_kChatSkills, encodedSkills);
     }
 
     return SettingsState(
@@ -538,6 +652,15 @@ class SettingsController extends AsyncNotifier<SettingsState> {
             kMinSearchMaxResults,
             kMaxSearchMaxResults,
           ),
+      searchMode: SearchModeInfo.fromWire(
+        prefs.getString(_kComposerSearchMode),
+      ),
+      imageGenMode: ImageGenModeInfo.fromWire(
+        prefs.getString(_kComposerImageGenMode),
+      ),
+      reasoningEffort: ReasoningEffort.fromWire(
+        prefs.getString(_kReasoningEffort),
+      ),
       systemPrompt: storedSystemPrompt,
       chatSkills: catalog,
       ui: _readUiPrefs(prefs),
@@ -555,6 +678,7 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       gatewayLegacyToken: gatewayLegacyToken,
       gatewayAuthSession: gatewayAuthSession,
       gatewayTokenProvider: _freshGatewayToken,
+      customMcpTokens: customMcpTokens,
       memoryEnabled: prefs.getBool(_kMemoryEnabled) ?? false,
       researchModeEnabled: prefs.getBool(_kResearchModeEnabled) ?? false,
       // Default on: learning hub is part of the main product surface.
@@ -816,6 +940,38 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     await ref.read(sharedPrefsProvider).setInt(_kSearchMaxRounds, bounded);
   }
 
+  Future<void> setSearchMode(SearchMode mode) async {
+    if (_current.searchMode == mode) return;
+    state = AsyncData(_current.copyWith(searchMode: mode));
+    try {
+      await ref
+          .read(sharedPrefsProvider)
+          .setString(_kComposerSearchMode, mode.wire);
+    } catch (_) {
+      // Widget tests override settings without SharedPreferences.
+    }
+  }
+
+  Future<void> setImageGenMode(ImageGenMode mode) async {
+    if (_current.imageGenMode == mode) return;
+    state = AsyncData(_current.copyWith(imageGenMode: mode));
+    try {
+      await ref
+          .read(sharedPrefsProvider)
+          .setString(_kComposerImageGenMode, mode.wire);
+    } catch (_) {
+      // Widget tests override settings without SharedPreferences.
+    }
+  }
+
+  Future<void> setReasoningEffort(ReasoningEffort effort) async {
+    if (_current.reasoningEffort == effort) return;
+    state = AsyncData(_current.copyWith(reasoningEffort: effort));
+    await ref
+        .read(sharedPrefsProvider)
+        .setString(_kReasoningEffort, effort.wire);
+  }
+
   Future<void> setSearchMaxResults(int results) async {
     final bounded = results.clamp(kMinSearchMaxResults, kMaxSearchMaxResults);
     state = AsyncData(_current.copyWith(searchMaxResults: bounded));
@@ -979,13 +1135,120 @@ class SettingsController extends AsyncNotifier<SettingsState> {
   Future<void> setGatewayCapabilities({
     required List<String> capabilities,
     required String serverVersion,
+    List<DiscoveredMcpTool> mcpTools = const [],
   }) => setGatewayConfig(
     _current.gateway.copyWith(
       capabilitiesDiscovered: true,
       capabilities: capabilities.toSet().toList()..sort(),
       serverVersion: serverVersion,
+      mcpTools: mcpTools,
     ),
   );
+
+  Future<void> addCustomMcpServer({
+    required String id,
+    required String name,
+    required String baseUrl,
+    String token = '',
+  }) async {
+    final trimmedName = name.trim();
+    final trimmedUrl = baseUrl.trim();
+    if (id.trim().isEmpty ||
+        trimmedName.isEmpty ||
+        GatewayConfig.normalizeBaseUrl(trimmedUrl).isEmpty) {
+      return;
+    }
+    if (_current.gateway.customMcpServers.any((server) => server.id == id)) {
+      return;
+    }
+    await setGatewayConfig(
+      _current.gateway.copyWith(
+        customMcpServers: [
+          ..._current.gateway.customMcpServers,
+          CustomMcpServer(id: id, name: trimmedName, baseUrl: trimmedUrl),
+        ],
+      ),
+    );
+    if (token.isNotEmpty) await setCustomMcpToken(id, token);
+  }
+
+  Future<void> updateCustomMcpServer({
+    required String id,
+    required String name,
+    required String baseUrl,
+  }) async {
+    await _updateCustomMcpServer(id, (server) {
+      final nextUrl = GatewayConfig.normalizeBaseUrl(baseUrl);
+      final urlChanged = nextUrl != server.normalizedBaseUrl;
+      return server.copyWith(
+        name: name.trim(),
+        baseUrl: baseUrl.trim(),
+        toolsDiscovered: urlChanged ? false : server.toolsDiscovered,
+        tools: urlChanged ? const <DiscoveredMcpTool>[] : server.tools,
+        serverVersion: urlChanged ? null : server.serverVersion,
+        lastError: urlChanged ? null : server.lastError,
+      );
+    });
+  }
+
+  Future<void> setCustomMcpEnabled(String id, bool enabled) =>
+      _updateCustomMcpServer(id, (server) => server.copyWith(enabled: enabled));
+
+  Future<void> setCustomMcpDiscovered(
+    String id, {
+    required List<DiscoveredMcpTool> tools,
+    required String serverVersion,
+  }) => _updateCustomMcpServer(
+    id,
+    (server) => server.copyWith(
+      toolsDiscovered: true,
+      tools: tools,
+      serverVersion: serverVersion,
+      lastError: null,
+    ),
+  );
+
+  Future<void> setCustomMcpError(String id, String error) =>
+      _updateCustomMcpServer(id, (server) => server.copyWith(lastError: error));
+
+  Future<void> deleteCustomMcpServer(String id) async {
+    await setGatewayConfig(
+      _current.gateway.copyWith(
+        customMcpServers: [
+          for (final server in _current.gateway.customMcpServers)
+            if (server.id != id) server,
+        ],
+      ),
+    );
+    await setCustomMcpToken(id, '');
+  }
+
+  Future<void> setCustomMcpToken(String id, String token) async {
+    if (id.isEmpty) return;
+    final next = Map<String, String>.from(_current.customMcpTokens);
+    final secure = ref.read(secureStorageProvider);
+    if (token.isEmpty) {
+      next.remove(id);
+      await secure.delete(key: customMcpTokenStorageKey(id));
+    } else {
+      next[id] = token;
+      await secure.write(key: customMcpTokenStorageKey(id), value: token);
+    }
+    if (!ref.mounted) return;
+    state = AsyncData(_current.copyWith(customMcpTokens: next));
+  }
+
+  Future<void> _updateCustomMcpServer(
+    String id,
+    CustomMcpServer Function(CustomMcpServer server) update,
+  ) async {
+    final current = _current.gateway.customMcpServers;
+    final index = current.indexWhere((server) => server.id == id);
+    if (index < 0) return;
+    final next = [...current];
+    next[index] = update(current[index]);
+    await setGatewayConfig(_current.gateway.copyWith(customMcpServers: next));
+  }
 
   Future<void> setChatSkills(ChatSkillCatalog catalog) async {
     final next = catalog.sanitize(legacySystemPrompt: _current.systemPrompt);
@@ -1201,6 +1464,356 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     );
     await _writeProfiles(prefs, remaining);
     await prefs.setString(_kActiveProfile, activeId!);
+  }
+
+  /// Snapshot of API endpoints, keys, gateway, and related prefs as pretty JSON.
+  Future<String> exportSettingsJson() async {
+    final prefs = ref.read(sharedPrefsProvider);
+    final secure = ref.read(secureStorageProvider);
+    final current = _current;
+
+    final profiles = <Map<String, dynamic>>[];
+    for (final profile in current.profiles) {
+      final key = profile.id == current.activeProfileId
+          ? current.apiKey
+          : await secure.read(key: providerApiKeyStorageKey(profile.id)) ?? '';
+      profiles.add({...profile.toJson(), 'apiKey': key});
+    }
+
+    final ttsProfiles = <String, dynamic>{};
+    for (final protocol in SpeechApiProtocol.values) {
+      final isActive = protocol == current.ttsApi.effectiveSpeechProtocol;
+      final config = isActive
+          ? current.ttsApi
+          : _readMediaApiOrNull(prefs, _ttsApiProfilePrefsKey(protocol)) ??
+                const MediaApiConfig();
+      final key = isActive
+          ? current.ttsApiKey
+          : await secure.read(key: _ttsApiProfileSecureKey(protocol)) ?? '';
+      if (config.baseUrl.trim().isEmpty &&
+          config.model.trim().isEmpty &&
+          key.trim().isEmpty) {
+        continue;
+      }
+      ttsProfiles[protocol.name] = SettingsBundle.mediaToJson(config, key);
+    }
+
+    return SettingsBundle.encode({
+      'profiles': profiles,
+      'activeProfileId': current.activeProfileId,
+      'selectedModel': current.selectedModel,
+      'themeMode': current.themeMode.name,
+      'search': {
+        'backend': current.searchBackend.wire,
+        'apiKey': current.searchApiKey,
+        'brainModel': current.searchBrainModel,
+        'maxRounds': current.searchMaxRounds,
+        'maxResults': current.searchMaxResults,
+        'mode': current.searchMode.wire,
+      },
+      'imageGenMode': current.imageGenMode.wire,
+      'reasoningEffort': current.reasoningEffort.wire,
+      'systemPrompt': current.systemPrompt,
+      'chatSkills': [
+        for (final skill in current.chatSkills.skills) skill.toJson(),
+      ],
+      'ui': current.ui.toJson(),
+      'vision': SettingsBundle.mediaToJson(
+        current.visionApi,
+        current.visionApiKey,
+      ),
+      'imageGeneration': SettingsBundle.mediaToJson(
+        current.imageGenerationApi,
+        current.imageGenerationApiKey,
+      ),
+      'tts': SettingsBundle.mediaToJson(current.ttsApi, current.ttsApiKey),
+      'ttsProfiles': ttsProfiles,
+      'asr': SettingsBundle.mediaToJson(current.asrApi, current.asrApiKey),
+      'context': current.context.toJson(),
+      'gateway': {
+        ...current.gateway.toJson(),
+        'token': current.gatewayLegacyToken,
+      },
+      'customMcpTokens': current.customMcpTokens,
+      'memoryEnabled': current.memoryEnabled,
+      'researchModeEnabled': current.researchModeEnabled,
+      'studyModeEnabled': current.studyModeEnabled,
+      'creationModeEnabled': current.creationModeEnabled,
+    });
+  }
+
+  /// Replace local API/settings from an exported JSON snapshot, then reload.
+  Future<void> importSettingsJson(String raw) async {
+    final json = SettingsBundle.decode(raw);
+    await _persistImportedSettings(json);
+    if (!ref.mounted) return;
+    ref.invalidateSelf();
+    await future;
+  }
+
+  Future<void> _persistImportedSettings(Map<String, dynamic> json) async {
+    final prefs = ref.read(sharedPrefsProvider);
+    final secure = ref.read(secureStorageProvider);
+
+    final profileRaw = json['profiles'];
+    if (profileRaw is List) {
+      final profiles = <ProviderProfile>[];
+      final keys = <String, String>{};
+      for (final item in profileRaw) {
+        final map = SettingsBundle.asMap(item);
+        if (map == null) continue;
+        final apiKey = map.remove('apiKey')?.toString() ?? '';
+        final profile = ProviderProfile.fromJson(map);
+        if (profile.name.trim().isEmpty && profile.baseUrl.trim().isEmpty) {
+          continue;
+        }
+        profiles.add(profile);
+        keys[profile.id] = apiKey;
+      }
+      if (profiles.isNotEmpty) {
+        final oldIds = {for (final profile in _current.profiles) profile.id};
+        final newIds = {for (final profile in profiles) profile.id};
+        for (final id in oldIds.difference(newIds)) {
+          await secure.delete(key: providerApiKeyStorageKey(id));
+        }
+        await _writeProfiles(prefs, profiles);
+        for (final profile in profiles) {
+          await secure.write(
+            key: providerApiKeyStorageKey(profile.id),
+            value: keys[profile.id] ?? '',
+          );
+        }
+        final requestedActive = json['activeProfileId']?.toString();
+        final activeId =
+            (requestedActive != null && newIds.contains(requestedActive))
+            ? requestedActive
+            : profiles.first.id;
+        await prefs.setString(_kActiveProfile, activeId);
+      }
+    }
+
+    if (json.containsKey('selectedModel')) {
+      final model = json['selectedModel']?.toString();
+      if (model == null || model.isEmpty) {
+        await prefs.remove(_kSelectedModel);
+      } else {
+        await prefs.setString(_kSelectedModel, model);
+      }
+    }
+
+    final themeName = json['themeMode']?.toString();
+    if (themeName != null) {
+      var mode = ThemeMode.system;
+      for (final value in ThemeMode.values) {
+        if (value.name == themeName) {
+          mode = value;
+          break;
+        }
+      }
+      await prefs.setInt(_kThemeMode, mode.index);
+    }
+
+    final search = SettingsBundle.asMap(json['search']);
+    if (search != null) {
+      if (search['backend'] != null) {
+        await prefs.setString(
+          _kSearchBackend,
+          SearchBackendInfo.fromWire(search['backend']?.toString()).wire,
+        );
+      }
+      if (search.containsKey('apiKey')) {
+        await secure.write(
+          key: _kSearchApiKeySecure,
+          value: search['apiKey']?.toString() ?? '',
+        );
+      }
+      if (search.containsKey('brainModel')) {
+        final brain = search['brainModel']?.toString().trim() ?? '';
+        if (brain.isEmpty) {
+          await prefs.remove(_kSearchBrainModel);
+        } else {
+          await prefs.setString(_kSearchBrainModel, brain);
+        }
+      }
+      if (search['maxRounds'] is num) {
+        await prefs.setInt(
+          _kSearchMaxRounds,
+          (search['maxRounds'] as num).toInt().clamp(
+            kMinSearchMaxRounds,
+            kMaxSearchMaxRounds,
+          ),
+        );
+      }
+      if (search['maxResults'] is num) {
+        await prefs.setInt(
+          _kSearchMaxResults,
+          (search['maxResults'] as num).toInt().clamp(
+            kMinSearchMaxResults,
+            kMaxSearchMaxResults,
+          ),
+        );
+      }
+      if (search['mode'] != null) {
+        await prefs.setString(
+          _kComposerSearchMode,
+          SearchModeInfo.fromWire(search['mode']?.toString()).wire,
+        );
+      }
+    }
+
+    if (json['imageGenMode'] != null) {
+      await prefs.setString(
+        _kComposerImageGenMode,
+        ImageGenModeInfo.fromWire(json['imageGenMode']?.toString()).wire,
+      );
+    }
+    if (json['reasoningEffort'] != null) {
+      await prefs.setString(
+        _kReasoningEffort,
+        ReasoningEffort.fromWire(json['reasoningEffort']?.toString()).wire,
+      );
+    }
+
+    final skillsRaw = json['chatSkills'];
+    if (skillsRaw is List || skillsRaw is String) {
+      final encoded = skillsRaw is String ? skillsRaw : jsonEncode(skillsRaw);
+      final catalog = ChatSkillCatalog.decode(
+        encoded,
+        legacySystemPrompt: json['systemPrompt']?.toString() ?? '',
+      );
+      await prefs.setString(_kChatSkills, catalog.encode());
+      await prefs.setString(_kSystemPrompt, catalog.fallback.prompt);
+    } else if (json['systemPrompt'] is String) {
+      await prefs.setString(_kSystemPrompt, json['systemPrompt'] as String);
+    }
+
+    final ui = SettingsBundle.asMap(json['ui']);
+    if (ui != null) {
+      await prefs.setString(
+        _kUiPrefs,
+        jsonEncode(UiPrefs.fromJson(ui).toJson()),
+      );
+    }
+
+    final context = SettingsBundle.asMap(json['context']);
+    if (context != null) {
+      await prefs.setString(
+        _kContextPrefs,
+        jsonEncode(ContextPrefs.fromJson(context).toJson()),
+      );
+    }
+
+    Future<void> writeMedia({
+      required Object? raw,
+      required String prefsKey,
+      required String secureKey,
+    }) async {
+      final slot = SettingsBundle.mediaFromJson(raw);
+      if (slot == null) return;
+      await prefs.setString(prefsKey, jsonEncode(slot.config.toJson()));
+      await secure.write(key: secureKey, value: slot.apiKey);
+    }
+
+    await writeMedia(
+      raw: json['vision'],
+      prefsKey: _kVisionApi,
+      secureKey: _kVisionApiKeySecure,
+    );
+    await writeMedia(
+      raw: json['imageGeneration'],
+      prefsKey: _kImageGenerationApi,
+      secureKey: _kImageGenerationApiKeySecure,
+    );
+    await writeMedia(
+      raw: json['asr'],
+      prefsKey: _kAsrApi,
+      secureKey: _kAsrApiKeySecure,
+    );
+
+    final ttsProfiles = SettingsBundle.asMap(json['ttsProfiles']);
+    if (ttsProfiles != null) {
+      for (final protocol in SpeechApiProtocol.values) {
+        final slot = SettingsBundle.mediaFromJson(ttsProfiles[protocol.name]);
+        if (slot == null) continue;
+        await prefs.setString(
+          _ttsApiProfilePrefsKey(protocol),
+          jsonEncode(slot.config.toJson()),
+        );
+        await secure.write(
+          key: _ttsApiProfileSecureKey(protocol),
+          value: slot.apiKey,
+        );
+      }
+    }
+    final tts = SettingsBundle.mediaFromJson(json['tts']);
+    if (tts != null) {
+      await prefs.setString(_kTtsApi, jsonEncode(tts.config.toJson()));
+      await secure.write(key: _kTtsApiKeySecure, value: tts.apiKey);
+      await prefs.setString(
+        _ttsApiProfilePrefsKey(tts.config.effectiveSpeechProtocol),
+        jsonEncode(tts.config.toJson()),
+      );
+      await secure.write(
+        key: _ttsApiProfileSecureKey(tts.config.effectiveSpeechProtocol),
+        value: tts.apiKey,
+      );
+    }
+
+    final oldMcpIds = {
+      for (final server in _current.gateway.customMcpServers) server.id,
+    };
+    final gatewayRaw = SettingsBundle.asMap(json['gateway']);
+    if (gatewayRaw != null) {
+      final token =
+          gatewayRaw.remove('token')?.toString() ??
+          gatewayRaw.remove('apiToken')?.toString();
+      var config = GatewayConfig.fromJson(gatewayRaw);
+      final current = _current.gateway;
+      final authChanged =
+          config.normalizedAuthServiceUrl != current.normalizedAuthServiceUrl ||
+          config.oidcClientId.trim() != current.oidcClientId.trim() ||
+          config.oidcRedirectUri.trim() != current.oidcRedirectUri.trim();
+      final urlChanged = config.normalizedBaseUrl != current.normalizedBaseUrl;
+      if (urlChanged) {
+        config = config.clearDiscovery();
+      }
+      if (authChanged || urlChanged) {
+        await _clearGatewayAuthSession();
+      }
+      await prefs.setString(_kGateway, jsonEncode(config.toJson()));
+      if (token != null) {
+        await secure.write(key: _kGatewayTokenSecure, value: token);
+      }
+      final newMcpIds = {
+        for (final server in config.customMcpServers) server.id,
+      };
+      for (final id in oldMcpIds.difference(newMcpIds)) {
+        await secure.delete(key: customMcpTokenStorageKey(id));
+      }
+    }
+
+    final mcpTokens = SettingsBundle.asMap(json['customMcpTokens']);
+    if (mcpTokens != null) {
+      for (final entry in mcpTokens.entries) {
+        final id = entry.key.toString();
+        if (id.isEmpty) continue;
+        final value = entry.value?.toString() ?? '';
+        if (value.isEmpty) {
+          await secure.delete(key: customMcpTokenStorageKey(id));
+        } else {
+          await secure.write(key: customMcpTokenStorageKey(id), value: value);
+        }
+      }
+    }
+
+    Future<void> writeFlag(String key, Object? value) async {
+      if (value is bool) await prefs.setBool(key, value);
+    }
+
+    await writeFlag(_kMemoryEnabled, json['memoryEnabled']);
+    await writeFlag(_kResearchModeEnabled, json['researchModeEnabled']);
+    await writeFlag(_kStudyModeEnabled, json['studyModeEnabled']);
+    await writeFlag(_kCreationModeEnabled, json['creationModeEnabled']);
   }
 }
 

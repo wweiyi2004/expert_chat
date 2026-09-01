@@ -6,8 +6,128 @@ abstract final class GatewayCapabilityIds {
   static const documentConvert = 'document_convert';
 }
 
-/// The app has exactly one Gateway connection. Capability-specific settings
-/// live here without creating another URL/token pair.
+class DiscoveredMcpTool {
+  const DiscoveredMcpTool({
+    required this.name,
+    this.description = '',
+    this.inputSchema = const <String, dynamic>{},
+  });
+
+  final String name;
+  final String description;
+  final Map<String, dynamic> inputSchema;
+
+  Map<String, dynamic> toJson() => {
+    'name': name,
+    'description': description,
+    'inputSchema': inputSchema,
+  };
+
+  factory DiscoveredMcpTool.fromJson(Map<String, dynamic> json) =>
+      DiscoveredMcpTool(
+        name: json['name']?.toString() ?? '',
+        description: json['description']?.toString() ?? '',
+        inputSchema: json['inputSchema'] is Map
+            ? Map<String, dynamic>.from(json['inputSchema'] as Map)
+            : const <String, dynamic>{},
+      );
+}
+
+/// User-added Streamable HTTP MCP server, separate from the document MCP.
+class CustomMcpServer {
+  const CustomMcpServer({
+    required this.id,
+    required this.name,
+    required this.baseUrl,
+    this.enabled = true,
+    this.toolsDiscovered = false,
+    this.tools = const <DiscoveredMcpTool>[],
+    this.serverVersion,
+    this.lastError,
+  });
+
+  final String id;
+  final String name;
+  final String baseUrl;
+  final bool enabled;
+  final bool toolsDiscovered;
+  final List<DiscoveredMcpTool> tools;
+  final String? serverVersion;
+  final String? lastError;
+
+  String get normalizedBaseUrl => GatewayConfig.normalizeBaseUrl(baseUrl);
+
+  bool get isConfigured => normalizedBaseUrl.isNotEmpty;
+
+  /// Stable prefix used when a tool name collides.
+  String get slug {
+    final fromName = name
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]+'), '_')
+        .replaceAll(RegExp(r'^_+|_+$'), '');
+    if (fromName.isNotEmpty) return fromName;
+    final fromId = id
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]+'), '_')
+        .replaceAll(RegExp(r'^_+|_+$'), '');
+    return fromId.isEmpty ? 'mcp' : fromId;
+  }
+
+  CustomMcpServer copyWith({
+    String? name,
+    String? baseUrl,
+    bool? enabled,
+    bool? toolsDiscovered,
+    List<DiscoveredMcpTool>? tools,
+    Object? serverVersion = _gatewaySentinel,
+    Object? lastError = _gatewaySentinel,
+  }) => CustomMcpServer(
+    id: id,
+    name: name ?? this.name,
+    baseUrl: baseUrl ?? this.baseUrl,
+    enabled: enabled ?? this.enabled,
+    toolsDiscovered: toolsDiscovered ?? this.toolsDiscovered,
+    tools: tools ?? this.tools,
+    serverVersion: identical(serverVersion, _gatewaySentinel)
+        ? this.serverVersion
+        : serverVersion as String?,
+    lastError: identical(lastError, _gatewaySentinel)
+        ? this.lastError
+        : lastError as String?,
+  );
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'baseUrl': baseUrl,
+    'enabled': enabled,
+    'toolsDiscovered': toolsDiscovered,
+    'tools': [for (final tool in tools) tool.toJson()],
+    if (serverVersion != null) 'serverVersion': serverVersion,
+    if (lastError != null) 'lastError': lastError,
+  };
+
+  factory CustomMcpServer.fromJson(Map<String, dynamic> json) =>
+      CustomMcpServer(
+        id: json['id']?.toString() ?? '',
+        name: json['name']?.toString() ?? '',
+        baseUrl: json['baseUrl']?.toString() ?? '',
+        enabled: json['enabled'] as bool? ?? true,
+        toolsDiscovered: json['toolsDiscovered'] as bool? ?? false,
+        tools: [
+          for (final raw in json['tools'] as List<dynamic>? ?? const [])
+            if (raw is Map)
+              DiscoveredMcpTool.fromJson(Map<String, dynamic>.from(raw)),
+        ].where((tool) => tool.name.isNotEmpty).toList(),
+        serverVersion: json['serverVersion']?.toString(),
+        lastError: json['lastError']?.toString(),
+      );
+}
+
+/// Persisted server connection settings.
+///
+/// The class name is retained for storage compatibility; the active document
+/// path now connects to the standalone MCP Server and discovers MCP Tools.
 class GatewayConfig {
   const GatewayConfig({
     this.enabled = false,
@@ -21,7 +141,9 @@ class GatewayConfig {
     this.requestTimeoutSeconds = 120,
     this.capabilitiesDiscovered = false,
     this.capabilities = const <String>[],
+    this.mcpTools = const <DiscoveredMcpTool>[],
     this.serverVersion,
+    this.customMcpServers = const <CustomMcpServer>[],
   });
 
   static const minTaskPollSeconds = 1;
@@ -40,7 +162,9 @@ class GatewayConfig {
   final int requestTimeoutSeconds;
   final bool capabilitiesDiscovered;
   final List<String> capabilities;
+  final List<DiscoveredMcpTool> mcpTools;
   final String? serverVersion;
+  final List<CustomMcpServer> customMcpServers;
 
   bool get isConfigured => enabled && normalizedBaseUrl.isNotEmpty;
   bool get authServiceConfigured =>
@@ -48,12 +172,10 @@ class GatewayConfig {
       oidcClientId.trim().isNotEmpty &&
       Uri.tryParse(oidcRedirectUri.trim())?.scheme.isNotEmpty == true;
 
-  String get normalizedBaseUrl {
-    return _normalizeBaseUrl(baseUrl);
-  }
+  String get normalizedBaseUrl => normalizeBaseUrl(baseUrl);
 
-  String get normalizedUploadBaseUrl => _normalizeBaseUrl(uploadBaseUrl);
-  String get normalizedAuthServiceUrl => _normalizeBaseUrl(authServiceUrl);
+  String get normalizedUploadBaseUrl => normalizeBaseUrl(uploadBaseUrl);
+  String get normalizedAuthServiceUrl => normalizeBaseUrl(authServiceUrl);
 
   String get effectiveUploadBaseUrl {
     final upload = normalizedUploadBaseUrl;
@@ -65,7 +187,7 @@ class GatewayConfig {
     return upload.isNotEmpty && upload != normalizedBaseUrl;
   }
 
-  static String _normalizeBaseUrl(String raw) {
+  static String normalizeBaseUrl(String raw) {
     var value = raw.trim();
     while (value.endsWith('/')) {
       value = value.substring(0, value.length - 1);
@@ -80,11 +202,22 @@ class GatewayConfig {
     ),
   );
 
-  /// Before the first discovery, stay compatible with a migrated installation.
-  /// Once discovery succeeds, the server manifest becomes authoritative.
+  /// MCP discovery is authoritative. Do not expose network tools until the
+  /// server has returned a successful tools/list result.
   bool supports(String capabilityId) =>
       isConfigured &&
-      (!capabilitiesDiscovered || capabilities.contains(capabilityId));
+      capabilitiesDiscovered &&
+      capabilities.contains(capabilityId);
+
+  GatewayConnection connectionForCustom(CustomMcpServer server, String token) =>
+      GatewayConnection(
+        config: GatewayConfig(
+          enabled: true,
+          baseUrl: server.baseUrl,
+          requestTimeoutSeconds: requestTimeoutSeconds,
+        ),
+        apiToken: token,
+      );
 
   GatewayConfig copyWith({
     bool? enabled,
@@ -98,7 +231,9 @@ class GatewayConfig {
     int? requestTimeoutSeconds,
     bool? capabilitiesDiscovered,
     List<String>? capabilities,
+    List<DiscoveredMcpTool>? mcpTools,
     Object? serverVersion = _gatewaySentinel,
+    List<CustomMcpServer>? customMcpServers,
   }) => GatewayConfig(
     enabled: enabled ?? this.enabled,
     baseUrl: baseUrl ?? this.baseUrl,
@@ -116,14 +251,17 @@ class GatewayConfig {
     capabilitiesDiscovered:
         capabilitiesDiscovered ?? this.capabilitiesDiscovered,
     capabilities: capabilities ?? this.capabilities,
+    mcpTools: mcpTools ?? this.mcpTools,
     serverVersion: identical(serverVersion, _gatewaySentinel)
         ? this.serverVersion
         : serverVersion as String?,
+    customMcpServers: customMcpServers ?? this.customMcpServers,
   );
 
   GatewayConfig clearDiscovery() => copyWith(
     capabilitiesDiscovered: false,
     capabilities: const [],
+    mcpTools: const [],
     serverVersion: null,
   );
 
@@ -139,7 +277,12 @@ class GatewayConfig {
     'requestTimeoutSeconds': requestTimeoutSeconds,
     'capabilitiesDiscovered': capabilitiesDiscovered,
     'capabilities': capabilities,
+    'mcpTools': [for (final tool in mcpTools) tool.toJson()],
     if (serverVersion != null) 'serverVersion': serverVersion,
+    'customMcpServers': [
+      for (final server in customMcpServers)
+        if (server.id.isNotEmpty) server.toJson(),
+    ],
   };
 
   factory GatewayConfig.fromJson(Map<String, dynamic> json) => GatewayConfig(
@@ -177,7 +320,17 @@ class GatewayConfig {
         .where((value) => value.trim().isNotEmpty)
         .toSet()
         .toList(),
+    mcpTools: [
+      for (final raw in json['mcpTools'] as List<dynamic>? ?? const [])
+        if (raw is Map)
+          DiscoveredMcpTool.fromJson(Map<String, dynamic>.from(raw)),
+    ].where((tool) => tool.name.isNotEmpty).toList(),
     serverVersion: json['serverVersion'] as String?,
+    customMcpServers: [
+      for (final raw in json['customMcpServers'] as List<dynamic>? ?? const [])
+        if (raw is Map)
+          CustomMcpServer.fromJson(Map<String, dynamic>.from(raw)),
+    ].where((server) => server.id.isNotEmpty).toList(),
   );
 }
 

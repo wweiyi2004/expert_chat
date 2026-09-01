@@ -17,7 +17,6 @@ import 'attachment_chip.dart';
 import 'citations_bar.dart';
 import 'html_preview_page.dart';
 import 'previewable_code_block.dart';
-import 'search_activity_panel.dart';
 import 'streaming_markdown.dart';
 import 'thinking_panel.dart';
 
@@ -48,6 +47,7 @@ class MessageBubble extends StatefulWidget {
     this.onPrevBranch,
     this.onNextBranch,
     this.messageStyle = MessageStylePref.bubble,
+    this.markdownStyle = MarkdownStylePref.standard,
     this.liveMarkdown = true,
     this.onSpeak,
     this.isSpeechLoading = false,
@@ -87,6 +87,7 @@ class MessageBubble extends StatefulWidget {
   final VoidCallback? onNextBranch;
 
   final MessageStylePref messageStyle;
+  final MarkdownStylePref markdownStyle;
   final bool liveMarkdown;
   final Future<void> Function()? onSpeak;
   final bool isSpeechLoading;
@@ -200,26 +201,30 @@ class _MessageBubbleState extends State<MessageBubble> {
     final useMarkdown = !widget.isStreaming || widget.liveMarkdown;
     return Builder(
       builder: (context) {
-        final scheme = Theme.of(context).colorScheme;
         // Must set [color] explicitly. gpt_markdown caches parsed spans and only
         // rebuilds them when config changes; without a theme-tied style, LaTeX
         // (flutter_math) keeps the light-mode black glyphs after a theme switch.
-        final baseStyle = Theme.of(
-          context,
-        ).textTheme.bodyLarge?.copyWith(height: 1.65, color: scheme.onSurface);
+        final baseStyle = widget.markdownStyle.bodyStyle(context);
         if (!useMarkdown) {
           return SelectableText(m.content, style: baseStyle);
         }
         return SelectionArea(
-          // Key by brightness so the whole markdown tree is recreated on theme
-          // change (covers any internal cache that ignores TextStyle equality).
-          key: ValueKey(Theme.of(context).brightness),
+          // Key by brightness + markdown style so gpt_markdown caches rebuild.
+          key: ValueKey(
+            '${Theme.of(context).brightness}-${widget.markdownStyle.name}',
+          ),
           child: StreamingGptMarkdown(
             m.content,
+            isFinal: !widget.isStreaming,
             style: baseStyle,
+            markdownStyle: widget.markdownStyle,
             onLinkTap: (url, _) => _openUrl(url),
-            codeBuilder: (context, name, code, closed) =>
-                PreviewableCodeBlock(name: name, code: code, closed: closed),
+            codeBuilder: (context, name, code, closed) => PreviewableCodeBlock(
+              name: name,
+              code: code,
+              closed: closed,
+              markdownStyle: widget.markdownStyle,
+            ),
             sourceTagBuilder: (context, content, style) {
               final n = int.tryParse(content.trim());
               final isCitation = m.citations.any((c) => c.index == n);
@@ -476,7 +481,7 @@ class _MessageBubbleState extends State<MessageBubble> {
       child: Container(
         margin: EdgeInsets.symmetric(vertical: doc ? 12 : 10),
         constraints: BoxConstraints(maxWidth: doc ? 900 : 760),
-        width: doc ? double.infinity : null,
+        width: double.infinity,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -510,19 +515,20 @@ class _MessageBubbleState extends State<MessageBubble> {
                 onCancel: widget.onCancelLongTask,
                 onRetry: widget.onRetryLongTask,
               ),
-            if (m.searchActivities.isNotEmpty)
-              SearchActivityPanel(
-                activities: m.searchActivities,
-                isStreaming: widget.isStreaming,
-              ),
             if (m.turnSkill != null) _TurnSkillChip(mark: m.turnSkill!),
             if (m.appliedWorldInfo.isNotEmpty)
               _AppliedWorldInfoBar(hits: m.appliedWorldInfo),
-            if (hasReasoning)
+            if (hasReasoning || m.searchActivities.isNotEmpty)
               ThinkingPanel(
                 reasoning: m.reasoning,
-                isStreaming: stillThinking,
+                isStreaming:
+                    stillThinking ||
+                    (widget.isStreaming &&
+                        m.searchActivities.any(
+                          (a) => a.status == SearchActivityStatus.running,
+                        )),
                 thinkingMillis: m.thinkingMillis,
+                activities: m.searchActivities,
                 onExpandedChanged: widget.onThinkingExpandedChanged,
               ),
             if (showCursor)
@@ -564,14 +570,18 @@ class _MessageBubbleState extends State<MessageBubble> {
                         ? 10
                         : 0,
                   ),
-                  child: Wrap(
-                    spacing: 10,
-                    runSpacing: 10,
-                    children: [
-                      for (final a in m.attachments)
-                        if (a.isImage && a.hasImageData)
-                          AttachmentImage(key: ValueKey(a.id), attachment: a),
-                    ],
+                  child: Align(
+                    alignment: Alignment.center,
+                    child: Wrap(
+                      alignment: WrapAlignment.center,
+                      spacing: 10,
+                      runSpacing: 10,
+                      children: [
+                        for (final a in m.attachments)
+                          if (a.isImage && a.hasImageData)
+                            AttachmentImage(key: ValueKey(a.id), attachment: a),
+                      ],
+                    ),
                   ),
                 ),
               // Edited office/text files from document service (and any other
@@ -641,7 +651,7 @@ class _MessageBubbleState extends State<MessageBubble> {
                   child: _assistantMarkdown(m),
                 ),
             ],
-            if (m.citations.isNotEmpty)
+            if (m.citations.isNotEmpty && m.searchActivities.isEmpty)
               CitationsBar(
                 citations: m.citations,
                 onTap: (c) => _openUrl(c.url),

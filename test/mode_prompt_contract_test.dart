@@ -30,6 +30,11 @@ void main() {
       expect(catalog.skillById('writing')!.prompt, contains('不要询问'));
       expect(catalog.skillById('translate')!.prompt, contains('不因题材自动删减'));
       expect(catalog.skillById('summarize')!.prompt, contains('中性、准确地总结'));
+      expect(catalog.skillById('image-prompt')!.prompt, contains('无需自动淡出'));
+      expect(catalog.skillById('image-prompt')!.prompt, contains('改成 SFW'));
+      expect(catalog.skillById('image-prompt')!.prompt, contains('不得自行补写年龄'));
+      expect(catalog.skillById('image-prompt')!.prompt, contains('未成年人'));
+      expect(catalog.skillById('image-prompt')!.prompt, contains('真实人物'));
     });
 
     test('all story sub-modes share the adult text boundary', () {

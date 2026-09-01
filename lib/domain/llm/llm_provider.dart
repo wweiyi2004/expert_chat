@@ -344,6 +344,29 @@ class LlmRequestMessage {
 /// OpenAI / Responses `tool_choice: required` — call any exposed tool.
 const kToolChoiceRequired = 'required';
 
+/// DeepSeek V4 / Grok reasoning intensity. Official DeepSeek values are
+/// `low` / `high` / `max` (`medium` and `xhigh` map to `high` server-side).
+enum ReasoningEffort {
+  low,
+  high,
+  max;
+
+  String get wire => name;
+
+  String get label => switch (this) {
+    ReasoningEffort.low => '低',
+    ReasoningEffort.high => '高',
+    ReasoningEffort.max => '最大',
+  };
+
+  static ReasoningEffort fromWire(String? value) => switch (value) {
+    'low' => ReasoningEffort.low,
+    'max' => ReasoningEffort.max,
+    'medium' || 'xhigh' || 'high' => ReasoningEffort.high,
+    _ => ReasoningEffort.high,
+  };
+}
+
 abstract class LlmProvider {
   Stream<ChatChunk> streamChat({
     required LlmConfig config,
@@ -352,6 +375,8 @@ abstract class LlmProvider {
     // DeepSeek V4 thinking-mode toggle. null = omit the field (use provider
     // default / non-DeepSeek providers); true/false = enable/disable.
     bool? thinking,
+    // Used when [thinking] is true and the model accepts `reasoning_effort`.
+    ReasoningEffort? reasoningEffort,
     // When non-null and [tools] is non-empty, force a tool call.
     // A function name becomes OpenAI `tool_choice: {type:function,...}`.
     // [kToolChoiceRequired] becomes `tool_choice: required`.

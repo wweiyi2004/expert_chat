@@ -47,6 +47,7 @@ class OpenAiCompatibleProvider implements LlmProvider {
     required List<LlmRequestMessage> messages,
     List<ToolSpec>? tools,
     bool? thinking,
+    ReasoningEffort? reasoningEffort,
     String? forceToolName,
     CancelToken? cancelToken,
   }) async* {
@@ -86,7 +87,8 @@ class OpenAiCompatibleProvider implements LlmProvider {
     // mode leaves its provider default untouched while deep-think requests high.
     if (thinking != null && config.capabilities.supportsReasoningEffort) {
       if (thinking) {
-        body['reasoning_effort'] = 'high';
+        body['reasoning_effort'] =
+            (reasoningEffort ?? ReasoningEffort.high).wire;
       } else if (config.capabilities.reasoningCanBeDisabled) {
         body['reasoning_effort'] = 'none';
       }

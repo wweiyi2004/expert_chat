@@ -30,6 +30,12 @@ class Conversations extends Table {
   // Director novel target length in Chinese characters (v9). 0 = unset.
   IntColumn get targetTotalChars => integer().withDefault(const Constant(0))();
 
+  // Per-conversation MCP server ids (v13).
+  TextColumn get customMcpServerIdsJson => text().nullable()();
+
+  // ChatGPT-style Work mode (v14).
+  BoolColumn get workMode => boolean().withDefault(const Constant(false))();
+
   @override
   Set<Column> get primaryKey => {id};
 }
@@ -137,6 +143,23 @@ class StudySessions extends Table {
   Set<Column> get primaryKey => {conversationId};
 }
 
+/// Local 素材 library (v15). File bytes live on disk; this row is metadata.
+@DataClassName('LibraryItemRow')
+class LibraryItems extends Table {
+  TextColumn get id => text()();
+  TextColumn get name => text()();
+  TextColumn get kind => text()();
+  TextColumn get mimeType => text()();
+  IntColumn get sizeBytes => integer().withDefault(const Constant(0))();
+  TextColumn get relativePath => text()();
+  TextColumn get sha256 => text()();
+  DateTimeColumn get createdAt => dateTime()();
+  DateTimeColumn get lastUsedAt => dateTime()();
+
+  @override
+  Set<Column> get primaryKey => {id};
+}
+
 @DriftDatabase(
   tables: [
     Conversations,
@@ -145,13 +168,14 @@ class StudySessions extends Table {
     WorldInfoEntries,
     StudyEntities,
     StudySessions,
+    LibraryItems,
   ],
 )
 class AppDatabase extends _$AppDatabase {
   AppDatabase([QueryExecutor? executor]) : super(executor ?? _open());
 
   @override
-  int get schemaVersion => 12;
+  int get schemaVersion => 15;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -213,6 +237,15 @@ class AppDatabase extends _$AppDatabase {
       }
       if (from < 12) {
         await m.addColumn(messages, messages.turnSkillJson);
+      }
+      if (from < 13) {
+        await m.addColumn(conversations, conversations.customMcpServerIdsJson);
+      }
+      if (from < 14) {
+        await m.addColumn(conversations, conversations.workMode);
+      }
+      if (from < 15) {
+        await m.createTable(libraryItems);
       }
     },
     beforeOpen: (details) async {

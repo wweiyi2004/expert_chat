@@ -20,8 +20,6 @@ class OpenAiCompatibleFilesClient {
   final Dio _dio;
   final Map<String, String> _cache = {};
 
-  static const _defaultTtlSeconds = 86400;
-
   /// Rewrites DeepSeek vision messages so `data:` images become Files API ids.
   /// Public `http(s)` URLs stay as `image_url` (docs method 2). Upload failures
   /// fall back to the original data URL so the turn still proceeds.
@@ -107,8 +105,6 @@ class OpenAiCompatibleFilesClient {
     final url = '${config.baseUrl.replaceAll(RegExp(r"/+$"), "")}/files';
     final form = FormData.fromMap({
       'purpose': 'user_data',
-      'expires_after[anchor]': 'created_at',
-      'expires_after[seconds]': '$_defaultTtlSeconds',
       'file': MultipartFile.fromBytes(
         bytes,
         filename: filename,

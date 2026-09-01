@@ -333,8 +333,27 @@ class Citation {
   );
 }
 
+/// One chip shown on a tool step (search hit, fetched page, returned file).
+class SearchActivityItem {
+  const SearchActivityItem({required this.title, this.url = ''});
+
+  final String title;
+  final String url;
+
+  Map<String, dynamic> toJson() => {
+    'title': title,
+    if (url.isNotEmpty) 'url': url,
+  };
+
+  factory SearchActivityItem.fromJson(Map<String, dynamic> json) =>
+      SearchActivityItem(
+        title: json['title']?.toString() ?? json['url']?.toString() ?? '',
+        url: json['url']?.toString() ?? '',
+      );
+}
+
 /// What a [SearchActivity] step did: a keyword search or reading one page.
-enum SearchActivityKind { search, fetch, vision }
+enum SearchActivityKind { search, fetch, vision, mcp, image, document }
 
 /// Lifecycle of a [SearchActivity]. `running` steps drive the live indicator;
 /// terminal states stay in the transcript so past turns show what was done.
@@ -351,6 +370,8 @@ class SearchActivity {
     this.status = SearchActivityStatus.running,
     this.resultCount = 0,
     this.error,
+    this.items = const [],
+    this.reasoningOffset = 0,
   }) : id = id ?? _uuid.v4();
 
   final String id;
@@ -366,10 +387,19 @@ class SearchActivity {
   /// Short human-readable reason when [status] is failed.
   final String? error;
 
+  /// Titles/URLs shown as chips on the thinking timeline.
+  final List<SearchActivityItem> items;
+
+  /// Character offset into the assistant [ChatMessage.reasoning] when this
+  /// step started. Used to interleave tool nodes with the thinking text.
+  final int reasoningOffset;
+
   SearchActivity copyWith({
     SearchActivityStatus? status,
     int? resultCount,
     String? error,
+    List<SearchActivityItem>? items,
+    int? reasoningOffset,
   }) => SearchActivity(
     id: id,
     kind: kind,
@@ -377,6 +407,8 @@ class SearchActivity {
     status: status ?? this.status,
     resultCount: resultCount ?? this.resultCount,
     error: error ?? this.error,
+    items: items ?? this.items,
+    reasoningOffset: reasoningOffset ?? this.reasoningOffset,
   );
 
   Map<String, dynamic> toJson() => {
@@ -386,6 +418,8 @@ class SearchActivity {
     'status': status.name,
     'resultCount': resultCount,
     if (error != null) 'error': error,
+    if (items.isNotEmpty) 'items': [for (final item in items) item.toJson()],
+    if (reasoningOffset > 0) 'reasoningOffset': reasoningOffset,
   };
 
   factory SearchActivity.fromJson(Map<String, dynamic> json) => SearchActivity(
@@ -404,6 +438,12 @@ class SearchActivity {
     },
     resultCount: (json['resultCount'] as num?)?.toInt() ?? 0,
     error: json['error'] as String?,
+    items: [
+      for (final raw in json['items'] as List<dynamic>? ?? const [])
+        if (raw is Map)
+          SearchActivityItem.fromJson(Map<String, dynamic>.from(raw)),
+    ].where((item) => item.title.isNotEmpty || item.url.isNotEmpty).toList(),
+    reasoningOffset: (json['reasoningOffset'] as num?)?.toInt() ?? 0,
   );
 }
 
@@ -622,12 +662,17 @@ class Conversation {
     List<String>? participantIds,
     List<CharacterCard>? localCast,
     List<String>? worldInfoIds,
+    List<String>? customMcpServerIds,
     this.outline = '',
     this.authorNote = '',
     this.plotCursor = 0,
     this.venue = '',
     this.nextSpeakerIndex = 0,
     this.targetTotalChars = 0,
+    this.workMode = false,
+    this.messagesLoaded = true,
+    this._childrenIndex,
+    this._branchInfoIndex,
   }) : id = id ?? _uuid.v4(),
        messages = messages ?? [],
        activeChildren = activeChildren ?? {},
@@ -635,7 +680,8 @@ class Conversation {
        participantIds =
            participantIds ?? (characterId != null ? [characterId] : const []),
        localCast = localCast ?? const [],
-       worldInfoIds = worldInfoIds ?? const [];
+       worldInfoIds = worldInfoIds ?? const [],
+       customMcpServerIds = customMcpServerIds ?? const [];
 
   final String id;
   final String title;
@@ -662,6 +708,9 @@ class Conversation {
   /// World-info entry ids enabled for this session (global library opt-in).
   final List<String> worldInfoIds;
 
+  /// Custom / document MCP servers enabled for this conversation only.
+  final List<String> customMcpServerIds;
+
   /// Free-form plot outline; parsed into beats for [plotCursor].
   final String outline;
 
@@ -681,6 +730,14 @@ class Conversation {
   /// Target novel length in Unicode grapheme clusters (Chinese-friendly
   /// "字数"). `0` means no length budget is enforced.
   final int targetTotalChars;
+
+  /// ChatGPT-style Work mode: keep calling tools until the task is done.
+  final bool workMode;
+
+  /// False for list-only placeholders from [loadSummaries]: [messages] is
+  /// empty even if the session has history on disk. Persistence must not
+  /// treat that as "delete every message".
+  final bool messagesLoaded;
 
   bool get isStory => mode == ConversationMode.story;
   bool get isEnsemble => mode == ConversationMode.ensemble;
@@ -702,10 +759,10 @@ class Conversation {
     return const [];
   }
 
-  /// Lazily built parent → children index. Conversations are treated as
-  /// immutable (every mutation goes through [copyWith], which builds a new
-  /// instance), so the index never goes stale. Avoids the O(n²) rescan that
-  /// [activePath]/[branchInfo] otherwise cost on every frame while streaming.
+  /// Lazily built parent → children index. [copyWith] reuses it when the
+  /// message id sequence is unchanged (streaming content updates) and
+  /// rebinds entries to the new [ChatMessage] objects. Avoids the O(n²)
+  /// rescan that [activePath]/[branchInfo] otherwise cost on every flush.
   Map<String, List<ChatMessage>>? _childrenIndex;
   Map<String, (int, int)>? _branchInfoIndex;
 
@@ -787,32 +844,66 @@ class Conversation {
     List<String>? participantIds,
     List<CharacterCard>? localCast,
     List<String>? worldInfoIds,
+    List<String>? customMcpServerIds,
     String? outline,
     String? authorNote,
     int? plotCursor,
     String? venue,
     int? nextSpeakerIndex,
     int? targetTotalChars,
-  }) => Conversation(
-    id: id,
-    title: title ?? this.title,
-    messages: messages ?? this.messages,
-    activeChildren: activeChildren ?? this.activeChildren,
-    updatedAt: updatedAt ?? DateTime.now(),
-    mode: mode ?? this.mode,
-    characterId: identical(characterId, _storySentinel)
-        ? this.characterId
-        : characterId as String?,
-    participantIds: participantIds ?? this.participantIds,
-    localCast: localCast ?? this.localCast,
-    worldInfoIds: worldInfoIds ?? this.worldInfoIds,
-    outline: outline ?? this.outline,
-    authorNote: authorNote ?? this.authorNote,
-    plotCursor: plotCursor ?? this.plotCursor,
-    venue: venue ?? this.venue,
-    nextSpeakerIndex: nextSpeakerIndex ?? this.nextSpeakerIndex,
-    targetTotalChars: targetTotalChars ?? this.targetTotalChars,
-  );
+    bool? workMode,
+    bool? messagesLoaded,
+  }) {
+    final nextMessages = messages ?? this.messages;
+    final reuseIndex = _sameMessageIds(this.messages, nextMessages);
+    return Conversation(
+      id: id,
+      title: title ?? this.title,
+      messages: nextMessages,
+      activeChildren: activeChildren ?? this.activeChildren,
+      updatedAt: updatedAt ?? DateTime.now(),
+      mode: mode ?? this.mode,
+      characterId: identical(characterId, _storySentinel)
+          ? this.characterId
+          : characterId as String?,
+      participantIds: participantIds ?? this.participantIds,
+      localCast: localCast ?? this.localCast,
+      worldInfoIds: worldInfoIds ?? this.worldInfoIds,
+      customMcpServerIds: customMcpServerIds ?? this.customMcpServerIds,
+      outline: outline ?? this.outline,
+      authorNote: authorNote ?? this.authorNote,
+      plotCursor: plotCursor ?? this.plotCursor,
+      venue: venue ?? this.venue,
+      nextSpeakerIndex: nextSpeakerIndex ?? this.nextSpeakerIndex,
+      targetTotalChars: targetTotalChars ?? this.targetTotalChars,
+      workMode: workMode ?? this.workMode,
+      messagesLoaded: messagesLoaded ?? this.messagesLoaded,
+      childrenIndex: reuseIndex ? _rebindChildren(nextMessages) : null,
+      branchInfoIndex: reuseIndex ? _branchInfoIndex : null,
+    );
+  }
+
+  static bool _sameMessageIds(List<ChatMessage> a, List<ChatMessage> b) {
+    if (identical(a, b)) return true;
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i].id != b[i].id) return false;
+    }
+    return true;
+  }
+
+  /// Keep sibling order from the cached index, but point at the new message
+  /// objects so [activePath] sees streamed content.
+  Map<String, List<ChatMessage>>? _rebindChildren(List<ChatMessage> next) {
+    final cached = _childrenIndex;
+    if (cached == null) return null;
+    if (identical(next, messages)) return cached;
+    final byId = <String, ChatMessage>{for (final m in next) m.id: m};
+    return {
+      for (final entry in cached.entries)
+        entry.key: [for (final child in entry.value) byId[child.id] ?? child],
+    };
+  }
 
   static const _storySentinel = Object();
 
@@ -828,12 +919,14 @@ class Conversation {
     if (localCast.isNotEmpty)
       'localCast': localCast.map((card) => card.toJson()).toList(),
     if (worldInfoIds.isNotEmpty) 'worldInfoIds': worldInfoIds,
+    if (customMcpServerIds.isNotEmpty) 'customMcpServerIds': customMcpServerIds,
     if (outline.isNotEmpty) 'outline': outline,
     if (authorNote.isNotEmpty) 'authorNote': authorNote,
     if (plotCursor != 0) 'plotCursor': plotCursor,
     if (venue.isNotEmpty) 'venue': venue,
     if (nextSpeakerIndex != 0) 'nextSpeakerIndex': nextSpeakerIndex,
     if (targetTotalChars != 0) 'targetTotalChars': targetTotalChars,
+    if (workMode) 'workMode': true,
   };
 
   factory Conversation.fromJson(Map<String, dynamic> json) => Conversation(
@@ -865,11 +958,16 @@ class Conversation {
     worldInfoIds: (json['worldInfoIds'] as List<dynamic>? ?? [])
         .map((e) => e.toString())
         .toList(),
+    customMcpServerIds: (json['customMcpServerIds'] as List<dynamic>? ?? [])
+        .map((e) => e.toString())
+        .where((id) => id.isNotEmpty)
+        .toList(),
     outline: json['outline'] as String? ?? '',
     authorNote: json['authorNote'] as String? ?? '',
     plotCursor: (json['plotCursor'] as num?)?.toInt() ?? 0,
     venue: json['venue'] as String? ?? '',
     nextSpeakerIndex: (json['nextSpeakerIndex'] as num?)?.toInt() ?? 0,
     targetTotalChars: (json['targetTotalChars'] as num?)?.toInt() ?? 0,
+    workMode: json['workMode'] == true,
   );
 }

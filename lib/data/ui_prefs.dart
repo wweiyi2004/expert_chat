@@ -73,6 +73,37 @@ enum MessageStylePref {
       .firstWhere((e) => e.name == v, orElse: () => MessageStylePref.bubble);
 }
 
+/// Visual skin for assistant Markdown (not just type scale).
+enum MarkdownStylePref {
+  standard,
+  github,
+  notion,
+  terminal;
+
+  String get label => switch (this) {
+    MarkdownStylePref.standard => '聊天',
+    MarkdownStylePref.github => 'GitHub',
+    MarkdownStylePref.notion => '笔记',
+    MarkdownStylePref.terminal => '终端',
+  };
+
+  String get description => switch (this) {
+    MarkdownStylePref.standard => '默认聊天渲染：标题适中，代码块跟随主题。',
+    MarkdownStylePref.github => '文档站风格：行内代码灰底、表头底纹、标题下划线。',
+    MarkdownStylePref.notion => '笔记风格：柔和标题、红色行内代码、轻量表格。',
+    MarkdownStylePref.terminal => '终端风格：更密正文、深色代码、绿色行内代码。',
+  };
+
+  String get wire => name;
+
+  static MarkdownStylePref fromWire(String? v) => switch (v) {
+    'github' => MarkdownStylePref.github,
+    'notion' || 'article' => MarkdownStylePref.notion,
+    'terminal' || 'compact' => MarkdownStylePref.terminal,
+    _ => MarkdownStylePref.standard,
+  };
+}
+
 enum ContentWidthPref {
   narrow,
   regular,
@@ -188,8 +219,10 @@ enum ColorThemePref {
 
   String get wire => name;
 
-  static ColorThemePref fromWire(String? v) => ColorThemePref.values
-      .firstWhere((e) => e.name == v, orElse: () => ColorThemePref.inkTeal);
+  static ColorThemePref fromWire(String? v) => ColorThemePref.values.firstWhere(
+    (e) => e.name == v,
+    orElse: () => ColorThemePref.inkTeal,
+  );
 }
 
 enum CornerStylePref {
@@ -286,6 +319,7 @@ class UiPrefs {
     this.textScale = TextScalePref.medium,
     this.density = DensityPref.comfortable,
     this.messageStyle = MessageStylePref.bubble,
+    this.markdownStyle = MarkdownStylePref.standard,
     this.contentWidth = ContentWidthPref.regular,
     this.colorTheme = ColorThemePref.inkTeal,
     this.cornerStyle = CornerStylePref.medium,
@@ -299,6 +333,7 @@ class UiPrefs {
   final TextScalePref textScale;
   final DensityPref density;
   final MessageStylePref messageStyle;
+  final MarkdownStylePref markdownStyle;
   final ContentWidthPref contentWidth;
   final ColorThemePref colorTheme;
   final CornerStylePref cornerStyle;
@@ -321,6 +356,7 @@ class UiPrefs {
     TextScalePref? textScale,
     DensityPref? density,
     MessageStylePref? messageStyle,
+    MarkdownStylePref? markdownStyle,
     ContentWidthPref? contentWidth,
     ColorThemePref? colorTheme,
     CornerStylePref? cornerStyle,
@@ -333,6 +369,7 @@ class UiPrefs {
     textScale: textScale ?? this.textScale,
     density: density ?? this.density,
     messageStyle: messageStyle ?? this.messageStyle,
+    markdownStyle: markdownStyle ?? this.markdownStyle,
     contentWidth: contentWidth ?? this.contentWidth,
     colorTheme: colorTheme ?? this.colorTheme,
     cornerStyle: cornerStyle ?? this.cornerStyle,
@@ -347,6 +384,7 @@ class UiPrefs {
     'textScale': textScale.wire,
     'density': density.wire,
     'messageStyle': messageStyle.wire,
+    'markdownStyle': markdownStyle.wire,
     'contentWidth': contentWidth.wire,
     'colorTheme': colorTheme.wire,
     'cornerStyle': cornerStyle.wire,
@@ -368,6 +406,7 @@ class UiPrefs {
       textScale: TextScalePref.fromWire(str('textScale')),
       density: DensityPref.fromWire(str('density')),
       messageStyle: MessageStylePref.fromWire(str('messageStyle')),
+      markdownStyle: MarkdownStylePref.fromWire(str('markdownStyle')),
       contentWidth: ContentWidthPref.fromWire(str('contentWidth')),
       colorTheme: ColorThemePref.fromWire(str('colorTheme')),
       cornerStyle: CornerStylePref.fromWire(str('cornerStyle')),

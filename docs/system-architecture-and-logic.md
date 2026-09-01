@@ -1,35 +1,38 @@
 # Expert Chat 当前系统逻辑与演进架构
 
-> 基线：Expert Chat `v3.3.0+4104`
+> 基线：Expert Chat `v3.5.0+4107`
 >
-> 最后更新：2026-08-17
+> 最后更新：2026-09-01
 >
-> 本文区分“当前已经实现”与“下一阶段目标”，作为后续客户端、Gateway、AuthService 和服务器部署的统一依据。
+> 当前主链路是“Flutter MCP Client + 独立单用户 MCP Server”。后文 Gateway/AuthService 内容保留为旧多账户部署的兼容说明。
 
 ## 1. 总体判断
 
-Expert Chat 当前已经不是早期计划中的“纯客户端聊天工具”，而是一个：
+Expert Chat 当前是一个：
 
-> **本地优先的跨平台 AI 工作空间 + 可选的自建统一 Gateway。**
+> **本地优先的跨平台 AI 工作空间 + 可选的单用户文档 MCP Server。**
 
-当前架构支持本地优先与多账户 Gateway 并存。聊天、学习、创作、记忆和科研终端主要在本机运行；需要服务端持续执行或处理二进制文档的能力进入 Gateway。AuthService 提供统一登录，Gateway 按 `sub` 完成账户隔离、分类授权、配额和审计。
+聊天、学习、创作、记忆和科研终端主要在客户端运行。文档编辑和转换由 Flutter 使用 MCP 2026-07-28 Streamable HTTP 直接连接 `server/mcp_server`：`server/discover` 和 `tools/list` 负责能力发现，文件通过 MCP 分块 Tools 上传，结果通过 MCP Resources 下载。服务端只使用预共享 `MCP_API_TOKEN`，不要求 Gateway、AuthService、管理页面或多租户配额。
+
+```text
+Expert Chat（MCP Host/Client）
+  ├── 普通聊天 ──► 用户配置的模型 API
+  └── 文档工具 ──► /mcp
+                       ├── begin/append/finish_upload
+                       ├── inspect/edit/convert_document
+                       └── expert-chat://... Resources
+```
 
 现有设计中可以继续保留的部分：
 
 - Flutter 客户端的分层结构与 Riverpod 依赖注入；
 - Drift 本地数据模型及渐进迁移；
 - 普通对话、学习、创作共用模型抽象；
-- Gateway 的单入口、能力发现和模块注册约定；
-- 长文件任务的持久化、幂等创建、重启恢复和取消；
+- MCP 的动态工具发现和统一 Tool Call 分发；
+- 现代 MCP 无状态请求、分块上传和持久 Resource；
 - 文档编辑与格式转换的独立业务边界。
 
-仍待后续阶段完成的部分：
-
-- `hybrid` 模式仍保留共享 `GATEWAY_API_TOKEN` 供旧客户端迁移，尚未切到纯 OIDC；
-- 普通聊天、学习、创作等仍直接从客户端调用模型，和 Gateway 形成两套执行路径；
-- 本地数据没有账户归属，也没有跨设备同步协议。
-
-身份与授权底座已经落地。下一阶段可集中于任务中心、文件库/知识库、增量事件消费和可选托管聊天，而不需要重做鉴权。
+旧 `server/gateway`、AuthService、REST 长任务和多账户权限代码暂不删除，用于已经部署的服务器回滚与迁移；新单用户安装不启动它们。
 
 ## 2. 产品能力地图
 
@@ -43,8 +46,8 @@ Expert Chat
 │   ├── 联网搜索与引用
 │   ├── 本地文件上下文
 │   ├── 图片理解与图片生成
-│   ├── 文档编辑 / 格式转换
-│   └── Gateway 长文件后台任务
+│   ├── 文档编辑 / 格式转换（MCP）
+│   └── 旧 Gateway 长文件后台任务（兼容）
 │
 ├── 终端（实验功能开关控制）
 │   ├── SSH / PTY
@@ -69,7 +72,7 @@ Expert Chat
     ├── 多模型 Provider
     ├── 上下文管理
     ├── 搜索、多媒体、语音
-    ├── Expert Chat Gateway
+    ├── Expert Chat MCP Server
     ├── 长期记忆
     ├── 外观与缓存
     └── GitHub Release / Shorebird 更新
@@ -81,7 +84,7 @@ Expert Chat
 - `ChatController`：对话树、流式生成、工具调用和持久化；
 - `LlmProvider`：Chat Completions / Responses API 路由；
 - `AppDatabase`：对话、消息、故事资产和学习数据；
-- Gateway 客户端：能力发现、长任务、文档编辑和转换。
+- MCP 客户端：能力发现、文档上传/编辑/转换和 Resource 下载。
 
 ## 3. 当前客户端分层
 
@@ -100,9 +103,9 @@ Expert Chat
 │ Drift │ Repository │ SharedPreferences │ SecureStorage  │
 └───────────────┬───────────────────────┬──────────────────┘
                 │                       │
-                │ HTTPS/SSE 直连        │ Gateway HTTP
+                │ HTTPS/SSE 直连        │ MCP Streamable HTTP
                 ▼                       ▼
-        云端模型 / 搜索 / 多媒体     Expert Chat Gateway
+        云端模型 / 搜索 / 多媒体     Expert Chat MCP Server
 ```
 
 ### 3.1 启动流程
@@ -207,7 +210,7 @@ AI 不能直接调用 SSH 写入接口，审批对象是类型边界；这是应
 - 完整安装包通过 GitHub Releases 检查与下载；
 - Dart 热更新通过 Shorebird 基座和 Patch 完成。
 
-## 5. 当前 Gateway 逻辑
+## 5. 旧 Gateway 兼容逻辑
 
 ### 5.1 统一入口
 
@@ -231,7 +234,8 @@ Expert Chat Gateway
 │
 └── documents
     ├── document_edit
-    └── document_convert
+    ├── document_convert
+    └── document_mcp（Streamable HTTP tools/resources）
 
 Admin
     ├── 用户、权限与配额
@@ -277,13 +281,15 @@ Gateway 已提供事件接口，但当前 App 主要轮询完整任务快照，�
 
 ### 5.3 文档服务
 
-文档编辑和转换通过同步 Multipart 请求完成：
+当前 Flutter App 的文档编辑和转换走独立 MCP Server：
 
-- 编辑：`POST /v1/documents/edit`；
-- 转换：`POST /v1/documents/convert`；
-- 支持 XLSX、DOCX、PPTX、TXT、MD、CSV、TSV；
-- 临时目录按请求创建，响应完成后清理；
-- 客户端会校验 capability、文件大小、错误结构和下载文件名。
+- 发现：`server/discover` + `tools/list`；
+- 上传：`begin_upload` / `append_upload` / `finish_upload`；
+- 编辑 / 转换：`edit_document` / `convert_document`；
+- 下载：`resources/read`（`expert-chat://documents/{file_id}/binary`）；
+- 模型侧 `inspect_document` 先读本轮附件提取文本，不额外上传。
+
+旧 Gateway 仍保留 REST：`POST /v1/documents/edit`、`POST /v1/documents/convert`，以及同一套 `/mcp` 兼容入口。新单用户安装不启动 Gateway。
 
 文档能力适合短操作；如果未来加入 OCR、大批量转换或复杂 Office 生成，应统一转成持久任务，而不是无限提高 HTTP 超时。
 
@@ -294,7 +300,7 @@ Gateway 已提供事件接口，但当前 App 主要轮询完整任务快照，�
 - 不能用多个 Gateway 实例同时写同一个数据目录；
 - 横向扩容时应引入外部数据库、对象存储和任务队列，但保持 `/v1` 客户端协议稳定。
 
-## 6. 当前多账户鉴权与隔离
+## 6. 旧多账户鉴权与隔离
 
 生产调用链为 `AuthService OIDC -> RS256 JWT -> Gateway`。Gateway 严格验证 `iss`、`aud`、签名、`exp`、`iat` 和 `sub`；文件与任务表都保存 `owner_sub`，所有对象查询在 SQL 边界同时匹配资源 ID 与账户。
 
@@ -309,7 +315,7 @@ AuthService sub
 
 现有数据库启动时自动补列并把历史记录归入 `GATEWAY_LEGACY_OWNER_SUB=legacy-owner`。`hybrid` 模式允许旧 Token 继续访问这个迁移账户；新 OIDC 用户只能看到自己的资源。最终切到 `oidc` 后即可彻底停用共享 Token。
 
-## 7. AuthService 与 Gateway 架构
+## 7. AuthService 与 Gateway 兼容架构
 
 ### 7.1 职责划分
 

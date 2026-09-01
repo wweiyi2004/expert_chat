@@ -38,15 +38,17 @@ Future<void> main() async {
   // from AppShell instead.
 
   try {
-    final prefs = await SharedPreferences.getInstance();
-
-    // Single shared DB instance; migrate the M1 JSON history into it once.
+    // Prefs I/O overlaps DB open; migration and study load are independent
+    // of each other. Both still finish before runApp so controllers never
+    // see a half-migrated store.
+    final prefsFuture = SharedPreferences.getInstance();
     final db = AppDatabase();
+    final prefs = await prefsFuture;
     final driftRepo = DriftConversationRepository(db);
-    await migrateLegacyJsonToDrift(driftRepo);
-    // Study migration runs before controllers load conversations so legacy
-    // study_meta author notes cannot be re-persisted from stale in-memory rows.
-    await StudyRepository(db, prefs).load();
+    await Future.wait([
+      migrateLegacyJsonToDrift(driftRepo),
+      StudyRepository(db, prefs).load(),
+    ]);
 
     runApp(
       ProviderScope(
@@ -105,11 +107,21 @@ class _StartupErrorApp extends StatelessWidget {
   }
 }
 
-class ExpertChatApp extends ConsumerWidget {
+class ExpertChatApp extends ConsumerStatefulWidget {
   const ExpertChatApp({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<ExpertChatApp> createState() => _ExpertChatAppState();
+}
+
+class _ExpertChatAppState extends ConsumerState<ExpertChatApp> {
+  UiPrefs? _themeUi;
+  VisualDensity? _themeDensity;
+  ThemeData? _lightTheme;
+  ThemeData? _darkTheme;
+
+  @override
+  Widget build(BuildContext context) {
     final settings = ref.watch(settingsControllerProvider);
     final themeMode = settings.maybeWhen(
       data: (s) => s.themeMode,
@@ -124,12 +136,24 @@ class ExpertChatApp extends ConsumerWidget {
       DensityPref.comfortable => VisualDensity.standard,
       DensityPref.compact => VisualDensity.compact,
     };
+    if (_lightTheme == null ||
+        _darkTheme == null ||
+        _themeUi == null ||
+        _themeUi!.colorTheme != ui.colorTheme ||
+        _themeUi!.cornerStyle != ui.cornerStyle ||
+        _themeUi!.chatSurface != ui.chatSurface ||
+        _themeDensity != density) {
+      _themeUi = ui;
+      _themeDensity = density;
+      _lightTheme = AppTheme.light(ui).copyWith(visualDensity: density);
+      _darkTheme = AppTheme.dark(ui).copyWith(visualDensity: density);
+    }
 
     return MaterialApp(
       title: 'Expert Chat',
       debugShowCheckedModeBanner: false,
-      theme: AppTheme.light(ui).copyWith(visualDensity: density),
-      darkTheme: AppTheme.dark(ui).copyWith(visualDensity: density),
+      theme: _lightTheme,
+      darkTheme: _darkTheme,
       themeMode: themeMode,
       builder: (context, child) {
         final mq = MediaQuery.of(context);

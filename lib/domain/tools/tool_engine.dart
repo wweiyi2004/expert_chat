@@ -171,6 +171,7 @@ class ToolEngine {
       query: normalizedQuery,
     );
     onActivity?.call(activity);
+    if (cancelToken?.isCancelled ?? false) throw cancelToken!.cancelError!;
 
     // Keep request/context size bounded even when a model supplies an
     // unexpectedly high maxResults value in a tool call.
@@ -266,6 +267,7 @@ class ToolEngine {
       activity.copyWith(
         status: SearchActivityStatus.done,
         resultCount: citations.length,
+        resultText: buffer.toString(),
         items: [
           for (final citation in citations)
             SearchActivityItem(title: citation.title, url: citation.url),
@@ -332,6 +334,7 @@ class ToolEngine {
         query: url,
       );
       onActivity?.call(activity);
+      if (cancelToken?.isCancelled ?? false) throw cancelToken!.cancelError!;
       final page = await http.fetchPage(url, cancelToken: cancelToken);
       final text = page.bestText.trim();
       if (text.characters.length < minSourceChars) {
@@ -384,6 +387,7 @@ class ToolEngine {
         activity.copyWith(
           status: SearchActivityStatus.done,
           resultCount: 1,
+          resultText: '[$index] ${page.title}\n$url\n$clipped',
           items: [
             SearchActivityItem(
               title: page.title.isEmpty ? url : page.title,

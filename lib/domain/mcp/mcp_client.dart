@@ -87,9 +87,7 @@ class McpClient {
       cancelToken: cancelToken,
     );
     final meta = _stringMap(discovered['_meta']);
-    final serverInfo = _stringMap(
-      meta['io.modelcontextprotocol/serverInfo'],
-    );
+    final serverInfo = _stringMap(meta['io.modelcontextprotocol/serverInfo']);
     final listed = await _request(
       connection: connection,
       method: 'tools/list',
@@ -97,9 +95,10 @@ class McpClient {
       cancelToken: cancelToken,
     );
     final tools = <McpToolDefinition>[
-      for (final raw in listed['tools'] is List
-          ? listed['tools'] as List<dynamic>
-          : const <dynamic>[])
+      for (final raw
+          in listed['tools'] is List
+              ? listed['tools'] as List<dynamic>
+              : const <dynamic>[])
         if (raw is Map)
           McpToolDefinition.fromJson(Map<String, dynamic>.from(raw)),
     ];
@@ -124,9 +123,10 @@ class McpClient {
       cancelToken: cancelToken,
     );
     final content = <Map<String, dynamic>>[
-      for (final raw in result['content'] is List
-          ? result['content'] as List<dynamic>
-          : const <dynamic>[])
+      for (final raw
+          in result['content'] is List
+              ? result['content'] as List<dynamic>
+              : const <dynamic>[])
         if (raw is Map) Map<String, dynamic>.from(raw),
     ];
     final callResult = McpToolResult(
@@ -252,6 +252,13 @@ class McpClient {
       throw const McpClientException('MCP Server 返回了无效的 JSON-RPC 结果');
     } on DioException catch (error) {
       if (CancelToken.isCancel(error)) rethrow;
+      final status = error.response?.statusCode;
+      if (status != null && status >= 500 && status < 600) {
+        throw McpClientException(
+          '文档服务暂时不可用（HTTP $status）：请检查服务器或反向代理，稍后重试。',
+          code: 'service_unavailable',
+        );
+      }
       if (error.type == DioExceptionType.connectionTimeout ||
           error.type == DioExceptionType.receiveTimeout ||
           error.type == DioExceptionType.sendTimeout) {

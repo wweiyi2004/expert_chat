@@ -1,3 +1,5 @@
+import '../llm/llm_request_policy.dart';
+
 /// How many model rounds may call tools before the app forces a final answer.
 abstract final class ToolLoopPolicy {
   /// Chat mode: user-configurable search rounds, plus one tool-less wrap-up.
@@ -24,10 +26,12 @@ abstract final class ToolLoopPolicy {
     required int maxRounds,
     required bool enableTools,
     required bool hasToolSpecs,
-  }) {
-    if (!enableTools || !hasToolSpecs) return false;
-    return round < maxRounds - 1;
-  }
+  }) => LlmRequestPolicy.allowToolsThisRound(
+    round: round,
+    maxRounds: maxRounds,
+    enableTools: enableTools,
+    hasToolSpecs: hasToolSpecs,
+  );
 
   static int maxCallsPerRound({required bool workMode}) =>
       workMode ? workCallsPerRound : chatCallsPerRound;

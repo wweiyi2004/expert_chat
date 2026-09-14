@@ -16,6 +16,7 @@ class LibraryRepository {
 
   final AppDatabase _db;
   final LibraryFileStore _store;
+  Future<void> _imports = Future.value();
 
   Future<String> get folderPath => _store.rootPath;
 
@@ -41,11 +42,25 @@ class LibraryRepository {
     required String name,
     required String mimeType,
     required Uint8List bytes,
+  }) {
+    final result = _imports.then(
+      (_) => _importBytes(name: name, mimeType: mimeType, bytes: bytes),
+    );
+    _imports = result.then<void>((_) {}, onError: (Object _) {});
+    return result;
+  }
+
+  Future<LibraryItem> _importBytes({
+    required String name,
+    required String mimeType,
+    required Uint8List bytes,
   }) async {
     final digest = sha256.convert(bytes).toString();
-    final existing = await (_db.select(
-      _db.libraryItems,
-    )..where((row) => row.sha256.equals(digest))).getSingleOrNull();
+    final existing =
+        await (_db.select(_db.libraryItems)
+              ..where((row) => row.sha256.equals(digest))
+              ..limit(1))
+            .getSingleOrNull();
     if (existing != null) {
       final now = DateTime.now();
       await (_db.update(_db.libraryItems)

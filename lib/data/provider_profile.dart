@@ -1,5 +1,7 @@
 import 'package:uuid/uuid.dart';
 
+import '../domain/llm/model_catalog.dart';
+
 const _uuid = Uuid();
 
 /// A named, switchable LLM endpoint configuration. The app keeps a list of
@@ -131,14 +133,11 @@ class ProviderPreset {
       name: 'DeepSeek',
       group: ProviderPresetGroup.china,
       baseUrl: 'https://api.deepseek.com',
-      chatModel: 'deepseek-v4-flash',
-      reasonerModel: 'deepseek-v4-pro',
-      models: [
-        'deepseek-v4-flash',
-        'deepseek-v4-pro',
-        'deepseek-v4-flash-vision-exp',
-      ],
-      hint: '不要加 /v1；官方联网 flash/pro/vision 均可；看图请选 flash-vision-exp',
+      chatModel: KnownModels.chat,
+      reasonerModel: KnownModels.reasoner,
+      models: KnownModels.all,
+      hint:
+          'DeepSeek V4.1 Flash：deepseek-flash，支持看图与思考，联网请用客户端搜索；旧 Flash 名称为兼容别名',
     ),
     ProviderPreset(
       name: 'Kimi (Moonshot)',

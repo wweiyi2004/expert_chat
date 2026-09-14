@@ -493,16 +493,13 @@ class _StoryPanelBodyState extends ConsumerState<StoryPanelBody> {
               key: const ValueKey('story-prompt-preview'),
               leading: const Icon(Icons.rule_folder_outlined),
               title: const Text('本轮约束预览'),
-              subtitle: Text(
-                '${promptPreview.messages.length} 个稳定上下文块 + '
-                '${promptPreview.postHistoryMessages.length} 个仅本轮动作',
-              ),
+              subtitle: const Text('查看本轮采用的设定和写作要求'),
               childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
               children: [
                 Align(
                   alignment: Alignment.centerLeft,
                   child: Text(
-                    '预览按“写下一场”生成；世界书命中和全局系统提示会在发送时动态加入。',
+                    '以下为“写下一场”的要求预览，发送时还会加入相关世界书设定和全局提示词。',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
                       color: scheme.onSurfaceVariant,
                     ),

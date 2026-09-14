@@ -89,7 +89,7 @@ data: [DONE]
     },
   );
 
-  test('DeepSeek V4 sends selected reasoning_effort', () async {
+  test('DeepSeek V4.1 Flash sends selected reasoning_effort', () async {
     final adapter = _RecordingAdapter();
     final dio = Dio()..httpClientAdapter = adapter;
     final provider = OpenAiCompatibleProvider(dio: dio);
@@ -99,7 +99,7 @@ data: [DONE]
           config: const LlmConfig(
             baseUrl: 'https://api.deepseek.com',
             apiKey: 'k',
-            model: 'deepseek-v4-flash',
+            model: 'deepseek-flash',
           ),
           messages: const [
             LlmRequestMessage(role: MessageRole.user, content: 'hello'),
@@ -114,7 +114,7 @@ data: [DONE]
   });
 
   test(
-    'DeepSeek V4 disables thinking without sending reasoning_effort none',
+    'DeepSeek V4.1 Flash disables thinking without sending reasoning_effort none',
     () async {
       final adapter = _RecordingAdapter();
       final dio = Dio()..httpClientAdapter = adapter;
@@ -125,7 +125,7 @@ data: [DONE]
             config: const LlmConfig(
               baseUrl: 'https://api.deepseek.com',
               apiKey: 'k',
-              model: 'deepseek-v4-flash',
+              model: 'deepseek-flash',
             ),
             messages: const [
               LlmRequestMessage(role: MessageRole.user, content: 'hello'),
@@ -358,6 +358,7 @@ data: {"choices":[{"delta":{"content":"late"},"finish_reason":"stop"}]}
     'reasoning_content still round-trips for DeepSeek and reasoners',
     () async {
       for (final model in [
+        'deepseek-flash',
         'deepseek-v4-flash',
         'deepseek-v4-pro',
         'grok-4.5',

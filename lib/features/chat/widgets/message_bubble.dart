@@ -61,9 +61,15 @@ class MessageBubble extends StatefulWidget {
     this.onCancelLongTask,
     this.onRetryLongTask,
     this.onThinkingExpandedChanged,
+    this.onAnswerFromResults,
+    this.onRetryStep,
+    this.onStopTask,
   });
 
   final ChatMessage message;
+  final VoidCallback? onAnswerFromResults;
+  final ValueChanged<SearchActivity>? onRetryStep;
+  final VoidCallback? onStopTask;
 
   /// Whether THIS message is the one currently being streamed.
   final bool isStreaming;
@@ -427,6 +433,16 @@ class _MessageBubbleState extends State<MessageBubble> {
                   : MainAxisAlignment.end,
               children: [
                 _branchNav(scheme),
+                if (messageHasHtmlPreview(m.content))
+                  IconButton(
+                    tooltip: '本地预览 HTML / SVG',
+                    iconSize: 18,
+                    icon: const Icon(Icons.visibility_outlined),
+                    onPressed: () => HtmlPreviewPage.open(
+                      context,
+                      snippets: extractHtmlSnippets(m.content),
+                    ),
+                  ),
                 if (m.content.isNotEmpty)
                   IconButton(
                     iconSize: 16,
@@ -473,7 +489,11 @@ class _MessageBubbleState extends State<MessageBubble> {
     // Assistant message: optional thinking panel + markdown body + actions.
     final hasReasoning = m.reasoning.trim().isNotEmpty;
     final stillThinking = widget.isStreaming && m.content.isEmpty;
-    final showCursor = widget.isStreaming && m.content.isEmpty && !hasReasoning;
+    final showCursor =
+        widget.isStreaming &&
+        m.content.isEmpty &&
+        !hasReasoning &&
+        m.searchActivities.isEmpty;
     final speaker = widget.speakerName?.trim();
 
     return Align(
@@ -515,7 +535,8 @@ class _MessageBubbleState extends State<MessageBubble> {
                 onCancel: widget.onCancelLongTask,
                 onRetry: widget.onRetryLongTask,
               ),
-            if (m.turnSkill != null) _TurnSkillChip(mark: m.turnSkill!),
+            if (m.turnSkill?.source == ChatSkillSource.prefix)
+              _TurnSkillChip(mark: m.turnSkill!),
             if (m.appliedWorldInfo.isNotEmpty)
               _AppliedWorldInfoBar(hits: m.appliedWorldInfo),
             if (hasReasoning || m.searchActivities.isNotEmpty)
@@ -529,6 +550,9 @@ class _MessageBubbleState extends State<MessageBubble> {
                         )),
                 thinkingMillis: m.thinkingMillis,
                 activities: m.searchActivities,
+                onAnswerFromResults: widget.onAnswerFromResults,
+                onRetryStep: widget.onRetryStep,
+                onStop: widget.onStopTask,
                 onExpandedChanged: widget.onThinkingExpandedChanged,
               ),
             if (showCursor)
@@ -688,7 +712,7 @@ class _MessageBubbleState extends State<MessageBubble> {
                     if (messageHasHtmlPreview(m.content))
                       IconButton(
                         iconSize: 18,
-                        tooltip: '预览网页',
+                        tooltip: '本地预览 HTML / SVG',
                         color: scheme.primary,
                         icon: const Icon(Icons.visibility_outlined),
                         onPressed: () {
@@ -908,13 +932,7 @@ class _LongTaskCard extends StatelessWidget {
   };
 }
 
-String _turnSkillSourceLabel(ChatSkillSource source) => switch (source) {
-  ChatSkillSource.prefix => '已指定',
-  ChatSkillSource.model => '自动',
-  ChatSkillSource.fallback => '回退',
-};
-
-/// Outlined chip showing which catalog skill handled this assistant turn.
+/// Show the task explicitly selected by the user, without routing internals.
 class _TurnSkillChip extends StatelessWidget {
   const _TurnSkillChip({required this.mark});
 
@@ -923,11 +941,10 @@ class _TurnSkillChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final source = _turnSkillSourceLabel(mark.source);
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Tooltip(
-        message: source,
+        message: '你指定的任务',
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
           decoration: BoxDecoration(
@@ -944,17 +961,10 @@ class _TurnSkillChip extends StatelessWidget {
               ),
               const SizedBox(width: 6),
               Text(
-                '本轮：${mark.name}',
+                mark.name,
                 style: Theme.of(context).textTheme.labelMedium?.copyWith(
                   color: scheme.onSurface,
                   fontWeight: FontWeight.w600,
-                ),
-              ),
-              const SizedBox(width: 6),
-              Text(
-                source,
-                style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: scheme.onSurfaceVariant,
                 ),
               ),
             ],

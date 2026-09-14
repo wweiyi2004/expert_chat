@@ -15,6 +15,8 @@ import 'package:expert_chat/data/context_prefs.dart';
 import 'package:expert_chat/data/db/app_database.dart' show AppDatabase;
 import 'package:expert_chat/data/drift_conversation_repository.dart';
 import 'package:expert_chat/data/gateway_config.dart';
+import 'package:expert_chat/data/library_file_store.dart';
+import 'package:expert_chat/data/library_paths.dart';
 import 'package:expert_chat/data/media_api_config.dart';
 import 'package:expert_chat/data/models.dart';
 import 'package:expert_chat/data/provider_profile.dart';
@@ -301,6 +303,14 @@ class FakeChatSkillSelectedModelSettings extends FakeChatSkillSettings {
     final base = await super.build();
     return base.copyWith(selectedModel: KnownModels.reasoner);
   }
+}
+
+class FakeSavedEffortSettings extends FakeChatSkillSettings {
+  @override
+  Future<SettingsState> build() async => (await super.build()).copyWith(
+    reasoningEffort: ReasoningEffort.max,
+    hasReasoningEffortOverride: true,
+  );
 }
 
 class FakeSmallContextSettings extends FakeSettings {
@@ -783,6 +793,31 @@ class FakeTextToSpeechService implements TextToSpeechService {
   }
 }
 
+class InMemoryLibraryFileStore extends LibraryFileStore {
+  final _files = <String, Uint8List>{};
+  @override
+  Future<String> get rootPath async => 'test-library';
+  @override
+  Future<String> writeBytes({
+    required String id,
+    required String fileName,
+    required bool image,
+    required Uint8List bytes,
+  }) async {
+    final path = libraryRelativePath(id, fileName, image);
+    _files[path] = Uint8List.fromList(bytes);
+    return path;
+  }
+
+  @override
+  Future<Uint8List?> readBytes(String relativePath) async =>
+      _files[relativePath];
+  @override
+  Future<void> delete(String relativePath) async {
+    _files.remove(relativePath);
+  }
+}
+
 /// In-memory Drift DB for story repos in unit tests (no path_provider).
 ProviderContainer _container(
   LlmProvider llm,
@@ -804,6 +839,7 @@ ProviderContainer _container(
       conversationRepositoryProvider.overrideWithValue(repo),
       settingsControllerProvider.overrideWith(settingsBuilder),
       appDatabaseProvider.overrideWithValue(db),
+      libraryFileStoreProvider.overrideWithValue(InMemoryLibraryFileStore()),
       characterRepositoryProvider.overrideWithValue(characters),
       worldInfoRepositoryProvider.overrideWithValue(worldInfo),
       if (toolEngineFactory != null)
@@ -1068,6 +1104,76 @@ void main() {
       expect(assistant.turnSkill?.id, 'writing');
       expect(assistant.turnSkill?.name, '写作');
       expect(assistant.turnSkill?.source, ChatSkillSource.model);
+    },
+  );
+
+  test(
+    'DeepSeek prose uses low effort and restores high for other tasks',
+    () async {
+      final llm = FakeLlmProvider([const ChatChunk(contentDelta: '完整答复')]);
+      final c = _container(
+        llm,
+        InMemoryRepo(),
+        settingsBuilder: FakeChatSkillSettings.new,
+      );
+      addTearDown(c.dispose);
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(settingsControllerProvider.future);
+      await c.read(chatControllerProvider.future);
+      ctrl.toggleDeepThink();
+      for (final prompt in ['/翻译 hello', '/写作 写一段雨景']) {
+        await ctrl.sendMessage(prompt);
+        expect(llm.lastThinking, isTrue);
+        expect(llm.lastReasoningEffort, ReasoningEffort.low);
+        expect(
+          c.read(chatControllerProvider).requireValue.reasoningEffort,
+          ReasoningEffort.low,
+        );
+      }
+      await ctrl.sendMessage('/代码 分析算法复杂度');
+      expect(llm.lastReasoningEffort, ReasoningEffort.high);
+      ctrl.toggleDeepThink();
+      await ctrl.sendMessage('/翻译 hello');
+      expect(llm.lastThinking, isFalse);
+      expect(llm.lastReasoningEffort, isNull);
+    },
+  );
+
+  test('DeepSeek prose respects a saved maximum effort', () async {
+    final llm = FakeLlmProvider([const ChatChunk(contentDelta: '完整译文')]);
+    final c = _container(
+      llm,
+      InMemoryRepo(),
+      settingsBuilder: FakeSavedEffortSettings.new,
+    );
+    addTearDown(c.dispose);
+    final ctrl = c.read(chatControllerProvider.notifier);
+    await c.read(settingsControllerProvider.future);
+    await c.read(chatControllerProvider.future);
+    ctrl.toggleDeepThink();
+    await ctrl.sendMessage('/翻译 hello');
+    expect(llm.lastReasoningEffort, ReasoningEffort.max);
+  });
+
+  test(
+    'DeepSeek story prose uses low but outline consultation retains high',
+    () async {
+      final llm = FakeLlmProvider([const ChatChunk(contentDelta: '故事答复')]);
+      final c = _container(llm, InMemoryRepo());
+      addTearDown(c.dispose);
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
+      await ctrl.newDirectorStoryConversation(
+        title: '旅人',
+        premise: '旅人抵达城镇',
+        outline: '抵达城镇',
+        cast: [CharacterCard(name: '旅人')],
+      );
+      ctrl.toggleDeepThink();
+      await ctrl.sendMessage('写一段旅人抵达城镇的场景');
+      expect(llm.lastReasoningEffort, ReasoningEffort.low);
+      await ctrl.sendMessage('/大纲 调整下一幕的线索');
+      expect(llm.lastReasoningEffort, ReasoningEffort.high);
     },
   );
 
@@ -3263,6 +3369,76 @@ void main() {
     },
   );
 
+  test(
+    'vision tool uses its own model and records the result on the originating answer',
+    () async {
+      final llm = FakeLlmProvider(
+        const [],
+        scriptedChunks: const [
+          [
+            ChatChunk(
+              toolCalls: [
+                ToolCall(
+                  index: 0,
+                  id: 'vision-call',
+                  name: 'analyze_image',
+                  argumentsJson:
+                      '{"attachment_name":"pic.png","question":"图中文字"}',
+                ),
+              ],
+              finishReason: 'tool_calls',
+            ),
+          ],
+          [ChatChunk(contentDelta: '图片上写着 hello')],
+          [ChatChunk(contentDelta: '文字是 hello')],
+        ],
+      );
+      final c = _container(
+        llm,
+        InMemoryRepo(),
+        settingsBuilder: FakeVisionToolSettings.new,
+      );
+      addTearDown(c.dispose);
+      await c.read(chatControllerProvider.future);
+      final ctrl = c.read(chatControllerProvider.notifier);
+      expect(
+        await ctrl.sendMessage(
+          '读图',
+          attachments: [
+            Attachment(
+              name: 'pic.png',
+              mimeType: 'image/png',
+              imageBase64: 'AAAA',
+            ),
+          ],
+        ),
+        isTrue,
+      );
+      expect(llm.calls, hasLength(3));
+      expect(llm.configs[1].model, KnownModels.vision);
+      expect(llm.configs[1].apiKey, 'sk-vision-test');
+      expect(llm.calls[1].last.imageDataUrls, ['data:image/png;base64,AAAA']);
+      expect(llm.calls[1].last.content, '图中文字');
+      final toolReply = llm.calls.last.singleWhere(
+        (m) => m.role == MessageRole.tool,
+      );
+      expect(toolReply.toolCallId, 'vision-call');
+      expect(toolReply.content, '【图片：pic.png】\n图片上写着 hello');
+      final answer = c
+          .read(chatControllerProvider)
+          .requireValue
+          .current!
+          .activePath
+          .last;
+      expect(answer.content, '文字是 hello');
+      final activity = answer.searchActivities.single;
+      expect(activity.kind, SearchActivityKind.vision);
+      expect(activity.status, SearchActivityStatus.done);
+      expect(activity.toolName, 'analyze_image');
+      expect(activity.resultText, toolReply.content);
+    },
+  );
+
   test('editMessage of a plain turn does not keep image parts', () async {
     final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'ok')]);
     final c = _container(
@@ -3482,6 +3658,14 @@ void main() {
       expect(assistant.attachments, isNotEmpty);
       expect(assistant.reasoning, contains('先补光影'));
       expect(assistant.content, contains('深度思考优化后的提示词'));
+      expect(assistant.searchActivities.map((a) => a.query), ['优化提示词', '生成图片']);
+      expect(
+        assistant.searchActivities.every(
+          (a) => a.status == SearchActivityStatus.done,
+        ),
+        isTrue,
+      );
+      expect(llm.lastReasoningEffort, ReasoningEffort.low);
     },
   );
 
@@ -3565,6 +3749,54 @@ void main() {
       ImageGenMode.auto,
     );
   });
+
+  test(
+    'dialogue image failure can retry but one success blocks later calls',
+    () async {
+      final media = FakeMediaProvider(failuresRemaining: 1);
+      final llm = FakeLlmProvider(
+        const [],
+        scriptedChunks: [
+          [
+            ChatChunk(
+              toolCalls: [
+                for (var index = 0; index < 3; index++)
+                  ToolCall(
+                    index: index,
+                    id: 'image-$index',
+                    name: 'generate_image',
+                    argumentsJson: '{"prompt":"a forest"}',
+                  ),
+              ],
+              finishReason: 'tool_calls',
+            ),
+          ],
+          const [ChatChunk(contentDelta: '生成完毕')],
+        ],
+      );
+      final c = _container(
+        llm,
+        InMemoryRepo(),
+        settingsBuilder: FakeImageGenSettings.new,
+        mediaProvider: media,
+      );
+      addTearDown(c.dispose);
+      await c.read(chatControllerProvider.future);
+      await c.read(chatControllerProvider.notifier).sendMessage('画一片森林');
+      expect(media.prompts, hasLength(2));
+      final replies = llm.calls.last
+          .where((m) => m.role == MessageRole.tool)
+          .toList();
+      expect(replies, hasLength(3));
+      expect(replies[0].content, contains('生图失败'));
+      expect(replies[1].content, contains('配图已生成'));
+      expect(replies[2].content, '本轮已生成过图片，每轮对话最多一张。');
+      final state = c.read(chatControllerProvider).requireValue;
+      expect(state.current!.activePath.last.attachments, hasLength(1));
+      expect(state.current!.activePath.last.content, '生成完毕');
+      expect(state.isGeneratingImage, isFalse);
+    },
+  );
 
   test('配图·强制 forces generate_image instead of pre-generating', () async {
     final media = FakeMediaProvider();
@@ -3785,6 +4017,64 @@ void main() {
   );
 
   group('ChatPage widget interactions', () {
+    testWidgets(
+      'switching conversations cancels dictation and ignores its late text',
+      (tester) async {
+        final speech = FakeSpeechInputService();
+        final c = _container(
+          FakeLlmProvider(const []),
+          InMemoryRepo(),
+          speechInputService: speech,
+        );
+        addTearDown(c.dispose);
+        await _pumpChat(tester, c);
+        await tester.tap(find.byTooltip('语音输入'));
+        await _drain(tester);
+        speech.emit('旧会话文字');
+        c
+            .read(chatControllerProvider.notifier)
+            .newConversation(projectId: 'next');
+        await _drain(tester);
+        speech.emit('迟到文字', isFinal: true);
+        await _drain(tester);
+        final field = tester.widget<TextField>(
+          find.byKey(const ValueKey('composer-text-field')),
+        );
+        expect(field.controller!.text, isEmpty);
+        expect(speech.cancelCount, 1);
+        expect(find.byTooltip('语音输入'), findsOneWidget);
+      },
+    );
+
+    testWidgets('switching conversations stops the previous reply playback', (
+      tester,
+    ) async {
+      final tts = FakeTextToSpeechService();
+      final c = _container(
+        FakeLlmProvider([const ChatChunk(contentDelta: 'hello')]),
+        InMemoryRepo(),
+        textToSpeechService: tts,
+      );
+      addTearDown(c.dispose);
+      await _pumpChat(tester, c);
+      await tester.enterText(
+        find.byKey(const ValueKey('composer-text-field')),
+        'hi',
+      );
+      await tester.tap(find.byTooltip('发送'));
+      await _drain(tester);
+      await tester.tap(find.byTooltip('朗读'));
+      await _drain(tester);
+      expect(tts.playback.value.isActive, isTrue);
+      final priorStops = tts.stopCount;
+      c
+          .read(chatControllerProvider.notifier)
+          .newConversation(projectId: 'next');
+      await _drain(tester);
+      expect(tts.playback.value.isActive, isFalse);
+      expect(tts.stopCount, priorStops + 1);
+    });
+
     testWidgets('permission sheet inactivity does not cancel first voice use', (
       tester,
     ) async {
@@ -4048,7 +4338,8 @@ void main() {
       await _drain(tester);
 
       expect(llm.callCount, 0); // never reached the LLM
-      expect(find.text('请先在设置中填写 API Key。'), findsOneWidget);
+      expect(find.text('还未连接模型'), findsOneWidget);
+      expect(find.text('检查设置'), findsOneWidget);
       expect(find.text('重试'), findsNothing);
     });
 

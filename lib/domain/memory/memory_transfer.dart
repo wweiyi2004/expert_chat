@@ -88,7 +88,8 @@ class MemoryTransferService {
 
     final currentById = {for (final entry in current.entries) entry.id: entry};
     final currentByContent = <String, MemoryEntry>{
-      for (final entry in current.entries) _contentKey(entry.content): entry,
+      for (final entry in current.entries)
+        '${entry.projectId ?? ''}:${_contentKey(entry.content)}': entry,
     };
     final currentBySource = <String, MemoryEntry>{};
     for (final entry in current.entries) {
@@ -120,10 +121,11 @@ class MemoryTransferService {
         sourceConversationId: raw.sourceConversationId,
         sourceMessageId: raw.sourceMessageId,
         sourceRole: raw.sourceRole,
+        projectId: raw.projectId,
         createdAt: raw.createdAt,
         updatedAt: raw.updatedAt,
       );
-      final contentKey = _contentKey(content);
+      final contentKey = '${imported.projectId ?? ''}:${_contentKey(content)}';
       if (!seenIds.add(imported.id) || !seenContents.add(contentKey)) {
         items.add(
           MemoryImportItem(
@@ -189,12 +191,17 @@ class MemoryTransferService {
   }
 
   static bool _sameUserValue(MemoryEntry a, MemoryEntry b) =>
-      _contentKey(a.content) == _contentKey(b.content) && a.pinned == b.pinned;
+      a.projectId == b.projectId &&
+      _contentKey(a.content) == _contentKey(b.content) &&
+      a.pinned == b.pinned;
 
   static String _contentKey(String value) {
     // 与 memory_repository 保持一致:连续空白压成一个空格而非删除,
     // 避免 "api key" 与 "apikey" 被误判为重复;与汉字相邻的空格视为排版差异。
-    final collapsed = value.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
+    final collapsed = value
+        .toLowerCase()
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
     final cjk = RegExp(r'[㐀-鿿]');
     final result = StringBuffer();
     for (var i = 0; i < collapsed.length; i++) {
@@ -212,6 +219,6 @@ class MemoryTransferService {
     final conversationId = entry.sourceConversationId?.trim() ?? '';
     final messageId = entry.sourceMessageId?.trim() ?? '';
     if (conversationId.isEmpty || messageId.isEmpty) return null;
-    return '$conversationId::$messageId';
+    return '${entry.projectId ?? ''}::$conversationId::$messageId';
   }
 }

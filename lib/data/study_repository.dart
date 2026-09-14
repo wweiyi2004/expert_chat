@@ -25,6 +25,9 @@ class StudyRepository {
   final SharedPreferences _prefs;
   Future<void>? _migration;
 
+  /// Bootstrap only the migration; the controller loads the library on demand.
+  Future<void> ensureMigrated() => _ensureMigrated();
+
   Future<StudyLibrary> load() async {
     await _ensureMigrated();
     return _loadFromDb();

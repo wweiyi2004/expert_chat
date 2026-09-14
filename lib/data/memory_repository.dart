@@ -66,6 +66,21 @@ class MemoryRepository {
   final MemoryMarkdownCodec _codec;
   MemoryDocument? _cache;
   Future<void> _writeQueue = Future.value();
+  Future<void> flush() => _writeQueue;
+
+  /// Serialize full-store maintenance with every memory mutation and discard
+  /// the cache before queued edits continue against the restored document.
+  Future<T> withMaintenance<T>(Future<T> Function() action) {
+    final result = _writeQueue.then((_) async {
+      try {
+        return await action();
+      } finally {
+        _cache = null;
+      }
+    });
+    _writeQueue = result.then<void>((_) {}, onError: (Object _) {});
+    return result;
+  }
 
   Future<MemoryDocument> load({bool refresh = false}) async {
     if (!refresh && _cache != null) return _cache!;
@@ -96,6 +111,7 @@ class MemoryRepository {
 
   Future<MemorySaveResult> add({
     required String content,
+    String? projectId,
     String? sourceConversationId,
     String? sourceMessageId,
     String? sourceRole,
@@ -107,7 +123,9 @@ class MemoryRepository {
         final normalized = MemorySafety.normalize(content);
         final current = await load();
         final duplicate = current.entries.cast<MemoryEntry?>().firstWhere(
-          (entry) => _dedupeKey(entry!.content) == _dedupeKey(normalized),
+          (entry) =>
+              entry!.projectId == projectId &&
+              _dedupeKey(entry.content) == _dedupeKey(normalized),
           orElse: () => null,
         );
         if (duplicate != null) {
@@ -118,6 +136,7 @@ class MemoryRepository {
         }
         final entry = MemoryEntry(
           content: normalized,
+          projectId: projectId,
           sourceConversationId: sourceConversationId,
           sourceMessageId: sourceMessageId,
           sourceRole: sourceRole,
@@ -138,6 +157,7 @@ class MemoryRepository {
   Future<MemoryReplaceResult> replace({
     required Iterable<String> replacedIds,
     required String content,
+    String? projectId,
     String? sourceConversationId,
     String? sourceMessageId,
     String? sourceRole,
@@ -149,7 +169,9 @@ class MemoryRepository {
         final ids = replacedIds.toSet();
         final current = await load();
         final targets = current.entries
-            .where((entry) => ids.contains(entry.id))
+            .where(
+              (entry) => ids.contains(entry.id) && entry.projectId == projectId,
+            )
             .toList(growable: false);
         if (targets.isEmpty) {
           completer.complete(const MemoryReplaceResult());
@@ -157,10 +179,12 @@ class MemoryRepository {
         }
 
         final remaining = current.entries
-            .where((entry) => !ids.contains(entry.id))
+            .where((entry) => !targets.any((target) => target.id == entry.id))
             .toList();
         final duplicate = remaining.cast<MemoryEntry?>().firstWhere(
-          (entry) => _dedupeKey(entry!.content) == _dedupeKey(normalized),
+          (entry) =>
+              entry!.projectId == projectId &&
+              _dedupeKey(entry.content) == _dedupeKey(normalized),
           orElse: () => null,
         );
         if (duplicate != null) {
@@ -176,6 +200,7 @@ class MemoryRepository {
 
         final replacement = MemoryEntry(
           content: normalized,
+          projectId: projectId,
           sourceConversationId: sourceConversationId,
           sourceMessageId: sourceMessageId,
           sourceRole: sourceRole,
@@ -215,7 +240,8 @@ class MemoryRepository {
           final index = entries.indexWhere(
             (entry) => entry.id == mutation.existingId,
           );
-          if (index < 0) {
+          if (index < 0 ||
+              entries[index].projectId != mutation.imported.projectId) {
             skipped++;
             continue;
           }
@@ -226,6 +252,7 @@ class MemoryRepository {
           final duplicateIndex = entries.indexWhere(
             (entry) =>
                 entry.id != mutation.existingId &&
+                entry.projectId == imported.projectId &&
                 _dedupeKey(entry.content) == _dedupeKey(imported.content),
           );
           if (duplicateIndex >= 0) {
@@ -241,7 +268,8 @@ class MemoryRepository {
           final duplicate = entries.any(
             (entry) =>
                 entry.id == imported.id ||
-                _dedupeKey(entry.content) == _dedupeKey(imported.content),
+                (entry.projectId == imported.projectId &&
+                    _dedupeKey(entry.content) == _dedupeKey(imported.content)),
           );
           if (duplicate) {
             skipped++;
@@ -314,6 +342,7 @@ class MemoryRepository {
 
   Future<MemoryRecall> recall(
     String query, {
+    String? projectId,
     int maxItems = 8,
     int maxChars = 4000,
   }) async {
@@ -324,6 +353,7 @@ class MemoryRepository {
     final queryTerms = _terms(query);
     final scored = <({MemoryEntry entry, int score})>[];
     for (final entry in current.entries) {
+      if (entry.projectId != null && entry.projectId != projectId) continue;
       // Desktop users may edit the Markdown file outside the app. Re-check at
       // recall time so manually pasted credentials are never sent upstream.
       if (MemorySafety.sensitiveReason(entry.content) != null ||
@@ -385,7 +415,10 @@ class MemoryRepository {
   static String _dedupeKey(String value) {
     // 连续空白压成一个空格而非删除,避免 "api key" 与 "apikey" 被误判为重复;
     // 中文不使用空格分词,与汉字相邻的空格视为排版差异,一并去掉。
-    final collapsed = value.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
+    final collapsed = value
+        .toLowerCase()
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
     final cjk = RegExp(r'[㐀-鿿]');
     final result = StringBuffer();
     for (var i = 0; i < collapsed.length; i++) {
@@ -405,6 +438,7 @@ class MemoryRepository {
       throw const MemoryValidationException('导入记忆的 ID 格式不正确。');
     }
     return MemoryEntry(
+      projectId: entry.projectId,
       id: safeId,
       content: MemorySafety.normalize(entry.content),
       pinned: entry.pinned,

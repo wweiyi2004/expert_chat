@@ -50,13 +50,15 @@ class DriftConversationRepository implements ConversationRepository {
     final convoRows = await (_db.select(
       _db.conversations,
     )..orderBy([(c) => OrderingTerm.desc(c.updatedAt)])).get();
-    final taskRows = await (_db.select(
-      _db.messages,
-    )..where((m) => m.longTaskJson.isNotNull())).get();
+    final taskRows =
+        await (_db.selectOnly(_db.messages)
+              ..addColumns([_db.messages.convoId, _db.messages.longTaskJson])
+              ..where(_db.messages.longTaskJson.isNotNull()))
+            .get();
     final activeIds = <String>{};
     for (final row in taskRows) {
-      if (_longTaskJsonIsActive(row.longTaskJson)) {
-        activeIds.add(row.convoId);
+      if (_longTaskJsonIsActive(row.read(_db.messages.longTaskJson))) {
+        activeIds.add(row.read(_db.messages.convoId)!);
       }
     }
     return [
@@ -67,6 +69,7 @@ class DriftConversationRepository implements ConversationRepository {
           updatedAt: c.updatedAt,
           mode: ConversationMode.fromWire(c.mode),
           characterId: c.characterId,
+          projectId: c.projectId,
           participantIds: _decodeStringList(c.participantIdsJson),
           localCast: _decodeList(c.localCastJson, CharacterCard.fromJson),
           worldInfoIds: _decodeStringList(c.worldInfoIdsJson),
@@ -177,6 +180,7 @@ class DriftConversationRepository implements ConversationRepository {
     messages: messages,
     mode: ConversationMode.fromWire(c.mode as String),
     characterId: c.characterId as String?,
+    projectId: c.projectId as String?,
     participantIds: _decodeStringList(c.participantIdsJson as String?),
     localCast: _decodeList(c.localCastJson as String?, CharacterCard.fromJson),
     worldInfoIds: _decodeStringList(c.worldInfoIdsJson as String?),
@@ -282,6 +286,7 @@ class DriftConversationRepository implements ConversationRepository {
         storedConvo.activeChildrenJson != activeChildrenJson ||
         storedConvo.mode != convo.mode.wire ||
         storedConvo.characterId != convo.characterId ||
+        storedConvo.projectId != convo.projectId ||
         storedConvo.worldInfoIdsJson != worldInfoIdsJson ||
         storedConvo.customMcpServerIdsJson != customMcpServerIdsJson ||
         storedConvo.participantIdsJson != participantIdsJson ||
@@ -304,6 +309,7 @@ class DriftConversationRepository implements ConversationRepository {
               activeChildrenJson: Value(activeChildrenJson),
               mode: Value(convo.mode.wire),
               characterId: Value(convo.characterId),
+              projectId: Value(convo.projectId),
               worldInfoIdsJson: Value(worldInfoIdsJson),
               customMcpServerIdsJson: Value(customMcpServerIdsJson),
               participantIdsJson: Value(participantIdsJson),
@@ -452,6 +458,7 @@ class DriftConversationRepository implements ConversationRepository {
           ],
           mode: ConversationMode.fromWire(c.mode),
           characterId: c.characterId,
+          projectId: c.projectId,
           participantIds: _decodeStringList(c.participantIdsJson),
           localCast: _decodeList(c.localCastJson, CharacterCard.fromJson),
           worldInfoIds: _decodeStringList(c.worldInfoIdsJson),

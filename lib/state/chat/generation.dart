@@ -23,13 +23,16 @@ mixin ChatGeneration on ChatStreaming {
     StoryGenerationIntent? storyIntent,
     CharacterCard? ensembleSpeaker,
     bool forceDocumentEdit = false,
+    ChatMessage? recoverySource,
   }) async {
     // The conversation was deleted while this turn was preflighting (awaiting
     // settings). Abandon the turn: re-inserting [working] here would resurrect
     // the deleted row both in memory and, via persistById, in the database.
     if (_deletedWhileStartingIds.contains(working.id)) return;
+    if (!_requireLoadedConversation(working)) return;
     final searchMode = _s.searchMode;
     final searchAllowed =
+        recoverySource == null &&
         searchMode != SearchMode.off &&
         searchQuery.trim().isNotEmpty &&
         !working.isStoryLike &&
@@ -39,6 +42,8 @@ mixin ChatGeneration on ChatStreaming {
     // pre-search path stays in charge.
     final useProviderSearch =
         searchAllowed &&
+        settings.taskBudget.maxSearches > 0 &&
+        settings.taskBudget.maxToolCalls > 0 &&
         settings.searchBackend.isProviderHosted &&
         config.capabilities.supportsServerWebSearch;
     final useWebSearchTool =
@@ -48,7 +53,9 @@ mixin ChatGeneration on ChatStreaming {
     // Only expose direct page fetching when this turn actually contains a URL.
     // The executor also restricts calls to this exact allow-list so a model
     // cannot invent unrelated network targets while "联网" is off.
-    final pastedUrls = extractHttpUrls(searchQuery);
+    final pastedUrls = recoverySource == null
+        ? extractHttpUrls(searchQuery)
+        : <String>[];
     // Browser clients cannot safely pin DNS and arbitrary pages are normally
     // CORS-blocked. Until a trusted fetch proxy exists, keep direct fetch off.
     final directPageFetchAllowed = !kIsWeb;
@@ -61,6 +68,7 @@ mixin ChatGeneration on ChatStreaming {
     final imageGenMode = _s.imageGenMode;
     final imageGenConfigured = settings.imageGenerationConfigured;
     final imageGenWanted =
+        recoverySource == null &&
         imageGenMode != ImageGenMode.off &&
         imageGenConfigured &&
         !working.isStudy;
@@ -90,7 +98,7 @@ mixin ChatGeneration on ChatStreaming {
       for (final a in turnUserAttachments)
         if (a.isImage && a.hasImageData) a,
     ];
-    final historyImages = _visionAttachmentsFor(working);
+    final historyImages = VisionTools.attachmentsFor(working);
     final visionSources = [
       ...turnImages,
       for (final a in historyImages)
@@ -99,7 +107,10 @@ mixin ChatGeneration on ChatStreaming {
     final nativeVision =
         config.capabilities.supportsVision && visionSources.isNotEmpty;
     final visionToolWanted =
-        !nativeVision && settings.visionConfigured && visionSources.isNotEmpty;
+        recoverySource == null &&
+        !nativeVision &&
+        settings.visionConfigured &&
+        visionSources.isNotEmpty;
     final useVisionTool =
         visionToolWanted && config.capabilities.supportsTools && !forceDocTool;
     final needPreVision =
@@ -124,7 +135,9 @@ mixin ChatGeneration on ChatStreaming {
         convoId: working.id,
       );
     }
-    final allowedFetchUrls = {for (final url in pastedUrls) _fetchUrlKey(url)};
+    final allowedFetchUrls = {
+      for (final url in pastedUrls) SearchToolExecutor.fetchUrlKey(url),
+    };
     final imageBudget = _TurnImageBudget();
     final failureOperation = ChatRetryOperation(
       kind: ensembleSpeaker == null
@@ -141,7 +154,8 @@ mixin ChatGeneration on ChatStreaming {
     // One token covers the whole generation (search pre-step + all tool
     // rounds); stop() fires it.
     final cancelToken = CancelToken();
-    _cancelToken = cancelToken;
+    _execution.attachRequest(cancelToken);
+    _beginTaskBudget(settings);
 
     // The user may have switched conversations while this turn was preflighting
     // (awaiting settings); don't yank focus back. The stream itself still
@@ -201,6 +215,66 @@ mixin ChatGeneration on ChatStreaming {
       _setScopedError('本地保存失败：$e', convoId: working.id);
     }
 
+    // Freeze memory before search/tool awaits, using the originating project.
+    var memoryPrompt = '';
+    if (settings.memoryEnabled) {
+      try {
+        final recall = await ref
+            .read(memoryRepositoryProvider)
+            .recall(
+              searchQuery,
+              projectId: working.projectId,
+              maxItems: 8,
+              maxChars: 4000,
+            );
+        memoryPrompt = recall.toSystemPrompt();
+      } catch (_) {
+        // Optional local memory must not block an otherwise usable chat.
+      }
+    }
+    var projectPrompt = '';
+    if (working.projectId != null && recoverySource == null) {
+      final started = DateTime.now();
+      try {
+        final project = await ref
+            .read(projectRepositoryProvider)
+            .context(working.projectId!);
+        projectPrompt = project.prompt;
+        _upsertSearchActivity(
+          working.id,
+          assistantId,
+          SearchActivity(
+            kind: SearchActivityKind.document,
+            query: '项目资料：${project.name}',
+            status: SearchActivityStatus.done,
+            startedAt: started,
+            finishedAt: DateTime.now(),
+            items: [
+              for (final name in project.sources)
+                SearchActivityItem(title: name),
+            ],
+            resultText:
+                '以下为项目资料载入快照，后续仍受上下文预算裁剪；不代表全部内容已发送。\n\n${project.prompt}',
+            resultCount: project.sources.length,
+          ),
+        );
+      } catch (e) {
+        // Fail closed: don't silently answer without the user's project context.
+        _setScopedError('项目资料读取失败：$e', convoId: working.id);
+        _set(_s.copyWith(streamingConvoId: null));
+        await _persistence.persistSafely(working.id);
+        _execution.releaseRequest(cancelToken);
+        _execution.endBudget();
+        unawaited(
+          GenerationNotify.onGenerationEnd(
+            success: false,
+            conversationTitle: working.title,
+          ),
+        );
+        return;
+      }
+    }
+
     // Resolve which character (if any) owns this turn's portrait target.
     final imageCharacter = await _resolveImageCharacter(
       working,
@@ -248,7 +322,7 @@ mixin ChatGeneration on ChatStreaming {
     if (useImageGenTool) {
       toolSpecs.add(ToolEngine.generateImageTool);
     }
-    final enableTools = toolSpecs.isNotEmpty;
+    final enableTools = recoverySource == null && toolSpecs.isNotEmpty;
     // Tool-capable models can decide when the pasted link is relevant. Models
     // without function calling keep the deterministic pre-fetch fallback.
     final needPreFetch =
@@ -348,14 +422,14 @@ mixin ChatGeneration on ChatStreaming {
       await _persistence.persistSafely(working.id);
       // Drop our token like _streamAnswer's finally would, so a later stop()
       // or dispose cannot touch a stale one.
-      if (identical(_cancelToken, cancelToken)) _cancelToken = null;
+      _execution.releaseRequest(cancelToken);
       // stop() already ends the notify session when the user pressed stop;
       // still clear wakelock if streaming dropped for another reason.
       unawaited(
         GenerationNotify.onGenerationEnd(
           success: false,
           conversationTitle: working.title,
-          cancelled: _cancelStart,
+          cancelled: _execution.isCancelled,
         ),
       );
       return;
@@ -368,18 +442,6 @@ mixin ChatGeneration on ChatStreaming {
       (c) => c.id == working.id,
       orElse: () => working,
     );
-    var memoryPrompt = '';
-    if (settings.memoryEnabled) {
-      try {
-        final recall = await ref
-            .read(memoryRepositoryProvider)
-            .recall(searchQuery, maxItems: 8, maxChars: 4000);
-        memoryPrompt = recall.toSystemPrompt();
-      } catch (_) {
-        // Long-term memory is optional context. A damaged/unavailable local
-        // memory file must never prevent the user from sending a message.
-      }
-    }
     var preVisionNote = '';
     if (needPreVision && _s.isStreaming) {
       final parts = <String>[];
@@ -406,44 +468,20 @@ mixin ChatGeneration on ChatStreaming {
     }
     if (!_s.isStreaming) {
       await _persistence.persistSafely(working.id);
-      if (identical(_cancelToken, cancelToken)) _cancelToken = null;
+      _execution.releaseRequest(cancelToken);
       return;
     }
 
-    final history = cur.activePath
-        .where((m) => m.id != assistantId)
-        .map(
-          (m) => _toRequestMessage(
-            m,
-            vision: nativeVision,
-            imageToolAvailable: useVisionTool,
-          ),
-        )
-        .toList();
-
-    if (searchContext != null && searchContext.contextText.isNotEmpty) {
-      final insertAt = history.isEmpty ? 0 : history.length - 1;
-      history.insert(
-        insertAt,
-        LlmRequestMessage(
-          role: MessageRole.system,
-          content: searchContext.contextText,
-        ),
-      );
-    }
-
-    // System prefix: story / ensemble use the assembler (no chat catalog
-    // persona). Chat uses the per-turn skill. Study keeps its own prompt.
+    // Load turn-specific data here; the builder receives only completed snapshots.
+    var storyContext = const StoryRequestContext();
+    ChatSkillRoute? skillRoute;
+    var studySystem = '';
     if (cur.isStoryLike) {
       final worldPool = cur.worldInfoIds.isEmpty
           ? const <WorldInfoEntry>[]
           : await ref
                 .read(worldInfoRepositoryProvider)
                 .loadByIds(cur.worldInfoIds);
-      final pathForScan = cur.activePath
-          .where((m) => m.id != assistantId)
-          .toList();
-
       CharacterCard? card;
       var cast = const <CharacterCard>[];
       final ensemble = cur.isEnsemble && ensembleSpeaker != null;
@@ -464,107 +502,18 @@ mixin ChatGeneration on ChatStreaming {
             .getById(cur.characterId!);
       }
 
-      // Rewrite history so ensemble lines are labeled by speaker for the model.
-      if (ensemble) {
-        final labeled = <LlmRequestMessage>[];
-        for (final m in pathForScan) {
-          if (m.role == MessageRole.assistant &&
-              (m.speakerName ?? '').isNotEmpty) {
-            labeled.add(
-              LlmRequestMessage(
-                role: MessageRole.assistant,
-                content: '【${m.speakerName}】${m.content}',
-              ),
-            );
-          } else {
-            labeled.add(
-              _toRequestMessage(
-                m,
-                vision: nativeVision,
-                imageToolAvailable: useVisionTool,
-              ),
-            );
-          }
-        }
-        history
-          ..clear()
-          ..addAll(labeled);
-        if (searchContext != null && searchContext.contextText.isNotEmpty) {
-          final insertAt = history.isEmpty ? 0 : history.length - 1;
-          history.insert(
-            insertAt,
-            LlmRequestMessage(
-              role: MessageRole.system,
-              content: searchContext.contextText,
-            ),
-          );
-        }
-      }
-
-      final promptConversation = promptPlotCursor == null
-          ? cur
-          : cur.copyWith(plotCursor: promptPlotCursor);
-      final prefix = const StoryPromptAssembler().buildSystemPrefix(
-        globalSystemPrompt: '',
+      storyContext = StoryRequestContext(
         character: card,
         cast: cast,
         speakingAs: ensembleSpeaker,
-        worldInfoPool: worldPool,
-        conversation: promptConversation,
-        historyPath: pathForScan,
+        worldInfo: worldPool,
         advancePlot: advancePlot,
-        ensembleTurn: ensemble,
-        directorMode: directorStory,
+        promptPlotCursor: promptPlotCursor,
         intent: storyIntent,
       );
-      if (prefix.worldInfoHits.isNotEmpty) {
-        _setAppliedWorldInfo(working.id, assistantId, prefix.worldInfoHits);
-      }
-      // Stable story context stays ahead of generic memory/tool hints. The
-      // assembler's turn-local action is appended after ordinary history.
-      final systemPrefix = <LlmRequestMessage>[...prefix.messages];
-      if (memoryPrompt.isNotEmpty) {
-        systemPrefix.add(
-          LlmRequestMessage(role: MessageRole.system, content: memoryPrompt),
-        );
-      }
-      if (forceImageNote.isNotEmpty) {
-        systemPrefix.add(
-          LlmRequestMessage(role: MessageRole.system, content: forceImageNote),
-        );
-      }
-      if (preVisionNote.isNotEmpty) {
-        systemPrefix.add(
-          LlmRequestMessage(role: MessageRole.system, content: preVisionNote),
-        );
-      }
-      if (enableTools) {
-        systemPrefix.add(
-          LlmRequestMessage(
-            role: MessageRole.system,
-            content: _composeClientToolHint(
-              searchMode: searchMode,
-              imageGenMode: imageGenMode,
-              useWebSearchTool: useWebSearchTool,
-              useFetchUrlTool: useFetchUrlTool,
-              useImageGenTool: useImageGenTool,
-              useVisionTool: useVisionTool,
-              useDocumentInspectTool: useDocumentInspectTool,
-              useDocumentEditTool: useDocumentEditTool,
-              useDocumentConvertTool: useDocumentConvertTool,
-              forceDocTool: forceDocTool,
-              workMode: working.workMode,
-              imageCharacter: imageCharacter,
-              mcpPassthroughTools: mcpPassthroughTools,
-            ),
-          ),
-        );
-      }
-      history.insertAll(0, systemPrefix);
-      history.addAll(prefix.postHistoryMessages);
     } else {
-      ChatSkillRoute? skillRoute;
-      if (cur.mode == ConversationMode.chat &&
+      if (recoverySource == null &&
+          cur.mode == ConversationMode.chat &&
           settings.chatSkills.enabled.isNotEmpty) {
         if (!settings.config.isReady) {
           skillRoute = ChatSkillRoute(
@@ -598,83 +547,68 @@ mixin ChatGeneration on ChatStreaming {
           ),
         );
       }
-      if (cur.isStudy) {
-        final studySystem = await _studySystemPrompt(cur);
-        if (studySystem.isNotEmpty) {
-          history.insert(
-            0,
-            LlmRequestMessage(role: MessageRole.system, content: studySystem),
-          );
-        }
-      }
-      if (memoryPrompt.isNotEmpty) {
-        history.insert(
-          0,
-          LlmRequestMessage(role: MessageRole.system, content: memoryPrompt),
-        );
-      }
-      final preset = chatPresetPrompt(
-        mode: cur.mode,
-        route: skillRoute,
-        fallbackPrompt: settings.systemPrompt.trim(),
-      );
-      if (preset.isNotEmpty) {
-        history.insert(
-          0,
-          LlmRequestMessage(role: MessageRole.system, content: preset),
-        );
-      }
-      if (forceImageNote.isNotEmpty) {
-        history.insert(
-          0,
-          LlmRequestMessage(role: MessageRole.system, content: forceImageNote),
-        );
-      }
-      if (preVisionNote.isNotEmpty) {
-        history.insert(
-          0,
-          LlmRequestMessage(role: MessageRole.system, content: preVisionNote),
-        );
-      }
-      if (enableTools) {
-        history.insert(
-          0,
-          LlmRequestMessage(
-            role: MessageRole.system,
-            content: _composeClientToolHint(
-              searchMode: searchMode,
-              imageGenMode: imageGenMode,
-              useWebSearchTool: useWebSearchTool,
-              useFetchUrlTool: useFetchUrlTool,
-              useImageGenTool: useImageGenTool,
-              useVisionTool: useVisionTool,
-              useDocumentInspectTool: useDocumentInspectTool,
-              useDocumentEditTool: useDocumentEditTool,
-              useDocumentConvertTool: useDocumentConvertTool,
-              forceDocTool: forceDocTool,
-              workMode: working.workMode,
-              imageCharacter: imageCharacter,
-              mcpPassthroughTools: mcpPassthroughTools,
-            ),
-          ),
-        );
-      }
+      if (cur.isStudy) studySystem = await _studySystemPrompt(cur);
     }
 
     if (!_s.isStreaming) {
       await _persistence.persistSafely(working.id);
       // Drop our token like _streamAnswer's finally would.
-      if (identical(_cancelToken, cancelToken)) _cancelToken = null;
+      _execution.releaseRequest(cancelToken);
       return;
     }
 
-    final contextResult = ref
-        .read(contextWindowManagerProvider)
-        .manage(history, settings.context);
+    final toolHint = enableTools
+        ? ClientToolPrompt.build(
+            dateLine: ToolEngine.dateLine(),
+            searchMode: searchMode,
+            imageGenMode: imageGenMode,
+            useWebSearchTool: useWebSearchTool,
+            useFetchUrlTool: useFetchUrlTool,
+            useImageGenTool: useImageGenTool,
+            useVisionTool: useVisionTool,
+            useDocumentInspectTool: useDocumentInspectTool,
+            useDocumentEditTool: useDocumentEditTool,
+            useDocumentConvertTool: useDocumentConvertTool,
+            forceDocTool: forceDocTool,
+            workMode: working.workMode,
+            imageCharacter: imageCharacter,
+            mcpPassthroughTools: mcpPassthroughTools,
+          )
+        : '';
+    final contextResult =
+        RequestContextBuilder(
+          contextWindow: ref.read(contextWindowManagerProvider),
+        ).prepare(
+          conversation: cur,
+          assistantId: assistantId,
+          contextPrefs: settings.context,
+          nativeVision: nativeVision,
+          imageToolAvailable: useVisionTool,
+          chatRoute: skillRoute,
+          fallbackPrompt: settings.systemPrompt,
+          studySystemPrompt: studySystem,
+          story: storyContext,
+          notes: RequestContextNotes(
+            project: projectPrompt,
+            memory: memoryPrompt,
+            search: searchContext?.contextText ?? '',
+            image: forceImageNote,
+            vision: preVisionNote,
+            tools: toolHint,
+            recovery: recoverySource == null
+                ? ''
+                : RequestContextBuilder.savedResultsPrompt(recoverySource),
+          ),
+        );
+    if (contextResult.worldInfoHits.isNotEmpty) {
+      _setAppliedWorldInfo(
+        working.id,
+        assistantId,
+        contextResult.worldInfoHits,
+      );
+    }
     _recordContextReport(working.id, contextResult.report);
-    if (settings.context.enabled &&
-        contextResult.report.sentTokens >
-            contextResult.report.inputBudgetTokens) {
+    if (contextResult.exceedsBudget) {
       _set(
         _s.copyWith(
           streamingConvoId: null,
@@ -685,7 +619,7 @@ mixin ChatGeneration on ChatStreaming {
       );
       await _persistence.persistSafely(working.id);
       // Drop our token like _streamAnswer's finally would.
-      if (identical(_cancelToken, cancelToken)) _cancelToken = null;
+      _execution.releaseRequest(cancelToken);
       unawaited(
         GenerationNotify.onGenerationEnd(
           success: false,
@@ -700,17 +634,37 @@ mixin ChatGeneration on ChatStreaming {
       forceServerWebSearch:
           useProviderSearch && searchMode == SearchMode.always,
     );
+    if (recoverySource != null) {
+      _execution.budget?.requestFinish('用户选择使用已有资料回答');
+    }
+    final turnEffort = LlmRequestPolicy.selectEffort(
+      config: config,
+      savedEffort: settings.reasoningEffort,
+      hasSavedOverride: settings.hasReasoningEffortOverride,
+      proseTask: contextResult.proseTask,
+      workMode: working.workMode,
+      manualEffort: _editedComposerPrefs.contains('effort')
+          ? _s.reasoningEffort
+          : null,
+    );
+    if (thinking && _s.currentId == working.id) {
+      _set(_s.copyWith(reasoningEffort: turnEffort));
+    }
     final succeeded = await _streamAnswer(
       config: streamConfig,
       history: contextResult.messages,
       convoId: working.id,
       assistantId: assistantId,
       thinking: thinking,
+      reasoningEffort: turnEffort,
       settings: settings,
       fallbackSearchQuery: searchQuery,
       enableTools: enableTools || useProviderSearch,
       toolSpecs: toolSpecs,
-      initialCitations: searchContext?.citations ?? const <Citation>[],
+      initialCitations:
+          recoverySource?.citations ??
+          searchContext?.citations ??
+          const <Citation>[],
       allowedFetchUrls: Set<String>.unmodifiable(allowedFetchUrls),
       cancelToken: cancelToken,
       imageBudget: imageBudget,
@@ -729,15 +683,15 @@ mixin ChatGeneration on ChatStreaming {
       GenerationNotify.onGenerationEnd(
         success: succeeded,
         conversationTitle: working.title,
-        preview: _previewFor(working.id, assistantId),
-        cancelled: !succeeded && _cancelStart,
+        preview: ref.mounted ? _previewFor(working.id, assistantId) : null,
+        cancelled: !succeeded && _execution.isCancelled,
       ),
     );
 
     // A successful "write next scene" action advances exactly one beat.
     // Length is pacing guidance only; it must never keep a dramatically
     // complete scene open just to satisfy an estimated character quota.
-    if (succeeded && commitPlotAdvance && cur.isStory) {
+    if (ref.mounted && succeeded && commitPlotAdvance && cur.isStory) {
       final latest = _s.conversations.firstWhere(
         (c) => c.id == working.id,
         orElse: () => cur,
@@ -752,94 +706,5 @@ mixin ChatGeneration on ChatStreaming {
         await _persistence.persistSafely(working.id);
       }
     }
-  }
-
-  String _composeClientToolHint({
-    required SearchMode searchMode,
-    required ImageGenMode imageGenMode,
-    required bool useWebSearchTool,
-    required bool useFetchUrlTool,
-    required bool useImageGenTool,
-    required bool useVisionTool,
-    required bool useDocumentInspectTool,
-    required bool useDocumentEditTool,
-    required bool useDocumentConvertTool,
-    required bool forceDocTool,
-    required bool workMode,
-    required CharacterCard? imageCharacter,
-    required List<ToolSpec> mcpPassthroughTools,
-  }) {
-    final hint = StringBuffer(ToolEngine.dateLine())..write('。');
-    if (useWebSearchTool) {
-      hint.write(
-        searchMode == SearchMode.always
-            ? '本轮必须调用 web_search。搜索关键词应自包含（把指代替换成具体名称，时效性问题带上年份）。'
-            : '需要实时、最新或你不确定的事实时调用 web_search；'
-                  '生图前若要核实真实事物的外观/标志也可先搜。'
-                  '常识、闲聊、上下文已有的内容不要搜。'
-                  '搜索关键词应自包含（把指代替换成具体名称，时效性问题带上年份）。',
-      );
-    }
-    if (useFetchUrlTool) {
-      hint.write('用户在本轮消息中给出的链接可用 fetch_url 读取。');
-    }
-    if (useImageGenTool) {
-      if (imageCharacter != null) {
-        hint.write(
-          imageGenMode == ImageGenMode.always
-              ? '本轮必须调用 generate_image，为角色「${imageCharacter.name}」配一张安全立绘（每轮最多一次）；'
-                    '即使用户在写成人向内容，生图也只画干净角色形象，禁止色情提示词。'
-              : '仅当用户明确要图，或立绘能明显帮助理解时，为角色「${imageCharacter.name}」调用 generate_image（每轮最多一次）；'
-                    '不要给每句对白配装饰图。即使用户在写成人向内容，生图也只画干净角色形象，禁止色情提示词。',
-        );
-      } else {
-        hint.write(
-          imageGenMode == ImageGenMode.always
-              ? '本轮必须调用 generate_image（每轮最多一次）；提示词必须 SFW，禁止色情内容。'
-              : '仅当用户明确要求画图/配图/生成图片，或配图能明显帮助理解时调用 generate_image（每轮最多一次）。'
-                    '不要给普通文字回答配装饰图。'
-                    '画真实存在、你不确定外观的事物时，先 web_search 再根据搜索结果写 prompt。'
-                    '提示词必须 SFW，禁止色情内容。',
-        );
-      }
-    }
-    if (useVisionTool) {
-      hint.write(
-        '用户上传了图片。你看不到像素，需要看图、读图中文字或回答图里的细节时，'
-        '必须调用 analyze_image；attachment_name 用【图片：文件名】中的名字。',
-      );
-    }
-    if (useDocumentInspectTool) {
-      hint.write('改表格或不确定附件结构时，先调用 inspect_document 查看预览。');
-    }
-    if (useDocumentEditTool) {
-      hint.write(
-        forceDocTool
-            ? '用户点击了「改文档」。你必须调用 edit_document，'
-                  '给出完整 DocumentPatch（schema_version=1；format 为 '
-                  'xlsx/docx/pptx/txt/md/csv/tsv 之一；ops）。'
-                  'xlsx 用 set_cells/set_range/add_sheet/ensure_sheet；'
-                  'docx 用 replace_text；pptx 用 set_shape_text；'
-                  'txt/md/csv/tsv 用 replace_text 或 set_text（整文件覆写）。'
-            : '用户上传了可编辑文件（.xlsx/.docx/.pptx/.txt/.md/.csv/.tsv）。'
-                  '若要求改文件内容/查找替换/回传，调用 edit_document。',
-      );
-    }
-    if (useDocumentConvertTool && !forceDocTool) {
-      hint.write('若要求格式转换（如 txt→docx、csv→xlsx、docx→md），调用 convert_document。');
-    }
-    if (useDocumentEditTool || useDocumentConvertTool) {
-      hint.write('不要编造未上传的附件名。');
-    }
-    if (mcpPassthroughTools.isNotEmpty) {
-      hint.write(
-        '已连接 MCP Server，还可调用：'
-        '${[for (final tool in mcpPassthroughTools) tool.name].join("、")}。',
-      );
-    }
-    if (workMode) {
-      hint.write(ToolLoopPolicy.workModeHint);
-    }
-    return hint.toString();
   }
 }

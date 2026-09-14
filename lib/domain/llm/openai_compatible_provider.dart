@@ -5,6 +5,7 @@ import 'package:characters/characters.dart';
 import 'package:dio/dio.dart';
 
 import 'llm_provider.dart';
+import 'llm_request_policy.dart';
 
 /// LLM provider for any OpenAI-compatible `/chat/completions` SSE endpoint.
 /// DeepSeek, OpenAI, xAI Grok, Kimi, 智谱 etc. all share this wire format
@@ -95,10 +96,8 @@ class OpenAiCompatibleProvider implements LlmProvider {
     }
     // Some legacy reasoner endpoints reject `tools`; callers avoid those paths,
     // but guard here too so a stray tool list can't break the request.
-    if (tools != null &&
-        tools.isNotEmpty &&
-        config.capabilities.supportsTools) {
-      body['tools'] = tools.map((t) => t.toJson()).toList();
+    if (LlmRequestPolicy.canUseTools(config, tools)) {
+      body['tools'] = tools!.map((t) => t.toJson()).toList();
       final force = forceToolName?.trim() ?? '';
       if (force == kToolChoiceRequired) {
         body['tool_choice'] = 'required';

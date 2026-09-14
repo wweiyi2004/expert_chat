@@ -23,13 +23,16 @@ List<ThinkingTimelineSegment> buildThinkingTimeline({
   if (activities.isEmpty) {
     return text.isEmpty ? const [] : [ThinkingTimelineSegment.reasoning(text)];
   }
-  final ordered = [...activities]
+  final indexed = activities.indexed.toList()
     ..sort((a, b) {
-      final byOffset = a.reasoningOffset.compareTo(b.reasoningOffset);
+      final byOffset = a.$2.reasoningOffset.compareTo(b.$2.reasoningOffset);
       if (byOffset != 0) return byOffset;
-      return 0;
+      return a.$1.compareTo(b.$1);
     });
-  final allLegacy = ordered.every((a) => a.reasoningOffset <= 0);
+  final ordered = [for (final entry in indexed) entry.$2];
+  final allLegacy = ordered.every(
+    (a) => a.reasoningOffset <= 0 && !a.reasoningOffsetRecorded,
+  );
   if (allLegacy) {
     return [
       if (text.isNotEmpty) ThinkingTimelineSegment.reasoning(text),

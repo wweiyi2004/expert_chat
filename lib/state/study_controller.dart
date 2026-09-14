@@ -22,6 +22,8 @@ class StudyController extends AsyncNotifier<StudyLibrary> {
   final _quiz = const QuizCodec();
   final _tree = const CourseTreeCodec();
   final _srs = const SrsScheduler();
+  int _activeRequests = 0;
+  bool get hasActiveRequest => _activeRequests > 0;
 
   @override
   Future<StudyLibrary> build() async => _repo.load();
@@ -560,6 +562,23 @@ class StudyController extends AsyncNotifier<StudyLibrary> {
 
   /// One-shot completion using the active LLM profile (stream collected).
   Future<String> completeText({
+    required String system,
+    required String user,
+    CancelToken? cancelToken,
+  }) async {
+    _activeRequests++;
+    try {
+      return await _completeText(
+        system: system,
+        user: user,
+        cancelToken: cancelToken,
+      );
+    } finally {
+      _activeRequests--;
+    }
+  }
+
+  Future<String> _completeText({
     required String system,
     required String user,
     CancelToken? cancelToken,

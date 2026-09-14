@@ -13,6 +13,7 @@ import '../data/gateway_config.dart';
 import '../data/media_api_config.dart';
 import '../data/provider_profile.dart';
 import '../data/settings_bundle.dart';
+import '../data/task_budget_prefs.dart';
 import '../data/ui_prefs.dart';
 import '../domain/llm/llm_provider.dart';
 import '../domain/gateway/gateway_auth_service.dart';
@@ -42,9 +43,11 @@ class SettingsState {
     this.searchBrainModel,
     this.searchMaxRounds = kDefaultSearchMaxRounds,
     this.searchMaxResults = kDefaultSearchMaxResults,
+    this.taskBudget = const TaskBudgetPrefs(),
     this.searchMode = SearchMode.auto,
     this.imageGenMode = ImageGenMode.auto,
     this.reasoningEffort = ReasoningEffort.high,
+    this.hasReasoningEffortOverride = false,
     this.systemPrompt = '',
     this.chatSkills = const ChatSkillCatalog([]),
     this.ui = const UiPrefs(),
@@ -102,6 +105,9 @@ class SettingsState {
   /// DeepSeek/Grok thinking intensity while composer 深度思考 is on.
   final ReasoningEffort reasoningEffort;
 
+  /// A saved user choice takes precedence over task-specific defaults.
+  final bool hasReasoningEffortOverride;
+
   /// User-authored general prompt. Empty on first install even though the
   /// chat catalog fallback has factory text. Synced with
   /// [chatSkills].fallback.prompt when the user edits general.
@@ -136,6 +142,7 @@ class SettingsState {
 
   /// Local Markdown long-term memory. Off by default until the user opts in.
   final bool memoryEnabled;
+  final TaskBudgetPrefs taskBudget;
 
   /// M7: hidden research mode (SSH / tmux / AI command approval). Default off.
   final bool researchModeEnabled;
@@ -303,6 +310,7 @@ class SettingsState {
     SearchMode? searchMode,
     ImageGenMode? imageGenMode,
     ReasoningEffort? reasoningEffort,
+    bool? hasReasoningEffortOverride,
     String? systemPrompt,
     ChatSkillCatalog? chatSkills,
     UiPrefs? ui,
@@ -322,6 +330,7 @@ class SettingsState {
     Future<String> Function()? gatewayTokenProvider,
     Map<String, String>? customMcpTokens,
     bool? memoryEnabled,
+    TaskBudgetPrefs? taskBudget,
     bool? researchModeEnabled,
     bool? studyModeEnabled,
     bool? creationModeEnabled,
@@ -343,6 +352,8 @@ class SettingsState {
     searchMode: searchMode ?? this.searchMode,
     imageGenMode: imageGenMode ?? this.imageGenMode,
     reasoningEffort: reasoningEffort ?? this.reasoningEffort,
+    hasReasoningEffortOverride:
+        hasReasoningEffortOverride ?? this.hasReasoningEffortOverride,
     systemPrompt: systemPrompt ?? this.systemPrompt,
     chatSkills: chatSkills ?? this.chatSkills,
     ui: ui ?? this.ui,
@@ -364,6 +375,7 @@ class SettingsState {
     gatewayTokenProvider: gatewayTokenProvider ?? this.gatewayTokenProvider,
     customMcpTokens: customMcpTokens ?? this.customMcpTokens,
     memoryEnabled: memoryEnabled ?? this.memoryEnabled,
+    taskBudget: taskBudget ?? this.taskBudget,
     researchModeEnabled: researchModeEnabled ?? this.researchModeEnabled,
     studyModeEnabled: studyModeEnabled ?? this.studyModeEnabled,
     creationModeEnabled: creationModeEnabled ?? this.creationModeEnabled,
@@ -443,6 +455,17 @@ class SettingsController extends AsyncNotifier<SettingsState> {
   Future<SettingsState> build() async {
     final prefs = ref.read(sharedPrefsProvider);
     final secure = ref.read(secureStorageProvider);
+    // Read before first-run profile migration writes defaults.
+    final existingInstall =
+        prefs.containsKey(_kProfiles) || prefs.containsKey(_kLegacyBaseUrl);
+    final taskBudget = prefs.containsKey('taskBudget')
+        ? TaskBudgetPrefs.decode(prefs.getString('taskBudget'))
+        : existingInstall
+        ? const TaskBudgetPrefs()
+        : TaskBudgetPrefs.forPreset(TaskBudgetPreset.standard);
+    if (!prefs.containsKey('taskBudget')) {
+      await prefs.setString('taskBudget', jsonEncode(taskBudget.toJson()));
+    }
 
     final profileRead = _readProfiles(prefs);
     List<ProviderProfile> profiles = profileRead.profiles;
@@ -503,6 +526,18 @@ class SettingsController extends AsyncNotifier<SettingsState> {
         for (final p in profiles)
           if (_isDeepSeekMissingVision(p))
             p.copyWith(models: [...p.models, KnownModels.vision])
+          else
+            p,
+      ];
+      await _writeProfiles(prefs, profiles);
+    }
+
+    // Add V4.1 Flash without changing the user's defaults or selected model.
+    if (profiles.any(_isDeepSeekMissingFlash)) {
+      profiles = [
+        for (final p in profiles)
+          if (_isDeepSeekMissingFlash(p))
+            p.copyWith(models: [...p.models, KnownModels.flash])
           else
             p,
       ];
@@ -634,6 +669,7 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     return SettingsState(
       profiles: profiles,
       activeProfileId: activeId,
+      taskBudget: taskBudget,
       apiKey: apiKey,
       selectedModel: selectedModel,
       themeMode: _readThemeMode(prefs),
@@ -661,6 +697,7 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       reasoningEffort: ReasoningEffort.fromWire(
         prefs.getString(_kReasoningEffort),
       ),
+      hasReasoningEffortOverride: prefs.containsKey(_kReasoningEffort),
       systemPrompt: storedSystemPrompt,
       chatSkills: catalog,
       ui: _readUiPrefs(prefs),
@@ -831,6 +868,10 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       p.models.contains(KnownModels.reasoner) &&
       !p.models.contains(KnownModels.vision);
 
+  static bool _isDeepSeekMissingFlash(ProviderProfile p) =>
+      Uri.tryParse(p.baseUrl)?.host.toLowerCase() == 'api.deepseek.com' &&
+      !p.models.contains(KnownModels.flash);
+
   SettingsState get _current => state.value ?? const SettingsState();
 
   ({List<ProviderProfile> profiles, bool corrupt}) _readProfiles(
@@ -900,10 +941,44 @@ class SettingsController extends AsyncNotifier<SettingsState> {
   Future<void> setApiKey(String apiKey) async {
     final active = _current.active;
     if (active == null) return;
-    state = AsyncData(_current.copyWith(apiKey: apiKey));
+    await setProfileApiKey(active.id, apiKey);
+  }
+
+  Future<void> setTaskBudget(TaskBudgetPrefs value) async {
+    final safe = TaskBudgetPrefs.fromJson(value.toJson());
+    state = AsyncData(_current.copyWith(taskBudget: safe));
     await ref
-        .read(secureStorageProvider)
-        .write(key: providerApiKeyStorageKey(active.id), value: apiKey);
+        .read(sharedPrefsProvider)
+        .setString('taskBudget', jsonEncode(safe.toJson()));
+  }
+
+  final Map<String, Future<void>> _profileKeyWrites = {};
+
+  Future<void> setProfileApiKey(String profileId, String apiKey) async {
+    if (!ref.mounted || !_current.profiles.any((p) => p.id == profileId)) {
+      return;
+    }
+    final storage = ref.read(secureStorageProvider);
+    if (_current.active?.id == profileId) {
+      state = AsyncData(_current.copyWith(apiKey: apiKey));
+    }
+    final previous = _profileKeyWrites[profileId] ?? Future<void>.value();
+    final write = previous
+        .catchError((Object _) {})
+        .then(
+          (_) => storage.write(
+            key: providerApiKeyStorageKey(profileId),
+            value: apiKey,
+          ),
+        );
+    _profileKeyWrites[profileId] = write;
+    try {
+      await write;
+    } finally {
+      if (identical(_profileKeyWrites[profileId], write)) {
+        _profileKeyWrites.remove(profileId);
+      }
+    }
   }
 
   /// Set the web-search backend.
@@ -965,8 +1040,12 @@ class SettingsController extends AsyncNotifier<SettingsState> {
   }
 
   Future<void> setReasoningEffort(ReasoningEffort effort) async {
-    if (_current.reasoningEffort == effort) return;
-    state = AsyncData(_current.copyWith(reasoningEffort: effort));
+    state = AsyncData(
+      _current.copyWith(
+        reasoningEffort: effort,
+        hasReasoningEffortOverride: true,
+      ),
+    );
     await ref
         .read(sharedPrefsProvider)
         .setString(_kReasoningEffort, effort.wire);
@@ -1367,9 +1446,78 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     await secure.write(key: _kTtsApiKeySecure, value: targetApiKey);
   }
 
+  /// Save a verified setup draft without publishing a half-written profile.
+  Future<void> saveVerifiedConnection(
+    ProviderProfile profile,
+    String apiKey,
+  ) async {
+    final prefs = ref.read(sharedPrefsProvider);
+    final secure = ref.read(secureStorageProvider);
+    await _profileKeyWrites[profile.id];
+    final keyName = providerApiKeyStorageKey(profile.id);
+    final oldKey = await secure.read(key: keyName);
+    final oldValues = {
+      for (final key in [_kProfiles, _kActiveProfile, _kSelectedModel])
+        key: prefs.getString(key),
+    };
+    final profiles = [
+      for (final p in _current.profiles)
+        if (p.id != profile.id) p,
+      profile,
+    ];
+    Future<void> writePreference(String key, String? value) async {
+      final ok = value == null
+          ? await prefs.remove(key)
+          : await prefs.setString(key, value);
+      if (!ok) throw StateError('本地保存失败，请检查存储空间后重试。');
+    }
+
+    try {
+      await secure.write(key: keyName, value: apiKey.trim());
+      await writePreference(
+        _kProfiles,
+        jsonEncode(profiles.map((p) => p.toJson()).toList()),
+      );
+      await writePreference(_kActiveProfile, profile.id);
+      await writePreference(_kSelectedModel, null);
+    } catch (error) {
+      // Restore all touched fields independently, even if one rollback fails.
+      var rollbackFailed = false;
+      try {
+        if (oldKey == null) {
+          await secure.delete(key: keyName);
+        } else {
+          await secure.write(key: keyName, value: oldKey);
+        }
+      } catch (_) {
+        rollbackFailed = true;
+      }
+      for (final entry in oldValues.entries) {
+        try {
+          await writePreference(entry.key, entry.value);
+        } catch (_) {
+          rollbackFailed = true;
+        }
+      }
+      if (rollbackFailed) throw StateError('配置未能完整保存，请保留当前填写内容，重启后检查设置。');
+      rethrow;
+    }
+    if (ref.mounted) {
+      state = AsyncData(
+        _current.copyWith(
+          profiles: profiles,
+          activeProfileId: profile.id,
+          apiKey: apiKey.trim(),
+          selectedModel: null,
+        ),
+      );
+    }
+  }
+
   /// Switch the active profile, loading its stored key.
   Future<void> selectProfile(String id) async {
     if (!_current.profiles.any((p) => p.id == id)) return;
+    await _profileKeyWrites[id];
     final key =
         await ref
             .read(secureStorageProvider)
@@ -1424,6 +1572,7 @@ class SettingsController extends AsyncNotifier<SettingsState> {
   /// Delete a profile and its stored key. Falls back to another profile, or a
   /// fresh DeepSeek preset if none remain.
   Future<void> deleteProfile(String id) async {
+    await _profileKeyWrites[id];
     final remaining = _current.profiles.where((p) => p.id != id).toList();
     final secure = ref.read(secureStorageProvider);
     await secure.delete(key: providerApiKeyStorageKey(id));
@@ -1512,6 +1661,7 @@ class SettingsController extends AsyncNotifier<SettingsState> {
         'mode': current.searchMode.wire,
       },
       'imageGenMode': current.imageGenMode.wire,
+      'taskBudget': current.taskBudget.toJson(),
       'reasoningEffort': current.reasoningEffort.wire,
       'systemPrompt': current.systemPrompt,
       'chatSkills': [
@@ -1811,6 +1961,12 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     }
 
     await writeFlag(_kMemoryEnabled, json['memoryEnabled']);
+    if (json['taskBudget'] is Map) {
+      await prefs.setString(
+        'taskBudget',
+        jsonEncode(TaskBudgetPrefs.fromJson(json['taskBudget']).toJson()),
+      );
+    }
     await writeFlag(_kResearchModeEnabled, json['researchModeEnabled']);
     await writeFlag(_kStudyModeEnabled, json['studyModeEnabled']);
     await writeFlag(_kCreationModeEnabled, json['creationModeEnabled']);

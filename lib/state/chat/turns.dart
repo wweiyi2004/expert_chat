@@ -2,20 +2,21 @@ part of '../chat_controller.dart';
 
 mixin ChatTurns on ChatMedia {
   void stop({bool persist = true}) {
-    // Also abort a generation that has been accepted but has not yet set
-    // streamingConvoId (still awaiting settings / building the turn).
-    _cancelStart = true;
     final streamingId = _s.streamingConvoId;
     final title = _titleFor(streamingId);
     _flushActiveStream?.call();
-    _sub?.cancel();
-    _sub = null;
-    // Abort the underlying HTTP request too, so it stops consuming tokens.
-    _cancelToken?.cancel();
-    _cancelToken = null;
-    final completer = _streamCompleter;
-    if (completer != null && !completer.isCompleted) completer.complete();
-    _streamCompleter = null;
+    if (streamingId != null) {
+      final active = _s.conversations
+          .where((c) => c.id == streamingId)
+          .firstOrNull;
+      final message = active?.activePath.lastOrNull;
+      if (message != null) {
+        _endPendingActivities(streamingId, message.id, '已停止本地等待；远端状态未确认');
+      }
+    }
+    // Covers preflight as well as an active model/tool request. Persist only
+    // after the live UI buffer has been flushed above.
+    _execution.cancel();
     _set(
       _s.copyWith(
         streamingConvoId: null,
@@ -24,7 +25,6 @@ mixin ChatTurns on ChatMedia {
         isProcessingDocument: false,
       ),
     );
-    _signalIdleIfReady();
     if (persist && streamingId != null) {
       _persistence.persistSoon(_persistence.persistById(streamingId));
     }
@@ -39,13 +39,12 @@ mixin ChatTurns on ChatMedia {
 
   /// Stop the active or preflight generation and wait until its entry point has
   /// completely unwound. This prevents a replacement turn from being dropped
-  /// by the synchronous [_starting] guard.
+  /// by the synchronous [_execution.isActive] guard.
   Future<void> stopAndWait({bool persist = true}) async {
-    if (!_starting && !_s.isStreaming) return;
-    final idle = _idleCompleter ??= Completer<void>();
+    if (!_execution.isActive && !_s.isStreaming) return;
+    final idle = _execution.whenIdle;
     stop(persist: persist);
-    _signalIdleIfReady();
-    await idle.future;
+    await idle;
   }
 
   /// Send a new user turn at the end of the active branch. Returns false when
@@ -61,24 +60,24 @@ mixin ChatTurns on ChatMedia {
     final trimmed = text.trim();
     if ((trimmed.isEmpty && attachments.isEmpty) ||
         _s.isStreaming ||
-        _starting) {
+        _execution.isActive) {
       return false;
     }
     if (forceDocumentEdit) {
       final hasDoc = attachments.any((a) => a.isEditableDocument);
       if (!hasDoc) return false;
     }
-    _starting = true;
-    _cancelStart = false;
+    if (!_execution.tryStart()) return false;
     try {
       final convo = _s.current ?? Conversation();
+      if (!_requireLoadedConversation(convo)) return false;
       final requiresVision = attachments.any(
         (a) => a.isImage && a.hasImageData,
       );
       final settings = await _readySettingsForTurn(
         requireVision: requiresVision,
       );
-      if (settings == null || _cancelStart) return false;
+      if (settings == null || _execution.isCancelled) return false;
       if (forceDocumentEdit && !settings.supportsDocumentEdit) {
         _set(_s.copyWith(error: '请先在设置中连接并发现支持文档编辑的 MCP Tools。'));
         return false;
@@ -130,7 +129,7 @@ mixin ChatTurns on ChatMedia {
         ),
       );
 
-      if (_cancelStart) return false;
+      if (_execution.isCancelled) return false;
 
       await _generate(
         working: working,
@@ -162,17 +161,20 @@ mixin ChatTurns on ChatMedia {
       for (final a in attachments)
         if (!a.isImage) a,
     ];
-    if (documents.isEmpty || _s.isStreaming || _starting) return false;
+    if (documents.isEmpty || _s.isStreaming || _execution.isActive) {
+      return false;
+    }
     if (documents.any((a) => !a.hasDownloadableBytes)) {
       _setScopedError('长任务需要上传原始文件；请移除旧附件并重新选择文件。');
       return false;
     }
 
-    _starting = true;
-    _cancelStart = false;
+    if (!_execution.tryStart()) return false;
     try {
+      final convo = _s.current ?? Conversation();
+      if (!_requireLoadedConversation(convo)) return false;
       final settings = await _readySettings();
-      if (settings == null || _cancelStart) return false;
+      if (settings == null || _execution.isCancelled) return false;
       if (!settings.supportsLongTasks) {
         _setScopedError('当前 MCP Server 未提供文件长任务；该能力仅在旧 Gateway 部署中可用。');
         return false;
@@ -182,7 +184,6 @@ mixin ChatTurns on ChatMedia {
       final prompt = text.trim().isEmpty
           ? '请完整阅读并深入分析上传文件，提炼关键信息、依据、风险和可执行结论。'
           : text.trim();
-      final convo = _s.current ?? Conversation();
       final parentId = convo.activePath.isEmpty
           ? null
           : convo.activePath.last.id;
@@ -301,7 +302,7 @@ mixin ChatTurns on ChatMedia {
     String newText, {
     List<Attachment>? attachments,
   }) async {
-    if (_s.isStreaming || _starting) return;
+    if (_s.isStreaming || _execution.isActive) return;
     final trimmed = newText.trim();
     if (trimmed.isEmpty) return;
     final convo = _s.current;
@@ -311,15 +312,14 @@ mixin ChatTurns on ChatMedia {
     final old = convo.messages[oldIdx];
     if (old.role != MessageRole.user) return;
 
-    _starting = true;
-    _cancelStart = false;
+    if (!_execution.tryStart()) return;
     try {
       final nextAttachments = attachments ?? old.attachments;
       final hasImages = nextAttachments.any((a) => a.isImage && a.hasImageData);
       final turnSettings = await _readySettingsForTurn(
         requireVision: hasImages,
       );
-      if (turnSettings == null || _cancelStart) return;
+      if (turnSettings == null || _execution.isCancelled) return;
       final config = _configForTurn(turnSettings, hasImages: hasImages);
 
       final userMsg = ChatMessage(
@@ -346,7 +346,7 @@ mixin ChatTurns on ChatMedia {
         ),
       );
 
-      if (_cancelStart) return;
+      if (_execution.isCancelled) return;
 
       await _generate(
         working: working,
@@ -367,7 +367,7 @@ mixin ChatTurns on ChatMedia {
   /// Regenerate the last assistant reply as a NEW branch (the previous reply is
   /// kept and can be switched back to).
   Future<void> regenerate({ChatRetryOperation? retryOperation}) async {
-    if (_s.isStreaming || _starting) return;
+    if (_s.isStreaming || _execution.isActive) return;
     final convo = _s.current;
     if (convo == null) return;
 
@@ -430,14 +430,13 @@ mixin ChatTurns on ChatMedia {
       }
     }
 
-    _starting = true;
-    _cancelStart = false;
+    if (!_execution.tryStart()) return;
     try {
       final hasImages = userMsg.attachments.any(
         (a) => a.isImage && a.hasImageData,
       );
       final settings = await _readySettingsForTurn(requireVision: hasImages);
-      if (settings == null || _cancelStart) return;
+      if (settings == null || _execution.isCancelled) return;
       final config = _configForTurn(settings, hasImages: hasImages);
 
       final assistantMsg = ChatMessage(
@@ -456,7 +455,7 @@ mixin ChatTurns on ChatMedia {
         ),
       );
 
-      if (_cancelStart) return;
+      if (_execution.isCancelled) return;
 
       await _generate(
         working: working,
@@ -477,10 +476,10 @@ mixin ChatTurns on ChatMedia {
 
   /// Switch which sibling branch is active at [messageId] (delta -1 / +1).
   void switchBranch(String messageId, int delta) {
-    // The _starting guard matches every other mutating entry point: a switch
+    // The _execution.isActive guard matches every other mutating entry point: a switch
     // during the preflight window would be silently rolled back by _generate
     // installing its own snapshot of activeChildren.
-    if (_s.isStreaming || _starting) return;
+    if (_s.isStreaming || _execution.isActive) return;
     final convo = _s.current;
     if (convo == null) return;
     final mIdx = convo.messages.indexWhere((x) => x.id == messageId);
@@ -513,7 +512,7 @@ mixin ChatTurns on ChatMedia {
       if (!_s.conversations.any((c) => c.id == operation.conversationId)) {
         return;
       }
-      selectConversation(operation.conversationId);
+      await selectConversation(operation.conversationId);
     }
     switch (operation.kind) {
       case ChatRetryKind.regenerate:
@@ -522,11 +521,13 @@ mixin ChatTurns on ChatMedia {
         await _retryGeneratedImage(operation);
       case ChatRetryKind.ensemble:
         await _retryEnsemble(operation);
+      case ChatRetryKind.loadConversation:
+        await _ensureConversationLoaded(operation.conversationId);
     }
   }
 
   Future<void> _retryGeneratedImage(ChatRetryOperation operation) async {
-    if (_s.isStreaming || _starting) return;
+    if (_s.isStreaming || _execution.isActive) return;
     final convo = _s.current;
     if (convo == null || convo.id != operation.conversationId) return;
     ChatMessage? failedAssistant;
@@ -556,7 +557,7 @@ mixin ChatTurns on ChatMedia {
   }
 
   Future<void> _retryEnsemble(ChatRetryOperation operation) async {
-    if (_s.isStreaming || _starting) return;
+    if (_s.isStreaming || _execution.isActive) return;
     final convo = _s.current;
     if (convo == null ||
         convo.id != operation.conversationId ||
@@ -574,20 +575,19 @@ mixin ChatTurns on ChatMedia {
     final speakerId = operation.ensembleSpeakerId ?? failedAssistant?.speakerId;
     if (failedAssistant == null || speakerId == null) return;
 
-    _starting = true;
-    _cancelStart = false;
+    if (!_execution.tryStart()) return;
     try {
       final card = await ref
           .read(characterRepositoryProvider)
           .getById(speakerId);
-      if (card == null || _cancelStart) {
+      if (card == null || _execution.isCancelled) {
         if (card == null) {
           _set(_s.copyWith(error: '找不到角色卡，请检查参与名单。'));
         }
         return;
       }
       final settings = await _readySettings();
-      if (settings == null || _cancelStart) return;
+      if (settings == null || _execution.isCancelled) return;
       final config = _configFor(settings);
       final parentId = failedAssistant.parentId;
       final pathToParent = pathToOptionalMessage(convo, parentId);
@@ -608,7 +608,7 @@ mixin ChatTurns on ChatMedia {
           childId: assistantMsg.id,
         ),
       );
-      if (_cancelStart) return;
+      if (_execution.isCancelled) return;
       await _generate(
         working: working,
         assistantId: assistantMsg.id,

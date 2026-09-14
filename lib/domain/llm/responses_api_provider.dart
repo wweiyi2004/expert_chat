@@ -7,6 +7,7 @@ import 'package:uuid/uuid.dart';
 
 import '../../data/models.dart';
 import 'llm_provider.dart';
+import 'llm_request_policy.dart';
 
 /// OpenAI-compatible **Responses API** client (`POST /responses`).
 ///
@@ -327,10 +328,8 @@ class ResponsesApiProvider implements LlmProvider {
     if (config.useServerWebSearch) {
       toolList.add({'type': 'web_search'});
     }
-    if (tools != null &&
-        tools.isNotEmpty &&
-        config.capabilities.supportsTools) {
-      for (final tool in tools) {
+    if (LlmRequestPolicy.canUseTools(config, tools)) {
+      for (final tool in tools!) {
         // Client web_search is replaced by the hosted tool when server search
         // is on; keep fetch_url / generate_image as functions.
         if (config.useServerWebSearch && tool.name == 'web_search') continue;
@@ -435,8 +434,9 @@ class ResponsesApiProvider implements LlmProvider {
               searchActivityIds,
               completed: true,
             );
-            if (activity != null)
+            if (activity != null) {
               out.add(ChatChunk(serverSearchActivity: activity));
+            }
             _collectCitationsFromWebSearch(item, citations, seenCitationUrls);
           }
           if (itemType == 'message') {

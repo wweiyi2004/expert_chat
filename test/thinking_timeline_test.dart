@@ -3,6 +3,30 @@ import 'package:expert_chat/domain/chat/thinking_timeline.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test(
+    'recorded zero-offset tools stay before subsequent reasoning and keep insertion order',
+    () {
+      final first = SearchActivity(
+        kind: SearchActivityKind.image,
+        query: '优化提示词',
+      ).copyWith(reasoningOffset: 0);
+      final second = SearchActivity(
+        kind: SearchActivityKind.search,
+        query: '搜索',
+      ).copyWith(reasoningOffset: 0);
+      final segments = buildThinkingTimeline(
+        reasoning: '后来的思考',
+        activities: [first, second],
+      );
+      expect(segments.first.activity, same(first));
+      expect(segments[1].activity, same(second));
+      expect(segments.last.text, '后来的思考');
+      expect(
+        SearchActivity.fromJson(first.toJson()).reasoningOffsetRecorded,
+        isTrue,
+      );
+    },
+  );
   test('legacy activities follow the full reasoning block', () {
     const reasoning = '先想清楚再搜。';
     final activities = [

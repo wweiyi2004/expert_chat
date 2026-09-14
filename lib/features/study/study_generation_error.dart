@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../domain/study/structured_output.dart';
 
@@ -8,9 +9,32 @@ Future<void> showStudyGenerationError(
   required Object error,
 }) async {
   if (error is! StudyStructuredOutputException) {
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text('$title：$error')));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('$title，请重试。'),
+        action: SnackBarAction(
+          label: '查看详情',
+          onPressed: () => showDialog<void>(
+            context: context,
+            builder: (dialogContext) => AlertDialog(
+              title: Text(title),
+              content: SingleChildScrollView(child: SelectableText('$error')),
+              actions: [
+                TextButton(
+                  onPressed: () =>
+                      Clipboard.setData(ClipboardData(text: '$error')),
+                  child: const Text('复制详情'),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text('关闭'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
     return;
   }
 
@@ -28,9 +52,23 @@ Future<void> showStudyGenerationError(
               Text(error.toString()),
               if (error.rawOutput.trim().isNotEmpty) ...[
                 const SizedBox(height: 12),
-                const Text('模型原始输出：'),
-                const SizedBox(height: 6),
-                SelectableText(error.rawOutput.trim()),
+                ExpansionTile(
+                  tilePadding: EdgeInsets.zero,
+                  title: const Text('查看详情'),
+                  expandedCrossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('模型返回的内容'),
+                    const SizedBox(height: 6),
+                    SelectableText(error.rawOutput.trim()),
+                    TextButton.icon(
+                      onPressed: () => Clipboard.setData(
+                        ClipboardData(text: error.rawOutput.trim()),
+                      ),
+                      icon: const Icon(Icons.copy_outlined),
+                      label: const Text('复制内容'),
+                    ),
+                  ],
+                ),
               ],
             ],
           ),

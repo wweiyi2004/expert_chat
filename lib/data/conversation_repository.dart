@@ -10,6 +10,7 @@ import 'story_models.dart';
 /// List-row metadata without message bodies or attachments.
 class ConversationSummary {
   const ConversationSummary({
+    this.projectId,
     required this.id,
     required this.title,
     required this.updatedAt,
@@ -33,6 +34,7 @@ class ConversationSummary {
   factory ConversationSummary.fromConversation(Conversation conversation) =>
       ConversationSummary(
         id: conversation.id,
+        projectId: conversation.projectId,
         title: conversation.title,
         updatedAt: conversation.updatedAt,
         mode: conversation.mode,
@@ -55,6 +57,7 @@ class ConversationSummary {
       );
 
   final String id;
+  final String? projectId;
   final String title;
   final DateTime updatedAt;
   final ConversationMode mode;
@@ -75,6 +78,7 @@ class ConversationSummary {
 
   Conversation toPlaceholder() => Conversation(
     id: id,
+    projectId: projectId,
     title: title,
     messages: const [],
     activeChildren: activeChildren,

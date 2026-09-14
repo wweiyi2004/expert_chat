@@ -8,6 +8,7 @@ mixin ChatStreaming on ChatTools {
     required String convoId,
     required String assistantId,
     required bool thinking,
+    required ReasoningEffort reasoningEffort,
     required SettingsState settings,
     required String fallbackSearchQuery,
     required bool enableTools,
@@ -27,19 +28,13 @@ mixin ChatStreaming on ChatTools {
     // Pre-fetch/pre-search citations must stay in the same numbering space as
     // citations produced by later model tool calls.
     final citations = List<Citation>.of(initialCitations);
-    final content = StringBuffer();
-    final reasoning = StringBuffer();
-    // Stopwatch for "已深度思考 N 秒": starts on first reasoning delta, freezes
-    // once real answer content begins streaming.
-    final thinkClock = Stopwatch();
-    var thinkMillis = 0;
+    final output = StreamAnswerBuffer();
     var succeeded = false;
+    var requestToken = cancelToken;
+    var finalizing = false;
+    var finalTimedOut = false;
+    Timer? finalTimer;
 
-    Timer? uiFlushTimer;
-    Duration? uiFlushDelay;
-    var uiDirty = false;
-    var lastCheckpointAt = DateTime.now();
-    var lastCheckpointLength = 0;
     var cacheHitRate = 0.0;
     try {
       cacheHitRate =
@@ -52,83 +47,22 @@ mixin ChatStreaming on ChatTools {
       // Optional: tests and early init may not override SharedPreferences.
     }
     _streamHasLiveContent = false;
-    var publishedContent = '';
-    var publishedReasoning = '';
-    final uiCoalescer = DualStreamUiCoalescer(
+    final presenter = StreamAnswerPresenter(
+      buffer: output,
       cacheHitRate: cacheHitRate,
       focusOf: () => _streamUiFocus,
-    );
-
-    void flushUi({bool publishAll = false}) {
-      uiFlushTimer?.cancel();
-      uiFlushTimer = null;
-      uiFlushDelay = null;
-      if (!uiDirty && !publishAll) return;
-      uiDirty = false;
-      final focus = _streamUiFocus;
-      final publishReasoning =
-          publishAll ||
-          focus == StreamUiFocus.away ||
-          focus == StreamUiFocus.reasoning;
-      final publishContent =
-          publishAll ||
-          focus == StreamUiFocus.away ||
-          focus == StreamUiFocus.content;
-      if (publishReasoning) publishedReasoning = reasoning.toString();
-      if (publishContent) publishedContent = content.toString();
-      uiCoalescer.markFlushed(all: publishAll);
-      _updateAssistant(
+      onPublish: (snapshot) => _updateAssistant(
         convoId,
         assistantId,
-        publishedContent,
-        publishedReasoning,
-        thinkMillis,
-      );
-
-      final totalLength = content.length + reasoning.length;
-      final now = DateTime.now();
-      if (totalLength > 0 &&
-          (now.difference(lastCheckpointAt) >= _checkpointInterval ||
-              totalLength - lastCheckpointLength >= _checkpointChars)) {
-        lastCheckpointAt = now;
-        lastCheckpointLength = totalLength;
-        // Checkpoints are best-effort; the final awaited write below remains
-        // the authoritative persistence error surface.
-        _persistence.checkpointSoon(convoId);
-      }
-    }
-
-    void scheduleUiFlush() {
-      uiDirty = true;
-      if (uiCoalescer.shouldFlushNow) {
-        flushUi();
-        return;
-      }
-      if (_streamUiFocus != StreamUiFocus.away &&
-          !uiCoalescer.focusedHasPending) {
-        return;
-      }
-      final delay = uiCoalescer.delay;
-      // Keep an in-flight timer unless the other pane needs a shorter wait
-      // (typical: answer tokens arriving after a long think fallback).
-      if (uiFlushTimer != null &&
-          uiFlushDelay != null &&
-          delay >= uiFlushDelay!) {
-        return;
-      }
-      uiFlushTimer?.cancel();
-      uiFlushDelay = delay;
-      uiFlushTimer = Timer(delay, flushUi);
-    }
-
-    late final void Function() flushActiveStream;
-    flushActiveStream = () => flushUi(publishAll: true);
+        snapshot.content,
+        snapshot.reasoning,
+        snapshot.thinkingMillis,
+      ),
+      onCheckpoint: () => _persistence.checkpointSoon(convoId),
+    );
+    void flushActiveStream() => presenter.flush(publishAll: true);
     _flushActiveStream = flushActiveStream;
-    late final void Function() nudgeStreamUi;
-    nudgeStreamUi = () {
-      uiDirty = true;
-      flushUi();
-    };
+    final void Function() nudgeStreamUi = presenter.nudge;
     _nudgeStreamUi = nudgeStreamUi;
 
     // Chat: N search rounds plus one tool-less wrap-up.
@@ -139,73 +73,108 @@ mixin ChatStreaming on ChatTools {
     );
     try {
       for (var round = 0; round < maxToolRounds; round++) {
+        if (_execution.isCancelled || !_s.isStreaming) return false;
+        if ((_execution.budget?.finishing ?? false) && !finalizing) {
+          finalizing = true;
+          output.appendReasoningNote(
+            '\n\n【任务提示】${_execution.budget!.reason}，正在整理答复。\n',
+          );
+          requestToken = CancelToken();
+          _execution.attachRequest(requestToken);
+          _endPendingActivities(convoId, assistantId, '已中断本地等待；远端状态未确认');
+          requestMessages.add(
+            LlmRequestMessage(
+              role: MessageRole.system,
+              content:
+                  '${_execution.budget!.reason}。停止规划和工具调用，直接基于已有资料输出正文。'
+                  '资料不足时说明限制，不得声称未完成的操作已成功。',
+            ),
+          );
+          final saved = _messageById(convoId, assistantId);
+          if (saved != null &&
+              !requestMessages.any((m) => m.role == MessageRole.tool)) {
+            requestMessages.add(
+              LlmRequestMessage(
+                role: MessageRole.system,
+                content: RequestContextBuilder.savedResultsPrompt(saved),
+              ),
+            );
+            final bounded = ref
+                .read(contextWindowManagerProvider)
+                .manage(requestMessages, settings.context);
+            requestMessages
+              ..clear()
+              ..addAll(bounded.messages);
+            if (settings.context.enabled &&
+                bounded.report.sentTokens > bounded.report.inputBudgetTokens) {
+              throw StateError('已有资料超过上下文预算，请减少资料后重试。');
+            }
+          }
+          finalTimer = Timer(LlmRequestPolicy.finalAnswerTimeout, () {
+            finalTimedOut = true;
+            _execution.cancelRequest('final answer timeout');
+          });
+        }
         final toolDrafts = <int, ToolCallDraft>{};
         final turnContent = StringBuffer();
         final turnReasoning = StringBuffer();
         String? finishReason;
-        Object? streamError;
 
         // On the LAST round drop the tool list entirely so the model is forced
         // to answer from what it has, instead of us erroring out mid-answer.
-        final allowTools = ToolLoopPolicy.allowToolsThisRound(
-          workMode: workMode,
+        final request = LlmRequestPolicy.forRound(
+          config: config,
+          thinking: thinking,
+          reasoningEffort: reasoningEffort,
+          tools: toolSpecs,
+          enableTools: enableTools,
           round: round,
           maxRounds: maxToolRounds,
-          enableTools: enableTools,
-          hasToolSpecs: toolSpecs.isNotEmpty,
+          finalizing: finalizing,
+          forceToolName: forceToolName,
         );
-        // Force hosted search only on the first model round; later rounds are
-        // for answering after client function tools and must not re-trigger
-        // tool_choice: web_search.
-        final roundConfig = round == 0
-            ? config
-            : config.copyWith(forceServerWebSearch: false);
         final stream = llm.streamChat(
-          config: roundConfig,
+          config: request.config,
           messages: requestMessages,
-          tools: allowTools ? toolSpecs : null,
-          thinking: thinking,
-          reasoningEffort: thinking ? _s.reasoningEffort : null,
-          // Force only on the first tool-enabled round so later answer rounds
-          // are free to write the final reply.
-          forceToolName: allowTools && round == 0 ? forceToolName : null,
-          cancelToken: cancelToken,
+          tools: request.tools,
+          thinking: request.thinking,
+          reasoningEffort: request.reasoningEffort,
+          forceToolName: request.forceToolName,
+          cancelToken: requestToken,
         );
-        final completer = Completer<void>();
-        _streamCompleter = completer;
 
         var turnResponseItems = <Map<String, dynamic>>[];
-        _sub = stream.listen(
-          (chunk) {
+        final streamResult = await _execution.consumeStream(
+          stream,
+          cancelToken: requestToken,
+          onData: (chunk) {
             finishReason = chunk.finishReason ?? finishReason;
             if (chunk.reasoningDelta != null &&
                 chunk.reasoningDelta!.isNotEmpty) {
-              // Restart across tool rounds too: the clock is stopped by the
-              // previous round's answer content, and reasoning from later
-              // rounds must keep accumulating into the reported thinking time.
-              if (!thinkClock.isRunning) {
-                thinkClock.start();
-              }
+              _execution.budget?.resumeWork();
               turnReasoning.write(chunk.reasoningDelta!);
-              reasoning.write(chunk.reasoningDelta!);
-              uiCoalescer.addReasoning(chunk.reasoningDelta!);
+              presenter.addReasoning(chunk.reasoningDelta!);
             }
             if (chunk.contentDelta != null && chunk.contentDelta!.isNotEmpty) {
-              if (thinkClock.isRunning) {
-                thinkClock.stop();
-                thinkMillis = thinkClock.elapsedMilliseconds;
+              if (chunk.contentDelta!.trim().isNotEmpty) {
+                _execution.budget?.answerStarted();
+                finalTimer?.cancel();
               }
               turnContent.write(chunk.contentDelta!);
-              content.write(chunk.contentDelta!);
+              presenter.addContent(chunk.contentDelta!);
               _streamHasLiveContent = true;
-              uiCoalescer.addContent(chunk.contentDelta!);
             }
             for (final call in chunk.toolCalls ?? const <ToolCall>[]) {
+              _execution.budget?.resumeWork();
               (toolDrafts[call.index] ??= ToolCallDraft(
                 call.index,
               )).merge(call);
             }
             if (chunk.serverSearchActivity != null) {
+              _execution.budget?.resumeWork();
+              // Stamp tool positions against all reasoning received so far,
+              // not the last throttled UI snapshot.
+              presenter.flush(publishAll: true);
               _upsertSearchActivity(
                 convoId,
                 assistantId,
@@ -221,8 +190,8 @@ mixin ChatStreaming on ChatTools {
                     isProcessingDocument: false,
                   ),
                 );
-              } else if (chunk.serverSearchActivity!.status ==
-                      SearchActivityStatus.done &&
+              } else if (chunk.serverSearchActivity!.status !=
+                      SearchActivityStatus.running &&
                   _s.isStreaming) {
                 _set(_s.copyWith(isSearching: false));
               }
@@ -247,43 +216,40 @@ mixin ChatStreaming on ChatTools {
             if (chunk.responseOutputItems != null) {
               turnResponseItems = chunk.responseOutputItems!;
             }
-            scheduleUiFlush();
+            presenter.scheduleFlush();
           },
-          onError: (Object e) {
-            streamError = e;
-            if (!completer.isCompleted) completer.complete();
-          },
-          onDone: () {
-            if (!completer.isCompleted) completer.complete();
-          },
-          cancelOnError: true,
         );
-
-        await completer.future;
-        if (identical(_streamCompleter, completer)) _streamCompleter = null;
-        _sub = null;
+        if (!ref.mounted) return false;
 
         // The fake/test stream and very short real answers may finish before
         // the coalescing timer fires, so always publish pending content here.
-        uiDirty = true;
-        flushUi(publishAll: true);
+        presenter.flush(publishAll: true);
 
-        if (streamError != null) throw streamError!;
+        if (_execution.isCancelled || !_s.isStreaming) return false;
+        if ((_execution.budget?.finishing ?? false) && !finalizing) {
+          round--; // Reserve exactly one tool-free wrap-up, including at the cap.
+          continue;
+        }
+        if (finalTimedOut) throw TimeoutException('任务已停止：整理答复未及时返回正文，请手动重试。');
+        if (streamResult.error != null) {
+          Error.throwWithStackTrace(
+            streamResult.error!,
+            streamResult.stackTrace ?? StackTrace.current,
+          );
+        }
         if (!_s.isStreaming) {
           await _persistence.persistSafely(convoId);
           return false;
         }
 
-        if (thinkClock.isRunning) {
-          thinkClock.stop();
-          thinkMillis = thinkClock.elapsedMilliseconds;
-          uiDirty = true;
-          flushUi(publishAll: true);
+        if (output.isThinking) {
+          output.stopThinking();
+          presenter.flush(publishAll: true);
         }
 
         final toolCalls = ToolCallDraft.finalize(toolDrafts);
         final needsTools =
-            allowTools &&
+            request.tools != null &&
             (toolCalls.isNotEmpty || finishReason == 'tool_calls');
         if (!needsTools) {
           // Some DeepSeek-compatible endpoints occasionally put the entire
@@ -291,35 +257,35 @@ mixin ChatStreaming on ChatTools {
           // Recover only after a normally completed round. If the provider
           // reports an output-limit stop, the reasoning may be a truncated
           // chain and must not be presented as a finished answer.
-          if (content.toString().trim().isEmpty) {
+          if (output.content.trim().isEmpty) {
+            if (finalizing) {
+              throw StateError('整理请求未返回正文，已停止。请检查已有结果后手动重试。');
+            }
             final reasoningOnly = turnReasoning.toString().trim();
-            content.clear();
+            output.replaceContent('');
             if (toolCalls.isNotEmpty) {
               // On the tool-withheld final round, reasoning that accompanies a
               // rejected tool call is not a final answer.
-              content.write(_emptyReplyFallback);
+              output.replaceContent(_emptyReplyFallback);
             } else if (reasoningOnly.isNotEmpty &&
                 !_isOutputLimitFinish(finishReason)) {
               final recovered = _splitReasoningOnlyReply(reasoningOnly);
-              final allReasoning = reasoning.toString();
+              final allReasoning = output.reasoning;
               final priorLength = allReasoning.length - turnReasoning.length;
               final priorReasoning = priorLength <= 0
                   ? ''
                   : allReasoning.substring(0, priorLength);
-              reasoning
-                ..clear()
-                ..write(priorReasoning)
-                ..write(recovered.reasoning);
-              content.write(recovered.content);
+              output.replaceReasoning(priorReasoning + recovered.reasoning);
+              output.replaceContent(recovered.content);
             } else if (reasoningOnly.isNotEmpty) {
-              content.write(_reasoningLimitFallback);
+              output.replaceContent(_reasoningLimitFallback);
             } else {
               // The final round withholds the tool list, but a stubborn model
               // may still emit tool calls (or nothing) without any text.
-              content.write(_emptyReplyFallback);
+              output.replaceContent(_emptyReplyFallback);
             }
-            uiDirty = true;
-            flushUi(publishAll: true);
+
+            presenter.flush(publishAll: true);
           }
           // A failed search / image gen earlier in this turn must not leave its
           // error banner behind once the model answered. Only this
@@ -353,10 +319,8 @@ mixin ChatStreaming on ChatTools {
 
         // Clear transient "let me search" text from the visible answer. The
         // final response will stream in after tool results are appended.
-        content.clear();
-        publishedContent = '';
-        uiDirty = true;
-        flushUi(publishAll: true);
+        output.replaceContent('');
+        presenter.flush(publishAll: true);
 
         final toolMessages = await _executeToolCalls(
           toolCalls: toolCalls,
@@ -367,7 +331,7 @@ mixin ChatStreaming on ChatTools {
           assistantId: assistantId,
           citations: citations,
           allowedFetchUrls: allowedFetchUrls,
-          cancelToken: cancelToken,
+          cancelToken: requestToken,
           imageBudget: imageBudget,
           imageCharacter: imageCharacter,
           clientSearchBackend: clientSearchBackend,
@@ -402,9 +366,9 @@ mixin ChatStreaming on ChatTools {
         }
       }
     } catch (e) {
-      uiDirty = true;
-      flushUi(publishAll: true);
-      if (thinkClock.isRunning) thinkClock.stop();
+      if (!ref.mounted) return false;
+      presenter.flush(publishAll: true);
+      output.stopThinking(recordElapsed: false);
       _set(
         _s.copyWith(
           streamingConvoId: null,
@@ -420,7 +384,15 @@ mixin ChatStreaming on ChatTools {
       await _persistence.persistSafely(convoId);
       return false;
     } finally {
-      uiFlushTimer?.cancel();
+      finalTimer?.cancel();
+      if (ref.mounted) {
+        _endPendingActivities(
+          convoId,
+          assistantId,
+          _execution.isCancelled ? '已停止本地等待；远端状态未确认' : '步骤未完成',
+        );
+      }
+      presenter.dispose();
       if (identical(_flushActiveStream, flushActiveStream)) {
         _flushActiveStream = null;
       }
@@ -428,7 +400,7 @@ mixin ChatStreaming on ChatTools {
         _nudgeStreamUi = null;
       }
       // Drop our token once finished so a later stop() can't cancel a stale one.
-      if (identical(_cancelToken, cancelToken)) _cancelToken = null;
+      _execution.releaseRequest(requestToken);
     }
     return succeeded;
   }

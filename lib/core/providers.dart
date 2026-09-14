@@ -5,6 +5,10 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/character_repository.dart';
+import '../data/backup_journal.dart';
+import '../data/full_backup_service.dart';
+import '../data/project_repository.dart';
+import '../data/generation_repository.dart';
 import '../data/conversation_repository.dart';
 import '../data/db/app_database.dart';
 import '../data/library_file_store.dart';
@@ -24,6 +28,7 @@ import '../domain/gateway/gateway_client.dart';
 import '../domain/gateway/gateway_auth_service.dart';
 import '../domain/llm/routing_llm_provider.dart';
 import '../domain/llm/usage_tracking_llm_provider.dart';
+import '../domain/llm/deepseek_reasoning_guard.dart';
 import '../domain/media/openai_compatible_media_provider.dart';
 import '../domain/memory/memory_backup_file.dart';
 import '../domain/settings/settings_bundle_file.dart';
@@ -99,6 +104,31 @@ final memoryRepositoryProvider = Provider<MemoryRepository>(
   (ref) => MemoryRepository(ref.read(memoryStoreProvider)),
 );
 
+final projectRepositoryProvider = Provider<ProjectRepository>(
+  (ref) => ProjectRepository(
+    ref.read(appDatabaseProvider),
+    ref.read(libraryRepositoryProvider),
+    ref.read(fileParserProvider),
+  ),
+);
+
+final generationRepositoryProvider = Provider<GenerationRepository>(
+  (ref) => GenerationRepository(
+    ref.read(appDatabaseProvider),
+    ref.read(libraryRepositoryProvider),
+  ),
+);
+
+final fullBackupServiceProvider = Provider<FullBackupService>(
+  (ref) => FullBackupService(
+    ref.read(appDatabaseProvider),
+    ref.read(libraryFileStoreProvider),
+    ref.read(memoryStoreProvider),
+    ref.read(sharedPrefsProvider),
+    BackupJournal(),
+  ),
+);
+
 final modelUsageStoreProvider = Provider<ModelUsageStore>(
   (ref) => ModelUsageStore(ref.read(sharedPrefsProvider)),
 );
@@ -136,9 +166,11 @@ final modelUsageControllerProvider =
 
 final llmProvider = Provider<LlmProvider>((ref) {
   final usageController = ref.read(modelUsageControllerProvider.notifier);
-  return UsageTrackingLlmProvider(
-    delegate: RoutingLlmProvider(),
-    onUsage: usageController.record,
+  return DeepSeekReasoningGuard(
+    delegate: UsageTrackingLlmProvider(
+      delegate: RoutingLlmProvider(),
+      onUsage: usageController.record,
+    ),
   );
 });
 

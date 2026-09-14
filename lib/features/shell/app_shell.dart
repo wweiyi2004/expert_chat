@@ -17,13 +17,14 @@ import '../settings/settings_page.dart';
 import '../story/studio_page.dart';
 import '../study/study_hub_page.dart';
 import 'shell_tab.dart';
+import 'tools_page.dart';
 
-/// Root chrome: 会话 / [终端] / [学习] / [创作] / 设置.
+/// Root chrome: 会话 / 工具 / 设置.
 ///
 /// Phone: bottom [NavigationBar]. Wide: a unified collapsible workspace and
 /// conversation sidebar.
 /// [IndexedStack] preserves scroll position and draft input across switches.
-/// Terminal / 学习 / 创作 tabs are only present when their mode flags are enabled.
+/// Optional pages live under 工具 and mount only while their saved flag is on.
 class AppShell extends ConsumerStatefulWidget {
   const AppShell({super.key});
 
@@ -82,6 +83,7 @@ class _AppShellState extends ConsumerState<AppShell>
     ShellTab.study,
     ShellTab.studio,
     ShellTab.settings,
+    ShellTab.tools,
   ];
 
   Widget _pageFor(
@@ -92,14 +94,21 @@ class _AppShellState extends ConsumerState<AppShell>
     required bool desktopShell,
   }) => switch (tab) {
     ShellTab.chat => ChatPage(desktopShell: desktopShell),
+    ShellTab.tools => const ToolsPage(),
     // Only mount heavy tabs when their mode is on; other stack slots stay put.
     ShellTab.terminal =>
-      researchOn ? const ResearchTerminalPage() : const SizedBox.shrink(),
-    ShellTab.study => studyOn ? const StudyHubPage() : const SizedBox.shrink(),
+      researchOn
+          ? ResearchTerminalPage(onBack: _backToTools)
+          : const SizedBox.shrink(),
+    ShellTab.study =>
+      studyOn ? StudyHubPage(onBack: _backToTools) : const SizedBox.shrink(),
     ShellTab.studio =>
-      creationOn ? const StudioPage() : const SizedBox.shrink(),
+      creationOn ? StudioPage(onBack: _backToTools) : const SizedBox.shrink(),
     ShellTab.settings => const SettingsPage(asRootTab: true),
   };
+
+  void _backToTools() =>
+      ref.read(shellTabProvider.notifier).set(ShellTab.tools);
 
   @override
   Widget build(BuildContext context) {
@@ -107,11 +116,7 @@ class _AppShellState extends ConsumerState<AppShell>
     final researchOn = settings?.researchModeEnabled ?? false;
     final studyOn = settings?.studyModeEnabled ?? true;
     final creationOn = settings?.creationModeEnabled ?? true;
-    final visible = ShellTab.visible(
-      researchModeEnabled: researchOn,
-      studyModeEnabled: studyOn,
-      creationModeEnabled: creationOn,
-    );
+    const visible = ShellTab.navigation;
     final selected = ref.watch(shellTabProvider);
     final scheme = Theme.of(context).colorScheme;
 
@@ -137,116 +142,132 @@ class _AppShellState extends ConsumerState<AppShell>
       }
     }
 
-    final navIndex = visible.contains(selected) ? visible.indexOf(selected) : 0;
+    final navIndex = visible.indexOf(selected.navigationTab);
     final stackIndex = _stackOrder
         .indexOf(selected)
         .clamp(0, _stackOrder.length - 1);
 
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final useRail = constraints.maxWidth >= WorkspaceBreakpoints.shellRail;
-        final stack = IndexedStack(
-          index: stackIndex,
-          children: [
-            for (final tab in _stackOrder)
-              KeyedSubtree(
-                key: ValueKey(tab),
-                child: _pageFor(
-                  tab,
-                  researchOn: researchOn,
-                  studyOn: studyOn,
-                  creationOn: creationOn,
-                  desktopShell: useRail,
-                ),
-              ),
-          ],
-        );
-
-        final scaffold = useRail
-            ? Scaffold(
-                body: Row(
-                  children: [
-                    AnimatedContainer(
-                      duration: const Duration(milliseconds: 180),
-                      curve: Curves.easeOutCubic,
-                      width: _desktopSidebarExpanded ? 288 : 64,
-                      child: _desktopSidebarExpanded
-                          ? ChatWorkspaceSidebar(
-                              onCollapse: () => setState(
-                                () => _desktopSidebarExpanded = false,
-                              ),
-                            )
-                          : _CompactWorkspaceRail(
-                              visible: visible,
-                              selected: selected,
-                              onExpand: () => setState(
-                                () => _desktopSidebarExpanded = true,
-                              ),
-                              onSelect: (tab) =>
-                                  ref.read(shellTabProvider.notifier).set(tab),
-                              onNewChat: () {
-                                ref
-                                    .read(chatControllerProvider.notifier)
-                                    .newConversation();
-                                ref
-                                    .read(shellTabProvider.notifier)
-                                    .set(ShellTab.chat);
-                              },
-                            ),
-                    ),
-                    VerticalDivider(
-                      width: 1,
-                      color: scheme.outlineVariant.withValues(alpha: 0.85),
-                    ),
-                    Expanded(child: stack),
-                  ],
-                ),
-              )
-            // On the research terminal tab, do not shrink the body for the
-            // soft keyboard — nested Scaffold + IME otherwise collapses the
-            // terminal Expanded to 0 height (blank/white screen on dismiss).
-            : Scaffold(
-                resizeToAvoidBottomInset: selected != ShellTab.terminal,
-                body: stack,
-                bottomNavigationBar: NavigationBar(
-                  selectedIndex: navIndex,
-                  onDestinationSelected: (i) =>
-                      ref.read(shellTabProvider.notifier).set(visible[i]),
-                  backgroundColor: scheme.surfaceContainer.withValues(
-                    alpha: 0.96,
-                  ),
-                  indicatorColor: scheme.primaryContainer.withValues(
-                    alpha: 0.85,
-                  ),
-                  labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
-                  destinations: [
-                    for (final tab in visible)
-                      NavigationDestination(
-                        icon: Icon(tab.icon),
-                        selectedIcon: Icon(tab.selectedIcon),
-                        label: tab.label,
-                      ),
-                  ],
-                ),
-              );
-
-        return KeyedSubtree(
-          key: _shellKey,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              scaffold,
-              ResearchModeRippleOverlay(
-                playing: fx.playing,
-                origin: localOrigin,
-                onFinished: () {
-                  ref.read(researchModeFxProvider.notifier).finish();
-                },
-              ),
-            ],
-          ),
-        );
+    return PopScope(
+      canPop: selected.navigationTab == selected,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop) _backToTools();
       },
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final useRail =
+              constraints.maxWidth >= WorkspaceBreakpoints.shellRail;
+          final stack = IndexedStack(
+            index: stackIndex,
+            children: [
+              for (final tab in _stackOrder)
+                KeyedSubtree(
+                  key: ValueKey(tab),
+                  child: ExcludeFocus(
+                    excluding: tab != selected,
+                    child: _pageFor(
+                      tab,
+                      researchOn: researchOn,
+                      studyOn: studyOn,
+                      creationOn: creationOn,
+                      desktopShell: useRail,
+                    ),
+                  ),
+                ),
+            ],
+          );
+
+          final scaffold = useRail
+              ? Scaffold(
+                  body: Row(
+                    children: [
+                      AnimatedContainer(
+                        duration: const Duration(milliseconds: 180),
+                        curve: Curves.easeOutCubic,
+                        width: _desktopSidebarExpanded ? 288 : 64,
+                        child: _desktopSidebarExpanded
+                            ? ChatWorkspaceSidebar(
+                                onCollapse: () => setState(
+                                  () => _desktopSidebarExpanded = false,
+                                ),
+                              )
+                            : _CompactWorkspaceRail(
+                                visible: visible,
+                                selected: selected.navigationTab,
+                                onExpand: () => setState(
+                                  () => _desktopSidebarExpanded = true,
+                                ),
+                                onSelect: (tab) => ref
+                                    .read(shellTabProvider.notifier)
+                                    .set(tab),
+                                onNewChat: () {
+                                  ref
+                                      .read(chatControllerProvider.notifier)
+                                      .newConversation();
+                                  ref
+                                      .read(shellTabProvider.notifier)
+                                      .set(ShellTab.chat);
+                                },
+                              ),
+                      ),
+                      VerticalDivider(
+                        width: 1,
+                        color: scheme.outlineVariant.withValues(alpha: 0.85),
+                      ),
+                      Expanded(child: stack),
+                    ],
+                  ),
+                )
+              // On the research terminal tab, do not shrink the body for the
+              // soft keyboard — nested Scaffold + IME otherwise collapses the
+              // terminal Expanded to 0 height (blank/white screen on dismiss).
+              : Scaffold(
+                  resizeToAvoidBottomInset: selected != ShellTab.terminal,
+                  body: stack,
+                  bottomNavigationBar:
+                      MediaQuery.viewInsetsOf(context).bottom > 0
+                      ? null
+                      : NavigationBar(
+                          selectedIndex: navIndex,
+                          onDestinationSelected: (i) => ref
+                              .read(shellTabProvider.notifier)
+                              .set(visible[i]),
+                          backgroundColor: scheme.surfaceContainer.withValues(
+                            alpha: 0.96,
+                          ),
+                          indicatorColor: scheme.primaryContainer.withValues(
+                            alpha: 0.85,
+                          ),
+                          labelBehavior:
+                              NavigationDestinationLabelBehavior.alwaysShow,
+                          destinations: [
+                            for (final tab in visible)
+                              NavigationDestination(
+                                icon: Icon(tab.icon),
+                                selectedIcon: Icon(tab.selectedIcon),
+                                label: tab.label,
+                              ),
+                          ],
+                        ),
+                );
+
+          return KeyedSubtree(
+            key: _shellKey,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                scaffold,
+                ResearchModeRippleOverlay(
+                  playing: fx.playing,
+                  origin: localOrigin,
+                  onFinished: () {
+                    ref.read(researchModeFxProvider.notifier).finish();
+                  },
+                ),
+              ],
+            ),
+          );
+        },
+      ),
     );
   }
 }

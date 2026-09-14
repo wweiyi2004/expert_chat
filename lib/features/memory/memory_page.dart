@@ -298,8 +298,9 @@ class _MemoryEditDialog extends StatefulWidget {
 }
 
 class _MemoryEditDialogState extends State<_MemoryEditDialog> {
-  late final TextEditingController _controller =
-      TextEditingController(text: widget.entry?.content ?? '');
+  late final TextEditingController _controller = TextEditingController(
+    text: widget.entry?.content ?? '',
+  );
   late bool _pinned = widget.entry?.pinned ?? true;
   String? _error;
 
@@ -381,7 +382,7 @@ class _StorageCard extends StatelessWidget {
                 Icon(Icons.folder_copy_outlined, color: scheme.primary),
                 const SizedBox(width: 10),
                 Text(
-                  '本地 Markdown 记忆文件',
+                  '本地记忆',
                   style: Theme.of(
                     context,
                   ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
@@ -389,15 +390,21 @@ class _StorageCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 10),
-            const Text('内容保存在应用沙盒，不会自动上传。发送消息时只读取最多 8 条相关记忆。'),
+            const Text('记忆保存在本机；启用记忆后，相关内容会随对话发送给所选模型。'),
             if (memory.locationLabel.isNotEmpty) ...[
               const SizedBox(height: 10),
-              SelectableText(
-                memory.locationLabel,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: scheme.onSurfaceVariant,
-                  fontFamily: 'monospace',
-                ),
+              ExpansionTile(
+                tilePadding: EdgeInsets.zero,
+                title: const Text('存储位置'),
+                children: [
+                  SelectableText(
+                    memory.locationLabel,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                ],
               ),
             ],
           ],
@@ -431,6 +438,10 @@ class _MemoryCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            Text(
+              entry.projectId == null ? '全局记忆' : '项目记忆（仅所属项目召回）',
+              style: Theme.of(context).textTheme.labelSmall,
+            ),
             Text(entry.content, style: const TextStyle(height: 1.5)),
             const SizedBox(height: 8),
             Wrap(

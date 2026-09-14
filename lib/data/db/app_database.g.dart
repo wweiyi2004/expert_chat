@@ -3,12 +3,388 @@
 part of 'app_database.dart';
 
 // ignore_for_file: type=lint
+class $ProjectsTable extends Projects with TableInfo<$ProjectsTable, Project> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $ProjectsTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _idMeta = const VerificationMeta('id');
+  @override
+  late final GeneratedColumn<String> id = GeneratedColumn<String>(
+    'id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _nameMeta = const VerificationMeta('name');
+  @override
+  late final GeneratedColumn<String> name = GeneratedColumn<String>(
+    'name',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _instructionsMeta = const VerificationMeta(
+    'instructions',
+  );
+  @override
+  late final GeneratedColumn<String> instructions = GeneratedColumn<String>(
+    'instructions',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(''),
+  );
+  static const VerificationMeta _createdAtMeta = const VerificationMeta(
+    'createdAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> createdAt = GeneratedColumn<DateTime>(
+    'created_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _updatedAtMeta = const VerificationMeta(
+    'updatedAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> updatedAt = GeneratedColumn<DateTime>(
+    'updated_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: true,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    id,
+    name,
+    instructions,
+    createdAt,
+    updatedAt,
+  ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'projects';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<Project> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('id')) {
+      context.handle(_idMeta, id.isAcceptableOrUnknown(data['id']!, _idMeta));
+    } else if (isInserting) {
+      context.missing(_idMeta);
+    }
+    if (data.containsKey('name')) {
+      context.handle(
+        _nameMeta,
+        name.isAcceptableOrUnknown(data['name']!, _nameMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_nameMeta);
+    }
+    if (data.containsKey('instructions')) {
+      context.handle(
+        _instructionsMeta,
+        instructions.isAcceptableOrUnknown(
+          data['instructions']!,
+          _instructionsMeta,
+        ),
+      );
+    }
+    if (data.containsKey('created_at')) {
+      context.handle(
+        _createdAtMeta,
+        createdAt.isAcceptableOrUnknown(data['created_at']!, _createdAtMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_createdAtMeta);
+    }
+    if (data.containsKey('updated_at')) {
+      context.handle(
+        _updatedAtMeta,
+        updatedAt.isAcceptableOrUnknown(data['updated_at']!, _updatedAtMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_updatedAtMeta);
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {id};
+  @override
+  Project map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return Project(
+      id: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}id'],
+      )!,
+      name: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}name'],
+      )!,
+      instructions: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}instructions'],
+      )!,
+      createdAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}created_at'],
+      )!,
+      updatedAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}updated_at'],
+      )!,
+    );
+  }
+
+  @override
+  $ProjectsTable createAlias(String alias) {
+    return $ProjectsTable(attachedDatabase, alias);
+  }
+}
+
+class Project extends DataClass implements Insertable<Project> {
+  final String id;
+  final String name;
+  final String instructions;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+  const Project({
+    required this.id,
+    required this.name,
+    required this.instructions,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['id'] = Variable<String>(id);
+    map['name'] = Variable<String>(name);
+    map['instructions'] = Variable<String>(instructions);
+    map['created_at'] = Variable<DateTime>(createdAt);
+    map['updated_at'] = Variable<DateTime>(updatedAt);
+    return map;
+  }
+
+  ProjectsCompanion toCompanion(bool nullToAbsent) {
+    return ProjectsCompanion(
+      id: Value(id),
+      name: Value(name),
+      instructions: Value(instructions),
+      createdAt: Value(createdAt),
+      updatedAt: Value(updatedAt),
+    );
+  }
+
+  factory Project.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return Project(
+      id: serializer.fromJson<String>(json['id']),
+      name: serializer.fromJson<String>(json['name']),
+      instructions: serializer.fromJson<String>(json['instructions']),
+      createdAt: serializer.fromJson<DateTime>(json['createdAt']),
+      updatedAt: serializer.fromJson<DateTime>(json['updatedAt']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'id': serializer.toJson<String>(id),
+      'name': serializer.toJson<String>(name),
+      'instructions': serializer.toJson<String>(instructions),
+      'createdAt': serializer.toJson<DateTime>(createdAt),
+      'updatedAt': serializer.toJson<DateTime>(updatedAt),
+    };
+  }
+
+  Project copyWith({
+    String? id,
+    String? name,
+    String? instructions,
+    DateTime? createdAt,
+    DateTime? updatedAt,
+  }) => Project(
+    id: id ?? this.id,
+    name: name ?? this.name,
+    instructions: instructions ?? this.instructions,
+    createdAt: createdAt ?? this.createdAt,
+    updatedAt: updatedAt ?? this.updatedAt,
+  );
+  Project copyWithCompanion(ProjectsCompanion data) {
+    return Project(
+      id: data.id.present ? data.id.value : this.id,
+      name: data.name.present ? data.name.value : this.name,
+      instructions: data.instructions.present
+          ? data.instructions.value
+          : this.instructions,
+      createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
+      updatedAt: data.updatedAt.present ? data.updatedAt.value : this.updatedAt,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('Project(')
+          ..write('id: $id, ')
+          ..write('name: $name, ')
+          ..write('instructions: $instructions, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('updatedAt: $updatedAt')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(id, name, instructions, createdAt, updatedAt);
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is Project &&
+          other.id == this.id &&
+          other.name == this.name &&
+          other.instructions == this.instructions &&
+          other.createdAt == this.createdAt &&
+          other.updatedAt == this.updatedAt);
+}
+
+class ProjectsCompanion extends UpdateCompanion<Project> {
+  final Value<String> id;
+  final Value<String> name;
+  final Value<String> instructions;
+  final Value<DateTime> createdAt;
+  final Value<DateTime> updatedAt;
+  final Value<int> rowid;
+  const ProjectsCompanion({
+    this.id = const Value.absent(),
+    this.name = const Value.absent(),
+    this.instructions = const Value.absent(),
+    this.createdAt = const Value.absent(),
+    this.updatedAt = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  ProjectsCompanion.insert({
+    required String id,
+    required String name,
+    this.instructions = const Value.absent(),
+    required DateTime createdAt,
+    required DateTime updatedAt,
+    this.rowid = const Value.absent(),
+  }) : id = Value(id),
+       name = Value(name),
+       createdAt = Value(createdAt),
+       updatedAt = Value(updatedAt);
+  static Insertable<Project> custom({
+    Expression<String>? id,
+    Expression<String>? name,
+    Expression<String>? instructions,
+    Expression<DateTime>? createdAt,
+    Expression<DateTime>? updatedAt,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (id != null) 'id': id,
+      if (name != null) 'name': name,
+      if (instructions != null) 'instructions': instructions,
+      if (createdAt != null) 'created_at': createdAt,
+      if (updatedAt != null) 'updated_at': updatedAt,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  ProjectsCompanion copyWith({
+    Value<String>? id,
+    Value<String>? name,
+    Value<String>? instructions,
+    Value<DateTime>? createdAt,
+    Value<DateTime>? updatedAt,
+    Value<int>? rowid,
+  }) {
+    return ProjectsCompanion(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      instructions: instructions ?? this.instructions,
+      createdAt: createdAt ?? this.createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (id.present) {
+      map['id'] = Variable<String>(id.value);
+    }
+    if (name.present) {
+      map['name'] = Variable<String>(name.value);
+    }
+    if (instructions.present) {
+      map['instructions'] = Variable<String>(instructions.value);
+    }
+    if (createdAt.present) {
+      map['created_at'] = Variable<DateTime>(createdAt.value);
+    }
+    if (updatedAt.present) {
+      map['updated_at'] = Variable<DateTime>(updatedAt.value);
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('ProjectsCompanion(')
+          ..write('id: $id, ')
+          ..write('name: $name, ')
+          ..write('instructions: $instructions, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('updatedAt: $updatedAt, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
 class $ConversationsTable extends Conversations
     with TableInfo<$ConversationsTable, Conversation> {
   @override
   final GeneratedDatabase attachedDatabase;
   final String? _alias;
   $ConversationsTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _projectIdMeta = const VerificationMeta(
+    'projectId',
+  );
+  @override
+  late final GeneratedColumn<String> projectId = GeneratedColumn<String>(
+    'project_id',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'REFERENCES projects (id) ON DELETE SET NULL',
+    ),
+  );
   static const VerificationMeta _idMeta = const VerificationMeta('id');
   @override
   late final GeneratedColumn<String> id = GeneratedColumn<String>(
@@ -202,6 +578,7 @@ class $ConversationsTable extends Conversations
   );
   @override
   List<GeneratedColumn> get $columns => [
+    projectId,
     id,
     title,
     updatedAt,
@@ -232,6 +609,12 @@ class $ConversationsTable extends Conversations
   }) {
     final context = VerificationContext();
     final data = instance.toColumns(true);
+    if (data.containsKey('project_id')) {
+      context.handle(
+        _projectIdMeta,
+        projectId.isAcceptableOrUnknown(data['project_id']!, _projectIdMeta),
+      );
+    }
     if (data.containsKey('id')) {
       context.handle(_idMeta, id.isAcceptableOrUnknown(data['id']!, _idMeta));
     } else if (isInserting) {
@@ -368,6 +751,10 @@ class $ConversationsTable extends Conversations
   Conversation map(Map<String, dynamic> data, {String? tablePrefix}) {
     final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
     return Conversation(
+      projectId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}project_id'],
+      ),
       id: attachedDatabase.typeMapping.read(
         DriftSqlType.string,
         data['${effectivePrefix}id'],
@@ -446,6 +833,7 @@ class $ConversationsTable extends Conversations
 }
 
 class Conversation extends DataClass implements Insertable<Conversation> {
+  final String? projectId;
   final String id;
   final String title;
   final DateTime updatedAt;
@@ -464,6 +852,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
   final String? customMcpServerIdsJson;
   final bool workMode;
   const Conversation({
+    this.projectId,
     required this.id,
     required this.title,
     required this.updatedAt,
@@ -485,6 +874,9 @@ class Conversation extends DataClass implements Insertable<Conversation> {
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
     final map = <String, Expression>{};
+    if (!nullToAbsent || projectId != null) {
+      map['project_id'] = Variable<String>(projectId);
+    }
     map['id'] = Variable<String>(id);
     map['title'] = Variable<String>(title);
     map['updated_at'] = Variable<DateTime>(updatedAt);
@@ -521,6 +913,9 @@ class Conversation extends DataClass implements Insertable<Conversation> {
 
   ConversationsCompanion toCompanion(bool nullToAbsent) {
     return ConversationsCompanion(
+      projectId: projectId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(projectId),
       id: Value(id),
       title: Value(title),
       updatedAt: Value(updatedAt),
@@ -559,6 +954,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
   }) {
     serializer ??= driftRuntimeOptions.defaultSerializer;
     return Conversation(
+      projectId: serializer.fromJson<String?>(json['projectId']),
       id: serializer.fromJson<String>(json['id']),
       title: serializer.fromJson<String>(json['title']),
       updatedAt: serializer.fromJson<DateTime>(json['updatedAt']),
@@ -588,6 +984,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
   Map<String, dynamic> toJson({ValueSerializer? serializer}) {
     serializer ??= driftRuntimeOptions.defaultSerializer;
     return <String, dynamic>{
+      'projectId': serializer.toJson<String?>(projectId),
       'id': serializer.toJson<String>(id),
       'title': serializer.toJson<String>(title),
       'updatedAt': serializer.toJson<DateTime>(updatedAt),
@@ -611,6 +1008,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
   }
 
   Conversation copyWith({
+    Value<String?> projectId = const Value.absent(),
     String? id,
     String? title,
     DateTime? updatedAt,
@@ -629,6 +1027,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
     Value<String?> customMcpServerIdsJson = const Value.absent(),
     bool? workMode,
   }) => Conversation(
+    projectId: projectId.present ? projectId.value : this.projectId,
     id: id ?? this.id,
     title: title ?? this.title,
     updatedAt: updatedAt ?? this.updatedAt,
@@ -659,6 +1058,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
   );
   Conversation copyWithCompanion(ConversationsCompanion data) {
     return Conversation(
+      projectId: data.projectId.present ? data.projectId.value : this.projectId,
       id: data.id.present ? data.id.value : this.id,
       title: data.title.present ? data.title.value : this.title,
       updatedAt: data.updatedAt.present ? data.updatedAt.value : this.updatedAt,
@@ -702,6 +1102,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
   @override
   String toString() {
     return (StringBuffer('Conversation(')
+          ..write('projectId: $projectId, ')
           ..write('id: $id, ')
           ..write('title: $title, ')
           ..write('updatedAt: $updatedAt, ')
@@ -725,6 +1126,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
 
   @override
   int get hashCode => Object.hash(
+    projectId,
     id,
     title,
     updatedAt,
@@ -747,6 +1149,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
   bool operator ==(Object other) =>
       identical(this, other) ||
       (other is Conversation &&
+          other.projectId == this.projectId &&
           other.id == this.id &&
           other.title == this.title &&
           other.updatedAt == this.updatedAt &&
@@ -767,6 +1170,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
 }
 
 class ConversationsCompanion extends UpdateCompanion<Conversation> {
+  final Value<String?> projectId;
   final Value<String> id;
   final Value<String> title;
   final Value<DateTime> updatedAt;
@@ -786,6 +1190,7 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
   final Value<bool> workMode;
   final Value<int> rowid;
   const ConversationsCompanion({
+    this.projectId = const Value.absent(),
     this.id = const Value.absent(),
     this.title = const Value.absent(),
     this.updatedAt = const Value.absent(),
@@ -806,6 +1211,7 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
     this.rowid = const Value.absent(),
   });
   ConversationsCompanion.insert({
+    this.projectId = const Value.absent(),
     required String id,
     this.title = const Value.absent(),
     required DateTime updatedAt,
@@ -827,6 +1233,7 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
   }) : id = Value(id),
        updatedAt = Value(updatedAt);
   static Insertable<Conversation> custom({
+    Expression<String>? projectId,
     Expression<String>? id,
     Expression<String>? title,
     Expression<DateTime>? updatedAt,
@@ -847,6 +1254,7 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
     Expression<int>? rowid,
   }) {
     return RawValuesInsertable({
+      if (projectId != null) 'project_id': projectId,
       if (id != null) 'id': id,
       if (title != null) 'title': title,
       if (updatedAt != null) 'updated_at': updatedAt,
@@ -872,6 +1280,7 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
   }
 
   ConversationsCompanion copyWith({
+    Value<String?>? projectId,
     Value<String>? id,
     Value<String>? title,
     Value<DateTime>? updatedAt,
@@ -892,6 +1301,7 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
     Value<int>? rowid,
   }) {
     return ConversationsCompanion(
+      projectId: projectId ?? this.projectId,
       id: id ?? this.id,
       title: title ?? this.title,
       updatedAt: updatedAt ?? this.updatedAt,
@@ -917,6 +1327,9 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
     final map = <String, Expression>{};
+    if (projectId.present) {
+      map['project_id'] = Variable<String>(projectId.value);
+    }
     if (id.present) {
       map['id'] = Variable<String>(id.value);
     }
@@ -979,6 +1392,7 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
   @override
   String toString() {
     return (StringBuffer('ConversationsCompanion(')
+          ..write('projectId: $projectId, ')
           ..write('id: $id, ')
           ..write('title: $title, ')
           ..write('updatedAt: $updatedAt, ')
@@ -4666,9 +5080,1264 @@ class LibraryItemsCompanion extends UpdateCompanion<LibraryItemRow> {
   }
 }
 
+class $ProjectFilesTable extends ProjectFiles
+    with TableInfo<$ProjectFilesTable, ProjectFile> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $ProjectFilesTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _projectIdMeta = const VerificationMeta(
+    'projectId',
+  );
+  @override
+  late final GeneratedColumn<String> projectId = GeneratedColumn<String>(
+    'project_id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'REFERENCES projects (id) ON DELETE CASCADE',
+    ),
+  );
+  static const VerificationMeta _libraryItemIdMeta = const VerificationMeta(
+    'libraryItemId',
+  );
+  @override
+  late final GeneratedColumn<String> libraryItemId = GeneratedColumn<String>(
+    'library_item_id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'REFERENCES library_items (id) ON DELETE CASCADE',
+    ),
+  );
+  @override
+  List<GeneratedColumn> get $columns => [projectId, libraryItemId];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'project_files';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<ProjectFile> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('project_id')) {
+      context.handle(
+        _projectIdMeta,
+        projectId.isAcceptableOrUnknown(data['project_id']!, _projectIdMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_projectIdMeta);
+    }
+    if (data.containsKey('library_item_id')) {
+      context.handle(
+        _libraryItemIdMeta,
+        libraryItemId.isAcceptableOrUnknown(
+          data['library_item_id']!,
+          _libraryItemIdMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_libraryItemIdMeta);
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {projectId, libraryItemId};
+  @override
+  ProjectFile map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return ProjectFile(
+      projectId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}project_id'],
+      )!,
+      libraryItemId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}library_item_id'],
+      )!,
+    );
+  }
+
+  @override
+  $ProjectFilesTable createAlias(String alias) {
+    return $ProjectFilesTable(attachedDatabase, alias);
+  }
+}
+
+class ProjectFile extends DataClass implements Insertable<ProjectFile> {
+  final String projectId;
+  final String libraryItemId;
+  const ProjectFile({required this.projectId, required this.libraryItemId});
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['project_id'] = Variable<String>(projectId);
+    map['library_item_id'] = Variable<String>(libraryItemId);
+    return map;
+  }
+
+  ProjectFilesCompanion toCompanion(bool nullToAbsent) {
+    return ProjectFilesCompanion(
+      projectId: Value(projectId),
+      libraryItemId: Value(libraryItemId),
+    );
+  }
+
+  factory ProjectFile.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return ProjectFile(
+      projectId: serializer.fromJson<String>(json['projectId']),
+      libraryItemId: serializer.fromJson<String>(json['libraryItemId']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'projectId': serializer.toJson<String>(projectId),
+      'libraryItemId': serializer.toJson<String>(libraryItemId),
+    };
+  }
+
+  ProjectFile copyWith({String? projectId, String? libraryItemId}) =>
+      ProjectFile(
+        projectId: projectId ?? this.projectId,
+        libraryItemId: libraryItemId ?? this.libraryItemId,
+      );
+  ProjectFile copyWithCompanion(ProjectFilesCompanion data) {
+    return ProjectFile(
+      projectId: data.projectId.present ? data.projectId.value : this.projectId,
+      libraryItemId: data.libraryItemId.present
+          ? data.libraryItemId.value
+          : this.libraryItemId,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('ProjectFile(')
+          ..write('projectId: $projectId, ')
+          ..write('libraryItemId: $libraryItemId')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(projectId, libraryItemId);
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is ProjectFile &&
+          other.projectId == this.projectId &&
+          other.libraryItemId == this.libraryItemId);
+}
+
+class ProjectFilesCompanion extends UpdateCompanion<ProjectFile> {
+  final Value<String> projectId;
+  final Value<String> libraryItemId;
+  final Value<int> rowid;
+  const ProjectFilesCompanion({
+    this.projectId = const Value.absent(),
+    this.libraryItemId = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  ProjectFilesCompanion.insert({
+    required String projectId,
+    required String libraryItemId,
+    this.rowid = const Value.absent(),
+  }) : projectId = Value(projectId),
+       libraryItemId = Value(libraryItemId);
+  static Insertable<ProjectFile> custom({
+    Expression<String>? projectId,
+    Expression<String>? libraryItemId,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (projectId != null) 'project_id': projectId,
+      if (libraryItemId != null) 'library_item_id': libraryItemId,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  ProjectFilesCompanion copyWith({
+    Value<String>? projectId,
+    Value<String>? libraryItemId,
+    Value<int>? rowid,
+  }) {
+    return ProjectFilesCompanion(
+      projectId: projectId ?? this.projectId,
+      libraryItemId: libraryItemId ?? this.libraryItemId,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (projectId.present) {
+      map['project_id'] = Variable<String>(projectId.value);
+    }
+    if (libraryItemId.present) {
+      map['library_item_id'] = Variable<String>(libraryItemId.value);
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('ProjectFilesCompanion(')
+          ..write('projectId: $projectId, ')
+          ..write('libraryItemId: $libraryItemId, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
+class $GenerationRecordsTable extends GenerationRecords
+    with TableInfo<$GenerationRecordsTable, GenerationRecord> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $GenerationRecordsTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _idMeta = const VerificationMeta('id');
+  @override
+  late final GeneratedColumn<String> id = GeneratedColumn<String>(
+    'id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _libraryItemIdMeta = const VerificationMeta(
+    'libraryItemId',
+  );
+  @override
+  late final GeneratedColumn<String> libraryItemId = GeneratedColumn<String>(
+    'library_item_id',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'REFERENCES library_items (id) ON DELETE SET NULL',
+    ),
+  );
+  static const VerificationMeta _conversationIdMeta = const VerificationMeta(
+    'conversationId',
+  );
+  @override
+  late final GeneratedColumn<String> conversationId = GeneratedColumn<String>(
+    'conversation_id',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _messageIdMeta = const VerificationMeta(
+    'messageId',
+  );
+  @override
+  late final GeneratedColumn<String> messageId = GeneratedColumn<String>(
+    'message_id',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _parentGenerationIdMeta =
+      const VerificationMeta('parentGenerationId');
+  @override
+  late final GeneratedColumn<String> parentGenerationId =
+      GeneratedColumn<String>(
+        'parent_generation_id',
+        aliasedName,
+        true,
+        type: DriftSqlType.string,
+        requiredDuringInsert: false,
+      );
+  static const VerificationMeta _originalPromptMeta = const VerificationMeta(
+    'originalPrompt',
+  );
+  @override
+  late final GeneratedColumn<String> originalPrompt = GeneratedColumn<String>(
+    'original_prompt',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _optimizedPromptMeta = const VerificationMeta(
+    'optimizedPrompt',
+  );
+  @override
+  late final GeneratedColumn<String> optimizedPrompt = GeneratedColumn<String>(
+    'optimized_prompt',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _revisedPromptMeta = const VerificationMeta(
+    'revisedPrompt',
+  );
+  @override
+  late final GeneratedColumn<String> revisedPrompt = GeneratedColumn<String>(
+    'revised_prompt',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _modelMeta = const VerificationMeta('model');
+  @override
+  late final GeneratedColumn<String> model = GeneratedColumn<String>(
+    'model',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _providerHostMeta = const VerificationMeta(
+    'providerHost',
+  );
+  @override
+  late final GeneratedColumn<String> providerHost = GeneratedColumn<String>(
+    'provider_host',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _imageSizeMeta = const VerificationMeta(
+    'imageSize',
+  );
+  @override
+  late final GeneratedColumn<String> imageSize = GeneratedColumn<String>(
+    'image_size',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _referencesJsonMeta = const VerificationMeta(
+    'referencesJson',
+  );
+  @override
+  late final GeneratedColumn<String> referencesJson = GeneratedColumn<String>(
+    'references_json',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant('[]'),
+  );
+  static const VerificationMeta _createdAtMeta = const VerificationMeta(
+    'createdAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> createdAt = GeneratedColumn<DateTime>(
+    'created_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: true,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    id,
+    libraryItemId,
+    conversationId,
+    messageId,
+    parentGenerationId,
+    originalPrompt,
+    optimizedPrompt,
+    revisedPrompt,
+    model,
+    providerHost,
+    imageSize,
+    referencesJson,
+    createdAt,
+  ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'generation_records';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<GenerationRecord> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('id')) {
+      context.handle(_idMeta, id.isAcceptableOrUnknown(data['id']!, _idMeta));
+    } else if (isInserting) {
+      context.missing(_idMeta);
+    }
+    if (data.containsKey('library_item_id')) {
+      context.handle(
+        _libraryItemIdMeta,
+        libraryItemId.isAcceptableOrUnknown(
+          data['library_item_id']!,
+          _libraryItemIdMeta,
+        ),
+      );
+    }
+    if (data.containsKey('conversation_id')) {
+      context.handle(
+        _conversationIdMeta,
+        conversationId.isAcceptableOrUnknown(
+          data['conversation_id']!,
+          _conversationIdMeta,
+        ),
+      );
+    }
+    if (data.containsKey('message_id')) {
+      context.handle(
+        _messageIdMeta,
+        messageId.isAcceptableOrUnknown(data['message_id']!, _messageIdMeta),
+      );
+    }
+    if (data.containsKey('parent_generation_id')) {
+      context.handle(
+        _parentGenerationIdMeta,
+        parentGenerationId.isAcceptableOrUnknown(
+          data['parent_generation_id']!,
+          _parentGenerationIdMeta,
+        ),
+      );
+    }
+    if (data.containsKey('original_prompt')) {
+      context.handle(
+        _originalPromptMeta,
+        originalPrompt.isAcceptableOrUnknown(
+          data['original_prompt']!,
+          _originalPromptMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_originalPromptMeta);
+    }
+    if (data.containsKey('optimized_prompt')) {
+      context.handle(
+        _optimizedPromptMeta,
+        optimizedPrompt.isAcceptableOrUnknown(
+          data['optimized_prompt']!,
+          _optimizedPromptMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_optimizedPromptMeta);
+    }
+    if (data.containsKey('revised_prompt')) {
+      context.handle(
+        _revisedPromptMeta,
+        revisedPrompt.isAcceptableOrUnknown(
+          data['revised_prompt']!,
+          _revisedPromptMeta,
+        ),
+      );
+    }
+    if (data.containsKey('model')) {
+      context.handle(
+        _modelMeta,
+        model.isAcceptableOrUnknown(data['model']!, _modelMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_modelMeta);
+    }
+    if (data.containsKey('provider_host')) {
+      context.handle(
+        _providerHostMeta,
+        providerHost.isAcceptableOrUnknown(
+          data['provider_host']!,
+          _providerHostMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_providerHostMeta);
+    }
+    if (data.containsKey('image_size')) {
+      context.handle(
+        _imageSizeMeta,
+        imageSize.isAcceptableOrUnknown(data['image_size']!, _imageSizeMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_imageSizeMeta);
+    }
+    if (data.containsKey('references_json')) {
+      context.handle(
+        _referencesJsonMeta,
+        referencesJson.isAcceptableOrUnknown(
+          data['references_json']!,
+          _referencesJsonMeta,
+        ),
+      );
+    }
+    if (data.containsKey('created_at')) {
+      context.handle(
+        _createdAtMeta,
+        createdAt.isAcceptableOrUnknown(data['created_at']!, _createdAtMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_createdAtMeta);
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {id};
+  @override
+  GenerationRecord map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return GenerationRecord(
+      id: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}id'],
+      )!,
+      libraryItemId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}library_item_id'],
+      ),
+      conversationId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}conversation_id'],
+      ),
+      messageId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}message_id'],
+      ),
+      parentGenerationId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}parent_generation_id'],
+      ),
+      originalPrompt: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}original_prompt'],
+      )!,
+      optimizedPrompt: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}optimized_prompt'],
+      )!,
+      revisedPrompt: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}revised_prompt'],
+      ),
+      model: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}model'],
+      )!,
+      providerHost: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}provider_host'],
+      )!,
+      imageSize: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}image_size'],
+      )!,
+      referencesJson: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}references_json'],
+      )!,
+      createdAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}created_at'],
+      )!,
+    );
+  }
+
+  @override
+  $GenerationRecordsTable createAlias(String alias) {
+    return $GenerationRecordsTable(attachedDatabase, alias);
+  }
+}
+
+class GenerationRecord extends DataClass
+    implements Insertable<GenerationRecord> {
+  final String id;
+  final String? libraryItemId;
+  final String? conversationId;
+  final String? messageId;
+  final String? parentGenerationId;
+  final String originalPrompt;
+  final String optimizedPrompt;
+  final String? revisedPrompt;
+  final String model;
+  final String providerHost;
+  final String imageSize;
+  final String referencesJson;
+  final DateTime createdAt;
+  const GenerationRecord({
+    required this.id,
+    this.libraryItemId,
+    this.conversationId,
+    this.messageId,
+    this.parentGenerationId,
+    required this.originalPrompt,
+    required this.optimizedPrompt,
+    this.revisedPrompt,
+    required this.model,
+    required this.providerHost,
+    required this.imageSize,
+    required this.referencesJson,
+    required this.createdAt,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['id'] = Variable<String>(id);
+    if (!nullToAbsent || libraryItemId != null) {
+      map['library_item_id'] = Variable<String>(libraryItemId);
+    }
+    if (!nullToAbsent || conversationId != null) {
+      map['conversation_id'] = Variable<String>(conversationId);
+    }
+    if (!nullToAbsent || messageId != null) {
+      map['message_id'] = Variable<String>(messageId);
+    }
+    if (!nullToAbsent || parentGenerationId != null) {
+      map['parent_generation_id'] = Variable<String>(parentGenerationId);
+    }
+    map['original_prompt'] = Variable<String>(originalPrompt);
+    map['optimized_prompt'] = Variable<String>(optimizedPrompt);
+    if (!nullToAbsent || revisedPrompt != null) {
+      map['revised_prompt'] = Variable<String>(revisedPrompt);
+    }
+    map['model'] = Variable<String>(model);
+    map['provider_host'] = Variable<String>(providerHost);
+    map['image_size'] = Variable<String>(imageSize);
+    map['references_json'] = Variable<String>(referencesJson);
+    map['created_at'] = Variable<DateTime>(createdAt);
+    return map;
+  }
+
+  GenerationRecordsCompanion toCompanion(bool nullToAbsent) {
+    return GenerationRecordsCompanion(
+      id: Value(id),
+      libraryItemId: libraryItemId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(libraryItemId),
+      conversationId: conversationId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(conversationId),
+      messageId: messageId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(messageId),
+      parentGenerationId: parentGenerationId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(parentGenerationId),
+      originalPrompt: Value(originalPrompt),
+      optimizedPrompt: Value(optimizedPrompt),
+      revisedPrompt: revisedPrompt == null && nullToAbsent
+          ? const Value.absent()
+          : Value(revisedPrompt),
+      model: Value(model),
+      providerHost: Value(providerHost),
+      imageSize: Value(imageSize),
+      referencesJson: Value(referencesJson),
+      createdAt: Value(createdAt),
+    );
+  }
+
+  factory GenerationRecord.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return GenerationRecord(
+      id: serializer.fromJson<String>(json['id']),
+      libraryItemId: serializer.fromJson<String?>(json['libraryItemId']),
+      conversationId: serializer.fromJson<String?>(json['conversationId']),
+      messageId: serializer.fromJson<String?>(json['messageId']),
+      parentGenerationId: serializer.fromJson<String?>(
+        json['parentGenerationId'],
+      ),
+      originalPrompt: serializer.fromJson<String>(json['originalPrompt']),
+      optimizedPrompt: serializer.fromJson<String>(json['optimizedPrompt']),
+      revisedPrompt: serializer.fromJson<String?>(json['revisedPrompt']),
+      model: serializer.fromJson<String>(json['model']),
+      providerHost: serializer.fromJson<String>(json['providerHost']),
+      imageSize: serializer.fromJson<String>(json['imageSize']),
+      referencesJson: serializer.fromJson<String>(json['referencesJson']),
+      createdAt: serializer.fromJson<DateTime>(json['createdAt']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'id': serializer.toJson<String>(id),
+      'libraryItemId': serializer.toJson<String?>(libraryItemId),
+      'conversationId': serializer.toJson<String?>(conversationId),
+      'messageId': serializer.toJson<String?>(messageId),
+      'parentGenerationId': serializer.toJson<String?>(parentGenerationId),
+      'originalPrompt': serializer.toJson<String>(originalPrompt),
+      'optimizedPrompt': serializer.toJson<String>(optimizedPrompt),
+      'revisedPrompt': serializer.toJson<String?>(revisedPrompt),
+      'model': serializer.toJson<String>(model),
+      'providerHost': serializer.toJson<String>(providerHost),
+      'imageSize': serializer.toJson<String>(imageSize),
+      'referencesJson': serializer.toJson<String>(referencesJson),
+      'createdAt': serializer.toJson<DateTime>(createdAt),
+    };
+  }
+
+  GenerationRecord copyWith({
+    String? id,
+    Value<String?> libraryItemId = const Value.absent(),
+    Value<String?> conversationId = const Value.absent(),
+    Value<String?> messageId = const Value.absent(),
+    Value<String?> parentGenerationId = const Value.absent(),
+    String? originalPrompt,
+    String? optimizedPrompt,
+    Value<String?> revisedPrompt = const Value.absent(),
+    String? model,
+    String? providerHost,
+    String? imageSize,
+    String? referencesJson,
+    DateTime? createdAt,
+  }) => GenerationRecord(
+    id: id ?? this.id,
+    libraryItemId: libraryItemId.present
+        ? libraryItemId.value
+        : this.libraryItemId,
+    conversationId: conversationId.present
+        ? conversationId.value
+        : this.conversationId,
+    messageId: messageId.present ? messageId.value : this.messageId,
+    parentGenerationId: parentGenerationId.present
+        ? parentGenerationId.value
+        : this.parentGenerationId,
+    originalPrompt: originalPrompt ?? this.originalPrompt,
+    optimizedPrompt: optimizedPrompt ?? this.optimizedPrompt,
+    revisedPrompt: revisedPrompt.present
+        ? revisedPrompt.value
+        : this.revisedPrompt,
+    model: model ?? this.model,
+    providerHost: providerHost ?? this.providerHost,
+    imageSize: imageSize ?? this.imageSize,
+    referencesJson: referencesJson ?? this.referencesJson,
+    createdAt: createdAt ?? this.createdAt,
+  );
+  GenerationRecord copyWithCompanion(GenerationRecordsCompanion data) {
+    return GenerationRecord(
+      id: data.id.present ? data.id.value : this.id,
+      libraryItemId: data.libraryItemId.present
+          ? data.libraryItemId.value
+          : this.libraryItemId,
+      conversationId: data.conversationId.present
+          ? data.conversationId.value
+          : this.conversationId,
+      messageId: data.messageId.present ? data.messageId.value : this.messageId,
+      parentGenerationId: data.parentGenerationId.present
+          ? data.parentGenerationId.value
+          : this.parentGenerationId,
+      originalPrompt: data.originalPrompt.present
+          ? data.originalPrompt.value
+          : this.originalPrompt,
+      optimizedPrompt: data.optimizedPrompt.present
+          ? data.optimizedPrompt.value
+          : this.optimizedPrompt,
+      revisedPrompt: data.revisedPrompt.present
+          ? data.revisedPrompt.value
+          : this.revisedPrompt,
+      model: data.model.present ? data.model.value : this.model,
+      providerHost: data.providerHost.present
+          ? data.providerHost.value
+          : this.providerHost,
+      imageSize: data.imageSize.present ? data.imageSize.value : this.imageSize,
+      referencesJson: data.referencesJson.present
+          ? data.referencesJson.value
+          : this.referencesJson,
+      createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('GenerationRecord(')
+          ..write('id: $id, ')
+          ..write('libraryItemId: $libraryItemId, ')
+          ..write('conversationId: $conversationId, ')
+          ..write('messageId: $messageId, ')
+          ..write('parentGenerationId: $parentGenerationId, ')
+          ..write('originalPrompt: $originalPrompt, ')
+          ..write('optimizedPrompt: $optimizedPrompt, ')
+          ..write('revisedPrompt: $revisedPrompt, ')
+          ..write('model: $model, ')
+          ..write('providerHost: $providerHost, ')
+          ..write('imageSize: $imageSize, ')
+          ..write('referencesJson: $referencesJson, ')
+          ..write('createdAt: $createdAt')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    id,
+    libraryItemId,
+    conversationId,
+    messageId,
+    parentGenerationId,
+    originalPrompt,
+    optimizedPrompt,
+    revisedPrompt,
+    model,
+    providerHost,
+    imageSize,
+    referencesJson,
+    createdAt,
+  );
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is GenerationRecord &&
+          other.id == this.id &&
+          other.libraryItemId == this.libraryItemId &&
+          other.conversationId == this.conversationId &&
+          other.messageId == this.messageId &&
+          other.parentGenerationId == this.parentGenerationId &&
+          other.originalPrompt == this.originalPrompt &&
+          other.optimizedPrompt == this.optimizedPrompt &&
+          other.revisedPrompt == this.revisedPrompt &&
+          other.model == this.model &&
+          other.providerHost == this.providerHost &&
+          other.imageSize == this.imageSize &&
+          other.referencesJson == this.referencesJson &&
+          other.createdAt == this.createdAt);
+}
+
+class GenerationRecordsCompanion extends UpdateCompanion<GenerationRecord> {
+  final Value<String> id;
+  final Value<String?> libraryItemId;
+  final Value<String?> conversationId;
+  final Value<String?> messageId;
+  final Value<String?> parentGenerationId;
+  final Value<String> originalPrompt;
+  final Value<String> optimizedPrompt;
+  final Value<String?> revisedPrompt;
+  final Value<String> model;
+  final Value<String> providerHost;
+  final Value<String> imageSize;
+  final Value<String> referencesJson;
+  final Value<DateTime> createdAt;
+  final Value<int> rowid;
+  const GenerationRecordsCompanion({
+    this.id = const Value.absent(),
+    this.libraryItemId = const Value.absent(),
+    this.conversationId = const Value.absent(),
+    this.messageId = const Value.absent(),
+    this.parentGenerationId = const Value.absent(),
+    this.originalPrompt = const Value.absent(),
+    this.optimizedPrompt = const Value.absent(),
+    this.revisedPrompt = const Value.absent(),
+    this.model = const Value.absent(),
+    this.providerHost = const Value.absent(),
+    this.imageSize = const Value.absent(),
+    this.referencesJson = const Value.absent(),
+    this.createdAt = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  GenerationRecordsCompanion.insert({
+    required String id,
+    this.libraryItemId = const Value.absent(),
+    this.conversationId = const Value.absent(),
+    this.messageId = const Value.absent(),
+    this.parentGenerationId = const Value.absent(),
+    required String originalPrompt,
+    required String optimizedPrompt,
+    this.revisedPrompt = const Value.absent(),
+    required String model,
+    required String providerHost,
+    required String imageSize,
+    this.referencesJson = const Value.absent(),
+    required DateTime createdAt,
+    this.rowid = const Value.absent(),
+  }) : id = Value(id),
+       originalPrompt = Value(originalPrompt),
+       optimizedPrompt = Value(optimizedPrompt),
+       model = Value(model),
+       providerHost = Value(providerHost),
+       imageSize = Value(imageSize),
+       createdAt = Value(createdAt);
+  static Insertable<GenerationRecord> custom({
+    Expression<String>? id,
+    Expression<String>? libraryItemId,
+    Expression<String>? conversationId,
+    Expression<String>? messageId,
+    Expression<String>? parentGenerationId,
+    Expression<String>? originalPrompt,
+    Expression<String>? optimizedPrompt,
+    Expression<String>? revisedPrompt,
+    Expression<String>? model,
+    Expression<String>? providerHost,
+    Expression<String>? imageSize,
+    Expression<String>? referencesJson,
+    Expression<DateTime>? createdAt,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (id != null) 'id': id,
+      if (libraryItemId != null) 'library_item_id': libraryItemId,
+      if (conversationId != null) 'conversation_id': conversationId,
+      if (messageId != null) 'message_id': messageId,
+      if (parentGenerationId != null)
+        'parent_generation_id': parentGenerationId,
+      if (originalPrompt != null) 'original_prompt': originalPrompt,
+      if (optimizedPrompt != null) 'optimized_prompt': optimizedPrompt,
+      if (revisedPrompt != null) 'revised_prompt': revisedPrompt,
+      if (model != null) 'model': model,
+      if (providerHost != null) 'provider_host': providerHost,
+      if (imageSize != null) 'image_size': imageSize,
+      if (referencesJson != null) 'references_json': referencesJson,
+      if (createdAt != null) 'created_at': createdAt,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  GenerationRecordsCompanion copyWith({
+    Value<String>? id,
+    Value<String?>? libraryItemId,
+    Value<String?>? conversationId,
+    Value<String?>? messageId,
+    Value<String?>? parentGenerationId,
+    Value<String>? originalPrompt,
+    Value<String>? optimizedPrompt,
+    Value<String?>? revisedPrompt,
+    Value<String>? model,
+    Value<String>? providerHost,
+    Value<String>? imageSize,
+    Value<String>? referencesJson,
+    Value<DateTime>? createdAt,
+    Value<int>? rowid,
+  }) {
+    return GenerationRecordsCompanion(
+      id: id ?? this.id,
+      libraryItemId: libraryItemId ?? this.libraryItemId,
+      conversationId: conversationId ?? this.conversationId,
+      messageId: messageId ?? this.messageId,
+      parentGenerationId: parentGenerationId ?? this.parentGenerationId,
+      originalPrompt: originalPrompt ?? this.originalPrompt,
+      optimizedPrompt: optimizedPrompt ?? this.optimizedPrompt,
+      revisedPrompt: revisedPrompt ?? this.revisedPrompt,
+      model: model ?? this.model,
+      providerHost: providerHost ?? this.providerHost,
+      imageSize: imageSize ?? this.imageSize,
+      referencesJson: referencesJson ?? this.referencesJson,
+      createdAt: createdAt ?? this.createdAt,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (id.present) {
+      map['id'] = Variable<String>(id.value);
+    }
+    if (libraryItemId.present) {
+      map['library_item_id'] = Variable<String>(libraryItemId.value);
+    }
+    if (conversationId.present) {
+      map['conversation_id'] = Variable<String>(conversationId.value);
+    }
+    if (messageId.present) {
+      map['message_id'] = Variable<String>(messageId.value);
+    }
+    if (parentGenerationId.present) {
+      map['parent_generation_id'] = Variable<String>(parentGenerationId.value);
+    }
+    if (originalPrompt.present) {
+      map['original_prompt'] = Variable<String>(originalPrompt.value);
+    }
+    if (optimizedPrompt.present) {
+      map['optimized_prompt'] = Variable<String>(optimizedPrompt.value);
+    }
+    if (revisedPrompt.present) {
+      map['revised_prompt'] = Variable<String>(revisedPrompt.value);
+    }
+    if (model.present) {
+      map['model'] = Variable<String>(model.value);
+    }
+    if (providerHost.present) {
+      map['provider_host'] = Variable<String>(providerHost.value);
+    }
+    if (imageSize.present) {
+      map['image_size'] = Variable<String>(imageSize.value);
+    }
+    if (referencesJson.present) {
+      map['references_json'] = Variable<String>(referencesJson.value);
+    }
+    if (createdAt.present) {
+      map['created_at'] = Variable<DateTime>(createdAt.value);
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('GenerationRecordsCompanion(')
+          ..write('id: $id, ')
+          ..write('libraryItemId: $libraryItemId, ')
+          ..write('conversationId: $conversationId, ')
+          ..write('messageId: $messageId, ')
+          ..write('parentGenerationId: $parentGenerationId, ')
+          ..write('originalPrompt: $originalPrompt, ')
+          ..write('optimizedPrompt: $optimizedPrompt, ')
+          ..write('revisedPrompt: $revisedPrompt, ')
+          ..write('model: $model, ')
+          ..write('providerHost: $providerHost, ')
+          ..write('imageSize: $imageSize, ')
+          ..write('referencesJson: $referencesJson, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
+class $BackupImportsTable extends BackupImports
+    with TableInfo<$BackupImportsTable, BackupImport> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $BackupImportsTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _idMeta = const VerificationMeta('id');
+  @override
+  late final GeneratedColumn<String> id = GeneratedColumn<String>(
+    'id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _committedAtMeta = const VerificationMeta(
+    'committedAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> committedAt = GeneratedColumn<DateTime>(
+    'committed_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: true,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [id, committedAt];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'backup_imports';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<BackupImport> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('id')) {
+      context.handle(_idMeta, id.isAcceptableOrUnknown(data['id']!, _idMeta));
+    } else if (isInserting) {
+      context.missing(_idMeta);
+    }
+    if (data.containsKey('committed_at')) {
+      context.handle(
+        _committedAtMeta,
+        committedAt.isAcceptableOrUnknown(
+          data['committed_at']!,
+          _committedAtMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_committedAtMeta);
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {id};
+  @override
+  BackupImport map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return BackupImport(
+      id: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}id'],
+      )!,
+      committedAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}committed_at'],
+      )!,
+    );
+  }
+
+  @override
+  $BackupImportsTable createAlias(String alias) {
+    return $BackupImportsTable(attachedDatabase, alias);
+  }
+}
+
+class BackupImport extends DataClass implements Insertable<BackupImport> {
+  final String id;
+  final DateTime committedAt;
+  const BackupImport({required this.id, required this.committedAt});
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['id'] = Variable<String>(id);
+    map['committed_at'] = Variable<DateTime>(committedAt);
+    return map;
+  }
+
+  BackupImportsCompanion toCompanion(bool nullToAbsent) {
+    return BackupImportsCompanion(
+      id: Value(id),
+      committedAt: Value(committedAt),
+    );
+  }
+
+  factory BackupImport.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return BackupImport(
+      id: serializer.fromJson<String>(json['id']),
+      committedAt: serializer.fromJson<DateTime>(json['committedAt']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'id': serializer.toJson<String>(id),
+      'committedAt': serializer.toJson<DateTime>(committedAt),
+    };
+  }
+
+  BackupImport copyWith({String? id, DateTime? committedAt}) => BackupImport(
+    id: id ?? this.id,
+    committedAt: committedAt ?? this.committedAt,
+  );
+  BackupImport copyWithCompanion(BackupImportsCompanion data) {
+    return BackupImport(
+      id: data.id.present ? data.id.value : this.id,
+      committedAt: data.committedAt.present
+          ? data.committedAt.value
+          : this.committedAt,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('BackupImport(')
+          ..write('id: $id, ')
+          ..write('committedAt: $committedAt')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(id, committedAt);
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is BackupImport &&
+          other.id == this.id &&
+          other.committedAt == this.committedAt);
+}
+
+class BackupImportsCompanion extends UpdateCompanion<BackupImport> {
+  final Value<String> id;
+  final Value<DateTime> committedAt;
+  final Value<int> rowid;
+  const BackupImportsCompanion({
+    this.id = const Value.absent(),
+    this.committedAt = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  BackupImportsCompanion.insert({
+    required String id,
+    required DateTime committedAt,
+    this.rowid = const Value.absent(),
+  }) : id = Value(id),
+       committedAt = Value(committedAt);
+  static Insertable<BackupImport> custom({
+    Expression<String>? id,
+    Expression<DateTime>? committedAt,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (id != null) 'id': id,
+      if (committedAt != null) 'committed_at': committedAt,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  BackupImportsCompanion copyWith({
+    Value<String>? id,
+    Value<DateTime>? committedAt,
+    Value<int>? rowid,
+  }) {
+    return BackupImportsCompanion(
+      id: id ?? this.id,
+      committedAt: committedAt ?? this.committedAt,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (id.present) {
+      map['id'] = Variable<String>(id.value);
+    }
+    if (committedAt.present) {
+      map['committed_at'] = Variable<DateTime>(committedAt.value);
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('BackupImportsCompanion(')
+          ..write('id: $id, ')
+          ..write('committedAt: $committedAt, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
 abstract class _$AppDatabase extends GeneratedDatabase {
   _$AppDatabase(QueryExecutor e) : super(e);
   $AppDatabaseManager get managers => $AppDatabaseManager(this);
+  late final $ProjectsTable projects = $ProjectsTable(this);
   late final $ConversationsTable conversations = $ConversationsTable(this);
   late final $MessagesTable messages = $MessagesTable(this);
   late final $CharacterCardsTable characterCards = $CharacterCardsTable(this);
@@ -4678,11 +6347,16 @@ abstract class _$AppDatabase extends GeneratedDatabase {
   late final $StudyEntitiesTable studyEntities = $StudyEntitiesTable(this);
   late final $StudySessionsTable studySessions = $StudySessionsTable(this);
   late final $LibraryItemsTable libraryItems = $LibraryItemsTable(this);
+  late final $ProjectFilesTable projectFiles = $ProjectFilesTable(this);
+  late final $GenerationRecordsTable generationRecords =
+      $GenerationRecordsTable(this);
+  late final $BackupImportsTable backupImports = $BackupImportsTable(this);
   @override
   Iterable<TableInfo<Table, Object?>> get allTables =>
       allSchemaEntities.whereType<TableInfo<Table, Object?>>();
   @override
   List<DatabaseSchemaEntity> get allSchemaEntities => [
+    projects,
     conversations,
     messages,
     characterCards,
@@ -4690,9 +6364,19 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     studyEntities,
     studySessions,
     libraryItems,
+    projectFiles,
+    generationRecords,
+    backupImports,
   ];
   @override
   StreamQueryUpdateRules get streamUpdateRules => const StreamQueryUpdateRules([
+    WritePropagation(
+      on: TableUpdateQuery.onTableName(
+        'projects',
+        limitUpdateKind: UpdateKind.delete,
+      ),
+      result: [TableUpdate('conversations', kind: UpdateKind.update)],
+    ),
     WritePropagation(
       on: TableUpdateQuery.onTableName(
         'conversations',
@@ -4707,11 +6391,434 @@ abstract class _$AppDatabase extends GeneratedDatabase {
       ),
       result: [TableUpdate('study_sessions', kind: UpdateKind.delete)],
     ),
+    WritePropagation(
+      on: TableUpdateQuery.onTableName(
+        'projects',
+        limitUpdateKind: UpdateKind.delete,
+      ),
+      result: [TableUpdate('project_files', kind: UpdateKind.delete)],
+    ),
+    WritePropagation(
+      on: TableUpdateQuery.onTableName(
+        'library_items',
+        limitUpdateKind: UpdateKind.delete,
+      ),
+      result: [TableUpdate('project_files', kind: UpdateKind.delete)],
+    ),
+    WritePropagation(
+      on: TableUpdateQuery.onTableName(
+        'library_items',
+        limitUpdateKind: UpdateKind.delete,
+      ),
+      result: [TableUpdate('generation_records', kind: UpdateKind.update)],
+    ),
   ]);
 }
 
+typedef $$ProjectsTableCreateCompanionBuilder =
+    ProjectsCompanion Function({
+      required String id,
+      required String name,
+      Value<String> instructions,
+      required DateTime createdAt,
+      required DateTime updatedAt,
+      Value<int> rowid,
+    });
+typedef $$ProjectsTableUpdateCompanionBuilder =
+    ProjectsCompanion Function({
+      Value<String> id,
+      Value<String> name,
+      Value<String> instructions,
+      Value<DateTime> createdAt,
+      Value<DateTime> updatedAt,
+      Value<int> rowid,
+    });
+
+final class $$ProjectsTableReferences
+    extends BaseReferences<_$AppDatabase, $ProjectsTable, Project> {
+  $$ProjectsTableReferences(super.$_db, super.$_table, super.$_typedResult);
+
+  static MultiTypedResultKey<$ConversationsTable, List<Conversation>>
+  _conversationsRefsTable(_$AppDatabase db) => MultiTypedResultKey.fromTable(
+    db.conversations,
+    aliasName: $_aliasNameGenerator(db.projects.id, db.conversations.projectId),
+  );
+
+  $$ConversationsTableProcessedTableManager get conversationsRefs {
+    final manager = $$ConversationsTableTableManager(
+      $_db,
+      $_db.conversations,
+    ).filter((f) => f.projectId.id.sqlEquals($_itemColumn<String>('id')!));
+
+    final cache = $_typedResult.readTableOrNull(_conversationsRefsTable($_db));
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: cache),
+    );
+  }
+
+  static MultiTypedResultKey<$ProjectFilesTable, List<ProjectFile>>
+  _projectFilesRefsTable(_$AppDatabase db) => MultiTypedResultKey.fromTable(
+    db.projectFiles,
+    aliasName: $_aliasNameGenerator(db.projects.id, db.projectFiles.projectId),
+  );
+
+  $$ProjectFilesTableProcessedTableManager get projectFilesRefs {
+    final manager = $$ProjectFilesTableTableManager(
+      $_db,
+      $_db.projectFiles,
+    ).filter((f) => f.projectId.id.sqlEquals($_itemColumn<String>('id')!));
+
+    final cache = $_typedResult.readTableOrNull(_projectFilesRefsTable($_db));
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: cache),
+    );
+  }
+}
+
+class $$ProjectsTableFilterComposer
+    extends Composer<_$AppDatabase, $ProjectsTable> {
+  $$ProjectsTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<String> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get name => $composableBuilder(
+    column: $table.name,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get instructions => $composableBuilder(
+    column: $table.instructions,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get updatedAt => $composableBuilder(
+    column: $table.updatedAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  Expression<bool> conversationsRefs(
+    Expression<bool> Function($$ConversationsTableFilterComposer f) f,
+  ) {
+    final $$ConversationsTableFilterComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.id,
+      referencedTable: $db.conversations,
+      getReferencedColumn: (t) => t.projectId,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$ConversationsTableFilterComposer(
+            $db: $db,
+            $table: $db.conversations,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return f(composer);
+  }
+
+  Expression<bool> projectFilesRefs(
+    Expression<bool> Function($$ProjectFilesTableFilterComposer f) f,
+  ) {
+    final $$ProjectFilesTableFilterComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.id,
+      referencedTable: $db.projectFiles,
+      getReferencedColumn: (t) => t.projectId,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$ProjectFilesTableFilterComposer(
+            $db: $db,
+            $table: $db.projectFiles,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return f(composer);
+  }
+}
+
+class $$ProjectsTableOrderingComposer
+    extends Composer<_$AppDatabase, $ProjectsTable> {
+  $$ProjectsTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<String> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get name => $composableBuilder(
+    column: $table.name,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get instructions => $composableBuilder(
+    column: $table.instructions,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get updatedAt => $composableBuilder(
+    column: $table.updatedAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+}
+
+class $$ProjectsTableAnnotationComposer
+    extends Composer<_$AppDatabase, $ProjectsTable> {
+  $$ProjectsTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<String> get id =>
+      $composableBuilder(column: $table.id, builder: (column) => column);
+
+  GeneratedColumn<String> get name =>
+      $composableBuilder(column: $table.name, builder: (column) => column);
+
+  GeneratedColumn<String> get instructions => $composableBuilder(
+    column: $table.instructions,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<DateTime> get createdAt =>
+      $composableBuilder(column: $table.createdAt, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get updatedAt =>
+      $composableBuilder(column: $table.updatedAt, builder: (column) => column);
+
+  Expression<T> conversationsRefs<T extends Object>(
+    Expression<T> Function($$ConversationsTableAnnotationComposer a) f,
+  ) {
+    final $$ConversationsTableAnnotationComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.id,
+      referencedTable: $db.conversations,
+      getReferencedColumn: (t) => t.projectId,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$ConversationsTableAnnotationComposer(
+            $db: $db,
+            $table: $db.conversations,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return f(composer);
+  }
+
+  Expression<T> projectFilesRefs<T extends Object>(
+    Expression<T> Function($$ProjectFilesTableAnnotationComposer a) f,
+  ) {
+    final $$ProjectFilesTableAnnotationComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.id,
+      referencedTable: $db.projectFiles,
+      getReferencedColumn: (t) => t.projectId,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$ProjectFilesTableAnnotationComposer(
+            $db: $db,
+            $table: $db.projectFiles,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return f(composer);
+  }
+}
+
+class $$ProjectsTableTableManager
+    extends
+        RootTableManager<
+          _$AppDatabase,
+          $ProjectsTable,
+          Project,
+          $$ProjectsTableFilterComposer,
+          $$ProjectsTableOrderingComposer,
+          $$ProjectsTableAnnotationComposer,
+          $$ProjectsTableCreateCompanionBuilder,
+          $$ProjectsTableUpdateCompanionBuilder,
+          (Project, $$ProjectsTableReferences),
+          Project,
+          PrefetchHooks Function({
+            bool conversationsRefs,
+            bool projectFilesRefs,
+          })
+        > {
+  $$ProjectsTableTableManager(_$AppDatabase db, $ProjectsTable table)
+    : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$ProjectsTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$ProjectsTableOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $$ProjectsTableAnnotationComposer($db: db, $table: table),
+          updateCompanionCallback:
+              ({
+                Value<String> id = const Value.absent(),
+                Value<String> name = const Value.absent(),
+                Value<String> instructions = const Value.absent(),
+                Value<DateTime> createdAt = const Value.absent(),
+                Value<DateTime> updatedAt = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => ProjectsCompanion(
+                id: id,
+                name: name,
+                instructions: instructions,
+                createdAt: createdAt,
+                updatedAt: updatedAt,
+                rowid: rowid,
+              ),
+          createCompanionCallback:
+              ({
+                required String id,
+                required String name,
+                Value<String> instructions = const Value.absent(),
+                required DateTime createdAt,
+                required DateTime updatedAt,
+                Value<int> rowid = const Value.absent(),
+              }) => ProjectsCompanion.insert(
+                id: id,
+                name: name,
+                instructions: instructions,
+                createdAt: createdAt,
+                updatedAt: updatedAt,
+                rowid: rowid,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map(
+                (e) => (
+                  e.readTable(table),
+                  $$ProjectsTableReferences(db, table, e),
+                ),
+              )
+              .toList(),
+          prefetchHooksCallback:
+              ({conversationsRefs = false, projectFilesRefs = false}) {
+                return PrefetchHooks(
+                  db: db,
+                  explicitlyWatchedTables: [
+                    if (conversationsRefs) db.conversations,
+                    if (projectFilesRefs) db.projectFiles,
+                  ],
+                  addJoins: null,
+                  getPrefetchedDataCallback: (items) async {
+                    return [
+                      if (conversationsRefs)
+                        await $_getPrefetchedData<
+                          Project,
+                          $ProjectsTable,
+                          Conversation
+                        >(
+                          currentTable: table,
+                          referencedTable: $$ProjectsTableReferences
+                              ._conversationsRefsTable(db),
+                          managerFromTypedResult: (p0) =>
+                              $$ProjectsTableReferences(
+                                db,
+                                table,
+                                p0,
+                              ).conversationsRefs,
+                          referencedItemsForCurrentItem:
+                              (item, referencedItems) => referencedItems.where(
+                                (e) => e.projectId == item.id,
+                              ),
+                          typedResults: items,
+                        ),
+                      if (projectFilesRefs)
+                        await $_getPrefetchedData<
+                          Project,
+                          $ProjectsTable,
+                          ProjectFile
+                        >(
+                          currentTable: table,
+                          referencedTable: $$ProjectsTableReferences
+                              ._projectFilesRefsTable(db),
+                          managerFromTypedResult: (p0) =>
+                              $$ProjectsTableReferences(
+                                db,
+                                table,
+                                p0,
+                              ).projectFilesRefs,
+                          referencedItemsForCurrentItem:
+                              (item, referencedItems) => referencedItems.where(
+                                (e) => e.projectId == item.id,
+                              ),
+                          typedResults: items,
+                        ),
+                    ];
+                  },
+                );
+              },
+        ),
+      );
+}
+
+typedef $$ProjectsTableProcessedTableManager =
+    ProcessedTableManager<
+      _$AppDatabase,
+      $ProjectsTable,
+      Project,
+      $$ProjectsTableFilterComposer,
+      $$ProjectsTableOrderingComposer,
+      $$ProjectsTableAnnotationComposer,
+      $$ProjectsTableCreateCompanionBuilder,
+      $$ProjectsTableUpdateCompanionBuilder,
+      (Project, $$ProjectsTableReferences),
+      Project,
+      PrefetchHooks Function({bool conversationsRefs, bool projectFilesRefs})
+    >;
 typedef $$ConversationsTableCreateCompanionBuilder =
     ConversationsCompanion Function({
+      Value<String?> projectId,
       required String id,
       Value<String> title,
       required DateTime updatedAt,
@@ -4733,6 +6840,7 @@ typedef $$ConversationsTableCreateCompanionBuilder =
     });
 typedef $$ConversationsTableUpdateCompanionBuilder =
     ConversationsCompanion Function({
+      Value<String?> projectId,
       Value<String> id,
       Value<String> title,
       Value<DateTime> updatedAt,
@@ -4760,6 +6868,25 @@ final class $$ConversationsTableReferences
     super.$_table,
     super.$_typedResult,
   );
+
+  static $ProjectsTable _projectIdTable(_$AppDatabase db) =>
+      db.projects.createAlias(
+        $_aliasNameGenerator(db.conversations.projectId, db.projects.id),
+      );
+
+  $$ProjectsTableProcessedTableManager? get projectId {
+    final $_column = $_itemColumn<String>('project_id');
+    if ($_column == null) return null;
+    final manager = $$ProjectsTableTableManager(
+      $_db,
+      $_db.projects,
+    ).filter((f) => f.id.sqlEquals($_column));
+    final item = $_typedResult.readTableOrNull(_projectIdTable($_db));
+    if (item == null) return manager;
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: [item]),
+    );
+  }
 
   static MultiTypedResultKey<$MessagesTable, List<Message>> _messagesRefsTable(
     _$AppDatabase db,
@@ -4895,6 +7022,29 @@ class $$ConversationsTableFilterComposer
     column: $table.workMode,
     builder: (column) => ColumnFilters(column),
   );
+
+  $$ProjectsTableFilterComposer get projectId {
+    final $$ProjectsTableFilterComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.projectId,
+      referencedTable: $db.projects,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$ProjectsTableFilterComposer(
+            $db: $db,
+            $table: $db.projects,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
 
   Expression<bool> messagesRefs(
     Expression<bool> Function($$MessagesTableFilterComposer f) f,
@@ -5040,6 +7190,29 @@ class $$ConversationsTableOrderingComposer
     column: $table.workMode,
     builder: (column) => ColumnOrderings(column),
   );
+
+  $$ProjectsTableOrderingComposer get projectId {
+    final $$ProjectsTableOrderingComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.projectId,
+      referencedTable: $db.projects,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$ProjectsTableOrderingComposer(
+            $db: $db,
+            $table: $db.projects,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
 }
 
 class $$ConversationsTableAnnotationComposer
@@ -5122,6 +7295,29 @@ class $$ConversationsTableAnnotationComposer
   GeneratedColumn<bool> get workMode =>
       $composableBuilder(column: $table.workMode, builder: (column) => column);
 
+  $$ProjectsTableAnnotationComposer get projectId {
+    final $$ProjectsTableAnnotationComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.projectId,
+      referencedTable: $db.projects,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$ProjectsTableAnnotationComposer(
+            $db: $db,
+            $table: $db.projects,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+
   Expression<T> messagesRefs<T extends Object>(
     Expression<T> Function($$MessagesTableAnnotationComposer a) f,
   ) {
@@ -5186,7 +7382,11 @@ class $$ConversationsTableTableManager
           $$ConversationsTableUpdateCompanionBuilder,
           (Conversation, $$ConversationsTableReferences),
           Conversation,
-          PrefetchHooks Function({bool messagesRefs, bool studySessionsRefs})
+          PrefetchHooks Function({
+            bool projectId,
+            bool messagesRefs,
+            bool studySessionsRefs,
+          })
         > {
   $$ConversationsTableTableManager(_$AppDatabase db, $ConversationsTable table)
     : super(
@@ -5201,6 +7401,7 @@ class $$ConversationsTableTableManager
               $$ConversationsTableAnnotationComposer($db: db, $table: table),
           updateCompanionCallback:
               ({
+                Value<String?> projectId = const Value.absent(),
                 Value<String> id = const Value.absent(),
                 Value<String> title = const Value.absent(),
                 Value<DateTime> updatedAt = const Value.absent(),
@@ -5220,6 +7421,7 @@ class $$ConversationsTableTableManager
                 Value<bool> workMode = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => ConversationsCompanion(
+                projectId: projectId,
                 id: id,
                 title: title,
                 updatedAt: updatedAt,
@@ -5241,6 +7443,7 @@ class $$ConversationsTableTableManager
               ),
           createCompanionCallback:
               ({
+                Value<String?> projectId = const Value.absent(),
                 required String id,
                 Value<String> title = const Value.absent(),
                 required DateTime updatedAt,
@@ -5260,6 +7463,7 @@ class $$ConversationsTableTableManager
                 Value<bool> workMode = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => ConversationsCompanion.insert(
+                projectId: projectId,
                 id: id,
                 title: title,
                 updatedAt: updatedAt,
@@ -5288,14 +7492,51 @@ class $$ConversationsTableTableManager
               )
               .toList(),
           prefetchHooksCallback:
-              ({messagesRefs = false, studySessionsRefs = false}) {
+              ({
+                projectId = false,
+                messagesRefs = false,
+                studySessionsRefs = false,
+              }) {
                 return PrefetchHooks(
                   db: db,
                   explicitlyWatchedTables: [
                     if (messagesRefs) db.messages,
                     if (studySessionsRefs) db.studySessions,
                   ],
-                  addJoins: null,
+                  addJoins:
+                      <
+                        T extends TableManagerState<
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic
+                        >
+                      >(state) {
+                        if (projectId) {
+                          state =
+                              state.withJoin(
+                                    currentTable: table,
+                                    currentColumn: table.projectId,
+                                    referencedTable:
+                                        $$ConversationsTableReferences
+                                            ._projectIdTable(db),
+                                    referencedColumn:
+                                        $$ConversationsTableReferences
+                                            ._projectIdTable(db)
+                                            .id,
+                                  )
+                                  as T;
+                        }
+
+                        return state;
+                      },
                   getPrefetchedDataCallback: (items) async {
                     return [
                       if (messagesRefs)
@@ -5360,7 +7601,11 @@ typedef $$ConversationsTableProcessedTableManager =
       $$ConversationsTableUpdateCompanionBuilder,
       (Conversation, $$ConversationsTableReferences),
       Conversation,
-      PrefetchHooks Function({bool messagesRefs, bool studySessionsRefs})
+      PrefetchHooks Function({
+        bool projectId,
+        bool messagesRefs,
+        bool studySessionsRefs,
+      })
     >;
 typedef $$MessagesTableCreateCompanionBuilder =
     MessagesCompanion Function({
@@ -7154,6 +9399,56 @@ typedef $$LibraryItemsTableUpdateCompanionBuilder =
       Value<int> rowid,
     });
 
+final class $$LibraryItemsTableReferences
+    extends BaseReferences<_$AppDatabase, $LibraryItemsTable, LibraryItemRow> {
+  $$LibraryItemsTableReferences(super.$_db, super.$_table, super.$_typedResult);
+
+  static MultiTypedResultKey<$ProjectFilesTable, List<ProjectFile>>
+  _projectFilesRefsTable(_$AppDatabase db) => MultiTypedResultKey.fromTable(
+    db.projectFiles,
+    aliasName: $_aliasNameGenerator(
+      db.libraryItems.id,
+      db.projectFiles.libraryItemId,
+    ),
+  );
+
+  $$ProjectFilesTableProcessedTableManager get projectFilesRefs {
+    final manager = $$ProjectFilesTableTableManager(
+      $_db,
+      $_db.projectFiles,
+    ).filter((f) => f.libraryItemId.id.sqlEquals($_itemColumn<String>('id')!));
+
+    final cache = $_typedResult.readTableOrNull(_projectFilesRefsTable($_db));
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: cache),
+    );
+  }
+
+  static MultiTypedResultKey<$GenerationRecordsTable, List<GenerationRecord>>
+  _generationRecordsRefsTable(_$AppDatabase db) =>
+      MultiTypedResultKey.fromTable(
+        db.generationRecords,
+        aliasName: $_aliasNameGenerator(
+          db.libraryItems.id,
+          db.generationRecords.libraryItemId,
+        ),
+      );
+
+  $$GenerationRecordsTableProcessedTableManager get generationRecordsRefs {
+    final manager = $$GenerationRecordsTableTableManager(
+      $_db,
+      $_db.generationRecords,
+    ).filter((f) => f.libraryItemId.id.sqlEquals($_itemColumn<String>('id')!));
+
+    final cache = $_typedResult.readTableOrNull(
+      _generationRecordsRefsTable($_db),
+    );
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: cache),
+    );
+  }
+}
+
 class $$LibraryItemsTableFilterComposer
     extends Composer<_$AppDatabase, $LibraryItemsTable> {
   $$LibraryItemsTableFilterComposer({
@@ -7207,6 +9502,56 @@ class $$LibraryItemsTableFilterComposer
     column: $table.lastUsedAt,
     builder: (column) => ColumnFilters(column),
   );
+
+  Expression<bool> projectFilesRefs(
+    Expression<bool> Function($$ProjectFilesTableFilterComposer f) f,
+  ) {
+    final $$ProjectFilesTableFilterComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.id,
+      referencedTable: $db.projectFiles,
+      getReferencedColumn: (t) => t.libraryItemId,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$ProjectFilesTableFilterComposer(
+            $db: $db,
+            $table: $db.projectFiles,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return f(composer);
+  }
+
+  Expression<bool> generationRecordsRefs(
+    Expression<bool> Function($$GenerationRecordsTableFilterComposer f) f,
+  ) {
+    final $$GenerationRecordsTableFilterComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.id,
+      referencedTable: $db.generationRecords,
+      getReferencedColumn: (t) => t.libraryItemId,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$GenerationRecordsTableFilterComposer(
+            $db: $db,
+            $table: $db.generationRecords,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return f(composer);
+  }
 }
 
 class $$LibraryItemsTableOrderingComposer
@@ -7303,6 +9648,57 @@ class $$LibraryItemsTableAnnotationComposer
     column: $table.lastUsedAt,
     builder: (column) => column,
   );
+
+  Expression<T> projectFilesRefs<T extends Object>(
+    Expression<T> Function($$ProjectFilesTableAnnotationComposer a) f,
+  ) {
+    final $$ProjectFilesTableAnnotationComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.id,
+      referencedTable: $db.projectFiles,
+      getReferencedColumn: (t) => t.libraryItemId,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$ProjectFilesTableAnnotationComposer(
+            $db: $db,
+            $table: $db.projectFiles,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return f(composer);
+  }
+
+  Expression<T> generationRecordsRefs<T extends Object>(
+    Expression<T> Function($$GenerationRecordsTableAnnotationComposer a) f,
+  ) {
+    final $$GenerationRecordsTableAnnotationComposer composer =
+        $composerBuilder(
+          composer: this,
+          getCurrentColumn: (t) => t.id,
+          referencedTable: $db.generationRecords,
+          getReferencedColumn: (t) => t.libraryItemId,
+          builder:
+              (
+                joinBuilder, {
+                $addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer,
+              }) => $$GenerationRecordsTableAnnotationComposer(
+                $db: $db,
+                $table: $db.generationRecords,
+                $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+                joinBuilder: joinBuilder,
+                $removeJoinBuilderFromRootComposer:
+                    $removeJoinBuilderFromRootComposer,
+              ),
+        );
+    return f(composer);
+  }
 }
 
 class $$LibraryItemsTableTableManager
@@ -7316,12 +9712,12 @@ class $$LibraryItemsTableTableManager
           $$LibraryItemsTableAnnotationComposer,
           $$LibraryItemsTableCreateCompanionBuilder,
           $$LibraryItemsTableUpdateCompanionBuilder,
-          (
-            LibraryItemRow,
-            BaseReferences<_$AppDatabase, $LibraryItemsTable, LibraryItemRow>,
-          ),
+          (LibraryItemRow, $$LibraryItemsTableReferences),
           LibraryItemRow,
-          PrefetchHooks Function()
+          PrefetchHooks Function({
+            bool projectFilesRefs,
+            bool generationRecordsRefs,
+          })
         > {
   $$LibraryItemsTableTableManager(_$AppDatabase db, $LibraryItemsTable table)
     : super(
@@ -7383,9 +9779,70 @@ class $$LibraryItemsTableTableManager
                 rowid: rowid,
               ),
           withReferenceMapper: (p0) => p0
-              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .map(
+                (e) => (
+                  e.readTable(table),
+                  $$LibraryItemsTableReferences(db, table, e),
+                ),
+              )
               .toList(),
-          prefetchHooksCallback: null,
+          prefetchHooksCallback:
+              ({projectFilesRefs = false, generationRecordsRefs = false}) {
+                return PrefetchHooks(
+                  db: db,
+                  explicitlyWatchedTables: [
+                    if (projectFilesRefs) db.projectFiles,
+                    if (generationRecordsRefs) db.generationRecords,
+                  ],
+                  addJoins: null,
+                  getPrefetchedDataCallback: (items) async {
+                    return [
+                      if (projectFilesRefs)
+                        await $_getPrefetchedData<
+                          LibraryItemRow,
+                          $LibraryItemsTable,
+                          ProjectFile
+                        >(
+                          currentTable: table,
+                          referencedTable: $$LibraryItemsTableReferences
+                              ._projectFilesRefsTable(db),
+                          managerFromTypedResult: (p0) =>
+                              $$LibraryItemsTableReferences(
+                                db,
+                                table,
+                                p0,
+                              ).projectFilesRefs,
+                          referencedItemsForCurrentItem:
+                              (item, referencedItems) => referencedItems.where(
+                                (e) => e.libraryItemId == item.id,
+                              ),
+                          typedResults: items,
+                        ),
+                      if (generationRecordsRefs)
+                        await $_getPrefetchedData<
+                          LibraryItemRow,
+                          $LibraryItemsTable,
+                          GenerationRecord
+                        >(
+                          currentTable: table,
+                          referencedTable: $$LibraryItemsTableReferences
+                              ._generationRecordsRefsTable(db),
+                          managerFromTypedResult: (p0) =>
+                              $$LibraryItemsTableReferences(
+                                db,
+                                table,
+                                p0,
+                              ).generationRecordsRefs,
+                          referencedItemsForCurrentItem:
+                              (item, referencedItems) => referencedItems.where(
+                                (e) => e.libraryItemId == item.id,
+                              ),
+                          typedResults: items,
+                        ),
+                    ];
+                  },
+                );
+              },
         ),
       );
 }
@@ -7400,17 +9857,1018 @@ typedef $$LibraryItemsTableProcessedTableManager =
       $$LibraryItemsTableAnnotationComposer,
       $$LibraryItemsTableCreateCompanionBuilder,
       $$LibraryItemsTableUpdateCompanionBuilder,
-      (
-        LibraryItemRow,
-        BaseReferences<_$AppDatabase, $LibraryItemsTable, LibraryItemRow>,
-      ),
+      (LibraryItemRow, $$LibraryItemsTableReferences),
       LibraryItemRow,
+      PrefetchHooks Function({
+        bool projectFilesRefs,
+        bool generationRecordsRefs,
+      })
+    >;
+typedef $$ProjectFilesTableCreateCompanionBuilder =
+    ProjectFilesCompanion Function({
+      required String projectId,
+      required String libraryItemId,
+      Value<int> rowid,
+    });
+typedef $$ProjectFilesTableUpdateCompanionBuilder =
+    ProjectFilesCompanion Function({
+      Value<String> projectId,
+      Value<String> libraryItemId,
+      Value<int> rowid,
+    });
+
+final class $$ProjectFilesTableReferences
+    extends BaseReferences<_$AppDatabase, $ProjectFilesTable, ProjectFile> {
+  $$ProjectFilesTableReferences(super.$_db, super.$_table, super.$_typedResult);
+
+  static $ProjectsTable _projectIdTable(_$AppDatabase db) =>
+      db.projects.createAlias(
+        $_aliasNameGenerator(db.projectFiles.projectId, db.projects.id),
+      );
+
+  $$ProjectsTableProcessedTableManager get projectId {
+    final $_column = $_itemColumn<String>('project_id')!;
+
+    final manager = $$ProjectsTableTableManager(
+      $_db,
+      $_db.projects,
+    ).filter((f) => f.id.sqlEquals($_column));
+    final item = $_typedResult.readTableOrNull(_projectIdTable($_db));
+    if (item == null) return manager;
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: [item]),
+    );
+  }
+
+  static $LibraryItemsTable _libraryItemIdTable(_$AppDatabase db) =>
+      db.libraryItems.createAlias(
+        $_aliasNameGenerator(db.projectFiles.libraryItemId, db.libraryItems.id),
+      );
+
+  $$LibraryItemsTableProcessedTableManager get libraryItemId {
+    final $_column = $_itemColumn<String>('library_item_id')!;
+
+    final manager = $$LibraryItemsTableTableManager(
+      $_db,
+      $_db.libraryItems,
+    ).filter((f) => f.id.sqlEquals($_column));
+    final item = $_typedResult.readTableOrNull(_libraryItemIdTable($_db));
+    if (item == null) return manager;
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: [item]),
+    );
+  }
+}
+
+class $$ProjectFilesTableFilterComposer
+    extends Composer<_$AppDatabase, $ProjectFilesTable> {
+  $$ProjectFilesTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  $$ProjectsTableFilterComposer get projectId {
+    final $$ProjectsTableFilterComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.projectId,
+      referencedTable: $db.projects,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$ProjectsTableFilterComposer(
+            $db: $db,
+            $table: $db.projects,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+
+  $$LibraryItemsTableFilterComposer get libraryItemId {
+    final $$LibraryItemsTableFilterComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.libraryItemId,
+      referencedTable: $db.libraryItems,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$LibraryItemsTableFilterComposer(
+            $db: $db,
+            $table: $db.libraryItems,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+}
+
+class $$ProjectFilesTableOrderingComposer
+    extends Composer<_$AppDatabase, $ProjectFilesTable> {
+  $$ProjectFilesTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  $$ProjectsTableOrderingComposer get projectId {
+    final $$ProjectsTableOrderingComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.projectId,
+      referencedTable: $db.projects,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$ProjectsTableOrderingComposer(
+            $db: $db,
+            $table: $db.projects,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+
+  $$LibraryItemsTableOrderingComposer get libraryItemId {
+    final $$LibraryItemsTableOrderingComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.libraryItemId,
+      referencedTable: $db.libraryItems,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$LibraryItemsTableOrderingComposer(
+            $db: $db,
+            $table: $db.libraryItems,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+}
+
+class $$ProjectFilesTableAnnotationComposer
+    extends Composer<_$AppDatabase, $ProjectFilesTable> {
+  $$ProjectFilesTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  $$ProjectsTableAnnotationComposer get projectId {
+    final $$ProjectsTableAnnotationComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.projectId,
+      referencedTable: $db.projects,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$ProjectsTableAnnotationComposer(
+            $db: $db,
+            $table: $db.projects,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+
+  $$LibraryItemsTableAnnotationComposer get libraryItemId {
+    final $$LibraryItemsTableAnnotationComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.libraryItemId,
+      referencedTable: $db.libraryItems,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$LibraryItemsTableAnnotationComposer(
+            $db: $db,
+            $table: $db.libraryItems,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+}
+
+class $$ProjectFilesTableTableManager
+    extends
+        RootTableManager<
+          _$AppDatabase,
+          $ProjectFilesTable,
+          ProjectFile,
+          $$ProjectFilesTableFilterComposer,
+          $$ProjectFilesTableOrderingComposer,
+          $$ProjectFilesTableAnnotationComposer,
+          $$ProjectFilesTableCreateCompanionBuilder,
+          $$ProjectFilesTableUpdateCompanionBuilder,
+          (ProjectFile, $$ProjectFilesTableReferences),
+          ProjectFile,
+          PrefetchHooks Function({bool projectId, bool libraryItemId})
+        > {
+  $$ProjectFilesTableTableManager(_$AppDatabase db, $ProjectFilesTable table)
+    : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$ProjectFilesTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$ProjectFilesTableOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $$ProjectFilesTableAnnotationComposer($db: db, $table: table),
+          updateCompanionCallback:
+              ({
+                Value<String> projectId = const Value.absent(),
+                Value<String> libraryItemId = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => ProjectFilesCompanion(
+                projectId: projectId,
+                libraryItemId: libraryItemId,
+                rowid: rowid,
+              ),
+          createCompanionCallback:
+              ({
+                required String projectId,
+                required String libraryItemId,
+                Value<int> rowid = const Value.absent(),
+              }) => ProjectFilesCompanion.insert(
+                projectId: projectId,
+                libraryItemId: libraryItemId,
+                rowid: rowid,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map(
+                (e) => (
+                  e.readTable(table),
+                  $$ProjectFilesTableReferences(db, table, e),
+                ),
+              )
+              .toList(),
+          prefetchHooksCallback: ({projectId = false, libraryItemId = false}) {
+            return PrefetchHooks(
+              db: db,
+              explicitlyWatchedTables: [],
+              addJoins:
+                  <
+                    T extends TableManagerState<
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic
+                    >
+                  >(state) {
+                    if (projectId) {
+                      state =
+                          state.withJoin(
+                                currentTable: table,
+                                currentColumn: table.projectId,
+                                referencedTable: $$ProjectFilesTableReferences
+                                    ._projectIdTable(db),
+                                referencedColumn: $$ProjectFilesTableReferences
+                                    ._projectIdTable(db)
+                                    .id,
+                              )
+                              as T;
+                    }
+                    if (libraryItemId) {
+                      state =
+                          state.withJoin(
+                                currentTable: table,
+                                currentColumn: table.libraryItemId,
+                                referencedTable: $$ProjectFilesTableReferences
+                                    ._libraryItemIdTable(db),
+                                referencedColumn: $$ProjectFilesTableReferences
+                                    ._libraryItemIdTable(db)
+                                    .id,
+                              )
+                              as T;
+                    }
+
+                    return state;
+                  },
+              getPrefetchedDataCallback: (items) async {
+                return [];
+              },
+            );
+          },
+        ),
+      );
+}
+
+typedef $$ProjectFilesTableProcessedTableManager =
+    ProcessedTableManager<
+      _$AppDatabase,
+      $ProjectFilesTable,
+      ProjectFile,
+      $$ProjectFilesTableFilterComposer,
+      $$ProjectFilesTableOrderingComposer,
+      $$ProjectFilesTableAnnotationComposer,
+      $$ProjectFilesTableCreateCompanionBuilder,
+      $$ProjectFilesTableUpdateCompanionBuilder,
+      (ProjectFile, $$ProjectFilesTableReferences),
+      ProjectFile,
+      PrefetchHooks Function({bool projectId, bool libraryItemId})
+    >;
+typedef $$GenerationRecordsTableCreateCompanionBuilder =
+    GenerationRecordsCompanion Function({
+      required String id,
+      Value<String?> libraryItemId,
+      Value<String?> conversationId,
+      Value<String?> messageId,
+      Value<String?> parentGenerationId,
+      required String originalPrompt,
+      required String optimizedPrompt,
+      Value<String?> revisedPrompt,
+      required String model,
+      required String providerHost,
+      required String imageSize,
+      Value<String> referencesJson,
+      required DateTime createdAt,
+      Value<int> rowid,
+    });
+typedef $$GenerationRecordsTableUpdateCompanionBuilder =
+    GenerationRecordsCompanion Function({
+      Value<String> id,
+      Value<String?> libraryItemId,
+      Value<String?> conversationId,
+      Value<String?> messageId,
+      Value<String?> parentGenerationId,
+      Value<String> originalPrompt,
+      Value<String> optimizedPrompt,
+      Value<String?> revisedPrompt,
+      Value<String> model,
+      Value<String> providerHost,
+      Value<String> imageSize,
+      Value<String> referencesJson,
+      Value<DateTime> createdAt,
+      Value<int> rowid,
+    });
+
+final class $$GenerationRecordsTableReferences
+    extends
+        BaseReferences<
+          _$AppDatabase,
+          $GenerationRecordsTable,
+          GenerationRecord
+        > {
+  $$GenerationRecordsTableReferences(
+    super.$_db,
+    super.$_table,
+    super.$_typedResult,
+  );
+
+  static $LibraryItemsTable _libraryItemIdTable(_$AppDatabase db) =>
+      db.libraryItems.createAlias(
+        $_aliasNameGenerator(
+          db.generationRecords.libraryItemId,
+          db.libraryItems.id,
+        ),
+      );
+
+  $$LibraryItemsTableProcessedTableManager? get libraryItemId {
+    final $_column = $_itemColumn<String>('library_item_id');
+    if ($_column == null) return null;
+    final manager = $$LibraryItemsTableTableManager(
+      $_db,
+      $_db.libraryItems,
+    ).filter((f) => f.id.sqlEquals($_column));
+    final item = $_typedResult.readTableOrNull(_libraryItemIdTable($_db));
+    if (item == null) return manager;
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: [item]),
+    );
+  }
+}
+
+class $$GenerationRecordsTableFilterComposer
+    extends Composer<_$AppDatabase, $GenerationRecordsTable> {
+  $$GenerationRecordsTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<String> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get conversationId => $composableBuilder(
+    column: $table.conversationId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get messageId => $composableBuilder(
+    column: $table.messageId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get parentGenerationId => $composableBuilder(
+    column: $table.parentGenerationId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get originalPrompt => $composableBuilder(
+    column: $table.originalPrompt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get optimizedPrompt => $composableBuilder(
+    column: $table.optimizedPrompt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get revisedPrompt => $composableBuilder(
+    column: $table.revisedPrompt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get model => $composableBuilder(
+    column: $table.model,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get providerHost => $composableBuilder(
+    column: $table.providerHost,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get imageSize => $composableBuilder(
+    column: $table.imageSize,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get referencesJson => $composableBuilder(
+    column: $table.referencesJson,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  $$LibraryItemsTableFilterComposer get libraryItemId {
+    final $$LibraryItemsTableFilterComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.libraryItemId,
+      referencedTable: $db.libraryItems,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$LibraryItemsTableFilterComposer(
+            $db: $db,
+            $table: $db.libraryItems,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+}
+
+class $$GenerationRecordsTableOrderingComposer
+    extends Composer<_$AppDatabase, $GenerationRecordsTable> {
+  $$GenerationRecordsTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<String> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get conversationId => $composableBuilder(
+    column: $table.conversationId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get messageId => $composableBuilder(
+    column: $table.messageId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get parentGenerationId => $composableBuilder(
+    column: $table.parentGenerationId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get originalPrompt => $composableBuilder(
+    column: $table.originalPrompt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get optimizedPrompt => $composableBuilder(
+    column: $table.optimizedPrompt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get revisedPrompt => $composableBuilder(
+    column: $table.revisedPrompt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get model => $composableBuilder(
+    column: $table.model,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get providerHost => $composableBuilder(
+    column: $table.providerHost,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get imageSize => $composableBuilder(
+    column: $table.imageSize,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get referencesJson => $composableBuilder(
+    column: $table.referencesJson,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  $$LibraryItemsTableOrderingComposer get libraryItemId {
+    final $$LibraryItemsTableOrderingComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.libraryItemId,
+      referencedTable: $db.libraryItems,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$LibraryItemsTableOrderingComposer(
+            $db: $db,
+            $table: $db.libraryItems,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+}
+
+class $$GenerationRecordsTableAnnotationComposer
+    extends Composer<_$AppDatabase, $GenerationRecordsTable> {
+  $$GenerationRecordsTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<String> get id =>
+      $composableBuilder(column: $table.id, builder: (column) => column);
+
+  GeneratedColumn<String> get conversationId => $composableBuilder(
+    column: $table.conversationId,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get messageId =>
+      $composableBuilder(column: $table.messageId, builder: (column) => column);
+
+  GeneratedColumn<String> get parentGenerationId => $composableBuilder(
+    column: $table.parentGenerationId,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get originalPrompt => $composableBuilder(
+    column: $table.originalPrompt,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get optimizedPrompt => $composableBuilder(
+    column: $table.optimizedPrompt,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get revisedPrompt => $composableBuilder(
+    column: $table.revisedPrompt,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get model =>
+      $composableBuilder(column: $table.model, builder: (column) => column);
+
+  GeneratedColumn<String> get providerHost => $composableBuilder(
+    column: $table.providerHost,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get imageSize =>
+      $composableBuilder(column: $table.imageSize, builder: (column) => column);
+
+  GeneratedColumn<String> get referencesJson => $composableBuilder(
+    column: $table.referencesJson,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<DateTime> get createdAt =>
+      $composableBuilder(column: $table.createdAt, builder: (column) => column);
+
+  $$LibraryItemsTableAnnotationComposer get libraryItemId {
+    final $$LibraryItemsTableAnnotationComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.libraryItemId,
+      referencedTable: $db.libraryItems,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$LibraryItemsTableAnnotationComposer(
+            $db: $db,
+            $table: $db.libraryItems,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+}
+
+class $$GenerationRecordsTableTableManager
+    extends
+        RootTableManager<
+          _$AppDatabase,
+          $GenerationRecordsTable,
+          GenerationRecord,
+          $$GenerationRecordsTableFilterComposer,
+          $$GenerationRecordsTableOrderingComposer,
+          $$GenerationRecordsTableAnnotationComposer,
+          $$GenerationRecordsTableCreateCompanionBuilder,
+          $$GenerationRecordsTableUpdateCompanionBuilder,
+          (GenerationRecord, $$GenerationRecordsTableReferences),
+          GenerationRecord,
+          PrefetchHooks Function({bool libraryItemId})
+        > {
+  $$GenerationRecordsTableTableManager(
+    _$AppDatabase db,
+    $GenerationRecordsTable table,
+  ) : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$GenerationRecordsTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$GenerationRecordsTableOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $$GenerationRecordsTableAnnotationComposer(
+                $db: db,
+                $table: table,
+              ),
+          updateCompanionCallback:
+              ({
+                Value<String> id = const Value.absent(),
+                Value<String?> libraryItemId = const Value.absent(),
+                Value<String?> conversationId = const Value.absent(),
+                Value<String?> messageId = const Value.absent(),
+                Value<String?> parentGenerationId = const Value.absent(),
+                Value<String> originalPrompt = const Value.absent(),
+                Value<String> optimizedPrompt = const Value.absent(),
+                Value<String?> revisedPrompt = const Value.absent(),
+                Value<String> model = const Value.absent(),
+                Value<String> providerHost = const Value.absent(),
+                Value<String> imageSize = const Value.absent(),
+                Value<String> referencesJson = const Value.absent(),
+                Value<DateTime> createdAt = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => GenerationRecordsCompanion(
+                id: id,
+                libraryItemId: libraryItemId,
+                conversationId: conversationId,
+                messageId: messageId,
+                parentGenerationId: parentGenerationId,
+                originalPrompt: originalPrompt,
+                optimizedPrompt: optimizedPrompt,
+                revisedPrompt: revisedPrompt,
+                model: model,
+                providerHost: providerHost,
+                imageSize: imageSize,
+                referencesJson: referencesJson,
+                createdAt: createdAt,
+                rowid: rowid,
+              ),
+          createCompanionCallback:
+              ({
+                required String id,
+                Value<String?> libraryItemId = const Value.absent(),
+                Value<String?> conversationId = const Value.absent(),
+                Value<String?> messageId = const Value.absent(),
+                Value<String?> parentGenerationId = const Value.absent(),
+                required String originalPrompt,
+                required String optimizedPrompt,
+                Value<String?> revisedPrompt = const Value.absent(),
+                required String model,
+                required String providerHost,
+                required String imageSize,
+                Value<String> referencesJson = const Value.absent(),
+                required DateTime createdAt,
+                Value<int> rowid = const Value.absent(),
+              }) => GenerationRecordsCompanion.insert(
+                id: id,
+                libraryItemId: libraryItemId,
+                conversationId: conversationId,
+                messageId: messageId,
+                parentGenerationId: parentGenerationId,
+                originalPrompt: originalPrompt,
+                optimizedPrompt: optimizedPrompt,
+                revisedPrompt: revisedPrompt,
+                model: model,
+                providerHost: providerHost,
+                imageSize: imageSize,
+                referencesJson: referencesJson,
+                createdAt: createdAt,
+                rowid: rowid,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map(
+                (e) => (
+                  e.readTable(table),
+                  $$GenerationRecordsTableReferences(db, table, e),
+                ),
+              )
+              .toList(),
+          prefetchHooksCallback: ({libraryItemId = false}) {
+            return PrefetchHooks(
+              db: db,
+              explicitlyWatchedTables: [],
+              addJoins:
+                  <
+                    T extends TableManagerState<
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic
+                    >
+                  >(state) {
+                    if (libraryItemId) {
+                      state =
+                          state.withJoin(
+                                currentTable: table,
+                                currentColumn: table.libraryItemId,
+                                referencedTable:
+                                    $$GenerationRecordsTableReferences
+                                        ._libraryItemIdTable(db),
+                                referencedColumn:
+                                    $$GenerationRecordsTableReferences
+                                        ._libraryItemIdTable(db)
+                                        .id,
+                              )
+                              as T;
+                    }
+
+                    return state;
+                  },
+              getPrefetchedDataCallback: (items) async {
+                return [];
+              },
+            );
+          },
+        ),
+      );
+}
+
+typedef $$GenerationRecordsTableProcessedTableManager =
+    ProcessedTableManager<
+      _$AppDatabase,
+      $GenerationRecordsTable,
+      GenerationRecord,
+      $$GenerationRecordsTableFilterComposer,
+      $$GenerationRecordsTableOrderingComposer,
+      $$GenerationRecordsTableAnnotationComposer,
+      $$GenerationRecordsTableCreateCompanionBuilder,
+      $$GenerationRecordsTableUpdateCompanionBuilder,
+      (GenerationRecord, $$GenerationRecordsTableReferences),
+      GenerationRecord,
+      PrefetchHooks Function({bool libraryItemId})
+    >;
+typedef $$BackupImportsTableCreateCompanionBuilder =
+    BackupImportsCompanion Function({
+      required String id,
+      required DateTime committedAt,
+      Value<int> rowid,
+    });
+typedef $$BackupImportsTableUpdateCompanionBuilder =
+    BackupImportsCompanion Function({
+      Value<String> id,
+      Value<DateTime> committedAt,
+      Value<int> rowid,
+    });
+
+class $$BackupImportsTableFilterComposer
+    extends Composer<_$AppDatabase, $BackupImportsTable> {
+  $$BackupImportsTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<String> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get committedAt => $composableBuilder(
+    column: $table.committedAt,
+    builder: (column) => ColumnFilters(column),
+  );
+}
+
+class $$BackupImportsTableOrderingComposer
+    extends Composer<_$AppDatabase, $BackupImportsTable> {
+  $$BackupImportsTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<String> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get committedAt => $composableBuilder(
+    column: $table.committedAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+}
+
+class $$BackupImportsTableAnnotationComposer
+    extends Composer<_$AppDatabase, $BackupImportsTable> {
+  $$BackupImportsTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<String> get id =>
+      $composableBuilder(column: $table.id, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get committedAt => $composableBuilder(
+    column: $table.committedAt,
+    builder: (column) => column,
+  );
+}
+
+class $$BackupImportsTableTableManager
+    extends
+        RootTableManager<
+          _$AppDatabase,
+          $BackupImportsTable,
+          BackupImport,
+          $$BackupImportsTableFilterComposer,
+          $$BackupImportsTableOrderingComposer,
+          $$BackupImportsTableAnnotationComposer,
+          $$BackupImportsTableCreateCompanionBuilder,
+          $$BackupImportsTableUpdateCompanionBuilder,
+          (
+            BackupImport,
+            BaseReferences<_$AppDatabase, $BackupImportsTable, BackupImport>,
+          ),
+          BackupImport,
+          PrefetchHooks Function()
+        > {
+  $$BackupImportsTableTableManager(_$AppDatabase db, $BackupImportsTable table)
+    : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$BackupImportsTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$BackupImportsTableOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $$BackupImportsTableAnnotationComposer($db: db, $table: table),
+          updateCompanionCallback:
+              ({
+                Value<String> id = const Value.absent(),
+                Value<DateTime> committedAt = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => BackupImportsCompanion(
+                id: id,
+                committedAt: committedAt,
+                rowid: rowid,
+              ),
+          createCompanionCallback:
+              ({
+                required String id,
+                required DateTime committedAt,
+                Value<int> rowid = const Value.absent(),
+              }) => BackupImportsCompanion.insert(
+                id: id,
+                committedAt: committedAt,
+                rowid: rowid,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .toList(),
+          prefetchHooksCallback: null,
+        ),
+      );
+}
+
+typedef $$BackupImportsTableProcessedTableManager =
+    ProcessedTableManager<
+      _$AppDatabase,
+      $BackupImportsTable,
+      BackupImport,
+      $$BackupImportsTableFilterComposer,
+      $$BackupImportsTableOrderingComposer,
+      $$BackupImportsTableAnnotationComposer,
+      $$BackupImportsTableCreateCompanionBuilder,
+      $$BackupImportsTableUpdateCompanionBuilder,
+      (
+        BackupImport,
+        BaseReferences<_$AppDatabase, $BackupImportsTable, BackupImport>,
+      ),
+      BackupImport,
       PrefetchHooks Function()
     >;
 
 class $AppDatabaseManager {
   final _$AppDatabase _db;
   $AppDatabaseManager(this._db);
+  $$ProjectsTableTableManager get projects =>
+      $$ProjectsTableTableManager(_db, _db.projects);
   $$ConversationsTableTableManager get conversations =>
       $$ConversationsTableTableManager(_db, _db.conversations);
   $$MessagesTableTableManager get messages =>
@@ -7425,4 +10883,10 @@ class $AppDatabaseManager {
       $$StudySessionsTableTableManager(_db, _db.studySessions);
   $$LibraryItemsTableTableManager get libraryItems =>
       $$LibraryItemsTableTableManager(_db, _db.libraryItems);
+  $$ProjectFilesTableTableManager get projectFiles =>
+      $$ProjectFilesTableTableManager(_db, _db.projectFiles);
+  $$GenerationRecordsTableTableManager get generationRecords =>
+      $$GenerationRecordsTableTableManager(_db, _db.generationRecords);
+  $$BackupImportsTableTableManager get backupImports =>
+      $$BackupImportsTableTableManager(_db, _db.backupImports);
 }

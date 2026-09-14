@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'model_setup_page.dart';
+import '../shared/recovery_notice.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:package_info_plus/package_info_plus.dart';
@@ -30,13 +32,17 @@ import '../../domain/update/shorebird_ui.dart';
 import '../../domain/update/update_ui.dart';
 import '../../state/chat_controller.dart';
 import '../../state/memory_controller.dart';
-import '../../state/research_mode_fx.dart';
-import '../../state/research_terminal_controller.dart';
 import '../../state/settings_controller.dart';
 import '../chat/widgets/previewable_code_block.dart';
 import '../chat/widgets/streaming_markdown.dart';
 import '../memory/memory_page.dart';
 import '../shell/shell_tab.dart';
+import 'widgets/debounced_secret_field.dart';
+import 'widgets/task_budget_editor.dart';
+import 'backup_page.dart';
+import 'support_page.dart';
+import '../../domain/support/diagnostic_report.dart';
+import '../library/resources_page.dart';
 
 enum _SettingsCategory {
   model('模型', Icons.memory_outlined),
@@ -286,7 +292,7 @@ class _CustomMcpServerCard extends StatelessWidget {
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
                       : const Icon(Icons.hub_outlined, size: 18),
-                  label: Text(discovering ? '发现中…' : '连接并发现'),
+                  label: Text(discovering ? '连接中…' : '连接并获取工具'),
                 ),
                 IconButton(
                   tooltip: '编辑',
@@ -352,14 +358,12 @@ class SettingsPage extends ConsumerStatefulWidget {
 }
 
 class _SettingsPageState extends ConsumerState<SettingsPage> {
-  final _apiKey = TextEditingController();
   final _searchKey = TextEditingController();
   final _gatewayUrl = TextEditingController();
   final _gatewayToken = TextEditingController();
   bool _obscure = true;
   bool _obscureSearch = true;
   bool _obscureGatewayToken = true;
-  String? _syncedForProfile; // profile id whose key is in the field
   bool _searchKeySynced = false;
   bool _gatewaySynced = false;
   bool _clearingCache = false;
@@ -386,11 +390,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   }
 
   void _syncFieldsFromState(SettingsState s) {
-    final activeId = s.active?.id;
-    if (_syncedForProfile != activeId) {
-      _apiKey.text = s.apiKey;
-      _syncedForProfile = activeId;
-    }
     if (!_searchKeySynced) {
       _searchKey.text = s.searchApiKey;
       _searchKeySynced = true;
@@ -404,7 +403,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
 
   @override
   void dispose() {
-    _apiKey.dispose();
     _searchKey.dispose();
     _gatewayUrl.dispose();
     _gatewayToken.dispose();
@@ -554,8 +552,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         _searchTestResult = ok
             ? '官方联网已就绪：当前模型「$model」支持 DeepSeek Responses web_search。'
                   '请在聊天中开启「联网」实测（此处不单独发起搜索请求）。'
-            : '当前模型「$model」尚不支持官方联网（需 DeepSeek V4）。'
-                  '换用 deepseek-v4-flash / pro / vision-exp，或改用客户端搜索。';
+            : '当前模型「$model」尚不支持官方联网，请改用客户端搜索。';
         _testingSearch = false;
       });
       return;
@@ -596,7 +593,19 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       ),
       body: asyncSettings.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => Center(child: Text('加载失败：$e')),
+        error: (e, _) => Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(20),
+            child: RecoveryNotice(
+              error: e,
+              title: '设置暂时无法加载',
+              onRetry: () async {
+                ref.invalidate(settingsControllerProvider);
+                await ref.read(settingsControllerProvider.future);
+              },
+            ),
+          ),
+        ),
         data: (s) {
           final active = s.active;
           return SafeArea(
@@ -630,6 +639,26 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                         padding: const EdgeInsets.fromLTRB(20, 24, 20, 40),
                         children: [
                           if (_category == _SettingsCategory.model) ...[
+                            Card(
+                              child: ListTile(
+                                leading: const Icon(Icons.chat_bubble_outline),
+                                title: Text(
+                                  s.config.isReady ? '验证模型连接' : '连接模型，开始使用',
+                                ),
+                                subtitle: const Text('填写服务信息，测试成功后开始对话'),
+                                trailing: const Icon(Icons.chevron_right),
+                                onTap: () async {
+                                  final saved = await showModelSetup(context);
+                                  if (saved && context.mounted) {
+                                    openShellTab(ref, ShellTab.chat);
+                                    if (!widget.asRootTab) {
+                                      Navigator.pop(context);
+                                    }
+                                  }
+                                },
+                              ),
+                            ),
+                            const SizedBox(height: 20),
                             const _SectionTitle('模型服务'),
                             _ProfileSelector(
                               profiles: s.profiles,
@@ -646,11 +675,18 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                   : () => _confirmDeleteProfile(active),
                             ),
                             const SizedBox(height: 16),
-                            TextField(
-                              controller: _apiKey,
+                            DebouncedSecretField(
+                              key: ValueKey('provider-api-key-${active?.id}'),
+                              value: s.apiKey,
+                              onSaved: (value) async {
+                                if (active != null) {
+                                  await controller.setProfileApiKey(
+                                    active.id,
+                                    value,
+                                  );
+                                }
+                              },
                               obscureText: _obscure,
-                              autocorrect: false,
-                              enableSuggestions: false,
                               decoration: InputDecoration(
                                 labelText: 'API Key',
                                 hintText: 'sk-...',
@@ -670,10 +706,10 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                       setState(() => _obscure = !_obscure),
                                 ),
                               ),
-                              onChanged: controller.setApiKey,
                             ),
                             const SizedBox(height: 16),
                             DropdownButtonFormField<String>(
+                              isExpanded: true,
                               initialValue: s.availableModels.contains(s.model)
                                   ? s.model
                                   : (s.availableModels.isNotEmpty
@@ -686,7 +722,11 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                 for (final m in s.availableModels)
                                   DropdownMenuItem(
                                     value: m,
-                                    child: Text(_modelPickerLabel(m)),
+                                    child: Text(
+                                      _modelPickerLabel(m),
+                                      overflow: TextOverflow.ellipsis,
+                                      maxLines: 1,
+                                    ),
                                   ),
                               ],
                               onChanged: (v) => v == null
@@ -721,7 +761,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                           if (_category == _SettingsCategory.capabilities) ...[
                             const _SectionTitle('多媒体能力（可选）'),
                             Text(
-                              '对话模型本身支持视觉时（如 DeepSeek deepseek-v4-flash-vision-exp、GPT-4o）可直接看图。'
+                              '对话模型本身支持视觉时（如 deepseek-flash、deepseek-v4-flash-vision-exp、GPT-4o）可直接看图。'
                               '也可单独配置视觉 API，由对话模型通过 analyze_image 调用。'
                               '视觉、生图和语音的 API Key 与聊天服务互不共用。'
                               'MiMo 的 ASR 与 TTS 走 /chat/completions；'
@@ -733,7 +773,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                             _OptionalApiCard(
                               title: '视觉理解',
                               description:
-                                  '给不支持看图的对话模型用。DeepSeek 请填 deepseek-v4-flash-vision-exp，'
+                                  '给不支持看图的对话模型用。DeepSeek 请填 deepseek-flash，'
                                   '也可直接把聊天模型换成该视觉模型',
                               icon: Icons.visibility_outlined,
                               config: s.visionApi,
@@ -1002,58 +1042,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                             ),
                             const SizedBox(height: 22),
                             _PrefRow(
-                              label: '圆角风格',
-                              child: SegmentedButton<CornerStylePref>(
-                                segments: [
-                                  for (final v in CornerStylePref.values)
-                                    ButtonSegment(
-                                      value: v,
-                                      label: Text(v.label),
-                                    ),
-                                ],
-                                selected: {s.ui.cornerStyle},
-                                onSelectionChanged: (set) =>
-                                    controller.setUiPrefs(
-                                      s.ui.copyWith(cornerStyle: set.first),
-                                    ),
-                              ),
-                            ),
-                            const SizedBox(height: 12),
-                            _PrefRow(
-                              label: '聊天背景',
-                              child: SegmentedButton<ChatSurfacePref>(
-                                segments: [
-                                  for (final v in ChatSurfacePref.values)
-                                    ButtonSegment(
-                                      value: v,
-                                      label: Text(v.label),
-                                      tooltip: v.description,
-                                    ),
-                                ],
-                                selected: {s.ui.chatSurface},
-                                onSelectionChanged: (set) =>
-                                    controller.setUiPrefs(
-                                      s.ui.copyWith(chatSurface: set.first),
-                                    ),
-                              ),
-                            ),
-                            const SizedBox(height: 6),
-                            Text(
-                              s.ui.chatSurface.description,
-                              style: Theme.of(context).textTheme.bodySmall,
-                            ),
-                            const SizedBox(height: 22),
-                            Text(
-                              '阅读与布局',
-                              style: Theme.of(context).textTheme.labelLarge
-                                  ?.copyWith(
-                                    color: Theme.of(
-                                      context,
-                                    ).colorScheme.onSurfaceVariant,
-                                  ),
-                            ),
-                            const SizedBox(height: 12),
-                            _PrefRow(
                               label: '文字大小',
                               child: SegmentedButton<TextScalePref>(
                                 segments: [
@@ -1071,107 +1059,174 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                               ),
                             ),
                             const SizedBox(height: 12),
-                            _PrefRow(
-                              label: '界面密度',
-                              child: SegmentedButton<DensityPref>(
-                                segments: [
-                                  for (final v in DensityPref.values)
-                                    ButtonSegment(
-                                      value: v,
-                                      label: Text(v.label),
-                                    ),
-                                ],
-                                selected: {s.ui.density},
-                                onSelectionChanged: (set) =>
-                                    controller.setUiPrefs(
-                                      s.ui.copyWith(density: set.first),
-                                    ),
-                              ),
-                            ),
-                            const SizedBox(height: 12),
-                            _PrefRow(
-                              label: '消息样式',
-                              child: SegmentedButton<MessageStylePref>(
-                                segments: [
-                                  for (final v in MessageStylePref.values)
-                                    ButtonSegment(
-                                      value: v,
-                                      label: Text(v.label),
-                                    ),
-                                ],
-                                selected: {s.ui.messageStyle},
-                                onSelectionChanged: (set) =>
-                                    controller.setUiPrefs(
-                                      s.ui.copyWith(messageStyle: set.first),
-                                    ),
-                              ),
-                            ),
-                            const SizedBox(height: 12),
-                            Text(
-                              'Markdown 渲染',
-                              style: Theme.of(context).textTheme.labelLarge
-                                  ?.copyWith(
-                                    color: Theme.of(
-                                      context,
-                                    ).colorScheme.onSurfaceVariant,
-                                  ),
-                            ),
-                            const SizedBox(height: 8),
-                            Wrap(
-                              spacing: 8,
-                              runSpacing: 8,
+                            ExpansionTile(
+                              key: const ValueKey('advanced-appearance'),
+                              tilePadding: EdgeInsets.zero,
+                              title: const Text('更多外观设置'),
+                              subtitle: const Text('圆角、背景、消息样式与排版'),
                               children: [
-                                for (final v in MarkdownStylePref.values)
-                                  ChoiceChip(
-                                    label: Text(v.label),
-                                    selected: s.ui.markdownStyle == v,
-                                    onSelected: (_) => controller.setUiPrefs(
-                                      s.ui.copyWith(markdownStyle: v),
-                                    ),
+                                _PrefRow(
+                                  label: '圆角风格',
+                                  child: SegmentedButton<CornerStylePref>(
+                                    segments: [
+                                      for (final v in CornerStylePref.values)
+                                        ButtonSegment(
+                                          value: v,
+                                          label: Text(v.label),
+                                        ),
+                                    ],
+                                    selected: {s.ui.cornerStyle},
+                                    onSelectionChanged: (set) =>
+                                        controller.setUiPrefs(
+                                          s.ui.copyWith(cornerStyle: set.first),
+                                        ),
                                   ),
+                                ),
+                                const SizedBox(height: 12),
+                                _PrefRow(
+                                  label: '聊天背景',
+                                  child: SegmentedButton<ChatSurfacePref>(
+                                    segments: [
+                                      for (final v in ChatSurfacePref.values)
+                                        ButtonSegment(
+                                          value: v,
+                                          label: Text(v.label),
+                                          tooltip: v.description,
+                                        ),
+                                    ],
+                                    selected: {s.ui.chatSurface},
+                                    onSelectionChanged: (set) =>
+                                        controller.setUiPrefs(
+                                          s.ui.copyWith(chatSurface: set.first),
+                                        ),
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                Text(
+                                  s.ui.chatSurface.description,
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                                const SizedBox(height: 22),
+                                Text(
+                                  '阅读与布局',
+                                  style: Theme.of(context).textTheme.labelLarge
+                                      ?.copyWith(
+                                        color: Theme.of(
+                                          context,
+                                        ).colorScheme.onSurfaceVariant,
+                                      ),
+                                ),
+                                const SizedBox(height: 12),
+                                _PrefRow(
+                                  label: '界面密度',
+                                  child: SegmentedButton<DensityPref>(
+                                    segments: [
+                                      for (final v in DensityPref.values)
+                                        ButtonSegment(
+                                          value: v,
+                                          label: Text(v.label),
+                                        ),
+                                    ],
+                                    selected: {s.ui.density},
+                                    onSelectionChanged: (set) =>
+                                        controller.setUiPrefs(
+                                          s.ui.copyWith(density: set.first),
+                                        ),
+                                  ),
+                                ),
+                                const SizedBox(height: 12),
+                                _PrefRow(
+                                  label: '消息样式',
+                                  child: SegmentedButton<MessageStylePref>(
+                                    segments: [
+                                      for (final v in MessageStylePref.values)
+                                        ButtonSegment(
+                                          value: v,
+                                          label: Text(v.label),
+                                        ),
+                                    ],
+                                    selected: {s.ui.messageStyle},
+                                    onSelectionChanged: (set) =>
+                                        controller.setUiPrefs(
+                                          s.ui.copyWith(
+                                            messageStyle: set.first,
+                                          ),
+                                        ),
+                                  ),
+                                ),
+                                const SizedBox(height: 12),
+                                Text(
+                                  'Markdown 渲染',
+                                  style: Theme.of(context).textTheme.labelLarge
+                                      ?.copyWith(
+                                        color: Theme.of(
+                                          context,
+                                        ).colorScheme.onSurfaceVariant,
+                                      ),
+                                ),
+                                const SizedBox(height: 8),
+                                Wrap(
+                                  spacing: 8,
+                                  runSpacing: 8,
+                                  children: [
+                                    for (final v in MarkdownStylePref.values)
+                                      ChoiceChip(
+                                        label: Text(v.label),
+                                        selected: s.ui.markdownStyle == v,
+                                        onSelected: (_) =>
+                                            controller.setUiPrefs(
+                                              s.ui.copyWith(markdownStyle: v),
+                                            ),
+                                      ),
+                                  ],
+                                ),
+                                const SizedBox(height: 6),
+                                Text(
+                                  s.ui.markdownStyle.description,
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                                const SizedBox(height: 10),
+                                _MarkdownStylePreview(
+                                  style: s.ui.markdownStyle,
+                                ),
+                                const SizedBox(height: 12),
+                                _PrefRow(
+                                  label: '内容宽度',
+                                  child: SegmentedButton<ContentWidthPref>(
+                                    segments: [
+                                      for (final v in ContentWidthPref.values)
+                                        ButtonSegment(
+                                          value: v,
+                                          label: Text(v.label),
+                                        ),
+                                    ],
+                                    selected: {s.ui.contentWidth},
+                                    onSelectionChanged: (set) =>
+                                        controller.setUiPrefs(
+                                          s.ui.copyWith(
+                                            contentWidth: set.first,
+                                          ),
+                                        ),
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  '内容宽度主要影响平板 / 桌面宽屏；手机上消息仍铺满可用宽度。',
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                                const SizedBox(height: 12),
+                                SwitchListTile(
+                                  contentPadding: EdgeInsets.zero,
+                                  title: const Text('流式实时 Markdown'),
+                                  subtitle: const Text(
+                                    '开启后生成过程中即渲染格式；关闭则先纯文本、结束后再排版。',
+                                  ),
+                                  value: s.ui.liveMarkdown,
+                                  onChanged: (v) => controller.setUiPrefs(
+                                    s.ui.copyWith(liveMarkdown: v),
+                                  ),
+                                ),
                               ],
-                            ),
-                            const SizedBox(height: 6),
-                            Text(
-                              s.ui.markdownStyle.description,
-                              style: Theme.of(context).textTheme.bodySmall,
-                            ),
-                            const SizedBox(height: 10),
-                            _MarkdownStylePreview(style: s.ui.markdownStyle),
-                            const SizedBox(height: 12),
-                            _PrefRow(
-                              label: '内容宽度',
-                              child: SegmentedButton<ContentWidthPref>(
-                                segments: [
-                                  for (final v in ContentWidthPref.values)
-                                    ButtonSegment(
-                                      value: v,
-                                      label: Text(v.label),
-                                    ),
-                                ],
-                                selected: {s.ui.contentWidth},
-                                onSelectionChanged: (set) =>
-                                    controller.setUiPrefs(
-                                      s.ui.copyWith(contentWidth: set.first),
-                                    ),
-                              ),
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              '内容宽度主要影响平板 / 桌面宽屏；手机上消息仍铺满可用宽度。',
-                              style: Theme.of(context).textTheme.bodySmall,
-                            ),
-                            const SizedBox(height: 12),
-                            SwitchListTile(
-                              contentPadding: EdgeInsets.zero,
-                              title: const Text('流式实时 Markdown'),
-                              subtitle: const Text(
-                                '开启后生成过程中即渲染格式；关闭则先纯文本、结束后再排版。',
-                              ),
-                              value: s.ui.liveMarkdown,
-                              onChanged: (v) => controller.setUiPrefs(
-                                s.ui.copyWith(liveMarkdown: v),
-                              ),
                             ),
                             const SizedBox(height: 32),
                           ],
@@ -1331,9 +1386,14 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                               trailing: Text('${s.searchMaxResults} 条'),
                             ),
                             const SizedBox(height: 32),
+                            TaskBudgetEditor(
+                              value: s.taskBudget,
+                              onChanged: controller.setTaskBudget,
+                            ),
+                            const SizedBox(height: 24),
                             const _SectionTitle('Expert Chat MCP Server'),
                             Text(
-                              '软件直接连接服务端 MCP；文档上传、编辑、转换和下载都通过 MCP Tools/Resources 完成。',
+                              '连接文档服务后，可编辑和转换文件。',
                               style: Theme.of(context).textTheme.bodySmall,
                             ),
                             const SizedBox(height: 12),
@@ -1367,7 +1427,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                               enableSuggestions: false,
                               decoration: InputDecoration(
                                 labelText: 'MCP Token',
-                                helperText: '对应服务端 MCP_API_TOKEN',
+                                helperText: '填写服务提供方给你的访问令牌',
                                 suffixIcon: IconButton(
                                   tooltip: _obscureGatewayToken
                                       ? '显示 Token'
@@ -1421,9 +1481,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                       ),
                                     )
                                   : const Icon(Icons.hub_outlined, size: 18),
-                              label: Text(
-                                _testingGateway ? '发现中…' : '连接并发现 MCP Tools',
-                              ),
+                              label: Text(_testingGateway ? '连接中…' : '连接并获取工具'),
                             ),
                             if (_gatewayTestResult != null) ...[
                               const SizedBox(height: 8),
@@ -1468,8 +1526,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                             const SizedBox(height: 32),
                             const _SectionTitle('自定义 MCP 服务器'),
                             Text(
-                              '像 ChatGPT Connectors 一样添加远程 Streamable HTTP MCP。'
-                              '已启用且发现成功的工具会在对话中提供给模型；工具列表缓存在本地，不会每轮重新发现。',
+                              '连接外部工具，扩展对话能力。',
                               style: Theme.of(context).textTheme.bodySmall,
                             ),
                             const SizedBox(height: 12),
@@ -1495,36 +1552,50 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                               label: const Text('添加 MCP 服务器'),
                             ),
                             const SizedBox(height: 32),
-                            const _SectionTitle('实验功能'),
-                            _StudyModeCard(
-                              enabled: s.studyModeEnabled,
-                              onChanged: _setStudyModeEnabled,
-                              onOpenStudy: s.studyModeEnabled
-                                  ? () => openShellTab(ref, ShellTab.study)
-                                  : null,
-                            ),
-                            const SizedBox(height: 16),
-                            _CreationModeCard(
-                              enabled: s.creationModeEnabled,
-                              onChanged: _setCreationModeEnabled,
-                              onOpenStudio: s.creationModeEnabled
-                                  ? () => openShellTab(ref, ShellTab.studio)
-                                  : null,
-                            ),
-                            const SizedBox(height: 16),
-                            _ResearchModeCard(
-                              enabled: s.researchModeEnabled,
-                              onChanged: (v, origin) => _setResearchModeEnabled(
-                                v,
-                                originGlobal: origin,
+                            Card(
+                              child: ListTile(
+                                leading: const Icon(Icons.extension_outlined),
+                                title: const Text('可选工具'),
+                                subtitle: const Text('学习、创作和科研终端的入口与开关'),
+                                trailing: const Icon(Icons.chevron_right),
+                                onTap: () {
+                                  openShellTab(ref, ShellTab.tools);
+                                  Navigator.of(
+                                    context,
+                                  ).popUntil((route) => route.isFirst);
+                                },
                               ),
-                              onOpenTerminal: s.researchModeEnabled
-                                  ? () => openShellTab(ref, ShellTab.terminal)
-                                  : null,
                             ),
                             const SizedBox(height: 32),
                           ],
                           if (_category == _SettingsCategory.data) ...[
+                            Card(
+                              child: ListTile(
+                                leading: const Icon(Icons.folder_outlined),
+                                title: const Text('资料'),
+                                subtitle: const Text('项目、素材库与生图记录'),
+                                trailing: const Icon(Icons.chevron_right),
+                                onTap: () => Navigator.of(context).push(
+                                  MaterialPageRoute<void>(
+                                    builder: (_) => const ResourcesPage(),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            Card(
+                              child: ListTile(
+                                leading: const Icon(Icons.save_outlined),
+                                title: const Text('完整备份与恢复'),
+                                subtitle: const Text('会话、记忆、学习和素材；校验后导入副本'),
+                                trailing: const Icon(Icons.chevron_right),
+                                onTap: () => Navigator.of(context).push(
+                                  MaterialPageRoute<void>(
+                                    builder: (_) => const BackupPage(),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 16),
                             const _SectionTitle('配置迁移'),
                             Card(
                               child: Column(
@@ -1535,7 +1606,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                     ),
                                     title: const Text('导出 API 配置'),
                                     subtitle: const Text(
-                                      '下载为 JSON，可拿到其他设备导入。文件含密钥，不要提交到 Git。',
+                                      '用于在其他设备导入配置。文件含密钥，请勿分享或公开。',
                                     ),
                                     trailing: _exportingSettings
                                         ? const SizedBox.square(
@@ -1604,11 +1675,43 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                             ),
                             const SizedBox(height: 32),
                             Text(
-                              'API Key 通过系统安全存储保存在本机，不会上传到任何服务器。',
+                              'API Key 保存在本机系统安全存储中，仅用于向你配置的服务发送请求认证。',
                               style: Theme.of(context).textTheme.bodySmall,
                             ),
                             const SizedBox(height: 32),
                             const _SectionTitle('关于与更新'),
+                            Card(
+                              child: ListTile(
+                                leading: const Icon(Icons.info_outline),
+                                title: const Text('帮助与反馈'),
+                                subtitle: const Text('检查常见问题，预览并复制诊断摘要'),
+                                trailing: const Icon(Icons.chevron_right),
+                                onTap: () {
+                                  final database = ref.read(
+                                    appDatabaseProvider,
+                                  );
+                                  final chat = ref
+                                      .read(chatControllerProvider)
+                                      .value;
+                                  final error =
+                                      chat != null &&
+                                          chat.errorVisibleFor(chat.currentId)
+                                      ? chat.error
+                                      : null;
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute<void>(
+                                      builder: (_) => SupportPage(
+                                        initialError: error,
+                                        readCounts: () =>
+                                            readDiagnosticCounts(database),
+                                      ),
+                                    ),
+                                  );
+                                },
+                              ),
+                            ),
+                            const SizedBox(height: 12),
                             const _AboutUpdateTile(),
                           ],
                         ],
@@ -1677,80 +1780,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     }
   }
 
-  Future<void> _setStudyModeEnabled(bool enabled) async {
-    final controller = ref.read(settingsControllerProvider.notifier);
-    if (enabled) {
-      await controller.setStudyModeEnabled(true);
-      return;
-    }
-    if (ref.read(shellTabProvider) == ShellTab.study) {
-      ref.read(shellTabProvider.notifier).set(ShellTab.settings);
-    }
-    await controller.setStudyModeEnabled(false);
-  }
-
-  Future<void> _setCreationModeEnabled(bool enabled) async {
-    final controller = ref.read(settingsControllerProvider.notifier);
-    if (enabled) {
-      await controller.setCreationModeEnabled(true);
-      return;
-    }
-    if (ref.read(shellTabProvider) == ShellTab.studio) {
-      ref.read(shellTabProvider.notifier).set(ShellTab.settings);
-    }
-    await controller.setCreationModeEnabled(false);
-  }
-
-  Future<void> _setResearchModeEnabled(
-    bool enabled, {
-    Offset? originGlobal,
-  }) async {
-    final controller = ref.read(settingsControllerProvider.notifier);
-    if (enabled) {
-      await controller.setResearchModeEnabled(true);
-      // Rainbow ripple expands from the research switch itself.
-      ref
-          .read(researchModeFxProvider.notifier)
-          .play(originGlobal: originGlobal);
-      return;
-    }
-
-    final research = ref.read(researchTerminalProvider);
-    final hasSession =
-        research.isConnected ||
-        research.status == ResearchConnectionStatus.connecting;
-    if (hasSession) {
-      final confirmed = await showDialog<bool>(
-        context: context,
-        builder: (dialogContext) => AlertDialog(
-          icon: const Icon(Icons.link_off_outlined),
-          title: const Text('关闭科研模式？'),
-          content: const Text(
-            '将断开当前 SSH 连接；远端 tmux 中的任务仍会继续运行。'
-            '终端入口会从导航中隐藏。',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(false),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(dialogContext).pop(true),
-              child: const Text('断开并关闭'),
-            ),
-          ],
-        ),
-      );
-      if (confirmed != true || !mounted) return;
-    }
-
-    if (ref.read(shellTabProvider) == ShellTab.terminal) {
-      ref.read(shellTabProvider.notifier).set(ShellTab.settings);
-    }
-    await ref.read(researchTerminalProvider.notifier).releaseAll();
-    await controller.setResearchModeEnabled(false);
-  }
-
   Future<void> _exportSettings() async {
     if (_exportingSettings) return;
     setState(() => _exportingSettings = true);
@@ -1807,7 +1836,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       );
       if (confirmed != true || !mounted) return;
       setState(() => _importingSettings = true);
-      _syncedForProfile = null;
       _searchKeySynced = false;
       _gatewaySynced = false;
       await ref
@@ -1958,6 +1986,7 @@ class _ContextSettingsCard extends StatelessWidget {
             const SizedBox(height: 6),
             DropdownButtonFormField<int>(
               key: ValueKey('context-window-${prefs.contextWindowTokens}'),
+              isExpanded: true,
               initialValue: prefs.contextWindowTokens,
               decoration: const InputDecoration(labelText: '模型上下文窗口'),
               items: [
@@ -1989,6 +2018,7 @@ class _ContextSettingsCard extends StatelessWidget {
                 'context-output-${prefs.contextWindowTokens}-'
                 '${prefs.reservedOutputTokens}',
               ),
+              isExpanded: true,
               initialValue: prefs.reservedOutputTokens,
               decoration: const InputDecoration(labelText: '为回复预留'),
               items: [
@@ -2606,6 +2636,7 @@ class _OptionalApiCardState extends State<_OptionalApiCard> {
           if (widget.showImageSize) ...[
             const SizedBox(height: 12),
             DropdownButtonFormField<String>(
+              isExpanded: true,
               initialValue:
                   const [
                     '1024x1024',
@@ -3220,13 +3251,21 @@ class _ProfileSelector extends StatelessWidget {
           children: [
             Expanded(
               child: DropdownButtonFormField<String>(
+                isExpanded: true,
                 initialValue: profiles.any((p) => p.id == activeId)
                     ? activeId
                     : (profiles.isNotEmpty ? profiles.first.id : null),
                 decoration: const InputDecoration(labelText: '服务商'),
                 items: [
                   for (final p in profiles)
-                    DropdownMenuItem(value: p.id, child: Text(p.name)),
+                    DropdownMenuItem(
+                      value: p.id,
+                      child: Text(
+                        p.name,
+                        overflow: TextOverflow.ellipsis,
+                        maxLines: 1,
+                      ),
+                    ),
                 ],
                 onChanged: (v) => v == null ? null : onSelect(v),
               ),
@@ -4224,8 +4263,8 @@ class _MarkdownStylePreview extends StatelessWidget {
 一段正文，内含 `inline code` 与 [链接](https://example.com)。
 
 | 列 A | 列 B |
-| --- | --- |
-| 1 | 2 |
+| :--- | ---: |
+| 左 | 右 |
 ''';
 
   @override
@@ -4646,7 +4685,7 @@ class _MemorySettingsCard extends ConsumerWidget {
           SwitchListTile(
             secondary: const Icon(Icons.psychology_alt_outlined),
             title: const Text('启用长期记忆'),
-            subtitle: const Text('从本地 Markdown 文件召回用户明确保存的事实和偏好；默认不自动记忆。'),
+            subtitle: const Text('在回答中参考你保存的信息和偏好，不会自动记住新内容。'),
             value: enabled,
             onChanged: onEnabledChanged,
           ),
@@ -4664,297 +4703,6 @@ class _MemorySettingsCard extends ConsumerWidget {
           ),
         ],
       ),
-    );
-  }
-}
-
-/// Creation hub toggle under 能力 → 实验功能 (mirrors research mode hide/show).
-class _StudyModeCard extends StatelessWidget {
-  const _StudyModeCard({
-    required this.enabled,
-    required this.onChanged,
-    this.onOpenStudy,
-  });
-
-  final bool enabled;
-  final ValueChanged<bool> onChanged;
-  final VoidCallback? onOpenStudy;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  width: 40,
-                  height: 40,
-                  decoration: BoxDecoration(
-                    color: scheme.secondaryContainer,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Icon(
-                    Icons.school_rounded,
-                    color: scheme.onSecondaryContainer,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '学习模式',
-                        style: Theme.of(context).textTheme.titleMedium
-                            ?.copyWith(fontWeight: FontWeight.w600),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        '启用底部「学习」入口：导师、课程、刷题与间隔复习。',
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    ],
-                  ),
-                ),
-                Switch.adaptive(value: enabled, onChanged: onChanged),
-              ],
-            ),
-          ),
-        ),
-        const SizedBox(height: 8),
-        Text(
-          '关闭后隐藏学习入口；课程、卡片与错题本仍保留在本机。',
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-        if (enabled && onOpenStudy != null) ...[
-          const SizedBox(height: 12),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: OutlinedButton.icon(
-              onPressed: onOpenStudy,
-              icon: const Icon(Icons.school_outlined, size: 18),
-              label: const Text('进入学习中心'),
-            ),
-          ),
-        ],
-      ],
-    );
-  }
-}
-
-class _CreationModeCard extends StatelessWidget {
-  const _CreationModeCard({
-    required this.enabled,
-    required this.onChanged,
-    this.onOpenStudio,
-  });
-
-  final bool enabled;
-  final ValueChanged<bool> onChanged;
-  final VoidCallback? onOpenStudio;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  width: 40,
-                  height: 40,
-                  decoration: BoxDecoration(
-                    color: scheme.primaryContainer,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Icon(
-                    Icons.menu_book_rounded,
-                    color: scheme.onPrimaryContainer,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '创作模式',
-                        style: Theme.of(context).textTheme.titleMedium
-                            ?.copyWith(fontWeight: FontWeight.w600),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        '启用底部「创作」入口：导演故事、角色库、世界书。',
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    ],
-                  ),
-                ),
-                Switch.adaptive(value: enabled, onChanged: onChanged),
-              ],
-            ),
-          ),
-        ),
-        const SizedBox(height: 8),
-        Text(
-          '关闭后导航更干净；角色与草稿仍保留。聊天里仍可直接开导演故事。',
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-        if (enabled && onOpenStudio != null) ...[
-          const SizedBox(height: 12),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: OutlinedButton.icon(
-              onPressed: onOpenStudio,
-              icon: const Icon(Icons.menu_book_outlined, size: 18),
-              label: const Text('进入创作中心'),
-            ),
-          ),
-        ],
-      ],
-    );
-  }
-}
-
-/// M7 experimental research-mode card under 能力 → 实验功能.
-class _ResearchModeCard extends StatefulWidget {
-  const _ResearchModeCard({
-    required this.enabled,
-    required this.onChanged,
-    this.onOpenTerminal,
-  });
-
-  final bool enabled;
-
-  /// [originGlobal] is the switch center in global coordinates (ripple source).
-  final void Function(bool enabled, Offset? originGlobal) onChanged;
-  final VoidCallback? onOpenTerminal;
-
-  @override
-  State<_ResearchModeCard> createState() => _ResearchModeCardState();
-}
-
-class _ResearchModeCardState extends State<_ResearchModeCard> {
-  final _switchKey = GlobalKey();
-
-  Offset? _switchCenterGlobal() {
-    final box = _switchKey.currentContext?.findRenderObject() as RenderBox?;
-    if (box == null || !box.hasSize) return null;
-    return box.localToGlobal(box.size.center(Offset.zero));
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final webBlocked = kIsWeb;
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  width: 40,
-                  height: 40,
-                  decoration: BoxDecoration(
-                    color: scheme.primaryContainer,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Icon(
-                    Icons.terminal_rounded,
-                    color: scheme.onPrimaryContainer,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Text(
-                            '科研模式',
-                            style: Theme.of(context).textTheme.titleMedium
-                                ?.copyWith(fontWeight: FontWeight.w600),
-                          ),
-                          const SizedBox(width: 8),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 8,
-                              vertical: 2,
-                            ),
-                            decoration: BoxDecoration(
-                              color: scheme.secondaryContainer,
-                              borderRadius: BorderRadius.circular(999),
-                            ),
-                            child: Text(
-                              '实验性',
-                              style: Theme.of(context).textTheme.labelSmall
-                                  ?.copyWith(
-                                    color: scheme.onSecondaryContainer,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        webBlocked
-                            ? '浏览器无法直接建立原生 SSH 连接。'
-                            : '启用 SSH 终端、tmux 会话和 AI 命令审批。',
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    ],
-                  ),
-                ),
-                KeyedSubtree(
-                  key: _switchKey,
-                  child: Switch.adaptive(
-                    value: widget.enabled && !webBlocked,
-                    onChanged: webBlocked
-                        ? null
-                        : (v) => widget.onChanged(v, _switchCenterGlobal()),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-        const SizedBox(height: 8),
-        Text(
-          '关闭时，终端入口不会显示，服务器配置也不会进入普通 AI 会话。',
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-        if (widget.enabled && !webBlocked && widget.onOpenTerminal != null) ...[
-          const SizedBox(height: 12),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: OutlinedButton.icon(
-              onPressed: widget.onOpenTerminal,
-              icon: const Icon(Icons.terminal_rounded, size: 18),
-              label: const Text('进入科研终端'),
-            ),
-          ),
-        ],
-      ],
     );
   }
 }

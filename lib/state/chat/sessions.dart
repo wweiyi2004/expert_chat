@@ -1,6 +1,19 @@
 part of '../chat_controller.dart';
 
 mixin ChatSessions on ChatTurns {
+  /// The caller must keep a modal barrier up until maintenance is finished.
+  Future<void> prepareDataMaintenance() async {
+    if (_execution.isActive ||
+        _s.isStreaming ||
+        _s.conversations.any(
+          (c) => c.messages.any((m) => m.longTask?.isActive == true),
+        )) {
+      throw StateError('请先停止生成和后台文档任务，再进行备份或恢复。');
+    }
+    await _persistence.enqueueWrite(() async {});
+    await ref.read(memoryRepositoryProvider).flush();
+  }
+
   /// Start or focus a study-mode conversation (tutor / course-linked).
   Future<Conversation> newStudyConversation({
     required String topic,
@@ -88,20 +101,21 @@ mixin ChatSessions on ChatTurns {
     return fresh;
   }
 
-  void newConversation() {
+  void newConversation({String? projectId}) {
     // Chat / story / ensemble are separate: only reuse an unused *chat*.
     // Once a turn has entered preflight, its origin session is reserved even
     // though the user message has not been appended yet. Reusing that blank
     // session here would make “new conversation” keep the same id and let the
     // pending turn appear in the view the user tried to leave.
-    final existing = _starting
+    final candidate = _execution.isActive
         ? null
         : _findUnusedSession(ConversationMode.chat);
+    final existing = candidate?.projectId == projectId ? candidate : null;
     if (existing != null) {
       _selectExistingSession(existing);
       return;
     }
-    final fresh = Conversation();
+    final fresh = Conversation(projectId: projectId);
     _set(
       _s.copyWith(
         conversations: [fresh, ..._s.conversations],
@@ -110,6 +124,35 @@ mixin ChatSessions on ChatTurns {
       ),
     );
     _persistence.persistSoon(_persistence.persist());
+  }
+
+  Future<void> assignProject(String conversationId, String? projectId) async {
+    await prepareDataMaintenance();
+    if (projectId != null &&
+        await ref.read(projectRepositoryProvider).get(projectId) == null) {
+      throw StateError('项目已不存在。');
+    }
+    final index = _s.conversations.indexWhere((c) => c.id == conversationId);
+    if (index < 0) throw StateError('会话已不存在。');
+    final old = _s.conversations[index];
+    final updated = old.copyWith(projectId: projectId);
+    await _persistence.enqueueWrite(
+      () => ref.read(conversationRepositoryProvider).saveConversation(updated),
+    );
+    _set(_s.copyWith(conversations: _replace(updated)));
+  }
+
+  Future<void> deleteProject(String projectId) async {
+    await prepareDataMaintenance();
+    await ref.read(projectRepositoryProvider).delete(projectId);
+    _set(
+      _s.copyWith(
+        conversations: [
+          for (final c in _s.conversations)
+            if (c.projectId == projectId) c.copyWith(projectId: null) else c,
+        ],
+      ),
+    );
   }
 
   /// Prefer [current] when it already matches; otherwise first unused of [mode]
@@ -457,7 +500,7 @@ mixin ChatSessions on ChatTurns {
       _runStorySceneTurn(StoryGenerationIntent.continueScene);
 
   Future<void> _runStorySceneTurn(StoryGenerationIntent intent) async {
-    if (_s.isStreaming || _starting) return;
+    if (_s.isStreaming || _execution.isActive) return;
     final convo = _s.current;
     if (convo == null || !convo.isStory) return;
     if (intent != StoryGenerationIntent.nextScene &&
@@ -465,11 +508,10 @@ mixin ChatSessions on ChatTurns {
       return;
     }
 
-    _starting = true;
-    _cancelStart = false;
+    if (!_execution.tryStart()) return;
     try {
       final settings = await _readySettings();
-      if (settings == null || _cancelStart) return;
+      if (settings == null || _execution.isCancelled) return;
       final config = _configFor(settings);
 
       final parentId = convo.activePath.isEmpty
@@ -523,7 +565,7 @@ mixin ChatSessions on ChatTurns {
         },
       );
 
-      if (_cancelStart) return;
+      if (_execution.isCancelled) return;
 
       await _generate(
         working: working,
@@ -556,7 +598,7 @@ mixin ChatSessions on ChatTurns {
     /// keeps writing there even after the user switches conversations).
     String? conversationId,
   }) async {
-    if (_s.isStreaming || _starting) return;
+    if (_s.isStreaming || _execution.isActive) return;
     final convo = conversationId == null
         ? _s.current
         : _s.conversations.where((c) => c.id == conversationId).firstOrNull;
@@ -578,11 +620,10 @@ mixin ChatSessions on ChatTurns {
       return;
     }
 
-    _starting = true;
-    _cancelStart = false;
+    if (!_execution.tryStart()) return;
     try {
       final settings = await _readySettings();
-      if (settings == null || _cancelStart) return;
+      if (settings == null || _execution.isCancelled) return;
       final config = _configFor(settings);
 
       final parentId = convo.activePath.isEmpty
@@ -606,7 +647,7 @@ mixin ChatSessions on ChatTurns {
         nextSpeakerIndex: nextIndex,
       );
 
-      if (_cancelStart) return;
+      if (_execution.isCancelled) return;
 
       await _generate(
         working: working,
@@ -631,12 +672,12 @@ mixin ChatSessions on ChatTurns {
     final targetId = target.id;
     final n = rounds.clamp(1, 20);
     for (var i = 0; i < n; i++) {
-      if (_s.isStreaming || _starting) return;
+      if (_s.isStreaming || _execution.isActive) return;
       await ensembleNextTurn(conversationId: targetId);
       // Allow UI to settle between turns.
       await Future<void>.delayed(const Duration(milliseconds: 80));
       final after = _s.conversations.where((c) => c.id == targetId).firstOrNull;
-      if (_cancelStart || after == null || !after.isEnsemble) return;
+      if (_execution.isCancelled || after == null || !after.isEnsemble) return;
       // Stop on errors that belong to the target conversation; a banner parked
       // on another conversation must not end this run.
       final err = _s.error;
@@ -652,7 +693,7 @@ mixin ChatSessions on ChatTurns {
   }
 
   void setReasoningEffort(ReasoningEffort effort) {
-    if (_s.reasoningEffort == effort) return;
+    _editedComposerPrefs.add('effort');
     _set(_s.copyWith(reasoningEffort: effort));
     unawaited(
       ref.read(settingsControllerProvider.notifier).setReasoningEffort(effort),
@@ -661,6 +702,7 @@ mixin ChatSessions on ChatTurns {
 
   /// Cycle the "联网" switch shown next to the composer: 关 → 自动 → 强制 → 关.
   void toggleSearch() {
+    _editedComposerPrefs.add('search');
     final next = _s.searchMode.next;
     _set(_s.copyWith(searchMode: next));
     unawaited(
@@ -674,6 +716,7 @@ mixin ChatSessions on ChatTurns {
     required ImageGenMode imageGenMode,
     required ReasoningEffort reasoningEffort,
   }) {
+    _editedComposerPrefs.addAll(['effort', 'search', 'image']);
     if (_s.searchMode == searchMode &&
         _s.imageGenMode == imageGenMode &&
         _s.reasoningEffort == reasoningEffort) {
@@ -690,10 +733,14 @@ mixin ChatSessions on ChatTurns {
 
   /// Cycle dialogue "配图": 关 → 自动 → 强制 → 关.
   void toggleImageGenMode() {
-    final next = _s.imageGenMode.next;
-    _set(_s.copyWith(imageGenMode: next));
+    setImageGenMode(_s.imageGenMode.next);
+  }
+
+  void setImageGenMode(ImageGenMode mode) {
+    _editedComposerPrefs.add('image');
+    _set(_s.copyWith(imageGenMode: mode));
     unawaited(
-      ref.read(settingsControllerProvider.notifier).setImageGenMode(next),
+      ref.read(settingsControllerProvider.notifier).setImageGenMode(mode),
     );
   }
 

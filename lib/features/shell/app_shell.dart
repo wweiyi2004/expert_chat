@@ -5,12 +5,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/workspace_layout.dart';
 import '../../domain/notify/generation_notify.dart';
+import '../../domain/share/shared_intake.dart';
 import '../../domain/update/shorebird_ui.dart';
 import '../../domain/update/update_ui.dart';
 import '../../state/chat_controller.dart';
 import '../../state/research_mode_fx.dart';
 import '../../state/settings_controller.dart';
 import '../chat/chat_page.dart';
+import '../chat/pending_share.dart';
 import '../research/research_mode_ripple.dart';
 import '../research/research_terminal_page.dart';
 import '../settings/settings_page.dart';
@@ -44,6 +46,8 @@ class _AppShellState extends ConsumerState<AppShell>
     // Best-effort OTA + notifications after the first frame (Activity ready).
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted) return;
+      // Before the OTA delay so a share that launched the app opens promptly.
+      unawaited(SharedIntake.listen(_openShared));
       // Init only — no runtime permission dialogs before UI is alive.
       await GenerationNotify.init();
       // Stagger so the first frame paints before network work.
@@ -55,8 +59,19 @@ class _AppShellState extends ConsumerState<AppShell>
     });
   }
 
+  /// Opens a new conversation for content shared from another app. The
+  /// composer is filled by [ChatPage]; nothing is sent automatically.
+  Future<void> _openShared(SharedPayload payload) async {
+    await ref.read(chatControllerProvider.future);
+    if (!mounted) return;
+    ref.read(chatControllerProvider.notifier).newConversation();
+    ref.read(shellTabProvider.notifier).set(ShellTab.chat);
+    ref.read(pendingSharedPayloadProvider.notifier).set(payload);
+  }
+
   @override
   void dispose() {
+    SharedIntake.stop();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }

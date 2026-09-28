@@ -3,6 +3,7 @@ package com.wweiyi.expert_chat
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import androidx.core.content.FileProvider
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
@@ -13,9 +14,24 @@ import java.io.File
 class MainActivity : FlutterActivity() {
     private val installChannel = "expert_chat/install"
     private var generationChannel: MethodChannel? = null
+    private val sharedIntake by lazy { SharedIntake(applicationContext) }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        // A recreated activity must not re-import the share it started with.
+        if (savedInstanceState == null) sharedIntake.handle(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (sharedIntake.handle(intent)) setIntent(intent)
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        sharedIntake.attach(
+            MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "expert_chat/share"),
+        )
         generationChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger, "expert_chat/generation",
         ).also { channel ->
@@ -77,6 +93,7 @@ class MainActivity : FlutterActivity() {
     override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
         generationChannel?.setMethodCallHandler(null)
         generationChannel = null
+        sharedIntake.detach()
         stopService(Intent(this, GenerationService::class.java))
         super.cleanUpFlutterEngine(flutterEngine)
     }

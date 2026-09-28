@@ -22,6 +22,7 @@ import '../../domain/export/conversation_export.dart';
 import '../../domain/memory/memory_candidate_service.dart';
 import '../../domain/memory/memory_entry.dart';
 import '../../domain/memory/memory_safety.dart';
+import '../../domain/share/shared_intake.dart';
 import '../../domain/speech/text_to_speech_service.dart';
 import '../../domain/story/story_length_budget.dart';
 import '../../domain/llm/llm_provider.dart';
@@ -40,6 +41,7 @@ import '../story/ensemble_setup_page.dart';
 import '../story/story_panel.dart';
 import '../study/study_session_actions.dart';
 import 'jump_to_message.dart';
+import 'pending_share.dart';
 import 'chat_workspace_sidebar.dart';
 
 import 'controllers/chat_speech_controller.dart';
@@ -347,6 +349,10 @@ class _ChatPageState extends ConsumerState<ChatPage>
       onNotice: _showSpeechNotice,
     )..addListener(_onSpeechChanged);
     _scroll.addListener(_onScroll);
+    // A share may already be pending if it arrived before this page built.
+    if (ref.read(pendingSharedPayloadProvider) != null) {
+      _scheduleSharedPayload();
+    }
   }
 
   void _enterSelect(String messageId) {
@@ -882,6 +888,98 @@ class _ChatPageState extends ConsumerState<ChatPage>
           : null,
     );
   });
+
+  /// Applies the pending share after the conversation-switch listener has
+  /// cleared the previous draft, so the shared content is not wiped with it.
+  void _scheduleSharedPayload() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final payload = ref.read(pendingSharedPayloadProvider.notifier).take();
+      if (payload != null) unawaited(_applySharedPayload(payload));
+    });
+  }
+
+  /// Places shared text in the composer and shared files as attachments.
+  /// Like voice input, nothing is sent until the user taps send.
+  Future<void> _applySharedPayload(SharedPayload payload) async {
+    if (payload.text.isNotEmpty) {
+      final current = _input.text;
+      final next = current.trim().isEmpty
+          ? payload.text
+          : '${current.trimRight()}\n${payload.text}';
+      _input.value = TextEditingValue(
+        text: next,
+        selection: TextSelection.collapsed(offset: next.length),
+      );
+    }
+    final nativeNotices = <String>[
+      if (payload.tooLarge > 0) '跳过 ${payload.tooLarge} 个（单个最大 10 MB）',
+      if (payload.tooMany > 0) '跳过 ${payload.tooMany} 个（最多 $_maxAttachments 个）',
+      if (payload.unreadable > 0) '跳过 ${payload.unreadable} 个（无法读取）',
+    ];
+    if (payload.files.isEmpty) {
+      if (nativeNotices.isNotEmpty) {
+        _showAttachmentNotice(nativeNotices.join('；'));
+      }
+      return;
+    }
+    if (_picking || _pendingImagePicks != null) {
+      _showAttachmentNotice('附件正在准备，分享的文件未添加，请稍后重新分享。');
+      return;
+    }
+    await _runAttachmentImport((epoch) async {
+      final settings = ref.read(settingsControllerProvider).value;
+      final visionOk =
+          settings?.canAttachImages(
+            deepThink:
+                ref.read(chatControllerProvider).value?.deepThink ?? false,
+          ) ??
+          false;
+      final imageExts = _imageExtensions.toSet();
+      final docExts = _documentExtensions.toSet();
+      final sources = <FileIngestSource>[
+        for (final file in payload.files)
+          FileIngestSource(
+            name: file.name.isEmpty ? fileNameFromPath(file.path) : file.name,
+            extension: extensionOfName(
+              file.name.isEmpty ? fileNameFromPath(file.path) : file.name,
+            ),
+            path: file.path,
+            reportedSize: file.size,
+          ),
+      ];
+      final images = sources.where((s) => imageExts.contains(s.extension));
+      final usable = [
+        for (final source in sources)
+          if ((visionOk && imageExts.contains(source.extension)) ||
+              docExts.contains(source.extension))
+            source,
+      ];
+      final notices = [...nativeNotices];
+      if (!visionOk && images.isNotEmpty) {
+        notices.add('当前模型不支持看图，跳过 ${images.length} 张图片');
+      }
+      final unsupported = sources
+          .where(
+            (s) =>
+                !imageExts.contains(s.extension) &&
+                !docExts.contains(s.extension),
+          )
+          .length;
+      if (unsupported > 0) notices.add('跳过 $unsupported 个不支持的文件');
+      if (usable.isEmpty) {
+        if (notices.isNotEmpty) _showAttachmentNotice(notices.join('；'));
+        return;
+      }
+      await _ingestFileSources(
+        usable,
+        epoch: epoch,
+        imagesOnly: usable.every((s) => imageExts.contains(s.extension)),
+        confirmImages: false,
+        extraNotice: notices.isEmpty ? null : notices.join('；'),
+      );
+    });
+  }
 
   Future<void> _pasteTextIntoComposer(int epoch) async {
     final data = await Clipboard.getData(Clipboard.kTextPlain);
@@ -1597,6 +1695,10 @@ class _ChatPageState extends ConsumerState<ChatPage>
         }
       }
       _scrollToBottom();
+    });
+
+    ref.listen<SharedPayload?>(pendingSharedPayloadProvider, (prev, next) {
+      if (next != null) _scheduleSharedPayload();
     });
 
     // History search “定位” → scroll to a specific message once the list

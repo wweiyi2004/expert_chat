@@ -1908,145 +1908,167 @@ class _ChatPageState extends ConsumerState<ChatPage>
                 !slice.isStory &&
                 !slice.isEnsemble &&
                 !slice.isStudy;
+            // Phones get a DeepSeek-style bar: centered title, new chat and
+            // a menu. Work mode and context usage move into the menu.
+            final phoneBar = constraints.maxWidth < 600;
             return Scaffold(
               appBar: AppBar(
-                toolbarHeight: constraints.maxWidth < 600 && showWorkMode
-                    ? 72
-                    : null,
                 titleSpacing: dualPane ? 20 : 8,
-                title: LayoutBuilder(
-                  builder: (context, constraints) {
-                    final compactTitle =
-                        showWorkMode && constraints.maxWidth < 240;
-                    final modeIcon = Container(
-                      width: 32,
-                      height: 32,
-                      decoration: BoxDecoration(
-                        color: modeColor.withValues(alpha: 0.14),
-                        borderRadius: BorderRadius.circular(11),
-                        border: Border.all(
-                          color: modeColor.withValues(alpha: 0.28),
-                        ),
-                      ),
-                      child: Icon(
-                        ModeStyle.icon(mode, outlined: false),
-                        size: 17,
-                        color: modeColor,
-                      ),
-                    );
-                    final titleBlock = Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(titleText, overflow: TextOverflow.ellipsis),
-                        if (slice.hasCurrent && storyLike)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 2),
+                centerTitle: phoneBar,
+                title: phoneBar
+                    ? _PhoneTitle(
+                        title: slice.hasCurrent ? titleText : '新对话',
+                        subtitle: showWorkMode && slice.workMode
+                            ? '任务模式'
+                            : slice.hasCurrent && storyLike
+                            ? [
+                                slice.hasLocalCast
+                                    ? '导演故事'
+                                    : ModeStyle.label(mode),
+                                ?beatProgress,
+                              ].join(' · ')
+                            : null,
+                      )
+                    : LayoutBuilder(
+                        builder: (context, constraints) {
+                          final compactTitle =
+                              showWorkMode && constraints.maxWidth < 240;
+                          final modeIcon = Container(
+                            width: 32,
+                            height: 32,
+                            decoration: BoxDecoration(
+                              color: modeColor.withValues(alpha: 0.14),
+                              borderRadius: BorderRadius.circular(11),
+                              border: Border.all(
+                                color: modeColor.withValues(alpha: 0.28),
+                              ),
+                            ),
+                            child: Icon(
+                              ModeStyle.icon(mode, outlined: false),
+                              size: 17,
+                              color: modeColor,
+                            ),
+                          );
+                          final titleBlock = Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(titleText, overflow: TextOverflow.ellipsis),
+                              if (slice.hasCurrent && storyLike)
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 2),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      _ModePill(
+                                        label: slice.hasLocalCast
+                                            ? '导演故事'
+                                            : ModeStyle.label(mode),
+                                        color: modeColor,
+                                        icon: ModeStyle.icon(mode),
+                                      ),
+                                      if (beatProgress != null) ...[
+                                        const SizedBox(width: 8),
+                                        Text(
+                                          beatProgress,
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .labelSmall
+                                              ?.copyWith(
+                                                color: scheme.onSurfaceVariant,
+                                              ),
+                                        ),
+                                      ],
+                                      const SizedBox(width: 6),
+                                      GestureDetector(
+                                        onTap: () {
+                                          final convo = ref
+                                              .read(chatControllerProvider)
+                                              .value
+                                              ?.current;
+                                          if (convo != null) {
+                                            _openPlot(
+                                              convo,
+                                              canPinTools: triplePane,
+                                            );
+                                          }
+                                        },
+                                        child: Text(
+                                          '情节',
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .labelSmall
+                                              ?.copyWith(
+                                                color: modeColor,
+                                                fontWeight: FontWeight.w700,
+                                              ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                            ],
+                          );
+                          return SizedBox(
+                            width: constraints.maxWidth,
+                            height: constraints.maxHeight.isFinite
+                                ? constraints.maxHeight
+                                : 56,
                             child: Row(
-                              mainAxisSize: MainAxisSize.min,
                               children: [
-                                _ModePill(
-                                  label: slice.hasLocalCast
-                                      ? '导演故事'
-                                      : ModeStyle.label(mode),
-                                  color: modeColor,
-                                  icon: ModeStyle.icon(mode),
-                                ),
-                                if (beatProgress != null) ...[
+                                if (!compactTitle) ...[
+                                  modeIcon,
                                   const SizedBox(width: 8),
-                                  Text(
-                                    beatProgress,
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .labelSmall
-                                        ?.copyWith(
-                                          color: scheme.onSurfaceVariant,
-                                        ),
-                                  ),
                                 ],
-                                const SizedBox(width: 6),
-                                GestureDetector(
-                                  onTap: () {
-                                    final convo = ref
-                                        .read(chatControllerProvider)
-                                        .value
-                                        ?.current;
-                                    if (convo != null) {
-                                      _openPlot(convo, canPinTools: triplePane);
-                                    }
-                                  },
-                                  child: Text(
-                                    '情节',
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .labelSmall
-                                        ?.copyWith(
-                                          color: modeColor,
-                                          fontWeight: FontWeight.w700,
+                                if (showWorkMode && compactTitle)
+                                  Expanded(
+                                    child: Column(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          titleText,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: Theme.of(
+                                            context,
+                                          ).textTheme.labelMedium,
                                         ),
-                                  ),
-                                ),
+                                        ChatWorkModeSwitch(
+                                          workMode: slice.workMode,
+                                          onChanged: controller.setWorkMode,
+                                        ),
+                                      ],
+                                    ),
+                                  )
+                                else ...[
+                                  Expanded(child: titleBlock),
+                                  if (showWorkMode) ...[
+                                    const SizedBox(width: 8),
+                                    ChatWorkModeSwitch(
+                                      workMode: slice.workMode,
+                                      onChanged: controller.setWorkMode,
+                                    ),
+                                  ],
+                                ],
                               ],
                             ),
-                          ),
-                      ],
-                    );
-                    return SizedBox(
-                      width: constraints.maxWidth,
-                      height: constraints.maxHeight.isFinite
-                          ? constraints.maxHeight
-                          : 56,
-                      child: Row(
-                        children: [
-                          if (!compactTitle) ...[
-                            modeIcon,
-                            const SizedBox(width: 8),
-                          ],
-                          if (showWorkMode && compactTitle)
-                            Expanded(
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    titleText,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: Theme.of(
-                                      context,
-                                    ).textTheme.labelMedium,
-                                  ),
-                                  ChatWorkModeSwitch(
-                                    workMode: slice.workMode,
-                                    onChanged: controller.setWorkMode,
-                                  ),
-                                ],
-                              ),
-                            )
-                          else ...[
-                            Expanded(child: titleBlock),
-                            if (showWorkMode) ...[
-                              const SizedBox(width: 8),
-                              ChatWorkModeSwitch(
-                                workMode: slice.workMode,
-                                onChanged: controller.setWorkMode,
-                              ),
-                            ],
-                          ],
-                        ],
+                          );
+                        },
                       ),
-                    );
-                  },
-                ),
-                bottom: PreferredSize(
-                  preferredSize: const Size.fromHeight(1),
-                  child: Container(
-                    height: 1,
-                    color: scheme.outlineVariant.withValues(alpha: 0.85),
-                  ),
-                ),
+                bottom: phoneBar
+                    ? null
+                    : PreferredSize(
+                        preferredSize: const Size.fromHeight(1),
+                        child: Container(
+                          height: 1,
+                          color: scheme.outlineVariant.withValues(alpha: 0.85),
+                        ),
+                      ),
                 actions: [
-                  if (contextEnabled)
+                  if (contextEnabled && !phoneBar)
                     Padding(
                       padding: const EdgeInsets.only(right: 4),
                       child: Center(
@@ -2089,7 +2111,14 @@ class _ChatPageState extends ConsumerState<ChatPage>
                         if (_toolsOpen) _outlineOpen = false;
                       }),
                     ),
-                  if (!widget.desktopShell)
+                  if (phoneBar)
+                    IconButton(
+                      key: const ValueKey('chat-new-conversation'),
+                      tooltip: '新对话',
+                      icon: const Icon(Icons.add_comment_outlined),
+                      onPressed: controller.newConversation,
+                    )
+                  else if (!widget.desktopShell)
                     PopupMenuButton<String>(
                       tooltip: '新建',
                       icon: const Icon(Icons.add_comment_outlined),
@@ -2167,9 +2196,38 @@ class _ChatPageState extends ConsumerState<ChatPage>
                         unawaited(_export(current));
                       } else if (v == 'memory_candidates' && current != null) {
                         unawaited(_extractMemoryCandidates(current));
+                      } else if (v == 'work_mode') {
+                        controller.setWorkMode(!slice.workMode);
+                      } else if (v == 'plot' && current != null) {
+                        _openPlot(current, canPinTools: triplePane);
                       }
                     },
                     itemBuilder: (_) => [
+                      if (phoneBar && showWorkMode)
+                        CheckedPopupMenuItem(
+                          key: const ValueKey('chat-work-mode-menu'),
+                          value: 'work_mode',
+                          checked: slice.workMode,
+                          child: const Text('任务模式'),
+                        ),
+                      if (phoneBar && slice.hasCurrent && storyLike)
+                        const PopupMenuItem(
+                          value: 'plot',
+                          child: ListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            leading: Icon(Icons.auto_stories_outlined),
+                            title: Text('情节'),
+                          ),
+                        ),
+                      if (phoneBar && contextEnabled)
+                        PopupMenuItem(
+                          enabled: false,
+                          child: ContextUsageChip(
+                            report: contextReport,
+                            inputBudget: contextInputBudget,
+                          ),
+                        ),
                       if (slice.hasCurrent)
                         const PopupMenuItem(
                           value: 'outline',
@@ -2209,13 +2267,11 @@ class _ChatPageState extends ConsumerState<ChatPage>
                                   ? '正在整理候选记忆…'
                                   : '整理候选记忆',
                             ),
-                            subtitle: Text(
-                              settings?.memoryEnabled != true
-                                  ? '请先在设置中开启长期记忆'
-                                  : slice.isStreaming
-                                  ? '当前回复完成后可用'
-                                  : '从当前会话提取，确认后才写入',
-                            ),
+                            subtitle: settings?.memoryEnabled != true
+                                ? const Text('需先开启长期记忆')
+                                : slice.isStreaming
+                                ? const Text('回复完成后可用')
+                                : null,
                           ),
                         ),
                     ],
@@ -2544,12 +2600,6 @@ class _ChatPageState extends ConsumerState<ChatPage>
               !(ref.watch(settingsControllerProvider).value?.config.isReady ??
                   false),
           onSetup: _openModelSetup,
-          onExample: (text) {
-            if (_input.text.trim().isEmpty) {
-              _input.text = text;
-              _input.selection = TextSelection.collapsed(offset: text.length);
-            }
-          },
         ),
       );
     }
@@ -2733,6 +2783,39 @@ class _SelectionShareBar extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Centered phone title with an optional one-line mode note under it.
+class _PhoneTitle extends StatelessWidget {
+  const _PhoneTitle({required this.title, this.subtitle});
+
+  final String title;
+  final String? subtitle;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          title,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: text.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+        ),
+        if (subtitle != null)
+          Text(
+            subtitle!,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: text.labelSmall?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
+      ],
     );
   }
 }
@@ -3119,126 +3202,47 @@ class _JumpToBottomButton extends StatelessWidget {
 }
 
 class _EmptyState extends StatelessWidget {
-  const _EmptyState({
-    required this.needsSetup,
-    required this.onSetup,
-    required this.onExample,
-  });
+  const _EmptyState({required this.needsSetup, required this.onSetup});
   final bool needsSetup;
   final VoidCallback onSetup;
-  final ValueChanged<String> onExample;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final text = Theme.of(context).textTheme;
     return LayoutBuilder(
       builder: (context, constraints) {
-        final compact =
-            constraints.maxHeight < 300 || constraints.maxWidth < 320;
-        final edge = compact ? 12.0 : 24.0;
         final minContentHeight = constraints.hasBoundedHeight
-            ? (constraints.maxHeight - edge * 2)
+            ? (constraints.maxHeight - 48)
                   .clamp(0.0, double.infinity)
                   .toDouble()
             : 0.0;
         return SingleChildScrollView(
           key: const ValueKey('chat-empty-state-scroll'),
-          padding: EdgeInsets.all(edge),
+          padding: const EdgeInsets.all(24),
           child: ConstrainedBox(
             constraints: BoxConstraints(minHeight: minContentHeight),
             child: Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 360),
-                child: Container(
-                  padding: compact
-                      ? const EdgeInsets.fromLTRB(20, 18, 20, 18)
-                      : const EdgeInsets.fromLTRB(28, 28, 28, 24),
-                  decoration: BoxDecoration(
-                    color: scheme.surfaceContainer.withValues(alpha: 0.88),
-                    borderRadius: BorderRadius.circular(compact ? 20 : 24),
-                    border: Border.all(
-                      color: scheme.outlineVariant.withValues(alpha: 0.9),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.auto_awesome, size: 32, color: scheme.primary),
+                  const SizedBox(height: 12),
+                  Text(
+                    '有什么可以帮你？',
+                    textAlign: TextAlign.center,
+                    style: text.titleLarge,
+                  ),
+                  if (needsSetup) ...[
+                    const SizedBox(height: 20),
+                    FilledButton.icon(
+                      key: const ValueKey('chat-connect-model'),
+                      onPressed: onSetup,
+                      icon: const Icon(Icons.add),
+                      label: const Text('连接模型'),
                     ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: scheme.shadow.withValues(alpha: 0.05),
-                        blurRadius: 24,
-                        offset: const Offset(0, 10),
-                      ),
-                    ],
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Container(
-                        width: compact ? 44 : 56,
-                        height: compact ? 44 : 56,
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            colors: [
-                              scheme.primary,
-                              Color.lerp(
-                                scheme.primary,
-                                scheme.secondary,
-                                0.35,
-                              )!,
-                            ],
-                          ),
-                          borderRadius: BorderRadius.circular(
-                            compact ? 15 : 18,
-                          ),
-                        ),
-                        child: Icon(
-                          Icons.auto_awesome,
-                          color: scheme.onPrimary,
-                          size: compact ? 23 : 28,
-                        ),
-                      ),
-                      SizedBox(height: compact ? 12 : 18),
-                      Text(
-                        '开始一段对话',
-                        style: Theme.of(context).textTheme.titleLarge,
-                      ),
-                      SizedBox(height: compact ? 6 : 8),
-                      Text(
-                        needsSetup
-                            ? '先连接你使用的模型服务，验证成功后即可开始。'
-                            : '写下你的问题，或从一个小任务开始。',
-                        textAlign: TextAlign.center,
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: scheme.onSurfaceVariant,
-                          height: compact ? 1.35 : 1.5,
-                        ),
-                      ),
-                      const SizedBox(height: 20),
-                      if (needsSetup)
-                        FilledButton.icon(
-                          key: const ValueKey('chat-connect-model'),
-                          onPressed: onSetup,
-                          icon: const Icon(Icons.add),
-                          label: const Text('连接模型，开始使用'),
-                        )
-                      else
-                        Wrap(
-                          alignment: WrapAlignment.center,
-                          spacing: 8,
-                          runSpacing: 8,
-                          children: [
-                            OutlinedButton(
-                              onPressed: () =>
-                                  onExample('帮我梳理一个问题，并给出清晰的行动步骤。'),
-                              child: const Text('梳理思路'),
-                            ),
-                            OutlinedButton(
-                              onPressed: () =>
-                                  onExample('请帮我解读接下来提供的资料，提炼重点和待确认的问题。'),
-                              child: const Text('解读资料'),
-                            ),
-                          ],
-                        ),
-                    ],
-                  ),
-                ),
+                  ],
+                ],
               ),
             ),
           ),

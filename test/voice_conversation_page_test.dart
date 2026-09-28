@@ -62,6 +62,9 @@ void main() {
     );
     await drain(tester);
 
+    // Voice mode lives in the "+" tray; long-pressing the mic also opens it.
+    await tester.tap(find.byKey(const ValueKey('composer-plus-button')));
+    await drain(tester);
     await tester.tap(
       find.byKey(const ValueKey('composer-voice-conversation-button')),
     );
@@ -98,9 +101,6 @@ void main() {
       find.byKey(const ValueKey('voice-conversation-panel')),
       findsNothing,
     );
-    expect(
-      find.byKey(const ValueKey('composer-voice-conversation-button')),
-      findsOneWidget,
-    );
+    expect(find.byKey(const ValueKey('composer-plus-button')), findsOneWidget);
   });
 }

@@ -150,6 +150,7 @@ void main() {
         prefs.getKeys().map(prefs.get).join(),
         isNot(contains('opaque-test-key')),
       );
+      await tester.pump();
       await tester.tap(find.byTooltip('发送'));
       await tester.runAsync(
         () => Future<void>.delayed(const Duration(milliseconds: 100)),

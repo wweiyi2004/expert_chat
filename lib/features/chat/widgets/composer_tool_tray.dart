@@ -24,6 +24,7 @@ class ComposerToolTray extends StatelessWidget {
     required this.onPickMcpServers,
     required this.onDocumentEdit,
     required this.onToggleLongTask,
+    this.onVoiceConversation,
   });
 
   final bool imageGenerationConfigured;
@@ -45,6 +46,9 @@ class ComposerToolTray extends StatelessWidget {
   final VoidCallback? onPickMcpServers;
   final VoidCallback? onDocumentEdit;
   final VoidCallback? onToggleLongTask;
+
+  /// Opens hands-free voice mode; hidden when null.
+  final VoidCallback? onVoiceConversation;
 
   @override
   Widget build(BuildContext context) {
@@ -136,13 +140,13 @@ class ComposerToolTray extends StatelessWidget {
             ),
           ),
         ),
-      if (onToggleSearch != null)
+      if (onVoiceConversation != null)
         _ComposerPlusAction(
-          icon: Icons.travel_explore,
-          label: searchMode.composerLabel,
-          selected: searchMode != SearchMode.off,
+          key: const ValueKey('composer-voice-conversation-button'),
+          icon: Icons.headset_mic_outlined,
+          label: '语音对话',
           enabled: true,
-          onTap: onToggleSearch,
+          onTap: onVoiceConversation,
         ),
       if (documentEditAvailable)
         _ComposerPlusAction(
@@ -211,11 +215,8 @@ class ComposerToolTray extends StatelessWidget {
       key: const ValueKey('composer-plus-tray'),
       padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
       decoration: BoxDecoration(
-        color: scheme.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: scheme.outlineVariant.withValues(alpha: 0.85),
-        ),
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(20),
       ),
       child: LayoutBuilder(
         builder: (context, constraints) {
@@ -238,6 +239,7 @@ class ComposerToolTray extends StatelessWidget {
 
 class _ComposerPlusAction extends StatelessWidget {
   const _ComposerPlusAction({
+    super.key,
     required this.icon,
     required this.label,
     required this.enabled,

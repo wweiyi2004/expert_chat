@@ -65,7 +65,8 @@ void main() {
   for (final width in [320.0, 360.0, 390.0]) {
     for (final scale in [1.0, 1.24]) {
       testWidgets(
-        'managed context keeps work-mode labels visible at $width / $scale',
+        'phone top bar keeps the title readable and work mode in the menu '
+        'at $width / $scale',
         (tester) async {
           tester.view.physicalSize = Size(width, 720);
           tester.view.devicePixelRatio = 1;
@@ -98,36 +99,32 @@ void main() {
           );
           await tester.pumpAndSettle();
           expect(tester.takeException(), isNull);
-          final switchFinder = find.byKey(
-            const ValueKey('chat-work-mode-switch'),
+          // Phones keep only the title in the bar; the switch is in "⋯".
+          expect(
+            find.byKey(const ValueKey('chat-work-mode-switch')),
+            findsNothing,
           );
-          final paragraphs = find.descendant(
-            of: switchFinder,
-            matching: find.byType(RichText),
-          );
-          expect(paragraphs, findsNWidgets(2));
-          for (final element in paragraphs.evaluate()) {
-            final paragraph = element.renderObject! as RenderParagraph;
-            expect(
-              paragraph.size.width,
-              greaterThanOrEqualTo(
-                paragraph.getMaxIntrinsicWidth(double.infinity) - 0.1,
-              ),
-            );
-          }
-          expect(find.text('任务').hitTestable(), findsOneWidget);
           final title = find.descendant(
             of: find.byType(AppBar),
             matching: find.text('长对话'),
           );
           expect(title, findsOneWidget);
-          final titleRect = tester.getRect(title);
-          final modeRect = tester.getRect(switchFinder);
-          expect(titleRect.overlaps(modeRect), isFalse);
           final titleParagraph = tester.renderObject<RenderParagraph>(
             find.descendant(of: title, matching: find.byType(RichText)),
           );
           expect(titleParagraph.didExceedMaxLines, isFalse);
+          await tester.tap(find.byTooltip('更多'));
+          await tester.pumpAndSettle();
+          await tester.tap(find.byKey(const ValueKey('chat-work-mode-menu')));
+          await tester.pumpAndSettle();
+          expect(tester.takeException(), isNull);
+          expect(
+            find.descendant(
+              of: find.byType(AppBar),
+              matching: find.text('任务模式'),
+            ),
+            findsOneWidget,
+          );
           final input = tester.getRect(
             find.byKey(const ValueKey('composer-text-field')),
           );
@@ -262,7 +259,11 @@ void main() {
           .dy;
       expect(workSwitchCenter, greaterThan(appBarTop));
       expect(workSwitchCenter, lessThan(appBarBottom));
-      expect(find.text('联网'), findsNothing);
+      // Search sits next to deep think inside the box.
+      expect(
+        find.byKey(const ValueKey('composer-search-toggle')),
+        findsOneWidget,
+      );
       expect(find.text('配图'), findsNothing);
       expect(find.text('MCP'), findsNothing);
       expect(
@@ -270,8 +271,9 @@ void main() {
         findsOneWidget,
       );
       expect(find.byKey(const ValueKey('composer-plus-tray')), findsNothing);
+      // An empty draft shows the microphone in the send slot.
       expect(find.byTooltip('语音输入'), findsOneWidget);
-      expect(find.byTooltip('发送'), findsOneWidget);
+      expect(find.byTooltip('发送'), findsNothing);
 
       await tester.tap(find.byKey(const ValueKey('composer-plus-button')));
       await tester.pumpAndSettle();
@@ -361,31 +363,14 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(tester.takeException(), isNull);
-    expect(find.text('开始一段对话'), findsOneWidget);
+    expect(find.text('有什么可以帮你？'), findsOneWidget);
     expect(find.byKey(const ValueKey('chat-composer')), findsOneWidget);
-    expect(find.byKey(const ValueKey('chat-work-mode-switch')), findsOneWidget);
-
-    await tester.tap(find.text('任务'));
-    await tester.pumpAndSettle();
-    expect(tester.takeException(), isNull);
-
-    final switchRect = tester.getRect(
-      find.byKey(const ValueKey('chat-work-mode-switch')),
+    expect(find.byKey(const ValueKey('chat-work-mode-switch')), findsNothing);
+    expect(
+      find.descendant(of: find.byType(AppBar), matching: find.text('新对话')),
+      findsOneWidget,
     );
-    final appBarRect = tester.getRect(find.byType(AppBar));
-    expect(appBarRect.overlaps(switchRect), isTrue);
-
-    final titleInAppBar = find.descendant(
-      of: find.byType(AppBar),
-      matching: find.text('新对话'),
-    );
-    if (titleInAppBar.evaluate().isNotEmpty) {
-      expect(
-        tester.getRect(titleInAppBar).overlaps(switchRect),
-        isFalse,
-        reason: '手机顶栏标题不能和「对话|任务」叠在一起',
-      );
-    }
+    expect(find.byKey(const ValueKey('chat-new-conversation')), findsOneWidget);
   });
 }
 

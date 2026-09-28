@@ -181,7 +181,10 @@ class CharacterLibraryBody extends ConsumerWidget {
                         itemBuilder: (_) => const [
                           PopupMenuItem(value: 'chat', child: Text('用此角色开聊')),
                           PopupMenuItem(value: 'edit', child: Text('编辑')),
-                          PopupMenuItem(value: 'export', child: Text('导出 JSON')),
+                          PopupMenuItem(
+                            value: 'export',
+                            child: Text('导出 JSON'),
+                          ),
                           PopupMenuItem(value: 'delete', child: Text('删除')),
                         ],
                       ),
@@ -248,9 +251,9 @@ class _CharacterEmptyState extends StatelessWidget {
                   ? '创建一张角色卡后即可开聊；也可以返回用「导演故事」免卡开写。'
                   : '三步新建、导入 JSON，或用「导演故事」免卡开写。',
               textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                color: scheme.onSurfaceVariant,
-              ),
+              style: Theme.of(
+                context,
+              ).textTheme.bodyMedium?.copyWith(color: scheme.onSurfaceVariant),
             ),
             const SizedBox(height: 16),
             FilledButton.tonalIcon(
@@ -692,18 +695,8 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
       maxLines: 6,
       helper: '新故事会话时作为角色的第一条消息',
     ),
-    _field(
-      label: '示例对话（可选）',
-      controller: _example,
-      minLines: 2,
-      maxLines: 6,
-    ),
-    _field(
-      label: '额外系统提示（可选）',
-      controller: _system,
-      minLines: 2,
-      maxLines: 5,
-    ),
+    _field(label: '示例对话（可选）', controller: _example, minLines: 2, maxLines: 6),
+    _field(label: '额外系统提示（可选）', controller: _system, minLines: 2, maxLines: 5),
   ];
 
   @override
@@ -719,7 +712,10 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
               child: const Text('取消生成'),
             ),
           if (!_isCreate || _step >= 2 || _showAdvanced)
-            TextButton(onPressed: _busy ? null : _save, child: const Text('保存')),
+            TextButton(
+              onPressed: _busy ? null : _save,
+              child: const Text('保存'),
+            ),
         ],
       ),
       body: ListView(

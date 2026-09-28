@@ -6,6 +6,7 @@ import 'package:expert_chat/data/db/app_database.dart' hide Conversation;
 import 'package:expert_chat/data/drift_conversation_repository.dart';
 import 'package:expert_chat/data/gateway_config.dart';
 import 'package:expert_chat/data/models.dart';
+import 'package:expert_chat/data/settings_bundle.dart';
 import 'package:expert_chat/domain/mcp/mcp_host_tools.dart';
 import 'package:expert_chat/state/settings_controller.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -16,6 +17,87 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  test(
+    'selected desktop tool aliases match execution even with unselected collisions',
+    () {
+      const state = SettingsState(
+        gateway: GatewayConfig(
+          customMcpServers: [
+            CustomMcpServer(
+              id: 'web',
+              name: 'Web',
+              baseUrl: 'https://web.example',
+              toolsDiscovered: true,
+              tools: [DiscoveredMcpTool(name: 'click')],
+            ),
+            CustomMcpServer(
+              id: 'desktop',
+              name: 'Desktop',
+              baseUrl: '',
+              computerUse: true,
+              localProcess: McpProcessConfig(command: 'cua-driver.exe'),
+              toolsDiscovered: true,
+              tools: [DiscoveredMcpTool(name: 'click')],
+            ),
+          ],
+        ),
+      );
+      final tool = state.modelMcpToolsFor(['desktop']).single;
+      expect(tool.name, 'desktop__click');
+      expect(state.routedMcpTool(tool.name)!.serverId, 'desktop');
+      expect(
+        state.connectionForRouted(state.routedMcpTool(tool.name)!).computerUse,
+        isTrue,
+      );
+    },
+  );
+  test(
+    'imported local programs remain disabled until explicitly enabled',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
+        {},
+      );
+      final prefs = await SharedPreferences.getInstance();
+      final container = ProviderContainer(
+        overrides: [
+          sharedPrefsProvider.overrideWithValue(prefs),
+          secureStorageProvider.overrideWithValue(const FlutterSecureStorage()),
+        ],
+      );
+      addTearDown(container.dispose);
+      await container.read(settingsControllerProvider.future);
+      const server = CustomMcpServer(
+        id: 'desktop',
+        name: 'Desktop',
+        baseUrl: '',
+        localProcess: McpProcessConfig(
+          command: 'not-executed.exe',
+          arguments: ['mcp'],
+        ),
+        computerUse: true,
+        allowForeground: true,
+        toolsDiscovered: true,
+        tools: [DiscoveredMcpTool(name: 'click')],
+      );
+      await container
+          .read(settingsControllerProvider.notifier)
+          .importSettingsJson(
+            SettingsBundle.encode({
+              'gateway': const GatewayConfig(
+                customMcpServers: [server],
+              ).toJson(),
+            }),
+          );
+      final imported = (await container.read(
+        settingsControllerProvider.future,
+      )).gateway.customMcpServers.single;
+      expect(imported.enabled, isFalse);
+      expect(imported.toolsDiscovered, isFalse);
+      expect(imported.allowForeground, isFalse);
+      expect(imported.localProcess!.command, 'not-executed.exe');
+    },
+  );
   test('factory gateway has no custom MCP servers', () {
     const config = GatewayConfig();
     expect(config.customMcpServers, isEmpty);

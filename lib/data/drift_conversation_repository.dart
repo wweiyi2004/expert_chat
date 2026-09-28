@@ -10,15 +10,31 @@ import 'conversation_repository.dart';
 import 'db/app_database.dart' hide Conversation;
 import 'models.dart';
 import 'story_models.dart';
+import 'stored_json.dart';
 
 /// Drift/SQLite-backed [ConversationRepository]. A drop-in replacement for
 /// [JsonConversationRepository]: it implements the same `loadAll`/`saveAll`
 /// contract (syncing the in-memory list to the DB) and adds full-text-ish
 /// [search] over titles and message bodies.
-class DriftConversationRepository implements ConversationRepository {
+class DriftConversationRepository
+    implements ConversationRepository, ConversationMetadataRepository {
   DriftConversationRepository(this._db);
 
   final AppDatabase _db;
+
+  @override
+  Future<void> renameConversation(
+    String id,
+    String title,
+    DateTime updatedAt,
+  ) => (_db.update(_db.conversations)..where((row) => row.id.equals(id)))
+      .write(
+        ConversationsCompanion(
+          title: Value(title),
+          updatedAt: Value(updatedAt),
+        ),
+      )
+      .then((_) {});
 
   @override
   Future<List<Conversation>> loadAll() async {
@@ -50,35 +66,21 @@ class DriftConversationRepository implements ConversationRepository {
     final convoRows = await (_db.select(
       _db.conversations,
     )..orderBy([(c) => OrderingTerm.desc(c.updatedAt)])).get();
-    final taskRows = await (_db.select(
-      _db.messages,
-    )..where((m) => m.longTaskJson.isNotNull())).get();
+    final taskRows =
+        await (_db.selectOnly(_db.messages)
+              ..addColumns([_db.messages.convoId, _db.messages.longTaskJson])
+              ..where(_db.messages.longTaskJson.isNotNull()))
+            .get();
     final activeIds = <String>{};
     for (final row in taskRows) {
-      if (_longTaskJsonIsActive(row.longTaskJson)) {
-        activeIds.add(row.convoId);
+      if (_longTaskJsonIsActive(row.read(_db.messages.longTaskJson))) {
+        activeIds.add(row.read(_db.messages.convoId)!);
       }
     }
     return [
       for (final c in convoRows)
-        ConversationSummary(
-          id: c.id,
-          title: c.title,
-          updatedAt: c.updatedAt,
-          mode: ConversationMode.fromWire(c.mode),
-          characterId: c.characterId,
-          participantIds: _decodeStringList(c.participantIdsJson),
-          localCast: _decodeList(c.localCastJson, CharacterCard.fromJson),
-          worldInfoIds: _decodeStringList(c.worldInfoIdsJson),
-          customMcpServerIds: _decodeStringList(c.customMcpServerIdsJson),
-          outline: c.outline,
-          authorNote: c.authorNote,
-          plotCursor: c.plotCursor,
-          venue: c.venue,
-          nextSpeakerIndex: c.nextSpeakerIndex,
-          targetTotalChars: c.targetTotalChars,
-          workMode: c.workMode,
-          activeChildren: _decodeActiveChildren(c.activeChildrenJson),
+        ConversationSummary.fromConversation(
+          _fromConvoRow(c, messages: const [], messagesLoaded: false),
           hasActiveLongTask: activeIds.contains(c.id),
         ),
     ];
@@ -113,52 +115,53 @@ class DriftConversationRepository implements ConversationRepository {
         .replaceAll('%', r'\%')
         .replaceAll('_', r'\_');
     final like = '%$escaped%';
-    final titleRows = await (_db.select(
-      _db.conversations,
-    )..where((c) => c.title.lower().like(like, escapeChar: r'\'))).get();
-    final msgRows = await (_db.select(
-      _db.messages,
-    )..where((m) => m.content.lower().like(like, escapeChar: r'\'))).get();
-    final titleById = {for (final c in titleRows) c.id: c.title};
-    if (titleById.isEmpty && msgRows.isEmpty) return const [];
-
-    final missingTitleIds = <String>{
-      for (final m in msgRows)
-        if (!titleById.containsKey(m.convoId)) m.convoId,
-    };
-    if (missingTitleIds.isNotEmpty) {
-      final extra = await (_db.select(
-        _db.conversations,
-      )..where((c) => c.id.isIn(missingTitleIds.toList()))).get();
-      for (final c in extra) {
-        titleById[c.id] = c.title;
-      }
-    }
-
+    // Only fetch searchable fields, never large attachment/base64 columns.
+    final rows = await _db
+        .customSelect(
+          "SELECT m.id,m.convo_id,m.content,c.title FROM messages m "
+          "JOIN conversations c ON c.id=m.convo_id "
+          "WHERE lower(m.content) LIKE ? ESCAPE '\\' "
+          "ORDER BY m.created_at DESC,m.id DESC LIMIT ?",
+          variables: [Variable(like), const Variable(conversationSearchLimit)],
+        )
+        .get();
     final hits = <SearchHit>[];
     final matchedConvoIds = <String>{};
-    final needle = q.toLowerCase();
-    for (final m in msgRows) {
-      final idx = m.content.toLowerCase().indexOf(needle);
-      if (idx < 0) continue;
-      matchedConvoIds.add(m.convoId);
+    for (final row in rows) {
+      final content = row.read<String>('content');
+      final index = content.toLowerCase().indexOf(q.toLowerCase());
+      if (index < 0) continue;
+      final id = row.read<String>('convo_id');
+      matchedConvoIds.add(id);
       hits.add(
         SearchHit(
-          convoId: m.convoId,
-          messageId: m.id,
-          snippet: searchSnippetAround(m.content, idx, q.length),
-          title: titleById[m.convoId] ?? '',
+          convoId: id,
+          messageId: row.read<String>('id'),
+          snippet: searchSnippetAround(content, index, q.length),
+          title: row.read<String>('title'),
         ),
       );
     }
-    for (final c in titleRows) {
-      if (matchedConvoIds.contains(c.id)) continue;
-      hits.add(
-        SearchHit(
-          convoId: c.id,
-          messageId: '',
-          snippet: c.title,
-          title: c.title,
+    final remaining = conversationSearchLimit - hits.length;
+    if (remaining > 0) {
+      final titleRows =
+          await (_db.select(_db.conversations)
+                ..where(
+                  (c) =>
+                      c.title.lower().like(like, escapeChar: r'\') &
+                      c.id.isNotIn(matchedConvoIds),
+                )
+                ..orderBy([(c) => OrderingTerm.desc(c.updatedAt)])
+                ..limit(remaining))
+              .get();
+      hits.addAll(
+        titleRows.map(
+          (c) => SearchHit(
+            convoId: c.id,
+            messageId: '',
+            snippet: c.title,
+            title: c.title,
+          ),
         ),
       );
     }
@@ -169,27 +172,51 @@ class DriftConversationRepository implements ConversationRepository {
     dynamic c, {
     required List<ChatMessage> messages,
     bool messagesLoaded = true,
-  }) => Conversation(
-    id: c.id as String,
-    title: c.title as String,
-    updatedAt: c.updatedAt as DateTime,
-    activeChildren: _decodeActiveChildren(c.activeChildrenJson as String?),
-    messages: messages,
-    mode: ConversationMode.fromWire(c.mode as String),
-    characterId: c.characterId as String?,
-    participantIds: _decodeStringList(c.participantIdsJson as String?),
-    localCast: _decodeList(c.localCastJson as String?, CharacterCard.fromJson),
-    worldInfoIds: _decodeStringList(c.worldInfoIdsJson as String?),
-    customMcpServerIds: _decodeStringList(c.customMcpServerIdsJson as String?),
-    outline: c.outline as String,
-    authorNote: c.authorNote as String,
-    plotCursor: c.plotCursor as int,
-    venue: c.venue as String,
-    nextSpeakerIndex: c.nextSpeakerIndex as int,
-    targetTotalChars: c.targetTotalChars as int,
-    workMode: c.workMode as bool,
-    messagesLoaded: messagesLoaded,
-  );
+  }) {
+    final recovery = StoredJsonReader();
+    return Conversation(
+      id: c.id as String,
+      title: c.title as String,
+      updatedAt: c.updatedAt as DateTime,
+      activeChildren: recovery.stringMap(
+        'active_children_json',
+        c.activeChildrenJson as String?,
+      ),
+      messages: messages,
+      mode: ConversationMode.fromWire(c.mode as String),
+      characterId: c.characterId as String?,
+      projectId: c.projectId as String?,
+      participantIds: recovery.list(
+        'participant_ids_json',
+        c.participantIdsJson as String?,
+        (v) => v as String,
+      ),
+      localCast: recovery.list(
+        'local_cast_json',
+        c.localCastJson as String?,
+        (v) => CharacterCard.fromJson(v as Map<String, dynamic>),
+      ),
+      worldInfoIds: recovery.list(
+        'world_info_ids_json',
+        c.worldInfoIdsJson as String?,
+        (v) => v as String,
+      ),
+      customMcpServerIds: recovery.list(
+        'custom_mcp_server_ids_json',
+        c.customMcpServerIdsJson as String?,
+        (v) => v as String,
+      ),
+      outline: c.outline as String,
+      authorNote: c.authorNote as String,
+      plotCursor: c.plotCursor as int,
+      venue: c.venue as String,
+      nextSpeakerIndex: c.nextSpeakerIndex as int,
+      targetTotalChars: c.targetTotalChars as int,
+      workMode: c.workMode as bool,
+      messagesLoaded: messagesLoaded,
+      recoveredStorage: Map.unmodifiable(recovery.retained),
+    );
+  }
 
   bool _longTaskJsonIsActive(String? raw) {
     if (raw == null || raw.isEmpty) return false;
@@ -202,27 +229,6 @@ class DriftConversationRepository implements ConversationRepository {
           status == 'running';
     } catch (_) {
       return false;
-    }
-  }
-
-  Map<String, String> _decodeActiveChildren(String? raw) {
-    if (raw == null || raw.isEmpty) return {};
-    try {
-      final map = jsonDecode(raw) as Map<String, dynamic>;
-      return map.map((k, v) => MapEntry(k, v as String));
-    } catch (_) {
-      return {};
-    }
-  }
-
-  List<String> _decodeStringList(String? raw) {
-    if (raw == null || raw.isEmpty) return const [];
-    try {
-      return (jsonDecode(raw) as List<dynamic>)
-          .map((e) => e.toString())
-          .toList();
-    } catch (_) {
-      return const [];
     }
   }
 
@@ -256,21 +262,31 @@ class DriftConversationRepository implements ConversationRepository {
   /// actually changed. This avoids rewriting a long conversation when a new
   /// turn is appended or a single streamed reply is finalized.
   Future<void> _writeConversation(Conversation convo) async {
-    final activeChildrenJson = convo.activeChildren.isEmpty
-        ? null
-        : jsonEncode(convo.activeChildren);
-    final worldInfoIdsJson = convo.worldInfoIds.isEmpty
-        ? null
-        : jsonEncode(convo.worldInfoIds);
-    final customMcpServerIdsJson = convo.customMcpServerIds.isEmpty
-        ? null
-        : jsonEncode(convo.customMcpServerIds);
-    final participantIdsJson = convo.participantIds.isEmpty
-        ? null
-        : jsonEncode(convo.participantIds);
-    final localCastJson = convo.localCast.isEmpty
-        ? null
-        : jsonEncode(convo.localCast.map((card) => card.toJson()).toList());
+    final activeChildrenJson =
+        convo.recoveredStorage['active_children_json'] ??
+        (convo.activeChildren.isEmpty
+            ? null
+            : jsonEncode(convo.activeChildren));
+    final worldInfoIdsJson =
+        convo.recoveredStorage['world_info_ids_json'] ??
+        (convo.worldInfoIds.isEmpty ? null : jsonEncode(convo.worldInfoIds));
+    final customMcpServerIdsJson =
+        convo.recoveredStorage['custom_mcp_server_ids_json'] ??
+        (convo.customMcpServerIds.isEmpty
+            ? null
+            : jsonEncode(convo.customMcpServerIds));
+    final participantIdsJson =
+        convo.recoveredStorage['participant_ids_json'] ??
+        (convo.participantIds.isEmpty
+            ? null
+            : jsonEncode(convo.participantIds));
+    final localCastJson =
+        convo.recoveredStorage['local_cast_json'] ??
+        (convo.localCast.isEmpty
+            ? null
+            : jsonEncode(
+                convo.localCast.map((card) => card.toJson()).toList(),
+              ));
     final storedConvo = await (_db.select(
       _db.conversations,
     )..where((c) => c.id.equals(convo.id))).getSingleOrNull();
@@ -282,6 +298,7 @@ class DriftConversationRepository implements ConversationRepository {
         storedConvo.activeChildrenJson != activeChildrenJson ||
         storedConvo.mode != convo.mode.wire ||
         storedConvo.characterId != convo.characterId ||
+        storedConvo.projectId != convo.projectId ||
         storedConvo.worldInfoIdsJson != worldInfoIdsJson ||
         storedConvo.customMcpServerIdsJson != customMcpServerIdsJson ||
         storedConvo.participantIdsJson != participantIdsJson ||
@@ -304,6 +321,7 @@ class DriftConversationRepository implements ConversationRepository {
               activeChildrenJson: Value(activeChildrenJson),
               mode: Value(convo.mode.wire),
               characterId: Value(convo.characterId),
+              projectId: Value(convo.projectId),
               worldInfoIdsJson: Value(worldInfoIdsJson),
               customMcpServerIdsJson: Value(customMcpServerIdsJson),
               participantIdsJson: Value(participantIdsJson),
@@ -442,84 +460,105 @@ class DriftConversationRepository implements ConversationRepository {
 
     return [
       for (final c in convoRows)
-        Conversation(
-          id: c.id,
-          title: c.title,
-          updatedAt: c.updatedAt,
-          activeChildren: _decodeActiveChildren(c.activeChildrenJson),
+        _fromConvoRow(
+          c,
           messages: [
             for (final m in byConvo[c.id] ?? const <Message>[]) _toMessage(m),
           ],
-          mode: ConversationMode.fromWire(c.mode),
-          characterId: c.characterId,
-          participantIds: _decodeStringList(c.participantIdsJson),
-          localCast: _decodeList(c.localCastJson, CharacterCard.fromJson),
-          worldInfoIds: _decodeStringList(c.worldInfoIdsJson),
-          customMcpServerIds: _decodeStringList(c.customMcpServerIdsJson),
-          outline: c.outline,
-          authorNote: c.authorNote,
-          plotCursor: c.plotCursor,
-          venue: c.venue,
-          nextSpeakerIndex: c.nextSpeakerIndex,
-          targetTotalChars: c.targetTotalChars,
-          workMode: c.workMode,
         ),
     ];
   }
 
-  ChatMessage _toMessage(Message m) => ChatMessage(
-    id: m.id,
-    role: MessageRoleApi.fromWire(m.role),
-    parentId: m.parentId,
-    content: m.content,
-    reasoning: m.reasoning,
-    model: m.model,
-    thinkingMillis: m.thinkingMillis,
-    speakerId: m.speakerId,
-    speakerName: m.speakerName,
-    kind: MessageKind.values.firstWhere(
-      (value) => value.name == m.kind,
-      orElse: () => MessageKind.text,
-    ),
-    createdAt: m.createdAt,
-    attachments: _decodeList(m.attachmentsJson, (e) => Attachment.fromJson(e)),
-    citations: _decodeList(m.citationsJson, (e) => Citation.fromJson(e)),
-    searchActivities: _decodeList(
-      m.searchActivitiesJson,
-      (e) => SearchActivity.fromJson(e),
-    ),
-    appliedWorldInfo: _decodeList(
-      m.appliedWorldInfoJson,
-      (e) => WorldInfoHit.fromJson(e),
-    ),
-    longTask: _decodeObject(m.longTaskJson, LongTaskState.fromJson),
-    turnSkill: _decodeObject(m.turnSkillJson, TurnSkillMark.fromJson),
-  );
+  ChatMessage _toMessage(Message m) {
+    final recovery = StoredJsonReader();
+    return ChatMessage(
+      id: m.id,
+      role: MessageRoleApi.fromWire(m.role),
+      parentId: m.parentId,
+      content: m.content,
+      reasoning: m.reasoning,
+      model: m.model,
+      thinkingMillis: m.thinkingMillis,
+      speakerId: m.speakerId,
+      speakerName: m.speakerName,
+      kind: MessageKind.values.firstWhere(
+        (value) => value.name == m.kind,
+        orElse: () => MessageKind.text,
+      ),
+      createdAt: m.createdAt,
+      attachments: recovery.list(
+        'attachments_json',
+        m.attachmentsJson,
+        (e) => Attachment.fromJson(e as Map<String, dynamic>),
+      ),
+      citations: recovery.list(
+        'citations_json',
+        m.citationsJson,
+        (e) => Citation.fromJson(e as Map<String, dynamic>),
+      ),
+      searchActivities: recovery.list(
+        'search_activities_json',
+        m.searchActivitiesJson,
+        (e) => SearchActivity.fromJson(e as Map<String, dynamic>),
+      ),
+      appliedWorldInfo: recovery.list(
+        'applied_world_info_json',
+        m.appliedWorldInfoJson,
+        (e) => WorldInfoHit.fromJson(e as Map<String, dynamic>),
+      ),
+      longTask: recovery.object(
+        'long_task_json',
+        m.longTaskJson,
+        (e) => LongTaskState.fromJson(e as Map<String, dynamic>),
+      ),
+      turnSkill: recovery.object(
+        'turn_skill_json',
+        m.turnSkillJson,
+        (e) => TurnSkillMark.fromJson(e as Map<String, dynamic>),
+      ),
+      recoveredStorage: Map.unmodifiable(recovery.retained),
+    );
+  }
 
-  String? _attachmentsJson(ChatMessage message) => message.attachments.isEmpty
-      ? null
-      : jsonEncode(message.attachments.map((a) => a.toJson()).toList());
+  String? _attachmentsJson(ChatMessage message) =>
+      message.recoveredStorage['attachments_json'] ??
+      (message.attachments.isEmpty
+          ? null
+          : jsonEncode(message.attachments.map((a) => a.toJson()).toList()));
 
-  String? _citationsJson(ChatMessage message) => message.citations.isEmpty
-      ? null
-      : jsonEncode(message.citations.map((c) => c.toJson()).toList());
+  String? _citationsJson(ChatMessage message) =>
+      message.recoveredStorage['citations_json'] ??
+      (message.citations.isEmpty
+          ? null
+          : jsonEncode(message.citations.map((c) => c.toJson()).toList()));
 
   String? _searchActivitiesJson(ChatMessage message) =>
-      message.searchActivities.isEmpty
-      ? null
-      : jsonEncode(message.searchActivities.map((a) => a.toJson()).toList());
+      message.recoveredStorage['search_activities_json'] ??
+      (message.searchActivities.isEmpty
+          ? null
+          : jsonEncode(
+              message.searchActivities.map((a) => a.toJson()).toList(),
+            ));
 
   String? _appliedWorldInfoJson(ChatMessage message) =>
-      message.appliedWorldInfo.isEmpty
-      ? null
-      : jsonEncode(message.appliedWorldInfo.map((a) => a.toJson()).toList());
+      message.recoveredStorage['applied_world_info_json'] ??
+      (message.appliedWorldInfo.isEmpty
+          ? null
+          : jsonEncode(
+              message.appliedWorldInfo.map((a) => a.toJson()).toList(),
+            ));
 
   String? _longTaskJson(ChatMessage message) =>
-      message.longTask == null ? null : jsonEncode(message.longTask!.toJson());
+      message.recoveredStorage['long_task_json'] ??
+      (message.longTask == null
+          ? null
+          : jsonEncode(message.longTask!.toJson()));
 
-  String? _turnSkillJson(ChatMessage message) => message.turnSkill == null
-      ? null
-      : jsonEncode(message.turnSkill!.toJson());
+  String? _turnSkillJson(ChatMessage message) =>
+      message.recoveredStorage['turn_skill_json'] ??
+      (message.turnSkill == null
+          ? null
+          : jsonEncode(message.turnSkill!.toJson()));
 
   MessagesCompanion _toCompanion(ChatMessage m, String convoId, int seq) =>
       MessagesCompanion.insert(
@@ -543,26 +582,4 @@ class DriftConversationRepository implements ConversationRepository {
         createdAt: m.createdAt,
         seq: Value(seq),
       );
-
-  List<T> _decodeList<T>(
-    String? raw,
-    T Function(Map<String, dynamic>) fromJson,
-  ) {
-    if (raw == null || raw.isEmpty) return const [];
-    try {
-      final list = jsonDecode(raw) as List<dynamic>;
-      return list.map((e) => fromJson(e as Map<String, dynamic>)).toList();
-    } catch (_) {
-      return const [];
-    }
-  }
-
-  T? _decodeObject<T>(String? raw, T Function(Map<String, dynamic>) fromJson) {
-    if (raw == null || raw.isEmpty) return null;
-    try {
-      return fromJson(jsonDecode(raw) as Map<String, dynamic>);
-    } catch (_) {
-      return null;
-    }
-  }
 }

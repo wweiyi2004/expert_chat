@@ -23,9 +23,7 @@ String analyzeSpeechStyle(
     );
   }
 
-  final scores = <_Emotion, int>{
-    for (final e in _Emotion.values) e: 0,
-  };
+  final scores = <_Emotion, int>{for (final e in _Emotion.values) e: 0};
 
   void bump(_Emotion e, [int n = 1]) => scores[e] = (scores[e] ?? 0) + n;
 
@@ -39,7 +37,8 @@ String analyzeSpeechStyle(
   if (ellipsis > 0) bump(_Emotion.gentle, ellipsis);
 
   // Dialogue / quote → more performative.
-  final hasDialogue = text.contains('「') ||
+  final hasDialogue =
+      text.contains('「') ||
       text.contains('」') ||
       text.contains('"') ||
       text.contains('"') ||
@@ -183,94 +182,15 @@ extension on _Emotion {
 }
 
 const Map<_Emotion, List<String>> _lexicon = {
-  _Emotion.happy: [
-    '开心',
-    '高兴',
-    '快乐',
-    '太好了',
-    '真棒',
-    '恭喜',
-    '幸福',
-    '喜欢',
-    '哈哈',
-    '耶',
-  ],
-  _Emotion.excited: [
-    '激动',
-    '兴奋',
-    '太棒',
-    '冲啊',
-    '出发',
-    '加油',
-    '胜利',
-    '终于',
-    '哇',
-    '天哪',
-  ],
-  _Emotion.tender: [
-    '温柔',
-    '抱抱',
-    '想你',
-    '安心',
-    '陪伴',
-    '晚安',
-    '小心',
-    '慢慢来',
-    '没关系',
-  ],
-  _Emotion.sad: [
-    '难过',
-    '伤心',
-    '失望',
-    '遗憾',
-    '哭',
-    '眼泪',
-    '孤独',
-    '抱歉',
-    '对不起',
-    '失去',
-  ],
-  _Emotion.angry: [
-    '生气',
-    '愤怒',
-    '可恶',
-    '混蛋',
-    '岂有此理',
-    '受够了',
-    '滚',
-    '烦死',
-  ],
-  _Emotion.curious: [
-    '为什么',
-    '怎么会',
-    '难道',
-    '是不是',
-    '什么情况',
-    '好奇',
-    '究竟',
-  ],
-  _Emotion.playful: [
-    '哼',
-    '才不是',
-    '笨蛋',
-    '讨厌',
-    '啦',
-    '嘛',
-    '嘻嘻',
-    '偷偷',
-    '骗你的',
-  ],
+  _Emotion.happy: ['开心', '高兴', '快乐', '太好了', '真棒', '恭喜', '幸福', '喜欢', '哈哈', '耶'],
+  _Emotion.excited: ['激动', '兴奋', '太棒', '冲啊', '出发', '加油', '胜利', '终于', '哇', '天哪'],
+  _Emotion.tender: ['温柔', '抱抱', '想你', '安心', '陪伴', '晚安', '小心', '慢慢来', '没关系'],
+  _Emotion.sad: ['难过', '伤心', '失望', '遗憾', '哭', '眼泪', '孤独', '抱歉', '对不起', '失去'],
+  _Emotion.angry: ['生气', '愤怒', '可恶', '混蛋', '岂有此理', '受够了', '滚', '烦死'],
+  _Emotion.curious: ['为什么', '怎么会', '难道', '是不是', '什么情况', '好奇', '究竟'],
+  _Emotion.playful: ['哼', '才不是', '笨蛋', '讨厌', '啦', '嘛', '嘻嘻', '偷偷', '骗你的'],
   _Emotion.gentle: ['或许', '也许', '静静', '慢慢', '仿佛', '微风', '月光', '回忆'],
-  _Emotion.serious: [
-    '因此',
-    '总之',
-    '需要注意',
-    '重要',
-    '必须',
-    '结论',
-    '分析',
-    '建议',
-  ],
+  _Emotion.serious: ['因此', '总之', '需要注意', '重要', '必须', '结论', '分析', '建议'],
   _Emotion.narrative: ['从前', '故事', '那天', '后来', '忽然', '只见', '远处', '夜色'],
   _Emotion.warm: ['谢谢', '麻烦你', '请', '你好', '欢迎', '一起'],
 };

@@ -1,17 +1,18 @@
 import 'package:characters/characters.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:wakelock_plus/wakelock_plus.dart';
+import 'generation_keep_alive.dart';
 
-/// Keeps generation from sleeping the device and notifies when a turn finishes
-/// while the app is backgrounded.
+/// Protects active generation and notifies when a background turn finishes.
 class GenerationNotify {
   GenerationNotify._();
 
   static final _plugin = FlutterLocalNotificationsPlugin();
+  static final _keepAlive = GenerationKeepAlive();
   static var _ready = false;
   static var _inBackground = false;
   static var _generating = false;
+  static var _revision = 0;
 
   static bool get inBackground => _inBackground;
 
@@ -58,14 +59,16 @@ class GenerationNotify {
 
   static Future<void> onGenerationStart() async {
     _generating = true;
+    final revision = ++_revision;
+    // Start before notification initialization/permission awaits, while the
+    // user's send action still has a foreground Activity.
+    await _keepAlive.start();
+    if (!_generating || revision != _revision) return;
     if (kIsWeb) return;
-    try {
-      await WakelockPlus.enable();
-    } catch (_) {}
     // Request notification permission while still foreground. Doing this only
     // in onGenerationEnd (often backgrounded) is ignored on Android 13+.
     await init();
-    if (!_inBackground) {
+    if (_generating && revision == _revision && !_inBackground) {
       await _ensureAndroidPermission();
     }
   }
@@ -76,17 +79,16 @@ class GenerationNotify {
     String? preview,
     bool cancelled = false,
   }) async {
-    final wasGenerating = _generating;
+    if (!_generating) return;
     _generating = false;
+    final revision = ++_revision;
+    await _keepAlive.stop();
     if (kIsWeb) return;
-    try {
-      await WakelockPlus.disable();
-    } catch (_) {}
 
-    if (!wasGenerating || cancelled || !_inBackground) return;
+    if (revision != _revision || cancelled || !_inBackground) return;
     await init();
-    if (!_ready) return;
-    await _ensureAndroidPermission();
+    if (!_ready || revision != _revision || !_inBackground) return;
+    // Permission dialogs cannot be shown in the background; start requested it.
 
     final title = success ? '回复已生成' : '生成未完成';
     final clippedTitle = _clip(conversationTitle, 40);

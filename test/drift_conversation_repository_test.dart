@@ -741,51 +741,57 @@ void main() {
     expect(restored.source, ChatSkillSource.model);
   });
 
-  test('loadSummaries skips message bodies and loadConversation loads one', () async {
-    final db = AppDatabase(NativeDatabase.memory());
-    addTearDown(db.close);
-    final repo = DriftConversationRepository(db);
-    final timestamp = DateTime.utc(2026, 8, 31);
-    await repo.saveConversation(
-      Conversation(
-        id: 'a',
-        title: '会话甲',
-        messages: [
-          ChatMessage(
-            id: 'a1',
-            role: MessageRole.user,
-            content: 'hello from a',
-            createdAt: timestamp,
-          ),
-        ],
-        updatedAt: timestamp,
-      ),
-    );
-    await repo.saveConversation(
-      Conversation(
-        id: 'b',
-        title: '会话乙',
-        messages: [
-          ChatMessage(
-            id: 'b1',
-            role: MessageRole.user,
-            content: 'secret payload',
-            createdAt: timestamp,
-          ),
-        ],
-        updatedAt: timestamp.add(const Duration(seconds: 1)),
-      ),
-    );
+  test(
+    'loadSummaries skips message bodies and loadConversation loads one',
+    () async {
+      final db = AppDatabase(NativeDatabase.memory());
+      addTearDown(db.close);
+      final repo = DriftConversationRepository(db);
+      final timestamp = DateTime.utc(2026, 8, 31);
+      await repo.saveConversation(
+        Conversation(
+          id: 'a',
+          title: '会话甲',
+          messages: [
+            ChatMessage(
+              id: 'a1',
+              role: MessageRole.user,
+              content: 'hello from a',
+              createdAt: timestamp,
+            ),
+          ],
+          updatedAt: timestamp,
+        ),
+      );
+      await repo.saveConversation(
+        Conversation(
+          id: 'b',
+          title: '会话乙',
+          messages: [
+            ChatMessage(
+              id: 'b1',
+              role: MessageRole.user,
+              content: 'secret payload',
+              createdAt: timestamp,
+            ),
+          ],
+          updatedAt: timestamp.add(const Duration(seconds: 1)),
+        ),
+      );
 
-    final summaries = await repo.loadSummaries();
-    expect(summaries.map((s) => s.id).toList(), ['b', 'a']);
-    expect(summaries.every((s) => s.toPlaceholder().messages.isEmpty), isTrue);
-    expect(summaries.every((s) => !s.toPlaceholder().messagesLoaded), isTrue);
+      final summaries = await repo.loadSummaries();
+      expect(summaries.map((s) => s.id).toList(), ['b', 'a']);
+      expect(
+        summaries.every((s) => s.toPlaceholder().messages.isEmpty),
+        isTrue,
+      );
+      expect(summaries.every((s) => !s.toPlaceholder().messagesLoaded), isTrue);
 
-    final loaded = await repo.loadConversation('a');
-    expect(loaded.messagesLoaded, isTrue);
-    expect(loaded.messages.single.content, 'hello from a');
-  });
+      final loaded = await repo.loadConversation('a');
+      expect(loaded.messagesLoaded, isTrue);
+      expect(loaded.messages.single.content, 'hello from a');
+    },
+  );
 
   test('searchMessages does not load the archive on empty query', () async {
     final db = AppDatabase(NativeDatabase.memory());
@@ -815,41 +821,44 @@ void main() {
     expect(hits.single.snippet, contains('drift'));
   });
 
-  test('saving an unloaded placeholder does not delete stored messages', () async {
-    final db = AppDatabase(NativeDatabase.memory());
-    addTearDown(db.close);
-    final repo = DriftConversationRepository(db);
-    final timestamp = DateTime.utc(2026, 8, 31);
-    await repo.saveConversation(
-      Conversation(
-        id: 'keep',
-        title: '旧标题',
-        messages: [
-          ChatMessage(
-            id: 'keep-1',
-            role: MessageRole.user,
-            content: 'must survive',
-            createdAt: timestamp,
-          ),
-        ],
-        updatedAt: timestamp,
-      ),
-    );
+  test(
+    'saving an unloaded placeholder does not delete stored messages',
+    () async {
+      final db = AppDatabase(NativeDatabase.memory());
+      addTearDown(db.close);
+      final repo = DriftConversationRepository(db);
+      final timestamp = DateTime.utc(2026, 8, 31);
+      await repo.saveConversation(
+        Conversation(
+          id: 'keep',
+          title: '旧标题',
+          messages: [
+            ChatMessage(
+              id: 'keep-1',
+              role: MessageRole.user,
+              content: 'must survive',
+              createdAt: timestamp,
+            ),
+          ],
+          updatedAt: timestamp,
+        ),
+      );
 
-    await repo.saveConversation(
-      Conversation(
-        id: 'keep',
-        title: '新标题',
-        messages: const [],
-        updatedAt: timestamp.add(const Duration(seconds: 1)),
-        messagesLoaded: false,
-      ),
-    );
+      await repo.saveConversation(
+        Conversation(
+          id: 'keep',
+          title: '新标题',
+          messages: const [],
+          updatedAt: timestamp.add(const Duration(seconds: 1)),
+          messagesLoaded: false,
+        ),
+      );
 
-    final loaded = await repo.loadConversation('keep');
-    expect(loaded.title, '新标题');
-    expect(loaded.messages.single.content, 'must survive');
-  });
+      final loaded = await repo.loadConversation('keep');
+      expect(loaded.title, '新标题');
+      expect(loaded.messages.single.content, 'must survive');
+    },
+  );
 }
 
 Future<List<String>> _auditOperations(AppDatabase db) async {

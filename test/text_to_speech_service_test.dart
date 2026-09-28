@@ -65,22 +65,10 @@ print('不该朗读的代码');
       // valid URL, so they are safe to keep (unlike '.', '?' and '!', which
       // are also URL characters and cannot be told apart from sentence
       // endings).
-      expect(
-        prepareTextForSpeech('请访问 https://example.com。谢谢'),
-        '请访问 。谢谢',
-      );
-      expect(
-        prepareTextForSpeech('请看 https://example.com，然后继续'),
-        '请看 ，然后继续',
-      );
-      expect(
-        prepareTextForSpeech('看这里 https://example.com！太棒了'),
-        '看这里 ！太棒了',
-      );
-      expect(
-        prepareTextForSpeech('详见 https://example.com/path?a=1。'),
-        '详见 。',
-      );
+      expect(prepareTextForSpeech('请访问 https://example.com。谢谢'), '请访问 。谢谢');
+      expect(prepareTextForSpeech('请看 https://example.com，然后继续'), '请看 ，然后继续');
+      expect(prepareTextForSpeech('看这里 https://example.com！太棒了'), '看这里 ！太棒了');
+      expect(prepareTextForSpeech('详见 https://example.com/path?a=1。'), '详见 。');
     });
   });
 
@@ -134,14 +122,10 @@ print('不该朗读的代码');
       final fileA = File(
         '${directory.path}${Platform.pathSeparator}speech-1-0.mp3',
       );
-      final fileB = File(
-        '${directory.path}${Platform.pathSeparator}stale.wav',
-      );
+      final fileB = File('${directory.path}${Platform.pathSeparator}stale.wav');
       await fileA.writeAsBytes(const [1]);
       await fileB.writeAsBytes(const [2]);
-      final sub = Directory(
-        '${directory.path}${Platform.pathSeparator}sub',
-      );
+      final sub = Directory('${directory.path}${Platform.pathSeparator}sub');
       final nested = File('${sub.path}${Platform.pathSeparator}keep.mp3');
       await sub.create();
       await nested.writeAsBytes(const [3]);
@@ -353,78 +337,81 @@ print('不该朗读的代码');
     },
   );
 
-  test('pipelines sentence synthesis so look-ahead starts before play finishes', () async {
-    // Three short sentences → three API calls. The service should kick off the
-    // first (1 + prefetchAhead) requests before any of them resolve, so a slow
-    // first response still overlaps with look-ahead downloads.
-    var inFlight = 0;
-    var maxInFlight = 0;
-    final started = <String>[];
-    final release = <Completer<void>>[];
+  test(
+    'pipelines sentence synthesis so look-ahead starts before play finishes',
+    () async {
+      // Three short sentences → three API calls. The service should kick off the
+      // first (1 + prefetchAhead) requests before any of them resolve, so a slow
+      // first response still overlaps with look-ahead downloads.
+      var inFlight = 0;
+      var maxInFlight = 0;
+      final started = <String>[];
+      final release = <Completer<void>>[];
 
-    final dio = Dio()
-      ..interceptors.add(
-        InterceptorsWrapper(
-          onRequest: (options, handler) async {
-            final body = jsonDecode(options.data as String) as Map;
-            final input = body['input'] as String? ?? '';
-            started.add(input);
-            final gate = Completer<void>();
-            release.add(gate);
-            inFlight++;
-            if (inFlight > maxInFlight) maxInFlight = inFlight;
-            await gate.future;
-            inFlight--;
-            // Minimal valid-looking mp3-ish payload for the write path.
-            handler.resolve(
-              Response<List<int>>(
-                requestOptions: options,
-                statusCode: 200,
-                data: List<int>.filled(32, 1),
-              ),
-            );
-          },
+      final dio = Dio()
+        ..interceptors.add(
+          InterceptorsWrapper(
+            onRequest: (options, handler) async {
+              final body = jsonDecode(options.data as String) as Map;
+              final input = body['input'] as String? ?? '';
+              started.add(input);
+              final gate = Completer<void>();
+              release.add(gate);
+              inFlight++;
+              if (inFlight > maxInFlight) maxInFlight = inFlight;
+              await gate.future;
+              inFlight--;
+              // Minimal valid-looking mp3-ish payload for the write path.
+              handler.resolve(
+                Response<List<int>>(
+                  requestOptions: options,
+                  statusCode: 200,
+                  data: List<int>.filled(32, 1),
+                ),
+              );
+            },
+          ),
+        );
+
+      final service = ApiTextToSpeechService(
+        mediaProvider: OpenAiCompatibleMediaProvider(dio: dio),
+      );
+      addTearDown(service.dispose);
+
+      unawaited(
+        service.speak(
+          const TextToSpeechRequest(
+            messageId: 'assistant-1',
+            text: '第一句。第二句。第三句。',
+            apiConfig: MediaApiConfig(
+              baseUrl: 'http://placeholder',
+              model: 'tts-1',
+            ),
+            apiKey: 'secret',
+          ),
         ),
       );
 
-    final service = ApiTextToSpeechService(
-      mediaProvider: OpenAiCompatibleMediaProvider(dio: dio),
-    );
-    addTearDown(service.dispose);
+      // Let the pipeline prime its look-ahead window.
+      for (var i = 0; i < 50 && started.length < 3; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
 
-    unawaited(
-      service.speak(
-        const TextToSpeechRequest(
-          messageId: 'assistant-1',
-          text: '第一句。第二句。第三句。',
-          apiConfig: MediaApiConfig(
-            baseUrl: 'http://placeholder',
-            model: 'tts-1',
-          ),
-          apiKey: 'secret',
-        ),
-      ),
-    );
+      // With prefetchAhead=2 and 3 sentences, all three should be in flight
+      // (or at least started) before the first response returns.
+      expect(started.length, 3);
+      expect(maxInFlight, greaterThanOrEqualTo(2));
 
-    // Let the pipeline prime its look-ahead window.
-    for (var i = 0; i < 50 && started.length < 3; i++) {
-      await Future<void>.delayed(const Duration(milliseconds: 10));
-    }
-
-    // With prefetchAhead=2 and 3 sentences, all three should be in flight
-    // (or at least started) before the first response returns.
-    expect(started.length, 3);
-    expect(maxInFlight, greaterThanOrEqualTo(2));
-
-    // Release in order so play can progress; we only assert pipeline priming.
-    for (final gate in release) {
-      if (!gate.isCompleted) gate.complete();
-    }
-    // Stop before just_audio tries to decode our fake bytes on CI hosts
-    // without a working audio backend.
-    await service.stop();
-    expect(service.playback.value.phase, TextToSpeechPhase.idle);
-  });
+      // Release in order so play can progress; we only assert pipeline priming.
+      for (final gate in release) {
+        if (!gate.isCompleted) gate.complete();
+      }
+      // Stop before just_audio tries to decode our fake bytes on CI hosts
+      // without a working audio backend.
+      await service.stop();
+      expect(service.playback.value.phase, TextToSpeechPhase.idle);
+    },
+  );
 
   test('packSentences:false keeps each sentence as its own pipeline job', () {
     const source = '今天天气不错。我们去散步吧！你觉得怎么样？';

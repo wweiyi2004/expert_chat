@@ -46,6 +46,7 @@ app.*.map.json
 # Gradle build output (android/build is a separate tree from the root /build/)
 /android/build/
 /android/.gradle/
+/android/.kotlin/
 
 # Local configuration (SDK paths)
 android/local.properties
@@ -97,3 +98,11 @@ server/authservice/.*-request.json
 server/authservice/.*-response.json
 server/authservice/UPSTREAM_COMMIT
 server/**/data/
+
+# Generated MCP credentials, user documents and local tool environments
+mcp.env
+mcp_data/
+server/.venv*/
+*.tsbuildinfo
+
+.tools/

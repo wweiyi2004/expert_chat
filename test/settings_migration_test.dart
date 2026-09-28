@@ -7,6 +7,8 @@ import 'package:expert_chat/data/gateway_config.dart';
 import 'package:expert_chat/data/media_api_config.dart';
 import 'package:expert_chat/data/provider_profile.dart';
 import 'package:expert_chat/data/ui_prefs.dart';
+import 'package:expert_chat/data/task_budget_prefs.dart';
+import 'package:expert_chat/domain/llm/llm_provider.dart';
 import 'package:expert_chat/state/settings_controller.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -17,6 +19,85 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  test(
+    'selecting the default effort explicitly persists the override',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
+        {},
+      );
+      addTearDown(() {
+        FlutterSecureStoragePlatform.instance =
+            TestFlutterSecureStoragePlatform({});
+      });
+      final prefs = await SharedPreferences.getInstance();
+      ProviderContainer create() => ProviderContainer(
+        overrides: [
+          sharedPrefsProvider.overrideWithValue(prefs),
+          secureStorageProvider.overrideWithValue(const FlutterSecureStorage()),
+        ],
+      );
+      final first = create();
+      addTearDown(first.dispose);
+      final initial = await first.read(settingsControllerProvider.future);
+      expect(initial.hasReasoningEffortOverride, isFalse);
+      await first
+          .read(settingsControllerProvider.notifier)
+          .setReasoningEffort(ReasoningEffort.high);
+      expect(
+        first
+            .read(settingsControllerProvider)
+            .requireValue
+            .hasReasoningEffortOverride,
+        isTrue,
+      );
+      final second = create();
+      addTearDown(second.dispose);
+      final restored = await second.read(settingsControllerProvider.future);
+      expect(restored.reasoningEffort, ReasoningEffort.high);
+      expect(restored.hasReasoningEffortOverride, isTrue);
+    },
+  );
+
+  test(
+    'task budget defaults persist and legacy installs remain custom',
+    () async {
+      for (final legacy in [false, true]) {
+        SharedPreferences.setMockInitialValues(
+          legacy ? {'baseUrl': 'https://example.com'} : {},
+        );
+        FlutterSecureStoragePlatform.instance =
+            TestFlutterSecureStoragePlatform({});
+        final prefs = await SharedPreferences.getInstance();
+        ProviderContainer create() => ProviderContainer(
+          overrides: [
+            sharedPrefsProvider.overrideWithValue(prefs),
+            secureStorageProvider.overrideWithValue(
+              const FlutterSecureStorage(),
+            ),
+          ],
+        );
+        final first = create();
+        final initial = await first.read(settingsControllerProvider.future);
+        expect(
+          initial.taskBudget.preset,
+          legacy ? TaskBudgetPreset.custom : TaskBudgetPreset.standard,
+        );
+        first.dispose();
+        final second = create();
+        final restored = await second.read(settingsControllerProvider.future);
+        expect(restored.taskBudget.toJson(), initial.taskBudget.toJson());
+        await second
+            .read(settingsControllerProvider.notifier)
+            .setTaskBudget(TaskBudgetPrefs.forPreset(TaskBudgetPreset.quick));
+        expect(
+          TaskBudgetPrefs.decode(prefs.getString('taskBudget')).preset,
+          TaskBudgetPreset.quick,
+        );
+        second.dispose();
+      }
+    },
+  );
   test('composer search and image modes default to auto and persist', () async {
     SharedPreferences.setMockInitialValues({});
     FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
@@ -212,6 +293,67 @@ void main() {
     expect(state.ttsApiKey, 'mimo-secret');
   });
 
+  test(
+    'DeepSeek Flash is added once to official profiles without changing selections',
+    () async {
+      final profiles = [
+        for (final url in [
+          'https://api.deepseek.com/v1',
+          'https://gateway.example/v1',
+          'https://api.deepseek.com.example/v1',
+        ])
+          ProviderProfile(
+            id: url,
+            name: 'Custom DeepSeek',
+            baseUrl: url,
+            chatModel: 'deepseek-v4-pro',
+            reasonerModel: 'deepseek-v4-pro',
+            models: const ['deepseek-v4-pro', 'custom-model'],
+          ),
+      ];
+      SharedPreferences.setMockInitialValues({
+        'providerProfiles': jsonEncode(
+          profiles.map((p) => p.toJson()).toList(),
+        ),
+        'activeProfileId': profiles.first.id,
+        'selectedModel': 'custom-model',
+      });
+      FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
+        {},
+      );
+      addTearDown(() {
+        FlutterSecureStoragePlatform.instance =
+            TestFlutterSecureStoragePlatform({});
+      });
+      final prefs = await SharedPreferences.getInstance();
+      for (var load = 0; load < 2; load++) {
+        final container = ProviderContainer(
+          overrides: [
+            sharedPrefsProvider.overrideWithValue(prefs),
+            secureStorageProvider.overrideWithValue(
+              const FlutterSecureStorage(),
+            ),
+          ],
+        );
+        addTearDown(container.dispose);
+        final state = await container.read(settingsControllerProvider.future);
+        expect(state.selectedModel, 'custom-model');
+        expect(state.profiles.first.chatModel, 'deepseek-v4-pro');
+        expect(state.profiles.first.reasonerModel, 'deepseek-v4-pro');
+        expect(state.profiles.first.models, [
+          'deepseek-v4-pro',
+          'custom-model',
+          'deepseek-flash',
+        ]);
+        for (final profile in state.profiles.skip(1)) {
+          expect(profile.models, ['deepseek-v4-pro', 'custom-model']);
+        }
+        final stored = jsonDecode(prefs.getString('providerProfiles')!) as List;
+        expect((stored.first as Map)['models'], state.profiles.first.models);
+      }
+    },
+  );
+
   test('DeepSeek v4 profiles gain the official vision model', () async {
     final profile = ProviderProfile(
       id: 'v4-profile',
@@ -246,6 +388,7 @@ void main() {
     final state = await container.read(settingsControllerProvider.future);
     expect(state.profiles.single.chatModel, 'deepseek-v4-flash');
     expect(state.profiles.single.reasonerModel, 'deepseek-v4-pro');
+    expect(state.profiles.single.models, contains('deepseek-flash'));
     expect(
       state.profiles.single.models,
       contains('deepseek-v4-flash-vision-exp'),

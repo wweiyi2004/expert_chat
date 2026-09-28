@@ -3,863 +3,78 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/providers.dart';
 import '../data/chat_skill.dart';
+import '../data/jev_config.dart';
 import '../data/composer_modes.dart';
 import '../data/context_prefs.dart';
 import '../data/gateway_config.dart';
 import '../data/media_api_config.dart';
 import '../data/provider_profile.dart';
 import '../data/settings_bundle.dart';
+import '../data/task_budget_prefs.dart';
 import '../data/ui_prefs.dart';
 import '../domain/llm/llm_provider.dart';
 import '../domain/gateway/gateway_auth_service.dart';
-import '../domain/mcp/mcp_host_tools.dart';
 import '../domain/tools/search_provider.dart';
 
-/// Bounds / defaults for the web-search knobs surfaced in settings.
-const int kDefaultSearchMaxRounds = 3;
-const int kMinSearchMaxRounds = 1;
-const int kMaxSearchMaxRounds = 5;
-const int kDefaultSearchMaxResults = 8;
-const int kMinSearchMaxResults = 4;
-const int kMaxSearchMaxResults = 12;
+import '../data/settings_state.dart';
+import '../data/settings_storage.dart';
+import '../data/settings_storage_keys.dart';
+export '../data/settings_storage_keys.dart'
+    show providerApiKeyStorageKey, customMcpTokenStorageKey;
+export '../data/settings_state.dart';
 
-/// App settings: a list of named provider profiles (one active at a time),
-/// the per-profile API key (kept in secure storage), an optional model
-/// override within the active profile, and the theme mode.
-class SettingsState {
-  const SettingsState({
-    this.profiles = const [],
-    this.activeProfileId,
-    this.apiKey = '',
-    this.selectedModel,
-    this.themeMode = ThemeMode.system,
-    this.searchBackend = SearchBackend.duckduckgo,
-    this.searchApiKey = '',
-    this.searchBrainModel,
-    this.searchMaxRounds = kDefaultSearchMaxRounds,
-    this.searchMaxResults = kDefaultSearchMaxResults,
-    this.searchMode = SearchMode.auto,
-    this.imageGenMode = ImageGenMode.auto,
-    this.reasoningEffort = ReasoningEffort.high,
-    this.systemPrompt = '',
-    this.chatSkills = const ChatSkillCatalog([]),
-    this.ui = const UiPrefs(),
-    this.visionApi = const MediaApiConfig(),
-    this.visionApiKey = '',
-    this.imageGenerationApi = const MediaApiConfig(),
-    this.imageGenerationApiKey = '',
-    this.ttsApi = const MediaApiConfig(),
-    this.ttsApiKey = '',
-    this.asrApi = const MediaApiConfig(),
-    this.asrApiKey = '',
-    this.context = const ContextPrefs(),
-    this.gateway = const GatewayConfig(),
-    this.gatewayToken = '',
-    this.gatewayLegacyToken = '',
-    this.gatewayAuthSession,
-    this.gatewayTokenProvider,
-    this.customMcpTokens = const {},
-    this.memoryEnabled = false,
-    this.researchModeEnabled = false,
-    this.studyModeEnabled = true,
-    this.creationModeEnabled = true,
-  });
-
-  final List<ProviderProfile> profiles;
-  final String? activeProfileId;
-
-  /// API key of the active profile (loaded from secure storage).
-  final String apiKey;
-
-  /// Model override within the active profile; null = use profile.chatModel.
-  final String? selectedModel;
-  final ThemeMode themeMode;
-
-  /// Web-search backend + its key (for the "联网搜索" feature, M5).
-  final SearchBackend searchBackend;
-  final String searchApiKey;
-
-  /// Model that plans multi-round retrieval for models without function
-  /// calling ("搜索大脑"). Null/empty = follow the active profile's chat model.
-  final String? searchBrainModel;
-
-  /// Max search rounds per answer (brain orchestration AND the tool loop).
-  final int searchMaxRounds;
-
-  /// Results requested per search call.
-  final int searchMaxResults;
-
-  /// Composer 联网 default (off / auto / always). Missing prefs → auto.
-  final SearchMode searchMode;
-
-  /// Composer 配图 default (off / auto / always). Missing prefs → auto.
-  final ImageGenMode imageGenMode;
-
-  /// DeepSeek/Grok thinking intensity while composer 深度思考 is on.
-  final ReasoningEffort reasoningEffort;
-
-  /// User-authored general prompt. Empty on first install even though the
-  /// chat catalog fallback has factory text. Synced with
-  /// [chatSkills].fallback.prompt when the user edits general.
-  final String systemPrompt;
-
-  /// Per-turn skill catalog. Empty lists are sanitized on read/save.
-  final ChatSkillCatalog chatSkills;
-
-  /// Appearance / reading preferences (text scale, density, message style…).
-  final UiPrefs ui;
-
-  /// Optional, independently configured multimedia endpoints.
-  final MediaApiConfig visionApi;
-  final String visionApiKey;
-  final MediaApiConfig imageGenerationApi;
-  final String imageGenerationApiKey;
-  final MediaApiConfig ttsApi;
-  final String ttsApiKey;
-  final MediaApiConfig asrApi;
-  final String asrApiKey;
-  final ContextPrefs context;
-
-  /// One connection for every server-side Expert Chat capability.
-  final GatewayConfig gateway;
-  final String gatewayToken;
-  final String gatewayLegacyToken;
-  final GatewayAuthSession? gatewayAuthSession;
-  final Future<String> Function()? gatewayTokenProvider;
-
-  /// Bearer tokens for [GatewayConfig.customMcpServers], keyed by server id.
-  final Map<String, String> customMcpTokens;
-
-  /// Local Markdown long-term memory. Off by default until the user opts in.
-  final bool memoryEnabled;
-
-  /// M7: hidden research mode (SSH / tmux / AI command approval). Default off.
-  final bool researchModeEnabled;
-
-  /// Study hub tab (导师 / 课程 / 刷题 / 复习). Default on.
-  final bool studyModeEnabled;
-
-  /// Creation hub tab (角色 / 世界书 / 导演故事). Default on; can hide for a cleaner nav.
-  final bool creationModeEnabled;
-
-  bool get searchConfigured => searchApiKey.trim().isNotEmpty;
-  bool get gatewayConfigured => gateway.isConfigured;
-  bool get gatewaySignedIn => gatewayAuthSession != null;
-  bool get supportsLongTasks =>
-      gateway.supports(GatewayCapabilityIds.longTasks);
-  bool get supportsDocumentEdit =>
-      gateway.supports(GatewayCapabilityIds.documentEdit);
-  bool get supportsDocumentConvert =>
-      gateway.supports(GatewayCapabilityIds.documentConvert);
-  List<DiscoveredMcpTool> get modelDocumentMcpTools =>
-      gateway.capabilitiesDiscovered
-      ? McpHostTools.modelFacing(gateway.mcpTools)
-      : const [];
-  List<RoutedMcpTool> get routedMcpTools => McpHostTools.mergeForModel(
-    documentTools: modelDocumentMcpTools,
-    customServers: gateway.customMcpServers,
-  );
-  List<DiscoveredMcpTool> get modelMcpTools => [
-    for (final routed in routedMcpTools)
-      DiscoveredMcpTool(
-        name: routed.exposedName,
-        description: routed.tool.description,
-        inputSchema: routed.tool.inputSchema,
-      ),
-  ];
-
-  List<McpServerChoice> get availableMcpServers => [
-    if (gateway.isConfigured)
-      McpServerChoice(
-        id: McpHostTools.expertChatServerId,
-        name: '文档 MCP',
-        toolsDiscovered: gateway.capabilitiesDiscovered,
-      ),
-    for (final server in gateway.customMcpServers)
-      if (server.enabled)
-        McpServerChoice(
-          id: server.id,
-          name: server.name,
-          toolsDiscovered: server.toolsDiscovered,
-        ),
-  ];
-
-  List<DiscoveredMcpTool> modelMcpToolsFor(Iterable<String> selectedIds) {
-    final selected = selectedIds.toSet();
-    final routed = McpHostTools.mergeForModel(
-      documentTools: selected.contains(McpHostTools.expertChatServerId)
-          ? modelDocumentMcpTools
-          : const [],
-      customServers: [
-        for (final server in gateway.customMcpServers)
-          if (selected.contains(server.id)) server,
-      ],
-    );
-    return [
-      for (final tool in routed)
-        DiscoveredMcpTool(
-          name: tool.exposedName,
-          description: tool.tool.description,
-          inputSchema: tool.tool.inputSchema,
-        ),
-    ];
-  }
-
-  RoutedMcpTool? routedMcpTool(String name) {
-    for (final tool in routedMcpTools) {
-      if (tool.exposedName == name) return tool;
-    }
-    return null;
-  }
-
-  GatewayConnection connectionForRouted(RoutedMcpTool tool) {
-    final serverId = tool.serverId;
-    if (serverId == null) return gatewayConnection;
-    for (final server in gateway.customMcpServers) {
-      if (server.id == serverId) {
-        return gateway.connectionForCustom(
-          server,
-          customMcpTokens[server.id] ?? '',
-        );
-      }
-    }
-    return gatewayConnection;
-  }
-
-  GatewayConnection get gatewayConnection => GatewayConnection(
-    config: gateway,
-    apiToken: gatewayToken,
-    tokenProvider: gatewayTokenProvider,
-  );
-  bool get visionConfigured => visionApi.isConfiguredWith(visionApiKey);
-
-  /// True when the user can upload pictures for this turn: either the optional
-  /// vision API is set, or the active chat/reasoner model accepts images.
-  bool canAttachImages({required bool deepThink}) =>
-      visionConfigured ||
-      ModelCapabilities.resolve(model).supportsVision ||
-      (deepThink && ModelCapabilities.resolve(reasonerModel).supportsVision);
-  bool get imageGenerationConfigured =>
-      imageGenerationApi.isConfiguredWith(imageGenerationApiKey);
-  bool get ttsConfigured => ttsApi.isConfiguredWith(ttsApiKey);
-  bool get asrConfigured => asrApi.isConfiguredWith(asrApiKey);
-
-  ProviderProfile? get active {
-    if (profiles.isEmpty) return null;
-    return profiles.firstWhere(
-      (p) => p.id == activeProfileId,
-      orElse: () => profiles.first,
-    );
-  }
-
-  String get baseUrl => active?.baseUrl ?? '';
-  String get model => selectedModel ?? active?.chatModel ?? KnownModels.chat;
-
-  /// Dedicated reasoner model for providers that cannot toggle thinking on
-  /// the chat model. DeepSeek V4 ignores this and stays on [model].
-  String get reasonerModel => active?.reasonerModel ?? model;
-
-  /// Resolved "搜索大脑" model: the explicit choice, else the active profile's
-  /// chat model (NOT the possibly-reasoner override, which can't call tools).
-  String get effectiveSearchBrainModel {
-    final chosen = searchBrainModel?.trim() ?? '';
-    if (chosen.isNotEmpty) return chosen;
-    return active?.chatModel ?? model;
-  }
-
-  /// Models offered in the picker for the active profile.
-  List<String> get availableModels => active?.models ?? KnownModels.all;
-
-  LlmConfig get config =>
-      LlmConfig(baseUrl: baseUrl, apiKey: apiKey, model: model);
-
-  LlmConfig get visionConfig => LlmConfig(
-    baseUrl: visionApi.baseUrl,
-    apiKey: visionApiKey,
-    model: visionApi.model,
-    capabilities: const ModelCapabilities(
-      isReasoner: false,
-      supportsTools: false,
-      sendThinkingField: false,
-      supportsVision: true,
-    ),
-  );
-
-  SettingsState copyWith({
-    List<ProviderProfile>? profiles,
-    String? activeProfileId,
-    String? apiKey,
-    Object? selectedModel = _sentinel,
-    ThemeMode? themeMode,
-    SearchBackend? searchBackend,
-    String? searchApiKey,
-    Object? searchBrainModel = _sentinel,
-    int? searchMaxRounds,
-    int? searchMaxResults,
-    SearchMode? searchMode,
-    ImageGenMode? imageGenMode,
-    ReasoningEffort? reasoningEffort,
-    String? systemPrompt,
-    ChatSkillCatalog? chatSkills,
-    UiPrefs? ui,
-    MediaApiConfig? visionApi,
-    String? visionApiKey,
-    MediaApiConfig? imageGenerationApi,
-    String? imageGenerationApiKey,
-    MediaApiConfig? ttsApi,
-    String? ttsApiKey,
-    MediaApiConfig? asrApi,
-    String? asrApiKey,
-    ContextPrefs? context,
-    GatewayConfig? gateway,
-    String? gatewayToken,
-    String? gatewayLegacyToken,
-    Object? gatewayAuthSession = _sentinel,
-    Future<String> Function()? gatewayTokenProvider,
-    Map<String, String>? customMcpTokens,
-    bool? memoryEnabled,
-    bool? researchModeEnabled,
-    bool? studyModeEnabled,
-    bool? creationModeEnabled,
-  }) => SettingsState(
-    profiles: profiles ?? this.profiles,
-    activeProfileId: activeProfileId ?? this.activeProfileId,
-    apiKey: apiKey ?? this.apiKey,
-    selectedModel: identical(selectedModel, _sentinel)
-        ? this.selectedModel
-        : selectedModel as String?,
-    themeMode: themeMode ?? this.themeMode,
-    searchBackend: searchBackend ?? this.searchBackend,
-    searchApiKey: searchApiKey ?? this.searchApiKey,
-    searchBrainModel: identical(searchBrainModel, _sentinel)
-        ? this.searchBrainModel
-        : searchBrainModel as String?,
-    searchMaxRounds: searchMaxRounds ?? this.searchMaxRounds,
-    searchMaxResults: searchMaxResults ?? this.searchMaxResults,
-    searchMode: searchMode ?? this.searchMode,
-    imageGenMode: imageGenMode ?? this.imageGenMode,
-    reasoningEffort: reasoningEffort ?? this.reasoningEffort,
-    systemPrompt: systemPrompt ?? this.systemPrompt,
-    chatSkills: chatSkills ?? this.chatSkills,
-    ui: ui ?? this.ui,
-    visionApi: visionApi ?? this.visionApi,
-    visionApiKey: visionApiKey ?? this.visionApiKey,
-    imageGenerationApi: imageGenerationApi ?? this.imageGenerationApi,
-    imageGenerationApiKey: imageGenerationApiKey ?? this.imageGenerationApiKey,
-    ttsApi: ttsApi ?? this.ttsApi,
-    ttsApiKey: ttsApiKey ?? this.ttsApiKey,
-    asrApi: asrApi ?? this.asrApi,
-    asrApiKey: asrApiKey ?? this.asrApiKey,
-    context: context ?? this.context,
-    gateway: gateway ?? this.gateway,
-    gatewayToken: gatewayToken ?? this.gatewayToken,
-    gatewayLegacyToken: gatewayLegacyToken ?? this.gatewayLegacyToken,
-    gatewayAuthSession: identical(gatewayAuthSession, _sentinel)
-        ? this.gatewayAuthSession
-        : gatewayAuthSession as GatewayAuthSession?,
-    gatewayTokenProvider: gatewayTokenProvider ?? this.gatewayTokenProvider,
-    customMcpTokens: customMcpTokens ?? this.customMcpTokens,
-    memoryEnabled: memoryEnabled ?? this.memoryEnabled,
-    researchModeEnabled: researchModeEnabled ?? this.researchModeEnabled,
-    studyModeEnabled: studyModeEnabled ?? this.studyModeEnabled,
-    creationModeEnabled: creationModeEnabled ?? this.creationModeEnabled,
-  );
-
-  static const _sentinel = Object();
-}
-
-const _kProfiles = 'providerProfiles';
-const _kActiveProfile = 'activeProfileId';
-const _kSelectedModel = 'selectedModel';
-const _kThemeMode = 'themeMode';
-const _kSearchBackend = 'searchBackend';
-const _kSearchApiKeySecure = 'search_api_key';
-const _kSearchBrainModel = 'searchBrainModel';
-const _kSearchMaxRounds = 'searchMaxRounds';
-const _kSearchMaxResults = 'searchMaxResults';
-const _kComposerSearchMode = 'composerSearchMode';
-const _kComposerImageGenMode = 'composerImageGenMode';
-const _kReasoningEffort = 'reasoningEffort';
-const _kSystemPrompt = 'systemPrompt';
-const _kChatSkills = 'chatSkills';
-const _kUiPrefs = 'uiPrefs';
-const _kVisionApi = 'visionApi';
-const _kVisionApiKeySecure = 'vision_api_key';
-const _kImageGenerationApi = 'imageGenerationApi';
-const _kImageGenerationApiKeySecure = 'image_generation_api_key';
-const _kTtsApi = 'ttsApi';
-const _kTtsApiKeySecure = 'tts_api_key';
-const _kAsrApi = 'asrApi';
-const _kAsrApiKeySecure = 'asr_api_key';
-const _kContextPrefs = 'contextPrefs';
-const _kGateway = 'expertChatGateway';
-const _kGatewayTokenSecure = 'expert_chat_gateway_token';
-String customMcpTokenStorageKey(String id) => 'custom_mcp_token_$id';
-const _kGatewayOidcAccessTokenSecure = 'expert_chat_gateway_oidc_access_token';
-const _kGatewayOidcRefreshTokenSecure =
-    'expert_chat_gateway_oidc_refresh_token';
-const _kGatewayOidcExpiresAtSecure = 'expert_chat_gateway_oidc_expires_at';
-const _kGatewayOidcSubjectSecure = 'expert_chat_gateway_oidc_subject';
-const _kGatewayOidcDisplayNameSecure = 'expert_chat_gateway_oidc_display_name';
-// Legacy split-service keys retained for a lossless one-time migration.
-const _kLegacyDocumentService = 'documentService';
-const _kLegacyDocumentServiceTokenSecure = 'document_service_token';
-const _kLegacyLongTaskGateway = 'longTaskGateway';
-const _kLegacyLongTaskGatewayTokenSecure = 'long_task_gateway_token';
-const _kMemoryEnabled = 'memoryEnabled';
-const _kResearchModeEnabled = 'researchModeEnabled';
-const _kStudyModeEnabled = 'studyModeEnabled';
-const _kCreationModeEnabled = 'creationModeEnabled';
-
-// Legacy M1 keys (single-config) — read once for migration.
-const _kLegacyBaseUrl = 'baseUrl';
-const _kLegacyModel = 'model';
-const _kLegacyApiKeySecure = 'llm_api_key';
-const _kProfilesCorruptBackup = 'providerProfiles.corrupt';
-
-/// Stable secure-storage key used by provider-scoped background jobs as well as
-/// the settings controller. A job may outlive a change of active provider.
-String providerApiKeyStorageKey(String profileId) => 'apikey_$profileId';
-
-/// TTS providers keep independent endpoint/model/voice profiles. The legacy
-/// keys above continue to mirror whichever profile is active so old releases
-/// and existing installs remain compatible.
-String _ttsApiProfilePrefsKey(SpeechApiProtocol protocol) =>
-    'ttsApi.${protocol.name}';
-
-String _ttsApiProfileSecureKey(SpeechApiProtocol protocol) =>
-    'tts_api_key.${protocol.name}';
-
-/// Loads settings (profiles + active key) and persists changes. Migrates the
-/// M1 single-config layout to a profile on first run.
 class SettingsController extends AsyncNotifier<SettingsState> {
   Future<GatewayAuthSession>? _gatewayRefreshInFlight;
 
+  SettingsStorage get _storage => SettingsStorage(
+    prefs: ref.read(sharedPrefsProvider),
+    secure: ref.read(secureStorageProvider),
+    authService: ref.read(gatewayAuthServiceProvider),
+    freshGatewayToken: _freshGatewayToken,
+  );
+
   @override
-  Future<SettingsState> build() async {
-    final prefs = ref.read(sharedPrefsProvider);
-    final secure = ref.read(secureStorageProvider);
-
-    final profileRead = _readProfiles(prefs);
-    List<ProviderProfile> profiles = profileRead.profiles;
-    String? activeId = prefs.getString(_kActiveProfile);
-    final legacyKey = await secure.read(key: _kLegacyApiKeySecure);
-
-    // First run / migration from the M1 single-config layout.
-    // Never treat a *corrupt* profiles blob as first-run empty — that would
-    // overwrite the user's JSON with a default preset.
-    if (profiles.isEmpty && !profileRead.corrupt) {
-      final legacyBaseUrl = prefs.getString(_kLegacyBaseUrl);
-      if (legacyBaseUrl != null || legacyKey != null) {
-        final migrated = ProviderProfile(
-          name: 'DeepSeek',
-          baseUrl: legacyBaseUrl ?? 'https://api.deepseek.com',
-          chatModel: prefs.getString(_kLegacyModel) ?? KnownModels.chat,
-          reasonerModel: KnownModels.reasoner,
-          models: KnownModels.all,
-        );
-        profiles = [migrated];
-        if (legacyKey != null && legacyKey.isNotEmpty) {
-          await secure.write(
-            key: providerApiKeyStorageKey(migrated.id),
-            value: legacyKey,
-          );
-        }
-      } else {
-        profiles = [ProviderPreset.presets.first.toProfile()];
-      }
-      activeId = profiles.first.id;
-      await _writeProfiles(prefs, profiles);
-      await prefs.setString(_kActiveProfile, activeId);
-    } else if (profiles.isEmpty && profileRead.corrupt) {
-      // Keep UI usable without clobbering the corrupt store.
-      profiles = [ProviderPreset.presets.first.toProfile()];
-      activeId = profiles.first.id;
-    }
-
-    // One-time upgrade: bump unmodified DeepSeek profiles to the v4 models.
-    if (profiles.any(_isLegacyDeepSeek)) {
-      profiles = [
-        for (final p in profiles)
-          if (_isLegacyDeepSeek(p))
-            p.copyWith(
-              chatModel: KnownModels.chat,
-              reasonerModel: KnownModels.reasoner,
-              models: KnownModels.all,
-            )
-          else
-            p,
-      ];
-      await _writeProfiles(prefs, profiles);
-    }
-
-    // Add the official vision model to already-migrated DeepSeek v4 profiles.
-    if (profiles.any(_isDeepSeekMissingVision)) {
-      profiles = [
-        for (final p in profiles)
-          if (_isDeepSeekMissingVision(p))
-            p.copyWith(models: [...p.models, KnownModels.vision])
-          else
-            p,
-      ];
-      await _writeProfiles(prefs, profiles);
-    }
-
-    // Old releases copied the M1 secret into a profile but left `llm_api_key`
-    // behind. Run cleanup for already-migrated installations too, not only
-    // inside the first-run branch above. Delete only after finding a verified
-    // profile copy, and preserve it when profile JSON itself is corrupt.
-    if (!profileRead.corrupt && legacyKey != null && legacyKey.isNotEmpty) {
-      var copied = false;
-      for (final profile in profiles) {
-        final profileKey = await secure.read(
-          key: providerApiKeyStorageKey(profile.id),
-        );
-        if (profileKey == legacyKey) {
-          copied = true;
-          break;
-        }
-      }
-      if (copied) {
-        await secure.delete(key: _kLegacyApiKeySecure);
-      }
-    }
-
-    activeId ??= profiles.first.id;
-    final apiKey =
-        await secure.read(key: providerApiKeyStorageKey(activeId)) ?? '';
-    final searchApiKey = await secure.read(key: _kSearchApiKeySecure) ?? '';
-    final visionApiKey = await secure.read(key: _kVisionApiKeySecure) ?? '';
-    final imageGenerationApiKey =
-        await secure.read(key: _kImageGenerationApiKeySecure) ?? '';
-    final ttsApi = _readMediaApi(prefs, _kTtsApi);
-    var ttsApiKey = await secure.read(key: _kTtsApiKeySecure) ?? '';
-    final activeTtsProtocol = ttsApi.effectiveSpeechProtocol;
-    final activeTtsProfilePrefsKey = _ttsApiProfilePrefsKey(activeTtsProtocol);
-    final activeTtsProfileSecureKey = _ttsApiProfileSecureKey(
-      activeTtsProtocol,
-    );
-
-    // One-time, lossless migration from the old single TTS slot. Keep the old
-    // slot as the active-profile mirror, and seed the matching provider slot
-    // only when it does not already exist.
-    if (!prefs.containsKey(activeTtsProfilePrefsKey)) {
-      await prefs.setString(
-        activeTtsProfilePrefsKey,
-        jsonEncode(ttsApi.toJson()),
-      );
-    }
-    final providerTtsApiKey = await secure.read(key: activeTtsProfileSecureKey);
-    if (providerTtsApiKey != null) {
-      ttsApiKey = providerTtsApiKey;
-    } else if (ttsApiKey.isNotEmpty) {
-      await secure.write(key: activeTtsProfileSecureKey, value: ttsApiKey);
-    }
-    final asrApiKey = await secure.read(key: _kAsrApiKeySecure) ?? '';
-    var gateway = _readGateway(prefs);
-    if (gateway == null) {
-      gateway = _migrateLegacyGateway(prefs);
-      await prefs.setString(_kGateway, jsonEncode(gateway.toJson()));
-    }
-    var gatewayLegacyToken = await secure.read(key: _kGatewayTokenSecure) ?? '';
-    if (gatewayLegacyToken.isEmpty) {
-      gatewayLegacyToken =
-          await secure.read(key: _kLegacyLongTaskGatewayTokenSecure) ?? '';
-      if (gatewayLegacyToken.isEmpty) {
-        gatewayLegacyToken =
-            await secure.read(key: _kLegacyDocumentServiceTokenSecure) ?? '';
-      }
-      if (gatewayLegacyToken.isNotEmpty) {
-        await secure.write(
-          key: _kGatewayTokenSecure,
-          value: gatewayLegacyToken,
-        );
-      }
-    }
-    var gatewayAuthSession = await _readGatewayAuthSession();
-    if (gateway.authServiceConfigured &&
-        gatewayAuthSession != null &&
-        gatewayAuthSession.needsRefresh) {
-      try {
-        gatewayAuthSession = await ref
-            .read(gatewayAuthServiceProvider)
-            .refresh(gateway, gatewayAuthSession);
-        await _persistGatewayAuthSession(gatewayAuthSession);
-      } catch (_) {
-        // Preserve the refresh token for a later online retry. Gateway clients
-        // call _freshGatewayToken before every request.
-      }
-    }
-    final gatewayToken =
-        gateway.authServiceConfigured && gatewayAuthSession != null
-        ? gatewayAuthSession.accessToken
-        : gatewayLegacyToken;
-    final customMcpTokens = <String, String>{};
-    for (final server in gateway.customMcpServers) {
-      final token =
-          await secure.read(key: customMcpTokenStorageKey(server.id)) ?? '';
-      if (token.isNotEmpty) customMcpTokens[server.id] = token;
-    }
-
-    // Drop a stored model override that no longer exists in the active
-    // profile's model list (e.g. the profile was edited since), so requests
-    // can't silently go out with a stale model id.
-    final id = activeId;
-    final activeProfile = profiles.firstWhere(
-      (p) => p.id == id,
-      orElse: () => profiles.first,
-    );
-    var selectedModel = prefs.getString(_kSelectedModel);
-    if (selectedModel != null &&
-        !activeProfile.models.contains(selectedModel)) {
-      selectedModel = null;
-      await prefs.remove(_kSelectedModel);
-    }
-
-    final storedSystemPrompt = prefs.getString(_kSystemPrompt) ?? '';
-    final storedSkills = prefs.getString(_kChatSkills);
-    final catalog = ChatSkillCatalog.decode(
-      storedSkills,
-      legacySystemPrompt: storedSystemPrompt,
-    );
-    final encodedSkills = catalog.encode();
-    if (storedSkills != encodedSkills) {
-      await prefs.setString(_kChatSkills, encodedSkills);
-    }
-
-    return SettingsState(
-      profiles: profiles,
-      activeProfileId: activeId,
-      apiKey: apiKey,
-      selectedModel: selectedModel,
-      themeMode: _readThemeMode(prefs),
-      searchBackend: SearchBackendInfo.fromWire(
-        prefs.getString(_kSearchBackend),
-      ),
-      searchApiKey: searchApiKey,
-      searchBrainModel: prefs.getString(_kSearchBrainModel),
-      searchMaxRounds:
-          (prefs.getInt(_kSearchMaxRounds) ?? kDefaultSearchMaxRounds).clamp(
-            kMinSearchMaxRounds,
-            kMaxSearchMaxRounds,
-          ),
-      searchMaxResults:
-          (prefs.getInt(_kSearchMaxResults) ?? kDefaultSearchMaxResults).clamp(
-            kMinSearchMaxResults,
-            kMaxSearchMaxResults,
-          ),
-      searchMode: SearchModeInfo.fromWire(
-        prefs.getString(_kComposerSearchMode),
-      ),
-      imageGenMode: ImageGenModeInfo.fromWire(
-        prefs.getString(_kComposerImageGenMode),
-      ),
-      reasoningEffort: ReasoningEffort.fromWire(
-        prefs.getString(_kReasoningEffort),
-      ),
-      systemPrompt: storedSystemPrompt,
-      chatSkills: catalog,
-      ui: _readUiPrefs(prefs),
-      visionApi: _readMediaApi(prefs, _kVisionApi),
-      visionApiKey: visionApiKey,
-      imageGenerationApi: _readMediaApi(prefs, _kImageGenerationApi),
-      imageGenerationApiKey: imageGenerationApiKey,
-      ttsApi: ttsApi,
-      ttsApiKey: ttsApiKey,
-      asrApi: _readMediaApi(prefs, _kAsrApi),
-      asrApiKey: asrApiKey,
-      context: _readContextPrefs(prefs),
-      gateway: gateway,
-      gatewayToken: gatewayToken,
-      gatewayLegacyToken: gatewayLegacyToken,
-      gatewayAuthSession: gatewayAuthSession,
-      gatewayTokenProvider: _freshGatewayToken,
-      customMcpTokens: customMcpTokens,
-      memoryEnabled: prefs.getBool(_kMemoryEnabled) ?? false,
-      researchModeEnabled: prefs.getBool(_kResearchModeEnabled) ?? false,
-      // Default on: learning hub is part of the main product surface.
-      studyModeEnabled: prefs.getBool(_kStudyModeEnabled) ?? true,
-      // Default on: existing installs keep the 创作 tab unless user hides it.
-      creationModeEnabled: prefs.getBool(_kCreationModeEnabled) ?? true,
-    );
-  }
+  Future<SettingsState> build() => _storage.load();
 
   Future<void> setMemoryEnabled(bool enabled) async {
     final next = _current.copyWith(memoryEnabled: enabled);
     state = AsyncData(next);
-    await ref.read(sharedPrefsProvider).setBool(_kMemoryEnabled, enabled);
+    await ref
+        .read(sharedPrefsProvider)
+        .setBool(kSettingsMemoryEnabled, enabled);
   }
 
   /// M7: toggle hidden research mode (SSH terminal). Does not connect.
   Future<void> setResearchModeEnabled(bool enabled) async {
     final next = _current.copyWith(researchModeEnabled: enabled);
     state = AsyncData(next);
-    await ref.read(sharedPrefsProvider).setBool(_kResearchModeEnabled, enabled);
+    await ref
+        .read(sharedPrefsProvider)
+        .setBool(kSettingsResearchModeEnabled, enabled);
   }
 
   /// Show/hide the 学习 hub tab. Does not delete courses or cards.
   Future<void> setStudyModeEnabled(bool enabled) async {
     final next = _current.copyWith(studyModeEnabled: enabled);
     state = AsyncData(next);
-    await ref.read(sharedPrefsProvider).setBool(_kStudyModeEnabled, enabled);
+    await ref
+        .read(sharedPrefsProvider)
+        .setBool(kSettingsStudyModeEnabled, enabled);
   }
 
   /// Show/hide the 创作 hub tab. Does not delete characters or drafts.
   Future<void> setCreationModeEnabled(bool enabled) async {
     final next = _current.copyWith(creationModeEnabled: enabled);
     state = AsyncData(next);
-    await ref.read(sharedPrefsProvider).setBool(_kCreationModeEnabled, enabled);
+    await ref
+        .read(sharedPrefsProvider)
+        .setBool(kSettingsCreationModeEnabled, enabled);
   }
-
-  /// A stored theme index from a corrupt/older store may fall outside the
-  /// enum range; fall back to the default instead of crashing the whole build.
-  static ThemeMode _readThemeMode(SharedPreferences prefs) {
-    final stored = prefs.getInt(_kThemeMode);
-    if (stored == null || stored < 0 || stored >= ThemeMode.values.length) {
-      return ThemeMode.system;
-    }
-    return ThemeMode.values[stored];
-  }
-
-  static UiPrefs _readUiPrefs(SharedPreferences prefs) {
-    final raw = prefs.getString(_kUiPrefs);
-    if (raw == null || raw.isEmpty) return const UiPrefs();
-    try {
-      return UiPrefs.fromJson(jsonDecode(raw) as Map<String, dynamic>);
-    } catch (_) {
-      return const UiPrefs();
-    }
-  }
-
-  static MediaApiConfig _readMediaApi(SharedPreferences prefs, String key) {
-    return _readMediaApiOrNull(prefs, key) ?? const MediaApiConfig();
-  }
-
-  static MediaApiConfig? _readMediaApiOrNull(
-    SharedPreferences prefs,
-    String key,
-  ) {
-    final raw = prefs.getString(key);
-    if (raw == null || raw.isEmpty) return null;
-    try {
-      return MediaApiConfig.fromJson(jsonDecode(raw) as Map<String, dynamic>);
-    } catch (_) {
-      return null;
-    }
-  }
-
-  static GatewayConfig? _readGateway(SharedPreferences prefs) {
-    final raw = prefs.getString(_kGateway);
-    if (raw == null || raw.isEmpty) return null;
-    try {
-      final decoded = jsonDecode(raw);
-      if (decoded is Map<String, dynamic>) {
-        return GatewayConfig.fromJson(decoded);
-      }
-      if (decoded is Map) {
-        return GatewayConfig.fromJson(Map<String, dynamic>.from(decoded));
-      }
-    } catch (_) {}
-    return null;
-  }
-
-  static GatewayConfig _migrateLegacyGateway(SharedPreferences prefs) {
-    Map<String, dynamic> readLegacy(String key) {
-      final raw = prefs.getString(key);
-      if (raw == null || raw.isEmpty) return const {};
-      try {
-        final decoded = jsonDecode(raw);
-        if (decoded is Map) return Map<String, dynamic>.from(decoded);
-      } catch (_) {}
-      return const {};
-    }
-
-    final longTask = readLegacy(_kLegacyLongTaskGateway);
-    final document = readLegacy(_kLegacyDocumentService);
-    final longUrl = longTask['baseUrl']?.toString().trim() ?? '';
-    final documentUrl = document['baseUrl']?.toString().trim() ?? '';
-    final longEnabled = longTask['enabled'] == true && longUrl.isNotEmpty;
-    final documentEnabled =
-        document['enabled'] == true && documentUrl.isNotEmpty;
-    final baseUrl = longEnabled
-        ? longUrl
-        : documentEnabled
-        ? documentUrl
-        : longUrl.isNotEmpty
-        ? longUrl
-        : documentUrl.isNotEmpty
-        ? documentUrl
-        : 'http://127.0.0.1:8790';
-    return GatewayConfig(
-      enabled: longEnabled || documentEnabled,
-      baseUrl: baseUrl,
-      taskModel: longTask['model']?.toString() ?? '',
-      taskPollSeconds: (longTask['pollSeconds'] as num?)?.toInt() ?? 2,
-      requestTimeoutSeconds:
-          (document['timeoutSeconds'] as num?)?.toInt() ?? 120,
-      // The legacy servers did not expose a common manifest. Stay optimistic
-      // until the user runs capability discovery against the unified server.
-      capabilitiesDiscovered: false,
-    );
-  }
-
-  static ContextPrefs _readContextPrefs(SharedPreferences prefs) {
-    final raw = prefs.getString(_kContextPrefs);
-    if (raw == null || raw.isEmpty) return const ContextPrefs();
-    try {
-      return ContextPrefs.fromJson(jsonDecode(raw) as Map<String, dynamic>);
-    } catch (_) {
-      return const ContextPrefs();
-    }
-  }
-
-  /// A DeepSeek profile still carrying the old default model list (so we can
-  /// safely upgrade it without clobbering a user's custom edits).
-  static bool _isLegacyDeepSeek(ProviderProfile p) =>
-      p.baseUrl.contains('api.deepseek.com') &&
-      p.models.contains('deepseek-chat') &&
-      p.models.contains('deepseek-reasoner');
-
-  /// Official DeepSeek v4 profile that predates `deepseek-v4-flash-vision-exp`.
-  static bool _isDeepSeekMissingVision(ProviderProfile p) =>
-      p.baseUrl.contains('api.deepseek.com') &&
-      p.models.contains(KnownModels.chat) &&
-      p.models.contains(KnownModels.reasoner) &&
-      !p.models.contains(KnownModels.vision);
 
   SettingsState get _current => state.value ?? const SettingsState();
-
-  ({List<ProviderProfile> profiles, bool corrupt}) _readProfiles(
-    SharedPreferences prefs,
-  ) {
-    final raw = prefs.getString(_kProfiles);
-    if (raw == null || raw.isEmpty) {
-      return (profiles: const [], corrupt: false);
-    }
-    try {
-      final list = jsonDecode(raw) as List<dynamic>;
-      final profiles = list
-          .map((e) => ProviderProfile.fromJson(e as Map<String, dynamic>))
-          .toList();
-      return (profiles: profiles, corrupt: false);
-    } catch (_) {
-      // Preserve the broken payload for manual recovery; never silent-overwrite.
-      unawaited(prefs.setString(_kProfilesCorruptBackup, raw));
-      return (profiles: const [], corrupt: true);
-    }
-  }
-
-  Future<void> _writeProfiles(
-    SharedPreferences prefs,
-    List<ProviderProfile> profiles,
-  ) => prefs.setString(
-    _kProfiles,
-    jsonEncode(profiles.map((p) => p.toJson()).toList()),
-  );
 
   /// Update theme and/or model selection (lightweight, frequently called).
   ///
@@ -868,7 +83,7 @@ class SettingsController extends AsyncNotifier<SettingsState> {
   /// alone doesn't wipe the picked model), passing `null` clears it back to the
   /// profile default, and passing a value sets it.
   Future<void> apply({
-    Object? selectedModel = SettingsState._sentinel,
+    Object? selectedModel = SettingsState.unchanged,
     ThemeMode? themeMode,
   }) async {
     final next = _current.copyWith(
@@ -877,15 +92,17 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     );
     state = AsyncData(next);
     final prefs = ref.read(sharedPrefsProvider);
-    if (!identical(selectedModel, SettingsState._sentinel)) {
+    if (!identical(selectedModel, SettingsState.unchanged)) {
       final model = selectedModel as String?;
       if (model != null) {
-        await prefs.setString(_kSelectedModel, model);
+        await prefs.setString(kSettingsSelectedModel, model);
       } else {
-        await prefs.remove(_kSelectedModel);
+        await prefs.remove(kSettingsSelectedModel);
       }
     }
-    if (themeMode != null) await prefs.setInt(_kThemeMode, themeMode.index);
+    if (themeMode != null) {
+      await prefs.setInt(kSettingsThemeMode, themeMode.index);
+    }
   }
 
   /// Patch appearance prefs and persist as JSON.
@@ -893,17 +110,51 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     state = AsyncData(_current.copyWith(ui: ui));
     await ref
         .read(sharedPrefsProvider)
-        .setString(_kUiPrefs, jsonEncode(ui.toJson()));
+        .setString(kSettingsUiPrefs, jsonEncode(ui.toJson()));
   }
 
   /// Set the API key for the active profile.
   Future<void> setApiKey(String apiKey) async {
     final active = _current.active;
     if (active == null) return;
-    state = AsyncData(_current.copyWith(apiKey: apiKey));
+    await setProfileApiKey(active.id, apiKey);
+  }
+
+  Future<void> setTaskBudget(TaskBudgetPrefs value) async {
+    final safe = TaskBudgetPrefs.fromJson(value.toJson());
+    state = AsyncData(_current.copyWith(taskBudget: safe));
     await ref
-        .read(secureStorageProvider)
-        .write(key: providerApiKeyStorageKey(active.id), value: apiKey);
+        .read(sharedPrefsProvider)
+        .setString('taskBudget', jsonEncode(safe.toJson()));
+  }
+
+  final Map<String, Future<void>> _profileKeyWrites = {};
+
+  Future<void> setProfileApiKey(String profileId, String apiKey) async {
+    if (!ref.mounted || !_current.profiles.any((p) => p.id == profileId)) {
+      return;
+    }
+    final storage = ref.read(secureStorageProvider);
+    if (_current.active?.id == profileId) {
+      state = AsyncData(_current.copyWith(apiKey: apiKey));
+    }
+    final previous = _profileKeyWrites[profileId] ?? Future<void>.value();
+    final write = previous
+        .catchError((Object _) {})
+        .then(
+          (_) => storage.write(
+            key: providerApiKeyStorageKey(profileId),
+            value: apiKey,
+          ),
+        );
+    _profileKeyWrites[profileId] = write;
+    try {
+      await write;
+    } finally {
+      if (identical(_profileKeyWrites[profileId], write)) {
+        _profileKeyWrites.remove(profileId);
+      }
+    }
   }
 
   /// Set the web-search backend.
@@ -911,7 +162,7 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     state = AsyncData(_current.copyWith(searchBackend: backend));
     await ref
         .read(sharedPrefsProvider)
-        .setString(_kSearchBackend, backend.wire);
+        .setString(kSettingsSearchBackend, backend.wire);
   }
 
   /// Set the web-search API key (stored in secure storage).
@@ -919,7 +170,7 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     state = AsyncData(_current.copyWith(searchApiKey: key));
     await ref
         .read(secureStorageProvider)
-        .write(key: _kSearchApiKeySecure, value: key);
+        .write(key: kSettingsSearchApiKeySecure, value: key);
   }
 
   /// Pick the "搜索大脑" model; null/empty follows the profile's chat model.
@@ -928,16 +179,18 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     state = AsyncData(_current.copyWith(searchBrainModel: normalized));
     final prefs = ref.read(sharedPrefsProvider);
     if (normalized == null) {
-      await prefs.remove(_kSearchBrainModel);
+      await prefs.remove(kSettingsSearchBrainModel);
     } else {
-      await prefs.setString(_kSearchBrainModel, normalized);
+      await prefs.setString(kSettingsSearchBrainModel, normalized);
     }
   }
 
   Future<void> setSearchMaxRounds(int rounds) async {
     final bounded = rounds.clamp(kMinSearchMaxRounds, kMaxSearchMaxRounds);
     state = AsyncData(_current.copyWith(searchMaxRounds: bounded));
-    await ref.read(sharedPrefsProvider).setInt(_kSearchMaxRounds, bounded);
+    await ref
+        .read(sharedPrefsProvider)
+        .setInt(kSettingsSearchMaxRounds, bounded);
   }
 
   Future<void> setSearchMode(SearchMode mode) async {
@@ -946,7 +199,7 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     try {
       await ref
           .read(sharedPrefsProvider)
-          .setString(_kComposerSearchMode, mode.wire);
+          .setString(kSettingsComposerSearchMode, mode.wire);
     } catch (_) {
       // Widget tests override settings without SharedPreferences.
     }
@@ -958,24 +211,30 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     try {
       await ref
           .read(sharedPrefsProvider)
-          .setString(_kComposerImageGenMode, mode.wire);
+          .setString(kSettingsComposerImageGenMode, mode.wire);
     } catch (_) {
       // Widget tests override settings without SharedPreferences.
     }
   }
 
   Future<void> setReasoningEffort(ReasoningEffort effort) async {
-    if (_current.reasoningEffort == effort) return;
-    state = AsyncData(_current.copyWith(reasoningEffort: effort));
+    state = AsyncData(
+      _current.copyWith(
+        reasoningEffort: effort,
+        hasReasoningEffortOverride: true,
+      ),
+    );
     await ref
         .read(sharedPrefsProvider)
-        .setString(_kReasoningEffort, effort.wire);
+        .setString(kSettingsReasoningEffort, effort.wire);
   }
 
   Future<void> setSearchMaxResults(int results) async {
     final bounded = results.clamp(kMinSearchMaxResults, kMaxSearchMaxResults);
     state = AsyncData(_current.copyWith(searchMaxResults: bounded));
-    await ref.read(sharedPrefsProvider).setInt(_kSearchMaxResults, bounded);
+    await ref
+        .read(sharedPrefsProvider)
+        .setInt(kSettingsSearchMaxResults, bounded);
   }
 
   Future<void> setGatewayConfig(GatewayConfig config) async {
@@ -988,7 +247,7 @@ class SettingsController extends AsyncNotifier<SettingsState> {
         ? config.clearDiscovery()
         : config;
     if (authChanged && _current.gatewayAuthSession != null) {
-      await _clearGatewayAuthSession();
+      await _storage.clearGatewayAuthSession();
       state = AsyncData(
         _current.copyWith(
           gateway: next,
@@ -1001,7 +260,7 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     }
     await ref
         .read(sharedPrefsProvider)
-        .setString(_kGateway, jsonEncode(next.toJson()));
+        .setString(kSettingsGateway, jsonEncode(next.toJson()));
   }
 
   Future<void> setGatewayToken(String token) async {
@@ -1015,13 +274,13 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     );
     await ref
         .read(secureStorageProvider)
-        .write(key: _kGatewayTokenSecure, value: token);
+        .write(key: kSettingsGatewayTokenSecure, value: token);
   }
 
   Future<void> signInGateway() async {
     final config = _current.gateway;
     final session = await ref.read(gatewayAuthServiceProvider).signIn(config);
-    await _persistGatewayAuthSession(session);
+    await _storage.persistGatewayAuthSession(session);
     state = AsyncData(
       _current.copyWith(
         gatewayToken: session.accessToken,
@@ -1032,7 +291,7 @@ class SettingsController extends AsyncNotifier<SettingsState> {
   }
 
   Future<void> signOutGateway() async {
-    await _clearGatewayAuthSession();
+    await _storage.clearGatewayAuthSession();
     state = AsyncData(
       _current.copyWith(
         gatewayToken: _current.gatewayLegacyToken,
@@ -1057,7 +316,7 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     }
     try {
       final refreshed = await pending;
-      await _persistGatewayAuthSession(refreshed);
+      await _storage.persistGatewayAuthSession(refreshed);
       state = AsyncData(
         _current.copyWith(
           gatewayToken: refreshed.accessToken,
@@ -1075,61 +334,6 @@ class SettingsController extends AsyncNotifier<SettingsState> {
         _gatewayRefreshInFlight = null;
       }
     }
-  }
-
-  Future<GatewayAuthSession?> _readGatewayAuthSession() async {
-    final secure = ref.read(secureStorageProvider);
-    final access = await secure.read(key: _kGatewayOidcAccessTokenSecure) ?? '';
-    final refresh =
-        await secure.read(key: _kGatewayOidcRefreshTokenSecure) ?? '';
-    final expiresRaw =
-        await secure.read(key: _kGatewayOidcExpiresAtSecure) ?? '';
-    final subject = await secure.read(key: _kGatewayOidcSubjectSecure) ?? '';
-    final displayName =
-        await secure.read(key: _kGatewayOidcDisplayNameSecure) ?? subject;
-    final expiresAt = DateTime.tryParse(expiresRaw)?.toUtc();
-    if (access.isEmpty || expiresAt == null) return null;
-    return GatewayAuthSession(
-      accessToken: access,
-      refreshToken: refresh,
-      expiresAt: expiresAt,
-      subject: subject,
-      displayName: displayName,
-    );
-  }
-
-  Future<void> _persistGatewayAuthSession(GatewayAuthSession session) async {
-    final secure = ref.read(secureStorageProvider);
-    await Future.wait([
-      secure.write(
-        key: _kGatewayOidcAccessTokenSecure,
-        value: session.accessToken,
-      ),
-      secure.write(
-        key: _kGatewayOidcRefreshTokenSecure,
-        value: session.refreshToken,
-      ),
-      secure.write(
-        key: _kGatewayOidcExpiresAtSecure,
-        value: session.expiresAt.toUtc().toIso8601String(),
-      ),
-      secure.write(key: _kGatewayOidcSubjectSecure, value: session.subject),
-      secure.write(
-        key: _kGatewayOidcDisplayNameSecure,
-        value: session.displayName,
-      ),
-    ]);
-  }
-
-  Future<void> _clearGatewayAuthSession() async {
-    final secure = ref.read(secureStorageProvider);
-    await Future.wait([
-      secure.delete(key: _kGatewayOidcAccessTokenSecure),
-      secure.delete(key: _kGatewayOidcRefreshTokenSecure),
-      secure.delete(key: _kGatewayOidcExpiresAtSecure),
-      secure.delete(key: _kGatewayOidcSubjectSecure),
-      secure.delete(key: _kGatewayOidcDisplayNameSecure),
-    ]);
   }
 
   Future<void> setGatewayCapabilities({
@@ -1150,12 +354,16 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     required String name,
     required String baseUrl,
     String token = '',
+    McpProcessConfig? localProcess,
+    bool computerUse = false,
+    bool allowForeground = false,
   }) async {
     final trimmedName = name.trim();
     final trimmedUrl = baseUrl.trim();
     if (id.trim().isEmpty ||
         trimmedName.isEmpty ||
-        GatewayConfig.normalizeBaseUrl(trimmedUrl).isEmpty) {
+        !(localProcess?.isConfigured ??
+            GatewayConfig.normalizeBaseUrl(trimmedUrl).isNotEmpty)) {
       return;
     }
     if (_current.gateway.customMcpServers.any((server) => server.id == id)) {
@@ -1165,7 +373,14 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       _current.gateway.copyWith(
         customMcpServers: [
           ..._current.gateway.customMcpServers,
-          CustomMcpServer(id: id, name: trimmedName, baseUrl: trimmedUrl),
+          CustomMcpServer(
+            id: id,
+            name: trimmedName,
+            baseUrl: trimmedUrl,
+            localProcess: localProcess,
+            computerUse: computerUse,
+            allowForeground: allowForeground,
+          ),
         ],
       ),
     );
@@ -1176,13 +391,23 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     required String id,
     required String name,
     required String baseUrl,
+    McpProcessConfig? localProcess,
+    bool computerUse = false,
+    bool allowForeground = false,
   }) async {
+    await ref.read(mcpClientProvider).stopLocalServers();
     await _updateCustomMcpServer(id, (server) {
       final nextUrl = GatewayConfig.normalizeBaseUrl(baseUrl);
-      final urlChanged = nextUrl != server.normalizedBaseUrl;
+      final urlChanged =
+          nextUrl != server.normalizedBaseUrl ||
+          localProcess?.identity != server.localProcess?.identity ||
+          computerUse != server.computerUse;
       return server.copyWith(
         name: name.trim(),
         baseUrl: baseUrl.trim(),
+        localProcess: localProcess,
+        computerUse: computerUse,
+        allowForeground: allowForeground,
         toolsDiscovered: urlChanged ? false : server.toolsDiscovered,
         tools: urlChanged ? const <DiscoveredMcpTool>[] : server.tools,
         serverVersion: urlChanged ? null : server.serverVersion,
@@ -1191,8 +416,13 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     });
   }
 
-  Future<void> setCustomMcpEnabled(String id, bool enabled) =>
-      _updateCustomMcpServer(id, (server) => server.copyWith(enabled: enabled));
+  Future<void> setCustomMcpEnabled(String id, bool enabled) async {
+    if (!enabled) await ref.read(mcpClientProvider).stopLocalServers();
+    await _updateCustomMcpServer(
+      id,
+      (server) => server.copyWith(enabled: enabled),
+    );
+  }
 
   Future<void> setCustomMcpDiscovered(
     String id, {
@@ -1212,6 +442,7 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       _updateCustomMcpServer(id, (server) => server.copyWith(lastError: error));
 
   Future<void> deleteCustomMcpServer(String id) async {
+    await ref.read(mcpClientProvider).stopLocalServers();
     await setGatewayConfig(
       _current.gateway.copyWith(
         customMcpServers: [
@@ -1250,14 +481,41 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     await setGatewayConfig(_current.gateway.copyWith(customMcpServers: next));
   }
 
+  Future<void> setJevConfig(JevConfig config) async {
+    final next = config.normalized();
+    await ref
+        .read(sharedPrefsProvider)
+        .setString(kSettingsJevConfig, jsonEncode(next.toJson()));
+    if (!ref.mounted) return;
+    state = AsyncData(_current.copyWith(jevConfig: next));
+  }
+
+  Future<void> _jevKeyWriteTail = Future<void>.value();
+
+  Future<void> setJevApiKey(String value) {
+    final key = value.trim();
+    final secure = ref.read(secureStorageProvider);
+    final write = _jevKeyWriteTail.catchError((Object _) {}).then((_) async {
+      if (key.isEmpty) {
+        await secure.delete(key: kSettingsJevApiKeySecure);
+      } else {
+        await secure.write(key: kSettingsJevApiKeySecure, value: key);
+      }
+      if (!ref.mounted) return;
+      state = AsyncData(_current.copyWith(jevApiKey: key));
+    });
+    _jevKeyWriteTail = write;
+    return write;
+  }
+
   Future<void> setChatSkills(ChatSkillCatalog catalog) async {
     final next = catalog.sanitize(legacySystemPrompt: _current.systemPrompt);
     state = AsyncData(
       _current.copyWith(chatSkills: next, systemPrompt: next.fallback.prompt),
     );
     final prefs = ref.read(sharedPrefsProvider);
-    await prefs.setString(_kChatSkills, next.encode());
-    await prefs.setString(_kSystemPrompt, next.fallback.prompt);
+    await prefs.setString(kSettingsChatSkills, next.encode());
+    await prefs.setString(kSettingsSystemPrompt, next.fallback.prompt);
   }
 
   /// Set the global preset/system prompt (persisted in shared preferences).
@@ -1274,7 +532,7 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     state = AsyncData(_current.copyWith(context: context));
     await ref
         .read(sharedPrefsProvider)
-        .setString(_kContextPrefs, jsonEncode(context.toJson()));
+        .setString(kSettingsContextPrefs, jsonEncode(context.toJson()));
   }
 
   Future<void> setMediaApiConfig(
@@ -1286,20 +544,20 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     switch (kind) {
       case MediaApiKind.vision:
         state = AsyncData(_current.copyWith(visionApi: config));
-        await prefs.setString(_kVisionApi, encoded);
+        await prefs.setString(kSettingsVisionApi, encoded);
       case MediaApiKind.imageGeneration:
         state = AsyncData(_current.copyWith(imageGenerationApi: config));
-        await prefs.setString(_kImageGenerationApi, encoded);
+        await prefs.setString(kSettingsImageGenerationApi, encoded);
       case MediaApiKind.tts:
         state = AsyncData(_current.copyWith(ttsApi: config));
-        await prefs.setString(_kTtsApi, encoded);
+        await prefs.setString(kSettingsTtsApi, encoded);
         await prefs.setString(
-          _ttsApiProfilePrefsKey(config.effectiveSpeechProtocol),
+          ttsApiProfilePrefsKey(config.effectiveSpeechProtocol),
           encoded,
         );
       case MediaApiKind.asr:
         state = AsyncData(_current.copyWith(asrApi: config));
-        await prefs.setString(_kAsrApi, encoded);
+        await prefs.setString(kSettingsAsrApi, encoded);
     }
   }
 
@@ -1312,18 +570,21 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     switch (kind) {
       case MediaApiKind.vision:
         state = AsyncData(_current.copyWith(visionApiKey: key));
-        await secure.write(key: _kVisionApiKeySecure, value: key);
+        await secure.write(key: kSettingsVisionApiKeySecure, value: key);
       case MediaApiKind.imageGeneration:
         state = AsyncData(_current.copyWith(imageGenerationApiKey: key));
-        await secure.write(key: _kImageGenerationApiKeySecure, value: key);
+        await secure.write(
+          key: kSettingsImageGenerationApiKeySecure,
+          value: key,
+        );
       case MediaApiKind.tts:
         final protocol = _current.ttsApi.effectiveSpeechProtocol;
         state = AsyncData(_current.copyWith(ttsApiKey: key));
-        await secure.write(key: _kTtsApiKeySecure, value: key);
-        await secure.write(key: _ttsApiProfileSecureKey(protocol), value: key);
+        await secure.write(key: kSettingsTtsApiKeySecure, value: key);
+        await secure.write(key: ttsApiProfileSecureKey(protocol), value: key);
       case MediaApiKind.asr:
         state = AsyncData(_current.copyWith(asrApiKey: key));
-        await secure.write(key: _kAsrApiKeySecure, value: key);
+        await secure.write(key: kSettingsAsrApiKeySecure, value: key);
     }
   }
 
@@ -1343,19 +604,22 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     // Capture the active provider before loading the target. This also covers
     // a legacy install that has not switched providers since migration.
     await prefs.setString(
-      _ttsApiProfilePrefsKey(currentProtocol),
+      ttsApiProfilePrefsKey(currentProtocol),
       jsonEncode(current.ttsApi.toJson()),
     );
     await secure.write(
-      key: _ttsApiProfileSecureKey(currentProtocol),
+      key: ttsApiProfileSecureKey(currentProtocol),
       value: current.ttsApiKey,
     );
 
     final targetConfig =
-        _readMediaApiOrNull(prefs, _ttsApiProfilePrefsKey(protocol)) ??
+        SettingsStorage.readMediaApiOrNull(
+          prefs,
+          ttsApiProfilePrefsKey(protocol),
+        ) ??
         fallback.copyWith(speechProtocol: protocol);
     final targetApiKey =
-        await secure.read(key: _ttsApiProfileSecureKey(protocol)) ?? '';
+        await secure.read(key: ttsApiProfileSecureKey(protocol)) ?? '';
     if (!ref.mounted) return;
 
     state = AsyncData(
@@ -1363,13 +627,86 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     );
 
     // Mirror the selected profile to the original active TTS keys.
-    await prefs.setString(_kTtsApi, jsonEncode(targetConfig.toJson()));
-    await secure.write(key: _kTtsApiKeySecure, value: targetApiKey);
+    await prefs.setString(kSettingsTtsApi, jsonEncode(targetConfig.toJson()));
+    await secure.write(key: kSettingsTtsApiKeySecure, value: targetApiKey);
+  }
+
+  /// Save a verified setup draft without publishing a half-written profile.
+  Future<void> saveVerifiedConnection(
+    ProviderProfile profile,
+    String apiKey,
+  ) async {
+    final prefs = ref.read(sharedPrefsProvider);
+    final secure = ref.read(secureStorageProvider);
+    await _profileKeyWrites[profile.id];
+    final keyName = providerApiKeyStorageKey(profile.id);
+    final oldKey = await secure.read(key: keyName);
+    final oldValues = {
+      for (final key in [
+        kSettingsProfiles,
+        kSettingsActiveProfile,
+        kSettingsSelectedModel,
+      ])
+        key: prefs.getString(key),
+    };
+    final profiles = [
+      for (final p in _current.profiles)
+        if (p.id != profile.id) p,
+      profile,
+    ];
+    Future<void> writePreference(String key, String? value) async {
+      final ok = value == null
+          ? await prefs.remove(key)
+          : await prefs.setString(key, value);
+      if (!ok) throw StateError('本地保存失败，请检查存储空间后重试。');
+    }
+
+    try {
+      await secure.write(key: keyName, value: apiKey.trim());
+      await writePreference(
+        kSettingsProfiles,
+        jsonEncode(profiles.map((p) => p.toJson()).toList()),
+      );
+      await writePreference(kSettingsActiveProfile, profile.id);
+      await writePreference(kSettingsSelectedModel, null);
+    } catch (error) {
+      // Restore all touched fields independently, even if one rollback fails.
+      var rollbackFailed = false;
+      try {
+        if (oldKey == null) {
+          await secure.delete(key: keyName);
+        } else {
+          await secure.write(key: keyName, value: oldKey);
+        }
+      } catch (_) {
+        rollbackFailed = true;
+      }
+      for (final entry in oldValues.entries) {
+        try {
+          await writePreference(entry.key, entry.value);
+        } catch (_) {
+          rollbackFailed = true;
+        }
+      }
+      if (rollbackFailed) throw StateError('配置未能完整保存，请保留当前填写内容，重启后检查设置。');
+      rethrow;
+    }
+    if (ref.mounted) {
+      state = AsyncData(
+        _current.copyWith(
+          profiles: profiles,
+          activeProfileId: profile.id,
+          apiKey: apiKey.trim(),
+          selectedModel: null,
+        ),
+      );
+    }
   }
 
   /// Switch the active profile, loading its stored key.
   Future<void> selectProfile(String id) async {
     if (!_current.profiles.any((p) => p.id == id)) return;
+    await _profileKeyWrites[id];
     final key =
         await ref
             .read(secureStorageProvider)
@@ -1379,8 +716,8 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       _current.copyWith(activeProfileId: id, apiKey: key, selectedModel: null),
     );
     final prefs = ref.read(sharedPrefsProvider);
-    await prefs.setString(_kActiveProfile, id);
-    await prefs.remove(_kSelectedModel);
+    await prefs.setString(kSettingsActiveProfile, id);
+    await prefs.remove(kSettingsSelectedModel);
   }
 
   /// Add a profile (e.g. from a preset). Becomes active.
@@ -1395,9 +732,9 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       ),
     );
     final prefs = ref.read(sharedPrefsProvider);
-    await _writeProfiles(prefs, profiles);
-    await prefs.setString(_kActiveProfile, profile.id);
-    await prefs.remove(_kSelectedModel);
+    await SettingsStorage.writeProfiles(prefs, profiles);
+    await prefs.setString(kSettingsActiveProfile, profile.id);
+    await prefs.remove(kSettingsSelectedModel);
   }
 
   /// Edit an existing profile in place. Clears the model override when the
@@ -1417,13 +754,14 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       ),
     );
     final prefs = ref.read(sharedPrefsProvider);
-    if (overrideStale) await prefs.remove(_kSelectedModel);
-    await _writeProfiles(prefs, profiles);
+    if (overrideStale) await prefs.remove(kSettingsSelectedModel);
+    await SettingsStorage.writeProfiles(prefs, profiles);
   }
 
   /// Delete a profile and its stored key. Falls back to another profile, or a
   /// fresh DeepSeek preset if none remain.
   Future<void> deleteProfile(String id) async {
+    await _profileKeyWrites[id];
     final remaining = _current.profiles.where((p) => p.id != id).toList();
     final secure = ref.read(secureStorageProvider);
     await secure.delete(key: providerApiKeyStorageKey(id));
@@ -1442,9 +780,9 @@ class SettingsController extends AsyncNotifier<SettingsState> {
           selectedModel: null,
         ),
       );
-      await _writeProfiles(prefs, [fresh]);
-      await prefs.setString(_kActiveProfile, fresh.id);
-      await prefs.remove(_kSelectedModel);
+      await SettingsStorage.writeProfiles(prefs, [fresh]);
+      await prefs.setString(kSettingsActiveProfile, fresh.id);
+      await prefs.remove(kSettingsSelectedModel);
       return;
     }
 
@@ -1462,8 +800,8 @@ class SettingsController extends AsyncNotifier<SettingsState> {
         selectedModel: null,
       ),
     );
-    await _writeProfiles(prefs, remaining);
-    await prefs.setString(_kActiveProfile, activeId!);
+    await SettingsStorage.writeProfiles(prefs, remaining);
+    await prefs.setString(kSettingsActiveProfile, activeId!);
   }
 
   /// Snapshot of API endpoints, keys, gateway, and related prefs as pretty JSON.
@@ -1485,11 +823,14 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       final isActive = protocol == current.ttsApi.effectiveSpeechProtocol;
       final config = isActive
           ? current.ttsApi
-          : _readMediaApiOrNull(prefs, _ttsApiProfilePrefsKey(protocol)) ??
+          : SettingsStorage.readMediaApiOrNull(
+                  prefs,
+                  ttsApiProfilePrefsKey(protocol),
+                ) ??
                 const MediaApiConfig();
       final key = isActive
           ? current.ttsApiKey
-          : await secure.read(key: _ttsApiProfileSecureKey(protocol)) ?? '';
+          : await secure.read(key: ttsApiProfileSecureKey(protocol)) ?? '';
       if (config.baseUrl.trim().isEmpty &&
           config.model.trim().isEmpty &&
           key.trim().isEmpty) {
@@ -1512,8 +853,10 @@ class SettingsController extends AsyncNotifier<SettingsState> {
         'mode': current.searchMode.wire,
       },
       'imageGenMode': current.imageGenMode.wire,
+      'taskBudget': current.taskBudget.toJson(),
       'reasoningEffort': current.reasoningEffort.wire,
       'systemPrompt': current.systemPrompt,
+      'jev': {...current.jevConfig.toJson(), 'apiKey': current.jevApiKey},
       'chatSkills': [
         for (final skill in current.chatSkills.skills) skill.toJson(),
       ],
@@ -1576,7 +919,7 @@ class SettingsController extends AsyncNotifier<SettingsState> {
         for (final id in oldIds.difference(newIds)) {
           await secure.delete(key: providerApiKeyStorageKey(id));
         }
-        await _writeProfiles(prefs, profiles);
+        await SettingsStorage.writeProfiles(prefs, profiles);
         for (final profile in profiles) {
           await secure.write(
             key: providerApiKeyStorageKey(profile.id),
@@ -1588,16 +931,16 @@ class SettingsController extends AsyncNotifier<SettingsState> {
             (requestedActive != null && newIds.contains(requestedActive))
             ? requestedActive
             : profiles.first.id;
-        await prefs.setString(_kActiveProfile, activeId);
+        await prefs.setString(kSettingsActiveProfile, activeId);
       }
     }
 
     if (json.containsKey('selectedModel')) {
       final model = json['selectedModel']?.toString();
       if (model == null || model.isEmpty) {
-        await prefs.remove(_kSelectedModel);
+        await prefs.remove(kSettingsSelectedModel);
       } else {
-        await prefs.setString(_kSelectedModel, model);
+        await prefs.setString(kSettingsSelectedModel, model);
       }
     }
 
@@ -1610,34 +953,34 @@ class SettingsController extends AsyncNotifier<SettingsState> {
           break;
         }
       }
-      await prefs.setInt(_kThemeMode, mode.index);
+      await prefs.setInt(kSettingsThemeMode, mode.index);
     }
 
     final search = SettingsBundle.asMap(json['search']);
     if (search != null) {
       if (search['backend'] != null) {
         await prefs.setString(
-          _kSearchBackend,
+          kSettingsSearchBackend,
           SearchBackendInfo.fromWire(search['backend']?.toString()).wire,
         );
       }
       if (search.containsKey('apiKey')) {
         await secure.write(
-          key: _kSearchApiKeySecure,
+          key: kSettingsSearchApiKeySecure,
           value: search['apiKey']?.toString() ?? '',
         );
       }
       if (search.containsKey('brainModel')) {
         final brain = search['brainModel']?.toString().trim() ?? '';
         if (brain.isEmpty) {
-          await prefs.remove(_kSearchBrainModel);
+          await prefs.remove(kSettingsSearchBrainModel);
         } else {
-          await prefs.setString(_kSearchBrainModel, brain);
+          await prefs.setString(kSettingsSearchBrainModel, brain);
         }
       }
       if (search['maxRounds'] is num) {
         await prefs.setInt(
-          _kSearchMaxRounds,
+          kSettingsSearchMaxRounds,
           (search['maxRounds'] as num).toInt().clamp(
             kMinSearchMaxRounds,
             kMaxSearchMaxRounds,
@@ -1646,7 +989,7 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       }
       if (search['maxResults'] is num) {
         await prefs.setInt(
-          _kSearchMaxResults,
+          kSettingsSearchMaxResults,
           (search['maxResults'] as num).toInt().clamp(
             kMinSearchMaxResults,
             kMaxSearchMaxResults,
@@ -1655,7 +998,7 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       }
       if (search['mode'] != null) {
         await prefs.setString(
-          _kComposerSearchMode,
+          kSettingsComposerSearchMode,
           SearchModeInfo.fromWire(search['mode']?.toString()).wire,
         );
       }
@@ -1663,15 +1006,26 @@ class SettingsController extends AsyncNotifier<SettingsState> {
 
     if (json['imageGenMode'] != null) {
       await prefs.setString(
-        _kComposerImageGenMode,
+        kSettingsComposerImageGenMode,
         ImageGenModeInfo.fromWire(json['imageGenMode']?.toString()).wire,
       );
     }
     if (json['reasoningEffort'] != null) {
       await prefs.setString(
-        _kReasoningEffort,
+        kSettingsReasoningEffort,
         ReasoningEffort.fromWire(json['reasoningEffort']?.toString()).wire,
       );
+    }
+
+    final jev = SettingsBundle.asMap(json['jev']);
+    if (jev != null) {
+      await prefs.setString(
+        kSettingsJevConfig,
+        jsonEncode(JevConfig.fromJson(jev).toJson()),
+      );
+      if (jev['apiKey'] is String) {
+        await setJevApiKey(jev['apiKey'] as String);
+      }
     }
 
     final skillsRaw = json['chatSkills'];
@@ -1681,16 +1035,19 @@ class SettingsController extends AsyncNotifier<SettingsState> {
         encoded,
         legacySystemPrompt: json['systemPrompt']?.toString() ?? '',
       );
-      await prefs.setString(_kChatSkills, catalog.encode());
-      await prefs.setString(_kSystemPrompt, catalog.fallback.prompt);
+      await prefs.setString(kSettingsChatSkills, catalog.encode());
+      await prefs.setString(kSettingsSystemPrompt, catalog.fallback.prompt);
     } else if (json['systemPrompt'] is String) {
-      await prefs.setString(_kSystemPrompt, json['systemPrompt'] as String);
+      await prefs.setString(
+        kSettingsSystemPrompt,
+        json['systemPrompt'] as String,
+      );
     }
 
     final ui = SettingsBundle.asMap(json['ui']);
     if (ui != null) {
       await prefs.setString(
-        _kUiPrefs,
+        kSettingsUiPrefs,
         jsonEncode(UiPrefs.fromJson(ui).toJson()),
       );
     }
@@ -1698,7 +1055,7 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     final context = SettingsBundle.asMap(json['context']);
     if (context != null) {
       await prefs.setString(
-        _kContextPrefs,
+        kSettingsContextPrefs,
         jsonEncode(ContextPrefs.fromJson(context).toJson()),
       );
     }
@@ -1716,18 +1073,18 @@ class SettingsController extends AsyncNotifier<SettingsState> {
 
     await writeMedia(
       raw: json['vision'],
-      prefsKey: _kVisionApi,
-      secureKey: _kVisionApiKeySecure,
+      prefsKey: kSettingsVisionApi,
+      secureKey: kSettingsVisionApiKeySecure,
     );
     await writeMedia(
       raw: json['imageGeneration'],
-      prefsKey: _kImageGenerationApi,
-      secureKey: _kImageGenerationApiKeySecure,
+      prefsKey: kSettingsImageGenerationApi,
+      secureKey: kSettingsImageGenerationApiKeySecure,
     );
     await writeMedia(
       raw: json['asr'],
-      prefsKey: _kAsrApi,
-      secureKey: _kAsrApiKeySecure,
+      prefsKey: kSettingsAsrApi,
+      secureKey: kSettingsAsrApiKeySecure,
     );
 
     final ttsProfiles = SettingsBundle.asMap(json['ttsProfiles']);
@@ -1736,25 +1093,25 @@ class SettingsController extends AsyncNotifier<SettingsState> {
         final slot = SettingsBundle.mediaFromJson(ttsProfiles[protocol.name]);
         if (slot == null) continue;
         await prefs.setString(
-          _ttsApiProfilePrefsKey(protocol),
+          ttsApiProfilePrefsKey(protocol),
           jsonEncode(slot.config.toJson()),
         );
         await secure.write(
-          key: _ttsApiProfileSecureKey(protocol),
+          key: ttsApiProfileSecureKey(protocol),
           value: slot.apiKey,
         );
       }
     }
     final tts = SettingsBundle.mediaFromJson(json['tts']);
     if (tts != null) {
-      await prefs.setString(_kTtsApi, jsonEncode(tts.config.toJson()));
-      await secure.write(key: _kTtsApiKeySecure, value: tts.apiKey);
+      await prefs.setString(kSettingsTtsApi, jsonEncode(tts.config.toJson()));
+      await secure.write(key: kSettingsTtsApiKeySecure, value: tts.apiKey);
       await prefs.setString(
-        _ttsApiProfilePrefsKey(tts.config.effectiveSpeechProtocol),
+        ttsApiProfilePrefsKey(tts.config.effectiveSpeechProtocol),
         jsonEncode(tts.config.toJson()),
       );
       await secure.write(
-        key: _ttsApiProfileSecureKey(tts.config.effectiveSpeechProtocol),
+        key: ttsApiProfileSecureKey(tts.config.effectiveSpeechProtocol),
         value: tts.apiKey,
       );
     }
@@ -1768,6 +1125,22 @@ class SettingsController extends AsyncNotifier<SettingsState> {
           gatewayRaw.remove('token')?.toString() ??
           gatewayRaw.remove('apiToken')?.toString();
       var config = GatewayConfig.fromJson(gatewayRaw);
+      // A portable file cannot authorize executing new local programs.
+      config = config.copyWith(
+        customMcpServers: [
+          for (final server in config.customMcpServers)
+            if (server.localProcess != null)
+              server.copyWith(
+                enabled: false,
+                toolsDiscovered: false,
+                tools: const [],
+                allowForeground: false,
+              )
+            else
+              server,
+        ],
+      );
+      await ref.read(mcpClientProvider).stopLocalServers();
       final current = _current.gateway;
       final authChanged =
           config.normalizedAuthServiceUrl != current.normalizedAuthServiceUrl ||
@@ -1778,11 +1151,11 @@ class SettingsController extends AsyncNotifier<SettingsState> {
         config = config.clearDiscovery();
       }
       if (authChanged || urlChanged) {
-        await _clearGatewayAuthSession();
+        await _storage.clearGatewayAuthSession();
       }
-      await prefs.setString(_kGateway, jsonEncode(config.toJson()));
+      await prefs.setString(kSettingsGateway, jsonEncode(config.toJson()));
       if (token != null) {
-        await secure.write(key: _kGatewayTokenSecure, value: token);
+        await secure.write(key: kSettingsGatewayTokenSecure, value: token);
       }
       final newMcpIds = {
         for (final server in config.customMcpServers) server.id,
@@ -1810,10 +1183,16 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       if (value is bool) await prefs.setBool(key, value);
     }
 
-    await writeFlag(_kMemoryEnabled, json['memoryEnabled']);
-    await writeFlag(_kResearchModeEnabled, json['researchModeEnabled']);
-    await writeFlag(_kStudyModeEnabled, json['studyModeEnabled']);
-    await writeFlag(_kCreationModeEnabled, json['creationModeEnabled']);
+    await writeFlag(kSettingsMemoryEnabled, json['memoryEnabled']);
+    if (json['taskBudget'] is Map) {
+      await prefs.setString(
+        'taskBudget',
+        jsonEncode(TaskBudgetPrefs.fromJson(json['taskBudget']).toJson()),
+      );
+    }
+    await writeFlag(kSettingsResearchModeEnabled, json['researchModeEnabled']);
+    await writeFlag(kSettingsStudyModeEnabled, json['studyModeEnabled']);
+    await writeFlag(kSettingsCreationModeEnabled, json['creationModeEnabled']);
   }
 }
 

@@ -74,13 +74,14 @@ typedef ResearchSshClientFactory = ResearchSshClient Function();
 
 /// Test seam mirroring [SSHClient]'s constructor: lets tests drive host-key,
 /// auth and channel timing without a real SSH server.
-typedef DebugSshClientFactory = SSHClient Function(
-  SSHSocket socket, {
-  required String username,
-  required List<SSHKeyPair> identities,
-  SSHPasswordRequestHandler? onPasswordRequest,
-  SSHHostkeyVerifyHandler? onVerifyHostKey,
-});
+typedef DebugSshClientFactory =
+    SSHClient Function(
+      SSHSocket socket, {
+      required String username,
+      required List<SSHKeyPair> identities,
+      SSHPasswordRequestHandler? onPasswordRequest,
+      SSHHostkeyVerifyHandler? onVerifyHostKey,
+    });
 
 class ResearchSshClientIo implements ResearchSshClient {
   SSHClient? _client;
@@ -220,7 +221,11 @@ class ResearchSshClientIo implements ResearchSshClient {
     try {
       shell = await client
           .shell(
-            pty: SSHPtyConfig(type: 'xterm-256color', width: cols, height: rows),
+            pty: SSHPtyConfig(
+              type: 'xterm-256color',
+              width: cols,
+              height: rows,
+            ),
           )
           .timeout(connectTimeout);
     } on TimeoutException {
@@ -236,23 +241,29 @@ class ResearchSshClientIo implements ResearchSshClient {
     _connected = true;
 
     _subs.add(
-      shell.stdout.listen((data) {
-        _emitStdout(data);
-      }, onError: (Object e) {
-        // A channel error means the session is gone even if TCP is not.
-        // Forward it through the same done-path the controller listens on —
-        // swallowing it would leave the UI staring at a dead shell.
-        debugPrint('research ssh stdout channel error: $e');
-        _markChannelClosed();
-      }),
+      shell.stdout.listen(
+        (data) {
+          _emitStdout(data);
+        },
+        onError: (Object e) {
+          // A channel error means the session is gone even if TCP is not.
+          // Forward it through the same done-path the controller listens on —
+          // swallowing it would leave the UI staring at a dead shell.
+          debugPrint('research ssh stdout channel error: $e');
+          _markChannelClosed();
+        },
+      ),
     );
     _subs.add(
-      shell.stderr.listen((data) {
-        _emitStderr(data);
-      }, onError: (Object e) {
-        debugPrint('research ssh stderr channel error: $e');
-        _markChannelClosed();
-      }),
+      shell.stderr.listen(
+        (data) {
+          _emitStderr(data);
+        },
+        onError: (Object e) {
+          debugPrint('research ssh stderr channel error: $e');
+          _markChannelClosed();
+        },
+      ),
     );
     unawaited(
       shell.done

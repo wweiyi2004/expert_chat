@@ -21,10 +21,7 @@ class ImagePromptSafety {
   ///
   /// [userHint] may carry a short pose/expression wish; long story text and
   /// sexual content are stripped. Card [description] is the primary source.
-  static String characterPortrait(
-    CharacterCard card, {
-    String? userHint,
-  }) {
+  static String characterPortrait(CharacterCard card, {String? userHint}) {
     final name = card.name.trim();
     final look = _sanitizeFragment(card.description, maxChars: 480);
     final vibe = _sanitizeFragment(card.personality, maxChars: 160);
@@ -45,6 +42,10 @@ class ImagePromptSafety {
   ///
   /// Scrubs NSFW phrasing from the model- or user-provided draft.
   static String freeform(String raw, {int maxChars = 800}) {
+    // Replaying a prepared prompt must not repeatedly grow/scrub its safety tail.
+    if (raw.endsWith(', $sfwSuffix')) {
+      raw = raw.substring(0, raw.length - sfwSuffix.length - 2);
+    }
     final cleaned = _sanitizeFragment(raw, maxChars: maxChars);
     if (cleaned.isEmpty) {
       return 'simple wholesome illustration, $sfwSuffix';

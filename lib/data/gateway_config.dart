@@ -1,3 +1,6 @@
+import 'mcp_process_config.dart';
+export 'mcp_process_config.dart';
+
 const _gatewaySentinel = Object();
 
 abstract final class GatewayCapabilityIds {
@@ -44,6 +47,9 @@ class CustomMcpServer {
     this.tools = const <DiscoveredMcpTool>[],
     this.serverVersion,
     this.lastError,
+    this.localProcess,
+    this.computerUse = false,
+    this.allowForeground = false,
   });
 
   final String id;
@@ -54,10 +60,14 @@ class CustomMcpServer {
   final List<DiscoveredMcpTool> tools;
   final String? serverVersion;
   final String? lastError;
+  final McpProcessConfig? localProcess;
+  final bool computerUse;
+  final bool allowForeground;
 
   String get normalizedBaseUrl => GatewayConfig.normalizeBaseUrl(baseUrl);
 
-  bool get isConfigured => normalizedBaseUrl.isNotEmpty;
+  bool get isConfigured =>
+      localProcess?.isConfigured ?? normalizedBaseUrl.isNotEmpty;
 
   /// Stable prefix used when a tool name collides.
   String get slug {
@@ -81,6 +91,9 @@ class CustomMcpServer {
     List<DiscoveredMcpTool>? tools,
     Object? serverVersion = _gatewaySentinel,
     Object? lastError = _gatewaySentinel,
+    Object? localProcess = _gatewaySentinel,
+    bool? computerUse,
+    bool? allowForeground,
   }) => CustomMcpServer(
     id: id,
     name: name ?? this.name,
@@ -88,6 +101,11 @@ class CustomMcpServer {
     enabled: enabled ?? this.enabled,
     toolsDiscovered: toolsDiscovered ?? this.toolsDiscovered,
     tools: tools ?? this.tools,
+    localProcess: identical(localProcess, _gatewaySentinel)
+        ? this.localProcess
+        : localProcess as McpProcessConfig?,
+    computerUse: computerUse ?? this.computerUse,
+    allowForeground: allowForeground ?? this.allowForeground,
     serverVersion: identical(serverVersion, _gatewaySentinel)
         ? this.serverVersion
         : serverVersion as String?,
@@ -103,6 +121,9 @@ class CustomMcpServer {
     'enabled': enabled,
     'toolsDiscovered': toolsDiscovered,
     'tools': [for (final tool in tools) tool.toJson()],
+    if (localProcess != null) 'localProcess': localProcess!.toJson(),
+    if (computerUse) 'computerUse': true,
+    if (allowForeground) 'allowForeground': true,
     if (serverVersion != null) 'serverVersion': serverVersion,
     if (lastError != null) 'lastError': lastError,
   };
@@ -121,6 +142,13 @@ class CustomMcpServer {
         ].where((tool) => tool.name.isNotEmpty).toList(),
         serverVersion: json['serverVersion']?.toString(),
         lastError: json['lastError']?.toString(),
+        localProcess: json['localProcess'] is Map
+            ? McpProcessConfig.fromJson(
+                Map<String, dynamic>.from(json['localProcess'] as Map),
+              )
+            : null,
+        computerUse: json['computerUse'] == true,
+        allowForeground: json['allowForeground'] == true,
       );
 }
 
@@ -211,8 +239,11 @@ class GatewayConfig {
 
   GatewayConnection connectionForCustom(CustomMcpServer server, String token) =>
       GatewayConnection(
+        localProcess: server.localProcess,
+        computerUse: server.computerUse,
+        allowForeground: server.allowForeground,
         config: GatewayConfig(
-          enabled: true,
+          enabled: server.enabled,
           baseUrl: server.baseUrl,
           requestTimeoutSeconds: requestTimeoutSeconds,
         ),
@@ -339,11 +370,19 @@ class GatewayConnection {
     required this.config,
     required this.apiToken,
     this.tokenProvider,
+    this.localProcess,
+    this.computerUse = false,
+    this.allowForeground = false,
   });
 
   final GatewayConfig config;
   final String apiToken;
   final Future<String> Function()? tokenProvider;
+  final McpProcessConfig? localProcess;
+  final bool computerUse;
+  final bool allowForeground;
+  bool get isConfigured =>
+      config.enabled && (localProcess?.isConfigured ?? config.isConfigured);
 
   Future<String> resolveApiToken() async {
     final provider = tokenProvider;

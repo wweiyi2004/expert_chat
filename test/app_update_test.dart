@@ -57,7 +57,10 @@ void main() {
       expect(AppUpdateChecker.isNewerForTest('', '1.0.0'), isFalse);
       expect(AppUpdateChecker.isNewerForTest('v', '1.0.0'), isFalse);
       // 当前版本无法解析时,任何发布版本都不应宣称有更新。
-      expect(AppUpdateChecker.isNewerForTest('2.0.0', 'not-a-version'), isFalse);
+      expect(
+        AppUpdateChecker.isNewerForTest('2.0.0', 'not-a-version'),
+        isFalse,
+      );
       expect(AppUpdateChecker.isNewerForTest('1.0.0', ''), isFalse);
     });
   });
@@ -227,16 +230,13 @@ void main() {
         ),
       );
 
-      final result = await AppUpdateChecker(dio: dio).check(
-        preferredAbi: 'arm64-v8a',
-      );
+      final result = await AppUpdateChecker(
+        dio: dio,
+      ).check(preferredAbi: 'arm64-v8a');
 
       expect(result.hasUpdate, isFalse);
       expect(connectTimeout, isNotNull);
-      expect(
-        connectTimeout!.inMilliseconds,
-        inInclusiveRange(10000, 15000),
-      );
+      expect(connectTimeout!.inMilliseconds, inInclusiveRange(10000, 15000));
     });
   });
 

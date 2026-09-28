@@ -224,8 +224,10 @@ class SearchOrchestrator {
       ..writeln('规则：')
       ..writeln('1. 涉及实时信息（新闻、价格、版本、赛果、天气）或你不确定的事实时，调用 web_search。')
       ..writeln('2. 关键词必须自包含：把"它/这个"等指代替换成对话中的具体名称；时效性问题补上年份。')
-      ..writeln('3. 一次调用只搜一个主题；多个主题分多次调用；每轮最多 $maxQueriesPerRound 次，'
-          '最多 $maxRounds 轮。')
+      ..writeln(
+        '3. 一次调用只搜一个主题；多个主题分多次调用；每轮最多 $maxQueriesPerRound 次，'
+        '最多 $maxRounds 轮。',
+      )
       ..writeln('4. 已有结果足以支撑回答时，停止调用工具，仅回复：DONE');
     if (force) {
       base.writeln('5. 用户已强制开启联网：本次必须至少调用一次 web_search，然后才能结束。');

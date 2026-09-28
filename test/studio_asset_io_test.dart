@@ -11,8 +11,7 @@ void main() {
     );
   });
 
-  test('decodeJsonText explains non-UTF-8 (GBK) bytes instead of failing',
-      () {
+  test('decodeJsonText explains non-UTF-8 (GBK) bytes instead of failing', () {
     // GBK 编码的「测试」— 不是合法的 UTF-8 字节序列。
     final gbkBytes = <int>[0xB2, 0xE2, 0xCA, 0xD4];
     expect(

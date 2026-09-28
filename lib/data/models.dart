@@ -372,6 +372,13 @@ class SearchActivity {
     this.error,
     this.items = const [],
     this.reasoningOffset = 0,
+    this.reasoningOffsetRecorded = false,
+    this.startedAt,
+    this.finishedAt,
+    this.toolName,
+    this.toolArguments,
+    this.resultText,
+    this.retryOfId,
   }) : id = id ?? _uuid.v4();
 
   final String id;
@@ -394,12 +401,34 @@ class SearchActivity {
   /// step started. Used to interleave tool nodes with the thinking text.
   final int reasoningOffset;
 
+  /// Distinguishes a live step anchored at zero from unpositioned legacy data.
+  final bool reasoningOffsetRecorded;
+  final DateTime? startedAt;
+  final DateTime? finishedAt;
+  final String? toolName;
+  final String? toolArguments;
+  final String? resultText;
+  final String? retryOfId;
+
+  bool get canRetry =>
+      status == SearchActivityStatus.failed &&
+      toolArguments != null &&
+      const ['web_search', 'fetch_url', 'generate_image'].contains(toolName);
+
+  bool get retryNeedsConfirmation => toolName == 'generate_image';
+
   SearchActivity copyWith({
     SearchActivityStatus? status,
     int? resultCount,
     String? error,
     List<SearchActivityItem>? items,
     int? reasoningOffset,
+    DateTime? startedAt,
+    DateTime? finishedAt,
+    String? toolName,
+    String? toolArguments,
+    String? resultText,
+    String? retryOfId,
   }) => SearchActivity(
     id: id,
     kind: kind,
@@ -409,6 +438,13 @@ class SearchActivity {
     error: error ?? this.error,
     items: items ?? this.items,
     reasoningOffset: reasoningOffset ?? this.reasoningOffset,
+    reasoningOffsetRecorded: reasoningOffset != null || reasoningOffsetRecorded,
+    startedAt: startedAt ?? this.startedAt,
+    finishedAt: finishedAt ?? this.finishedAt,
+    toolName: toolName ?? this.toolName,
+    toolArguments: toolArguments ?? this.toolArguments,
+    resultText: resultText ?? this.resultText,
+    retryOfId: retryOfId ?? this.retryOfId,
   );
 
   Map<String, dynamic> toJson() => {
@@ -417,9 +453,16 @@ class SearchActivity {
     'query': query,
     'status': status.name,
     'resultCount': resultCount,
+    if (startedAt != null) 'startedAt': startedAt!.toIso8601String(),
+    if (finishedAt != null) 'finishedAt': finishedAt!.toIso8601String(),
+    if (toolName != null) 'toolName': toolName,
+    if (toolArguments != null) 'toolArguments': toolArguments,
+    if (resultText != null) 'resultText': resultText,
+    if (retryOfId != null) 'retryOfId': retryOfId,
     if (error != null) 'error': error,
     if (items.isNotEmpty) 'items': [for (final item in items) item.toJson()],
-    if (reasoningOffset > 0) 'reasoningOffset': reasoningOffset,
+    if (reasoningOffsetRecorded || reasoningOffset > 0)
+      'reasoningOffset': reasoningOffset,
   };
 
   factory SearchActivity.fromJson(Map<String, dynamic> json) => SearchActivity(
@@ -437,13 +480,22 @@ class SearchActivity {
       _ => SearchActivityStatus.failed,
     },
     resultCount: (json['resultCount'] as num?)?.toInt() ?? 0,
-    error: json['error'] as String?,
+    error: json['status'] == 'running'
+        ? '已中断；远端是否完成尚未确认'
+        : json['error'] as String?,
+    startedAt: DateTime.tryParse(json['startedAt']?.toString() ?? ''),
+    finishedAt: DateTime.tryParse(json['finishedAt']?.toString() ?? ''),
+    toolName: json['toolName'] as String?,
+    toolArguments: json['toolArguments'] as String?,
+    resultText: json['resultText'] as String?,
+    retryOfId: json['retryOfId'] as String?,
     items: [
       for (final raw in json['items'] as List<dynamic>? ?? const [])
         if (raw is Map)
           SearchActivityItem.fromJson(Map<String, dynamic>.from(raw)),
     ].where((item) => item.title.isNotEmpty || item.url.isNotEmpty).toList(),
     reasoningOffset: (json['reasoningOffset'] as num?)?.toInt() ?? 0,
+    reasoningOffsetRecorded: json.containsKey('reasoningOffset'),
   );
 }
 
@@ -484,6 +536,7 @@ class ChatMessage {
     List<WorldInfoHit>? appliedWorldInfo,
     this.longTask,
     this.turnSkill,
+    this.recoveredStorage = const {},
     DateTime? createdAt,
   }) : id = id ?? _uuid.v4(),
        attachments = attachments ?? const [],
@@ -537,6 +590,9 @@ class ChatMessage {
   /// messages that were never routed.
   final TurnSkillMark? turnSkill;
 
+  /// Unreadable storage fields retained verbatim; never sent to a model.
+  final Map<String, String> recoveredStorage;
+
   final DateTime createdAt;
 
   ChatMessage copyWith({
@@ -578,6 +634,7 @@ class ChatMessage {
     turnSkill: identical(turnSkill, _msgSentinel)
         ? this.turnSkill
         : turnSkill as TurnSkillMark?,
+    recoveredStorage: recoveredStorage,
     createdAt: createdAt,
   );
 
@@ -585,6 +642,7 @@ class ChatMessage {
 
   Map<String, dynamic> toJson() => {
     'id': id,
+    if (recoveredStorage.isNotEmpty) 'recoveredStorage': recoveredStorage,
     'role': role.wire,
     if (parentId != null) 'parentId': parentId,
     'content': content,
@@ -609,6 +667,9 @@ class ChatMessage {
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) => ChatMessage(
     id: json['id'] as String?,
+    recoveredStorage: Map<String, String>.from(
+      json['recoveredStorage'] as Map? ?? const {},
+    ),
     role: MessageRoleApi.fromWire(json['role'] as String? ?? 'user'),
     parentId: json['parentId'] as String?,
     content: json['content'] as String? ?? '',
@@ -653,6 +714,7 @@ const String kRootKey = '';
 class Conversation {
   Conversation({
     String? id,
+    this.projectId,
     this.title = '新对话',
     List<ChatMessage>? messages,
     Map<String, String>? activeChildren,
@@ -671,6 +733,7 @@ class Conversation {
     this.targetTotalChars = 0,
     this.workMode = false,
     this.messagesLoaded = true,
+    this.recoveredStorage = const {},
     this._childrenIndex,
     this._branchInfoIndex,
   }) : id = id ?? _uuid.v4(),
@@ -686,6 +749,7 @@ class Conversation {
   final String id;
   final String title;
   final List<ChatMessage> messages;
+  final String? projectId;
 
   /// parentId (or [kRootKey]) → selected child id.
   final Map<String, String> activeChildren;
@@ -738,6 +802,7 @@ class Conversation {
   /// empty even if the session has history on disk. Persistence must not
   /// treat that as "delete every message".
   final bool messagesLoaded;
+  final Map<String, String> recoveredStorage;
 
   bool get isStory => mode == ConversationMode.story;
   bool get isEnsemble => mode == ConversationMode.ensemble;
@@ -835,6 +900,7 @@ class Conversation {
   (int, int) branchInfo(String messageId) => _branchInfo[messageId] ?? (0, 1);
 
   Conversation copyWith({
+    Object? projectId = _storySentinel,
     String? title,
     List<ChatMessage>? messages,
     Map<String, String>? activeChildren,
@@ -858,6 +924,9 @@ class Conversation {
     final reuseIndex = _sameMessageIds(this.messages, nextMessages);
     return Conversation(
       id: id,
+      projectId: identical(projectId, _storySentinel)
+          ? this.projectId
+          : projectId as String?,
       title: title ?? this.title,
       messages: nextMessages,
       activeChildren: activeChildren ?? this.activeChildren,
@@ -878,6 +947,7 @@ class Conversation {
       targetTotalChars: targetTotalChars ?? this.targetTotalChars,
       workMode: workMode ?? this.workMode,
       messagesLoaded: messagesLoaded ?? this.messagesLoaded,
+      recoveredStorage: recoveredStorage,
       childrenIndex: reuseIndex ? _rebindChildren(nextMessages) : null,
       branchInfoIndex: reuseIndex ? _branchInfoIndex : null,
     );
@@ -909,9 +979,11 @@ class Conversation {
 
   Map<String, dynamic> toJson() => {
     'id': id,
+    if (recoveredStorage.isNotEmpty) 'recoveredStorage': recoveredStorage,
     'title': title,
     'updatedAt': updatedAt.toIso8601String(),
     'activeChildren': activeChildren,
+    if (projectId != null) 'projectId': projectId,
     'messages': messages.map((m) => m.toJson()).toList(),
     'mode': mode.wire,
     if (characterId != null) 'characterId': characterId,
@@ -931,6 +1003,10 @@ class Conversation {
 
   factory Conversation.fromJson(Map<String, dynamic> json) => Conversation(
     id: json['id'] as String?,
+    recoveredStorage: Map<String, String>.from(
+      json['recoveredStorage'] as Map? ?? const {},
+    ),
+    projectId: json['projectId'] as String?,
     title: json['title'] as String? ?? '新对话',
     updatedAt: _parseStoredTime(json['updatedAt']),
     activeChildren: {

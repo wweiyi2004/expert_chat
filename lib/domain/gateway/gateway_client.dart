@@ -34,7 +34,7 @@ class GatewayException implements Exception {
 }
 
 class GatewayClient {
-  GatewayClient({Dio? dio}) : _mcp = McpClient(dio: dio);
+  GatewayClient({Dio? dio, McpClient? mcp}) : _mcp = mcp ?? McpClient(dio: dio);
 
   final McpClient _mcp;
 
@@ -43,7 +43,9 @@ class GatewayClient {
     CancelToken? cancelToken,
   }) async {
     final base = connection.config.normalizedBaseUrl;
-    if (base.isEmpty) throw const GatewayException('未配置 MCP Server URL');
+    if (base.isEmpty && connection.localProcess == null) {
+      throw const GatewayException('未配置 MCP Server URL');
+    }
     try {
       final server = await _mcp.discover(
         connection: connection,

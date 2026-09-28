@@ -100,6 +100,7 @@ shorebird patch windows
 注意：
 
 - **不能**只靠补丁：原生插件变更、**新增/替换 assets（字体等）**、Flutter 引擎大版本  
+- Android 会裁剪 Material Icons 字体，即使只修改 `Icons.*` 的 Dart 引用，也可能新增旧基座没有的字形。发布前必须做补丁预检；遇到字体差异时，优先复用旧基座已有图标，否则应发布完整基座，不要直接忽略资源差异。
 - 补丁绑定「当时的 release 版本号」；升 `1.5.0 → 1.5.1` 要先再 `shorebird release`  
 
 ## 应用内行为摘要

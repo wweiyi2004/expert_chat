@@ -144,8 +144,9 @@ class OpenAiCompatibleMediaProvider {
 
     // GPT Image multi-ref docs use repeated `image[]` parts; classic single
     // edits gateways expect one part named `image`.
-    final imageField =
-        config.supportsMultiReferenceImages ? 'image[]' : 'image';
+    final imageField = config.supportsMultiReferenceImages
+        ? 'image[]'
+        : 'image';
 
     final form = FormData();
     form.fields.add(MapEntry('model', config.model.trim()));
@@ -193,9 +194,11 @@ class OpenAiCompatibleMediaProvider {
   }
 
   MultipartFile _multipartImage(ImageEditReference ref, {required int index}) {
-    var safeName =
-        ref.fileName.trim().isEmpty ? 'reference_$index.png' : ref.fileName.trim();
-    final mime = ref.mimeType.trim().isEmpty || !ref.mimeType.startsWith('image/')
+    var safeName = ref.fileName.trim().isEmpty
+        ? 'reference_$index.png'
+        : ref.fileName.trim();
+    final mime =
+        ref.mimeType.trim().isEmpty || !ref.mimeType.startsWith('image/')
         ? 'image/png'
         : ref.mimeType.trim();
     if (!safeName.contains('.')) {
@@ -210,7 +213,9 @@ class OpenAiCompatibleMediaProvider {
     // Without an explicit contentType Dio sends application/octet-stream,
     // which several OpenAI-compatible gateways reject as "invalid image".
     return MultipartFile.fromBytes(
-      ref.bytes is Uint8List ? ref.bytes as Uint8List : Uint8List.fromList(ref.bytes),
+      ref.bytes is Uint8List
+          ? ref.bytes as Uint8List
+          : Uint8List.fromList(ref.bytes),
       filename: safeName,
       contentType: _mediaTypeOf(mime),
     );

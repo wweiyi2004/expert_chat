@@ -20,7 +20,8 @@ import 'wrong_book_page.dart';
 /// A calm learning workspace: one visual language, clear next action, and the
 /// library kept secondary to active learning.
 class StudyHubPage extends ConsumerWidget {
-  const StudyHubPage({super.key});
+  const StudyHubPage({super.key, this.onBack});
+  final VoidCallback? onBack;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -57,6 +58,13 @@ class StudyHubPage extends ConsumerWidget {
     return Scaffold(
       backgroundColor: studyPageBackground(context),
       appBar: AppBar(
+        leading: onBack == null
+            ? null
+            : IconButton(
+                tooltip: '返回工具',
+                onPressed: onBack,
+                icon: const Icon(Icons.arrow_back),
+              ),
         title: const Text('学习空间'),
         backgroundColor: Colors.transparent,
         scrolledUnderElevation: 0,

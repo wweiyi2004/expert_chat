@@ -10,6 +10,7 @@ import 'story_models.dart';
 /// List-row metadata without message bodies or attachments.
 class ConversationSummary {
   const ConversationSummary({
+    this.projectId,
     required this.id,
     required this.title,
     required this.updatedAt,
@@ -28,33 +29,41 @@ class ConversationSummary {
     this.workMode = false,
     this.activeChildren = const {},
     this.hasActiveLongTask = false,
+    this.recoveredStorage = const {},
   });
 
-  factory ConversationSummary.fromConversation(Conversation conversation) =>
-      ConversationSummary(
-        id: conversation.id,
-        title: conversation.title,
-        updatedAt: conversation.updatedAt,
-        mode: conversation.mode,
-        characterId: conversation.characterId,
-        participantIds: conversation.participantIds,
-        localCast: conversation.localCast,
-        worldInfoIds: conversation.worldInfoIds,
-        customMcpServerIds: conversation.customMcpServerIds,
-        outline: conversation.outline,
-        authorNote: conversation.authorNote,
-        plotCursor: conversation.plotCursor,
-        venue: conversation.venue,
-        nextSpeakerIndex: conversation.nextSpeakerIndex,
-        targetTotalChars: conversation.targetTotalChars,
-        workMode: conversation.workMode,
-        activeChildren: conversation.activeChildren,
-        hasActiveLongTask: conversation.messages.any(
+  factory ConversationSummary.fromConversation(
+    Conversation conversation, {
+    bool? hasActiveLongTask,
+  }) => ConversationSummary(
+    id: conversation.id,
+    projectId: conversation.projectId,
+    title: conversation.title,
+    updatedAt: conversation.updatedAt,
+    mode: conversation.mode,
+    characterId: conversation.characterId,
+    participantIds: conversation.participantIds,
+    localCast: conversation.localCast,
+    worldInfoIds: conversation.worldInfoIds,
+    customMcpServerIds: conversation.customMcpServerIds,
+    outline: conversation.outline,
+    authorNote: conversation.authorNote,
+    plotCursor: conversation.plotCursor,
+    venue: conversation.venue,
+    nextSpeakerIndex: conversation.nextSpeakerIndex,
+    targetTotalChars: conversation.targetTotalChars,
+    workMode: conversation.workMode,
+    activeChildren: conversation.activeChildren,
+    recoveredStorage: conversation.recoveredStorage,
+    hasActiveLongTask:
+        hasActiveLongTask ??
+        conversation.messages.any(
           (message) => message.longTask?.isActive == true,
         ),
-      );
+  );
 
   final String id;
+  final String? projectId;
   final String title;
   final DateTime updatedAt;
   final ConversationMode mode;
@@ -72,9 +81,11 @@ class ConversationSummary {
   final bool workMode;
   final Map<String, String> activeChildren;
   final bool hasActiveLongTask;
+  final Map<String, String> recoveredStorage;
 
   Conversation toPlaceholder() => Conversation(
     id: id,
+    projectId: projectId,
     title: title,
     messages: const [],
     activeChildren: activeChildren,
@@ -93,8 +104,12 @@ class ConversationSummary {
     targetTotalChars: targetTotalChars,
     workMode: workMode,
     messagesLoaded: false,
+    recoveredStorage: recoveredStorage,
   );
 }
+
+/// Maximum matching messages returned by interactive history search.
+const conversationSearchLimit = 200;
 
 /// One title/content match from [ConversationRepository.searchMessages].
 class SearchHit {
@@ -143,6 +158,12 @@ abstract class ConversationRepository {
   /// SQL/in-memory search over titles and message bodies. Empty query
   /// returns no hits (it must not load the full archive).
   Future<List<SearchHit>> searchMessages(String query);
+}
+
+/// Optional narrow writer for metadata-only actions. It must never insert a
+/// deleted conversation or synchronize message bodies.
+abstract interface class ConversationMetadataRepository {
+  Future<void> renameConversation(String id, String title, DateTime updatedAt);
 }
 
 /// Test/legacy helper: derive the on-demand APIs from [loadAll].

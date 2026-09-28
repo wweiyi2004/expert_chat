@@ -33,6 +33,7 @@ class MemoryMarkdownCodec {
         ..writeln('  - created_at: ${entry.createdAt.toIso8601String()}')
         ..writeln('  - updated_at: ${entry.updatedAt.toIso8601String()}');
       if (entry.sourceConversationId != null) {
+        // Project metadata is per entry; legacy entries remain global.
         buffer.writeln(
           '  - source_conversation_id: ${entry.sourceConversationId}',
         );
@@ -42,6 +43,9 @@ class MemoryMarkdownCodec {
       }
       if (entry.sourceRole != null) {
         buffer.writeln('  - source_role: ${entry.sourceRole}');
+      }
+      if (entry.projectId != null) {
+        buffer.writeln('  - project_id: ${entry.projectId}');
       }
       buffer.writeln();
     }
@@ -91,6 +95,7 @@ class MemoryMarkdownCodec {
           sourceConversationId: _nullable(metadata['source_conversation_id']),
           sourceMessageId: _nullable(metadata['source_message_id']),
           sourceRole: _nullable(metadata['source_role']),
+          projectId: _nullable(metadata['project_id']),
           createdAt: _time(metadata['created_at']),
           updatedAt: _time(metadata['updated_at']),
         ),

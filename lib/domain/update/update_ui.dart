@@ -85,10 +85,12 @@ Future<void> showUpdateResultDialog(
   required bool manual,
 }) {
   final notes = _normalizeReleaseNotes(result.releaseNotes);
-  final canInApp = !kIsWeb &&
+  final canInApp =
+      !kIsWeb &&
       result.downloadUrl != null &&
       result.downloadUrl!.isNotEmpty &&
-      ((defaultTargetPlatform == TargetPlatform.android && result.isAndroidApk) ||
+      ((defaultTargetPlatform == TargetPlatform.android &&
+              result.isAndroidApk) ||
           (defaultTargetPlatform == TargetPlatform.windows &&
               (result.isWindowsZip || result.downloadUrl != null)));
 
@@ -96,10 +98,9 @@ Future<void> showUpdateResultDialog(
     context: context,
     builder: (ctx) {
       final scheme = Theme.of(ctx).colorScheme;
-      final bodyStyle = Theme.of(ctx).textTheme.bodySmall?.copyWith(
-            color: scheme.onSurface,
-            height: 1.45,
-          );
+      final bodyStyle = Theme.of(
+        ctx,
+      ).textTheme.bodySmall?.copyWith(color: scheme.onSurface, height: 1.45);
 
       if (!result.hasUpdate) {
         return AlertDialog(
@@ -142,10 +143,7 @@ Future<void> showUpdateResultDialog(
                   ),
                   if (result.assetName != null) ...[
                     const SizedBox(height: 6),
-                    Text(
-                      '安装包：${result.assetName}',
-                      style: bodyStyle,
-                    ),
+                    Text('安装包：${result.assetName}', style: bodyStyle),
                   ],
                   if (notes.isNotEmpty) ...[
                     const SizedBox(height: 12),
@@ -333,10 +331,7 @@ Future<void> downloadAndApplyUpdate(
     messenger?.showSnackBar(
       SnackBar(
         content: Text('下载失败：$e'),
-        action: SnackBarAction(
-          label: '浏览器',
-          onPressed: () => _open(url),
-        ),
+        action: SnackBarAction(label: '浏览器', onPressed: () => _open(url)),
       ),
     );
   } catch (e) {
@@ -347,10 +342,7 @@ Future<void> downloadAndApplyUpdate(
     messenger?.showSnackBar(
       SnackBar(
         content: Text('下载失败：$e'),
-        action: SnackBarAction(
-          label: '浏览器',
-          onPressed: () => _open(url),
-        ),
+        action: SnackBarAction(label: '浏览器', onPressed: () => _open(url)),
       ),
     );
   } finally {

@@ -105,11 +105,7 @@ class StreamUiCoalescer {
 /// Scroll position is the stand-in for gaze: stick-to-bottom follows the
 /// growing tail; expanding the thinking panel while scrolled up watches
 /// reasoning; anything else is treated as reading a frozen prefix.
-enum StreamUiFocus {
-  reasoning,
-  content,
-  away,
-}
+enum StreamUiFocus { reasoning, content, away }
 
 /// Independent token budgets for the thinking pane and the answer pane.
 ///
@@ -157,9 +153,7 @@ class DualStreamUiCoalescer {
 
   void markFlushed({bool all = false}) {
     final publishReasoning =
-        all ||
-        focus == StreamUiFocus.away ||
-        focus == StreamUiFocus.reasoning;
+        all || focus == StreamUiFocus.away || focus == StreamUiFocus.reasoning;
     final publishContent =
         all || focus == StreamUiFocus.away || focus == StreamUiFocus.content;
     if (publishReasoning && (all || reasoning.pendingTokens > 0)) {

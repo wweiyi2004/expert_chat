@@ -10,16 +10,14 @@
 
 ```powershell
 cd server
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r gateway/requirements.txt
+uv sync --frozen
 
 $env:GATEWAY_AUTH_MODE = 'legacy'
 $env:GATEWAY_API_TOKEN = 'change-me'
 $env:LLM_BASE_URL = 'https://api.deepseek.com'
 $env:LLM_API_KEY = 'your-upstream-key'
 $env:LLM_MODEL = 'deepseek-chat'
-uvicorn gateway.app.main:app --host 127.0.0.1 --port 8790 --workers 1
+uv run --frozen uvicorn gateway.app.main:app --host 127.0.0.1 --port 8790 --workers 1
 ```
 
 本机开发可在软件设置中填写 `http://127.0.0.1:8790` 和相同旧 Token。生产环境应使用 HTTPS + AuthService OIDC。
@@ -124,3 +122,7 @@ docker run -d --name expert-chat-gateway \
 当前 Worker 内置于单进程，并使用 SQLite 恢复重启时未完成的任务，因此必须使用 `--workers 1`。
 
 生产环境反向代理 MCP 时必须显式设置 `GATEWAY_MCP_PUBLIC_URL`、`GATEWAY_MCP_ISSUER` 和 `GATEWAY_MCP_ALLOWED_HOSTS`。浏览器型 MCP Host 还需设置 `GATEWAY_MCP_ALLOWED_ORIGINS`；服务端客户端通常不发送 `Origin`。
+
+## 维护与恢复
+
+开发/打包要求 Python 3.12、uv 0.11.2；依赖统一来自 `server/uv.lock` 和带哈希的 `requirements.lock`。不要分别手动升级不同入口的依赖副本。详见 [维护制度](../../docs/MAINTENANCE.md)。

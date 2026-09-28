@@ -21,7 +21,8 @@ import '../shell/shell_tab.dart';
 ///
 /// Expert Chat chrome stays paper/ink; only the terminal canvas is dark.
 class ResearchTerminalPage extends ConsumerStatefulWidget {
-  const ResearchTerminalPage({super.key});
+  const ResearchTerminalPage({super.key, this.onBack});
+  final VoidCallback? onBack;
 
   @override
   ConsumerState<ResearchTerminalPage> createState() =>
@@ -359,9 +360,7 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
           color: Theme.of(ctx).colorScheme.error,
         ),
         title: const Text('发送 Ctrl+C？'),
-        content: const Text(
-          '这会中断远端当前前台进程。若正在观察长时间训练，请不要发送。',
-        ),
+        content: const Text('这会中断远端当前前台进程。若正在观察长时间训练，请不要发送。'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
@@ -577,6 +576,13 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
       resizeToAvoidBottomInset: false,
       backgroundColor: scheme.surface,
       appBar: AppBar(
+        leading: widget.onBack == null
+            ? null
+            : IconButton(
+                tooltip: '返回工具',
+                onPressed: widget.onBack,
+                icon: const Icon(Icons.arrow_back),
+              ),
         titleSpacing: 12,
         title: Row(
           children: [
@@ -1367,7 +1373,9 @@ class _AiAssistPanelState extends ConsumerState<_AiAssistPanel> {
   Future<void> _runAnalyze({required bool preferGoal}) async {
     final ctrl = ref.read(researchTerminalProvider.notifier);
     final goal = _goalCtrl.text.trim();
-    await ctrl.analyzeWithAi(userGoal: preferGoal || goal.isNotEmpty ? goal : null);
+    await ctrl.analyzeWithAi(
+      userGoal: preferGoal || goal.isNotEmpty ? goal : null,
+    );
   }
 
   Future<void> _confirmExecute(CommandProposal proposal) async {
@@ -1546,10 +1554,7 @@ class _AiAssistPanelState extends ConsumerState<_AiAssistPanel> {
                 unawaited(ctrl.setAiContextLines(s.first)),
           ),
           const SizedBox(height: 12),
-          Text(
-            '附带终端预览（已脱敏，可选）',
-            style: Theme.of(context).textTheme.labelLarge,
-          ),
+          Text('附带终端预览（已脱敏，可选）', style: Theme.of(context).textTheme.labelLarge),
           const SizedBox(height: 6),
           Container(
             constraints: const BoxConstraints(maxHeight: 120),
@@ -1573,7 +1578,10 @@ class _AiAssistPanelState extends ConsumerState<_AiAssistPanel> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('理解 / 诊断', style: Theme.of(context).textTheme.titleSmall),
+                    Text(
+                      '理解 / 诊断',
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
                     const SizedBox(height: 4),
                     Text(proposal.diagnosis),
                     if (proposal.evidence.isNotEmpty) ...[

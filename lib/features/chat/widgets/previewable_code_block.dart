@@ -5,7 +5,7 @@ import '../../../data/ui_prefs.dart';
 import '../../../domain/html/html_snippet.dart';
 import 'html_preview_page.dart';
 
-/// Code fence UI with optional HTML preview action.
+/// Code fence UI with local HTML/SVG preview.
 class PreviewableCodeBlock extends StatefulWidget {
   const PreviewableCodeBlock({
     super.key,
@@ -28,16 +28,8 @@ class _PreviewableCodeBlockState extends State<PreviewableCodeBlock> {
   var _copied = false;
 
   bool get _canPreview {
-    final lang = widget.name.trim().toLowerCase();
-    if (lang == 'html' ||
-        lang == 'htm' ||
-        lang == 'xhtml' ||
-        lang.startsWith('html')) {
-      return true;
-    }
-    if (lang.isNotEmpty) return false;
-    // Untitled fences are previewable only when the raw body looks like HTML.
-    return extractHtmlSnippets('```\n${widget.code}\n```').isNotEmpty;
+    return widget.closed &&
+        previewSnippetForCode(widget.name, widget.code) != null;
   }
 
   Future<void> _copy() async {
@@ -49,19 +41,9 @@ class _PreviewableCodeBlockState extends State<PreviewableCodeBlock> {
   }
 
   void _preview() {
-    final lang = widget.name.trim().toLowerCase();
-    final fenceLanguage =
-        lang == 'html' ||
-            lang == 'htm' ||
-            lang == 'xhtml' ||
-            lang.startsWith('html')
-        ? 'html'
-        : '';
-    final snippets = extractHtmlSnippets(
-      '```$fenceLanguage\n${widget.code}\n```',
-    );
-    if (snippets.isEmpty) return;
-    HtmlPreviewPage.open(context, snippets: snippets);
+    final snippet = previewSnippetForCode(widget.name, widget.code);
+    if (snippet == null) return;
+    HtmlPreviewPage.open(context, snippets: [snippet]);
   }
 
   @override
@@ -114,6 +96,7 @@ class _PreviewableCodeBlockState extends State<PreviewableCodeBlock> {
                 ),
                 if (_canPreview && widget.closed)
                   TextButton.icon(
+                    key: const ValueKey('code-local-preview'),
                     style: TextButton.styleFrom(
                       visualDensity: VisualDensity.compact,
                       foregroundColor: scheme.primary,

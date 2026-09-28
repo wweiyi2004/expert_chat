@@ -13,35 +13,65 @@ mixin ChatMedia on ChatGeneration {
     List<Attachment> referenceImages = const [],
   }) => _generateImageTurn(prompt, referenceImages: referenceImages);
 
+  /// UI must obtain confirmation for a new paid image request first.
+  Future<bool> regenerateImageVersion(GenerationRecord record) =>
+      _generateImageTurn(
+        record.originalPrompt,
+        preparedPrompt: record.optimizedPrompt,
+        version: record,
+      );
+
   Future<bool> _generateImageTurn(
     String prompt, {
     List<Attachment> referenceImages = const [],
     String? existingUserMessageId,
+    String? preparedPrompt,
+    GenerationRecord? version,
   }) async {
     final trimmed = prompt.trim();
-    final refs = [
+    var refs = [
       for (final a in referenceImages)
         if (a.isImage && a.hasImageData) a,
     ];
-    if (trimmed.isEmpty || _s.isStreaming || _starting) return false;
-    _starting = true;
-    _cancelStart = false;
+    if (trimmed.isEmpty || _s.isStreaming || _execution.isActive) return false;
+    if (!_tryStartGeneration()) return false;
     // Capture the originating conversation before the settings preflight: the
     // user may switch conversations while settings load, and the turn must
     // still target the conversation it started from (matching _generate).
     final originConvo = _s.current;
     try {
-      final settings = await ref.read(settingsControllerProvider.future);
+      if (originConvo != null && !_requireLoadedConversation(originConvo)) {
+        return false;
+      }
+      var settings = await ref.read(settingsControllerProvider.future);
+      if (version != null) {
+        if (GenerationRepository.providerOrigin(
+              settings.imageGenerationApi.baseUrl,
+            ) !=
+            version.providerHost) {
+          throw StateError('当前生图服务与原记录不同。请先配置原服务，再按原参数生成。');
+        }
+        settings = settings.copyWith(
+          imageGenerationApi: settings.imageGenerationApi.copyWith(
+            model: version.model,
+            imageSize: version.imageSize,
+          ),
+        );
+        refs = await ref.read(generationRepositoryProvider).references(version);
+        if (refs.length > settings.imageGenerationApi.maxImageEditReferences) {
+          throw StateError('当前接口无法接收原记录的全部参考图。');
+        }
+      }
       if (!settings.imageGenerationConfigured) {
         _set(_s.copyWith(error: '请先在设置中完整配置图片生成 API。'));
         return false;
       }
-      final useDeepThink = _s.deepThink;
+      final useDeepThink = preparedPrompt == null && _s.deepThink;
       if (useDeepThink && !settings.config.isReady) {
         _set(_s.copyWith(error: '深度思考生图需要先配置对话 API（用于优化提示词）。'));
         return false;
       }
-      if (_cancelStart) return false;
+      if (_execution.isCancelled) return false;
 
       final maxRefs = settings.imageGenerationApi.maxImageEditReferences;
       final usedRefs = refs.length > maxRefs ? refs.sublist(0, maxRefs) : refs;
@@ -101,7 +131,8 @@ mixin ChatMedia on ChatGeneration {
         assistantMessageId: assistantMsg.id,
       );
       final cancelToken = CancelToken();
-      _cancelToken = cancelToken;
+      _execution.attachRequest(cancelToken);
+      _beginTaskBudget(settings);
       // The user may have switched conversations while this turn was
       // preflighting; don't yank focus back. The image turn itself still
       // targets [working.id] and writes into it.
@@ -120,7 +151,6 @@ mixin ChatMedia on ChatGeneration {
           error: null,
         ),
       );
-      unawaited(GenerationNotify.onGenerationStart());
       try {
         await _persistence.persistById(working.id);
       } catch (e) {
@@ -130,29 +160,65 @@ mixin ChatMedia on ChatGeneration {
         _setScopedError('本地保存失败：$e', convoId: working.id);
       }
 
+      SearchActivity? imageStep;
+      void startStep(String query, {String? prompt}) {
+        imageStep = SearchActivity(
+          kind: SearchActivityKind.image,
+          query: query,
+          toolName: prompt == null ? null : 'generate_image',
+          toolArguments: prompt == null ? null : jsonEncode({'prompt': prompt}),
+        );
+        _upsertSearchActivity(working.id, assistantMsg.id, imageStep!);
+      }
+
+      void finishStep({String? error, int resultCount = 0}) {
+        final step = imageStep;
+        if (step == null) return;
+        _upsertSearchActivity(
+          working.id,
+          assistantMsg.id,
+          step.copyWith(
+            status: error == null
+                ? SearchActivityStatus.done
+                : SearchActivityStatus.failed,
+            error: error,
+            resultCount: resultCount,
+          ),
+        );
+        imageStep = null;
+      }
+
       try {
-        var imagePrompt = trimmed;
+        var imagePrompt = preparedPrompt ?? trimmed;
         var optimizedByModel = '';
         var reasoning = '';
         var thinkingMillis = 0;
 
         if (useDeepThink) {
-          final refined = await _optimizeImagePrompt(
-            userPrompt: trimmed,
-            settings: settings,
-            cancelToken: cancelToken,
-            onReasoning: (text, millis) {
-              reasoning = text;
-              thinkingMillis = millis;
-              _updateAssistant(
-                working.id,
-                assistantMsg.id,
-                '',
-                reasoning,
-                thinkingMillis,
-              );
-            },
-          );
+          startStep('优化提示词');
+          var refined = '';
+          try {
+            refined = await _optimizeImagePrompt(
+              userPrompt: trimmed,
+              settings: settings,
+              cancelToken: cancelToken,
+              onReasoning: (text, millis) {
+                reasoning = text;
+                thinkingMillis = millis;
+                _updateAssistant(
+                  working.id,
+                  assistantMsg.id,
+                  '',
+                  reasoning,
+                  thinkingMillis,
+                );
+              },
+            );
+            finishStep(error: cancelToken.isCancelled ? '已取消' : null);
+          } catch (e) {
+            if (isCancelError(e) || cancelToken.isCancelled) rethrow;
+            finishStep(error: '提示词优化未完成，使用原始描述');
+          }
           if (!_s.isStreaming || cancelToken.isCancelled) {
             await _persistence.persistById(working.id);
             unawaited(
@@ -179,63 +245,35 @@ mixin ChatMedia on ChatGeneration {
         // append an SFW suffix before hitting the media API.
         imagePrompt = ImagePromptSafety.freeform(imagePrompt);
 
-        final preparedRefs = <ImageEditReference>[];
-        for (final reference in usedRefs) {
-          final b64 = reference.imageBase64;
-          if (b64 == null || b64.isEmpty) {
-            _set(
-              _s.copyWith(
-                error: '参考图「${reference.name}」缺少本地数据，请重新从相册/文件选择。',
-                errorConvoId: working.id,
-                retryOperation: failureOperation,
-                streamingConvoId: null,
-              ),
+        if (usedRefs.isNotEmpty) startStep('准备参考图');
+        final referencePreparation = await const ImageReferencePreparer()
+            .prepare(
+              usedRefs,
+              preserveOriginalBytes: version != null,
+              isActive: () => _s.isStreaming && !cancelToken.isCancelled,
             );
-            await _persistence.persistById(working.id);
-            unawaited(
-              GenerationNotify.onGenerationEnd(
-                success: false,
-                conversationTitle: working.title,
-              ),
-            );
-            return true;
-          }
-          try {
-            // Large phone photos: decode base64 off the UI isolate, then
-            // downscale on the UI isolate (target-bound decode).
-            final raw = b64.length >= 256 * 1024
-                ? await compute(base64Decode, b64)
-                : base64Decode(b64);
-            final prepared = await ImageCodecUtil.prepareReferenceImage(
-              Uint8List.fromList(raw),
-              mimeType: reference.mimeType,
-              name: reference.name,
-            );
-            preparedRefs.add(
-              ImageEditReference(
-                bytes: prepared.bytes,
-                mimeType: prepared.mimeType,
-                fileName: prepared.name,
-              ),
-            );
-          } on FormatException {
-            _setScopedError(
-              '参考图「${reference.name}」数据无效，请重新选择图片。',
-              convoId: working.id,
-              retryOperation: failureOperation,
-            );
-            _set(_s.copyWith(streamingConvoId: null));
-            await _persistence.persistById(working.id);
-            unawaited(
-              GenerationNotify.onGenerationEnd(
-                success: false,
-                conversationTitle: working.title,
-              ),
-            );
-            return true;
-          }
+        if (referencePreparation.error != null) {
+          _setScopedError(
+            referencePreparation.error!,
+            convoId: working.id,
+            retryOperation: failureOperation,
+          );
+          _set(_s.copyWith(streamingConvoId: null));
+          await _persistence.persistById(working.id);
+          unawaited(
+            GenerationNotify.onGenerationEnd(
+              success: false,
+              conversationTitle: working.title,
+            ),
+          );
+          return true;
         }
+        if (referencePreparation.cancelled) return true;
+        final preparedRefs = referencePreparation.references;
 
+        finishStep();
+        if (cancelToken.isCancelled || !_s.isStreaming) return true;
+        startStep('生成图片', prompt: imagePrompt);
         if (_s.isStreaming) {
           _set(
             _s.copyWith(
@@ -245,14 +283,18 @@ mixin ChatMedia on ChatGeneration {
             ),
           );
         }
-        final generated = await ref
-            .read(mediaApiProvider)
-            .generateImage(
+        if (!(_execution.budget?.takeTool() ?? true)) {
+          throw StateError(_execution.budget?.reason ?? '工具预算已用完');
+        }
+        final generated =
+            await ImageGenerationService(
+              getProvider: () => ref.read(mediaApiProvider),
+            ).generate(
               config: settings.imageGenerationApi,
               apiKey: settings.imageGenerationApiKey,
               prompt: imagePrompt,
               cancelToken: cancelToken,
-              referenceImages: preparedRefs,
+              references: preparedRefs,
             );
         if (!_s.isStreaming || cancelToken.isCancelled) {
           await _persistence.persistById(working.id);
@@ -265,21 +307,8 @@ mixin ChatMedia on ChatGeneration {
           );
           return true;
         }
-        final sizeBytes = generated.base64 == null
-            ? 0
-            : (generated.base64!.length * 3 / 4).round();
-        final attachment = Attachment(
-          name: libraryGeneratedImageName(
-            prompt: imagePrompt,
-            mimeType: generated.mimeType,
-          ),
-          mimeType: generated.mimeType,
-          sizeBytes: sizeBytes,
-          imageBase64: generated.base64,
-          remoteUrl: generated.remoteUrl,
-        );
-        unawaited(_importImageToLibrary(attachment));
-        final content = _imageGenResultContent(
+        final attachment = generated.attachment;
+        final content = ImageGenerationService.resultContent(
           originalPrompt: trimmed,
           optimizedByModel: optimizedByModel,
           revisedByApi: generated.revisedPrompt,
@@ -294,6 +323,18 @@ mixin ChatMedia on ChatGeneration {
           thinkingMillis: thinkingMillis,
           model: settings.imageGenerationApi.model,
         );
+        await _recordImageVersion(
+          output: attachment,
+          settings: settings,
+          originalPrompt: trimmed,
+          sentPrompt: imagePrompt,
+          revisedPrompt: generated.revisedPrompt,
+          convoId: working.id,
+          messageId: assistantMsg.id,
+          references: preparedRefs,
+          parentGenerationId: version?.id,
+        );
+        finishStep(resultCount: 1);
         _set(
           _s.copyWith(
             streamingConvoId: null,
@@ -312,6 +353,7 @@ mixin ChatMedia on ChatGeneration {
         return true;
       } catch (e) {
         final cancelled = e is DioException && CancelToken.isCancel(e);
+        finishStep(error: cancelled ? '已取消' : describeError(e));
         if (!cancelled) {
           _set(
             _s.copyWith(
@@ -335,36 +377,14 @@ mixin ChatMedia on ChatGeneration {
         );
         return true;
       } finally {
+        finishStep(error: cancelToken.isCancelled ? '已取消' : '未完成');
         if (_s.isGeneratingImage) {
           _set(_s.copyWith(isGeneratingImage: false));
         }
-        if (identical(_cancelToken, cancelToken)) _cancelToken = null;
+        _execution.releaseRequest(cancelToken);
       }
     } finally {
       _finishStarting();
     }
-  }
-
-  static String _imageGenResultContent({
-    required String originalPrompt,
-    required String optimizedByModel,
-    String? revisedByApi,
-    bool usedReferenceImage = false,
-  }) {
-    final parts = <String>[usedReferenceImage ? '图片已生成（图生图）' : '图片已生成'];
-    final opt = optimizedByModel.trim();
-    final revised = revisedByApi?.trim() ?? '';
-    if (opt.isNotEmpty && opt != originalPrompt.trim()) {
-      parts.add('深度思考优化后的提示词：$opt');
-    }
-    if (revised.isNotEmpty &&
-        revised != opt &&
-        revised != originalPrompt.trim()) {
-      parts.add('生图接口改写：$revised');
-    }
-    if (parts.length == 1 && revised.isNotEmpty) {
-      parts.add('优化后的提示词：$revised');
-    }
-    return parts.join('\n\n');
   }
 }

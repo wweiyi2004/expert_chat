@@ -22,9 +22,12 @@ import 'world_info_page.dart';
 class StudioPage extends ConsumerStatefulWidget {
   const StudioPage({
     super.key,
+    this.onBack,
     this.initialTab = 0,
     this.pickCharacter = false,
   });
+
+  final VoidCallback? onBack;
 
   /// 0 开始 · 1 角色 · 2 世界书（[pickCharacter] 时忽略）。
   final int initialTab;
@@ -110,6 +113,13 @@ class _StudioPageState extends ConsumerState<StudioPage>
     return Scaffold(
       appBar: AppBar(
         title: const Text('创作'),
+        leading: widget.onBack == null
+            ? null
+            : IconButton(
+                tooltip: '返回工具',
+                onPressed: widget.onBack,
+                icon: const Icon(Icons.arrow_back),
+              ),
         automaticallyImplyLeading: false,
         actions: [
           ListenableBuilder(

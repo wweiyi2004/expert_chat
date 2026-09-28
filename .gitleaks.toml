@@ -1,0 +1,16 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Synthetic credential intentionally used by memory rejection tests; review 2026-12-22."
+condition = "AND"
+paths = ['''^test/memory_system_test\.dart$''']
+regexTarget = "match"
+regexes = ['''sk-1234567890abcdef''']
+
+[[allowlists]]
+description = "Document service README's explicit example token; review 2026-12-22."
+condition = "AND"
+paths = ['''^server/doc_edit/README\.md$''']
+regexTarget = "match"
+regexes = ['''Bearer (change-me|YOUR_TOKEN|your-token|replace-me)''']

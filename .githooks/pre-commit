@@ -1,0 +1,13 @@
+#!/usr/bin/env sh
+set -eu
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+if [ -x "$root/.tools/gitleaks" ]; then
+  scanner="$root/.tools/gitleaks"
+elif [ -f "$root/.tools/gitleaks.exe" ]; then
+  scanner="$root/.tools/gitleaks.exe"
+else
+  echo 'Install the verified scanner first: python scripts/install_gitleaks.py' >&2
+  exit 1
+fi
+exec "$scanner" git --pre-commit --staged --redact=100 --no-banner

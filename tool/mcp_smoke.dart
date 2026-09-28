@@ -8,7 +8,8 @@ import 'package:expert_chat/domain/document/document_service_client.dart';
 import 'package:expert_chat/domain/mcp/mcp_client.dart';
 
 Future<void> main() async {
-  final url = Platform.environment['EXPERT_CHAT_MCP_URL']?.trim() ??
+  final url =
+      Platform.environment['EXPERT_CHAT_MCP_URL']?.trim() ??
       'http://127.0.0.1:8790';
   final token = Platform.environment['EXPERT_CHAT_MCP_TOKEN']?.trim() ?? '';
   if (token.isEmpty) {
@@ -43,11 +44,7 @@ Future<void> main() async {
       'format': 'txt',
       'output_filename': 'smoke-edited.txt',
       'ops': [
-        {
-          'op': 'replace_text',
-          'find': 'before',
-          'replace': 'after',
-        },
+        {'op': 'replace_text', 'find': 'before', 'replace': 'after'},
       ],
     }),
   );

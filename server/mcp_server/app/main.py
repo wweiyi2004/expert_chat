@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import base64
-import binascii
+from document_core.runtime import extract_document_text
+
 import hmac
 import os
 import sqlite3
@@ -14,10 +14,8 @@ from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import urlsplit, urlunsplit
 
-from docx import Document
-from openpyxl import load_workbook
-from pypdf import PdfReader
-from pptx import Presentation
+from mcp_server.upload_store import UploadStore
+
 
 from doc_edit.app.main import (
     DocumentOperationError,
@@ -25,7 +23,7 @@ from doc_edit.app.main import (
     edit_document_path,
     convert_document_path,
 )
-from gateway.app.document_mcp import (
+from document_core.mcp_protocol import (
     DocumentMcpBackend,
     McpIdentity,
     StoredDocument,
@@ -46,8 +44,7 @@ RESOURCE_MAX_CHARS = max(
 )
 API_TOKEN = os.getenv("MCP_API_TOKEN", "").strip()
 PUBLIC_URL = (
-    os.getenv("MCP_PUBLIC_URL", "http://127.0.0.1:8790/mcp").strip()
-    or "http://127.0.0.1:8790/mcp"
+    os.getenv("MCP_PUBLIC_URL", "http://127.0.0.1:8790/mcp").strip() or "http://127.0.0.1:8790/mcp"
 )
 
 _SUPPORTED_UPLOADS = frozenset(
@@ -88,6 +85,12 @@ def _prepare_storage() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_documents_owner_created
                 ON documents(owner_sub, created_at DESC);
+            CREATE TABLE IF NOT EXISTS upload_receipts (
+                upload_id TEXT PRIMARY KEY,
+                owner_sub TEXT NOT NULL,
+                file_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                created_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS uploads (
                 id TEXT PRIMARY KEY,
                 owner_sub TEXT NOT NULL,
@@ -108,6 +111,8 @@ def _db(*, immediate: bool = False) -> Iterator[sqlite3.Connection]:
     db.row_factory = sqlite3.Row
     try:
         db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA synchronous=FULL")
+        db.execute("PRAGMA foreign_keys=ON")
         db.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
         yield db
         db.commit()
@@ -194,54 +199,14 @@ def _resolve_token(token: str) -> McpIdentity | None:
 def _list_documents(owner_sub: str, limit: int) -> list[StoredDocument]:
     with _db() as db:
         rows = db.execute(
-            "SELECT * FROM documents WHERE owner_sub = ? "
-            "ORDER BY created_at DESC LIMIT ?",
+            "SELECT * FROM documents WHERE owner_sub = ? ORDER BY created_at DESC LIMIT ?",
             (owner_sub, limit),
         ).fetchall()
     return [_stored(row) for row in rows]
 
 
-def _read_text_file(path: Path) -> str:
-    raw = path.read_bytes()
-    for encoding in ("utf-8-sig", "utf-8", "gb18030", "latin-1"):
-        try:
-            return raw.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-    return raw.decode("utf-8", errors="replace")
-
-
 def _extract_text(path: Path, original_name: str) -> str:
-    suffix = Path(original_name).suffix.lower()
-    if suffix == ".pdf":
-        return "\n\n".join(page.extract_text() or "" for page in PdfReader(path).pages)
-    if suffix == ".docx":
-        document = Document(path)
-        blocks = [paragraph.text for paragraph in document.paragraphs]
-        for table in document.tables:
-            blocks.extend("\t".join(cell.text for cell in row.cells) for row in table.rows)
-        return "\n".join(blocks)
-    if suffix == ".xlsx":
-        workbook = load_workbook(path, read_only=True, data_only=True)
-        blocks: list[str] = []
-        try:
-            for sheet in workbook.worksheets:
-                blocks.append(f"## Sheet: {sheet.title}")
-                for row in sheet.iter_rows(values_only=True):
-                    blocks.append("\t".join("" if value is None else str(value) for value in row))
-        finally:
-            workbook.close()
-        return "\n".join(blocks)
-    if suffix == ".pptx":
-        deck = Presentation(path)
-        blocks = []
-        for index, slide in enumerate(deck.slides, start=1):
-            blocks.append(f"## Slide {index}")
-            for shape in slide.shapes:
-                if hasattr(shape, "text") and shape.text:
-                    blocks.append(shape.text)
-        return "\n".join(blocks)
-    return _read_text_file(path)
+    return extract_document_text(path, original_name)
 
 
 def _metadata(owner_sub: str, file_id: str) -> dict[str, Any]:
@@ -274,141 +239,36 @@ def _read_binary(owner_sub: str, file_id: str) -> bytes:
     return _checked_path(str(row["path"]), DOCUMENT_DIR).read_bytes()
 
 
-def _begin_upload(
-    owner_sub: str,
-    filename: str,
-    mime_type: str,
-    size_bytes: int,
-) -> dict[str, Any]:
-    name = _safe_filename(filename)
-    if size_bytes <= 0 or size_bytes > MAX_FILE_BYTES:
-        raise RuntimeError(f"文件大小必须在 1 到 {MAX_FILE_BYTES} 字节之间。")
-    upload_id = f"upload_{uuid.uuid4().hex}"
-    path = UPLOAD_DIR / f"{upload_id}.part"
-    path.touch(exist_ok=False)
-    try:
-        with _db(immediate=True) as db:
-            db.execute(
-                "INSERT INTO uploads(id, owner_sub, name, mime_type, expected_size, "
-                "received_size, path, created_at) VALUES (?, ?, ?, ?, ?, 0, ?, ?)",
-                (
-                    upload_id,
-                    owner_sub,
-                    name,
-                    mime_type.strip() or "application/octet-stream",
-                    size_bytes,
-                    str(path),
-                    _now(),
-                ),
-            )
-    except BaseException:
-        path.unlink(missing_ok=True)
-        raise
-    return {
-        "upload_id": upload_id,
-        "offset": 0,
-        "chunk_size_bytes": _UPLOAD_CHUNK_BYTES,
-    }
+_uploads = UploadStore(
+    lambda **kwargs: _db(**kwargs),
+    UPLOAD_DIR,
+    DOCUMENT_DIR,
+    max_bytes=MAX_FILE_BYTES,
+    chunk_bytes=_UPLOAD_CHUNK_BYTES,
+    safe_name=_safe_filename,
+    checked_path=_checked_path,
+    stored=_stored,
+    now=_now,
+    retention_hours=max(1, int(os.getenv("MCP_UPLOAD_RETENTION_HOURS", "24"))),
+)
+
+
+def _begin_upload(owner_sub: str, filename: str, mime_type: str, size_bytes: int) -> dict[str, Any]:
+    return _uploads.begin(owner_sub, filename, mime_type, size_bytes)
 
 
 def _append_upload(
-    owner_sub: str,
-    upload_id: str,
-    chunk_base64: str,
-    offset: int,
+    owner_sub: str, upload_id: str, chunk_base64: str, offset: int
 ) -> dict[str, Any]:
-    try:
-        chunk = base64.b64decode(chunk_base64, validate=True)
-    except (binascii.Error, ValueError) as exc:
-        raise RuntimeError("上传分块不是合法 Base64。") from exc
-    if not chunk or len(chunk) > _UPLOAD_CHUNK_BYTES:
-        raise RuntimeError(f"上传分块必须在 1 到 {_UPLOAD_CHUNK_BYTES} 字节之间。")
-    with _db(immediate=True) as db:
-        row = db.execute(
-            "SELECT * FROM uploads WHERE id = ? AND owner_sub = ?",
-            (upload_id, owner_sub),
-        ).fetchone()
-        if row is None:
-            raise RuntimeError("上传会话不存在。")
-        received = int(row["received_size"])
-        expected = int(row["expected_size"])
-        if offset != received:
-            raise RuntimeError(f"上传 offset 不匹配；服务器需要 {received}。")
-        if received + len(chunk) > expected or received + len(chunk) > MAX_FILE_BYTES:
-            raise RuntimeError("上传内容超过声明大小或服务器上限。")
-        path = _checked_path(str(row["path"]), UPLOAD_DIR)
-        with path.open("ab") as output:
-            output.write(chunk)
-        next_offset = received + len(chunk)
-        db.execute(
-            "UPDATE uploads SET received_size = ? WHERE id = ?",
-            (next_offset, upload_id),
-        )
-    return {
-        "upload_id": upload_id,
-        "offset": next_offset,
-        "complete": next_offset == expected,
-    }
+    return _uploads.append(owner_sub, upload_id, chunk_base64, offset)
 
 
 def _finish_upload(owner_sub: str, upload_id: str) -> StoredDocument:
-    with _db(immediate=True) as db:
-        row = db.execute(
-            "SELECT * FROM uploads WHERE id = ? AND owner_sub = ?",
-            (upload_id, owner_sub),
-        ).fetchone()
-        if row is None:
-            raise RuntimeError("上传会话不存在。")
-        expected = int(row["expected_size"])
-        received = int(row["received_size"])
-        if received != expected:
-            raise RuntimeError(f"上传尚未完成：{received}/{expected} 字节。")
-        source = _checked_path(str(row["path"]), UPLOAD_DIR)
-        if not source.is_file() or source.stat().st_size != expected:
-            raise RuntimeError("上传临时文件大小不一致。")
-        file_id = f"file_{uuid.uuid4().hex}"
-        suffix = Path(str(row["name"])).suffix.lower()
-        target = DOCUMENT_DIR / f"{file_id}{suffix}"
-        source.replace(target)
-        created_at = _now()
-        try:
-            db.execute(
-                "INSERT INTO documents(id, owner_sub, name, mime_type, size_bytes, path, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (
-                    file_id,
-                    owner_sub,
-                    str(row["name"]),
-                    str(row["mime_type"]),
-                    expected,
-                    str(target),
-                    created_at,
-                ),
-            )
-            db.execute("DELETE FROM uploads WHERE id = ?", (upload_id,))
-        except BaseException:
-            target.unlink(missing_ok=True)
-            raise
-    return StoredDocument(
-        file_id=file_id,
-        filename=str(row["name"]),
-        mime_type=str(row["mime_type"]),
-        size_bytes=expected,
-        created_at=created_at,
-    )
+    return _uploads.finish(owner_sub, upload_id)
 
 
 def _abort_upload(owner_sub: str, upload_id: str) -> dict[str, Any]:
-    with _db(immediate=True) as db:
-        row = db.execute(
-            "SELECT path FROM uploads WHERE id = ? AND owner_sub = ?",
-            (upload_id, owner_sub),
-        ).fetchone()
-        if row is not None:
-            db.execute("DELETE FROM uploads WHERE id = ?", (upload_id,))
-    if row is not None:
-        _checked_path(str(row["path"]), UPLOAD_DIR).unlink(missing_ok=True)
-    return {"upload_id": upload_id, "deleted": row is not None}
+    return _uploads.abort(owner_sub, upload_id)
 
 
 def _store_output(
@@ -515,6 +375,7 @@ def _delete(owner_sub: str, file_id: str) -> dict[str, Any]:
 
 
 _prepare_storage()
+_uploads.recover()
 DOCUMENT_MCP = create_document_mcp_server(
     DocumentMcpBackend(
         resolve_token=_resolve_token,
@@ -549,3 +410,18 @@ app = DOCUMENT_MCP.streamable_http_app(
         allowed_origins=_csv_env("MCP_ALLOWED_ORIGINS"),
     ),
 )
+
+
+# Delegates lifespan and every MCP request unchanged.
+from document_core.health import HealthEndpoint
+
+
+def _readiness():
+    db = sqlite3.connect(DB_PATH.as_uri() + "?mode=ro", uri=True, timeout=0.2)
+    try:
+        db.execute("SELECT 1 FROM documents LIMIT 1").fetchone()
+    finally:
+        db.close()
+
+
+app = HealthEndpoint(app, _readiness)

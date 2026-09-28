@@ -179,7 +179,9 @@ class HttpSearchProvider implements SearchProvider {
     }
     try {
       return switch (backend) {
-        SearchBackend.provider => throw StateError('provider search is server-side'),
+        SearchBackend.provider => throw StateError(
+          'provider search is server-side',
+        ),
         SearchBackend.duckduckgo => await _duckduckgo(
           normalizedQuery,
           boundedMaxResults,
@@ -707,8 +709,28 @@ class HttpSearchProvider implements SearchProvider {
   /// source". Conservative blacklist: unknown/dev web ports (3000, 8000,
   /// 8080, 8443…) stay allowed so legitimate APIs are not broken.
   static const _nonWebPorts = <int>{
-    21, 22, 23, 25, 53, 110, 135, 139, 143, 445, 993, 995, 1433, 1521, 2049,
-    3306, 3389, 5432, 5900, 6379, 11211, 27017,
+    21,
+    22,
+    23,
+    25,
+    53,
+    110,
+    135,
+    139,
+    143,
+    445,
+    993,
+    995,
+    1433,
+    1521,
+    2049,
+    3306,
+    3389,
+    5432,
+    5900,
+    6379,
+    11211,
+    27017,
   };
 
   /// Returns false for malformed/non-web URLs and local/private literals.

@@ -28,7 +28,10 @@ void main() {
       expect(entries[2].depth, 2);
       expect(entries[3].title, '上午');
       expect(entries[3].depth, 3);
-      expect(entries.every((e) => e.messageId == 'u1' || e.messageId == 'a1'), isTrue);
+      expect(
+        entries.every((e) => e.messageId == 'u1' || e.messageId == 'a1'),
+        isTrue,
+      );
     });
 
     test('skips headings inside fenced code', () {
@@ -45,8 +48,7 @@ void main() {
       final user = ChatMessage(
         id: 'u1',
         role: MessageRole.user,
-        content:
-            '**请解释** [链接](https://example.com) 以及后面很长很长很长很长很长很长很长很长的说明文字',
+        content: '**请解释** [链接](https://example.com) 以及后面很长很长很长很长很长很长很长很长的说明文字',
       );
       final entries = buildConversationOutline([user]);
       expect(entries.single.title.endsWith('…'), isTrue);

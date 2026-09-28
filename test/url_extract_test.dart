@@ -20,10 +20,9 @@ void main() {
     });
 
     test('keeps balanced parentheses inside URLs (Wikipedia style)', () {
-      expect(
-        extractHttpUrls('维基：https://en.wikipedia.org/wiki/Foo_(bar)'),
-        ['https://en.wikipedia.org/wiki/Foo_(bar)'],
-      );
+      expect(extractHttpUrls('维基：https://en.wikipedia.org/wiki/Foo_(bar)'), [
+        'https://en.wikipedia.org/wiki/Foo_(bar)',
+      ]);
       expect(extractHttpUrls('(https://en.wikipedia.org/wiki/Foo_(bar))'), [
         'https://en.wikipedia.org/wiki/Foo_(bar)',
       ]);

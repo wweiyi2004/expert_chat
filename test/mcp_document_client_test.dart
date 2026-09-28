@@ -5,9 +5,37 @@ import 'package:dio/dio.dart';
 import 'package:expert_chat/data/gateway_config.dart';
 import 'package:expert_chat/domain/document/document_patch.dart';
 import 'package:expert_chat/domain/document/document_service_client.dart';
+import 'package:expert_chat/domain/mcp/mcp_client.dart';
+import 'package:expert_chat/domain/errors/app_failure.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test(
+    'MCP bad gateway is a service failure with safe actionable copy',
+    () async {
+      final client = McpClient(
+        dio: Dio()..httpClientAdapter = _BadGatewayAdapter(),
+      );
+      try {
+        await client.discover(
+          connection: GatewayConnection(
+            config: const GatewayConfig(
+              enabled: true,
+              baseUrl: 'http://127.0.0.1:8790',
+            ),
+            apiToken: 'test-token',
+          ),
+        );
+        fail('Expected a service failure');
+      } on McpClientException catch (error) {
+        expect(error.code, 'service_unavailable');
+        expect(error.message, contains('HTTP 502'));
+        expect(error.message, isNot(contains('PRIVATE_PROXY_TRACE')));
+        expect(AppFailure.from(error).kind, FailureKind.serviceUnavailable);
+      }
+    },
+  );
+
   test('document edit uses only MCP tools and resources', () async {
     final adapter = _McpDocumentAdapter();
     final client = DocumentServiceClient(
@@ -198,6 +226,23 @@ class _McpDocumentAdapter implements HttpClientAdapter {
     );
   }
 
+  @override
+  void close({bool force = false}) {}
+}
+
+class _BadGatewayAdapter implements HttpClientAdapter {
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelFuture,
+  ) async => ResponseBody.fromString(
+    'PRIVATE_PROXY_TRACE',
+    502,
+    headers: {
+      'content-type': ['text/plain'],
+    },
+  );
   @override
   void close({bool force = false}) {}
 }

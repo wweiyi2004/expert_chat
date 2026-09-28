@@ -82,9 +82,7 @@ void main() {
     });
 
     test('does not treat a <head> inside the body as an injection point', () {
-      final out = buildSandboxedHtmlPreview(
-        '<body><p><head></p></body>',
-      );
+      final out = buildSandboxedHtmlPreview('<body><p><head></p></body>');
 
       final srcdoc = srcdocOf(out);
       final fakeHead = srcdoc.lastIndexOf('&lt;head&gt;');

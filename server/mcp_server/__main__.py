@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import multiprocessing
 import secrets
 import sys
 from pathlib import Path
@@ -91,49 +92,55 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def resolve_runtime(args, root: Path, environ):
+    """CLI > environment > config file > defaults, with no writes here."""
+    env_path = Path(args.env_file) if args.env_file else root / "mcp.env"
+    values = load_env_file(env_path)
+    values.update(
+        {key: value for key, value in environ.items() if key.startswith(("MCP_", "DOCUMENT_"))}
+    )
+    for option, key in [
+        (args.token, "MCP_API_TOKEN"),
+        (args.host, "MCP_HOST"),
+        (args.port, "MCP_PORT"),
+        (args.data_dir, "MCP_DATA_DIR"),
+    ]:
+        if option is not None:
+            values[key] = str(option)
+    values.setdefault("MCP_HOST", _DEFAULT_HOST)
+    values.setdefault("MCP_PORT", str(_DEFAULT_PORT))
+    values.setdefault("MCP_DATA_DIR", str((root / "mcp_data").resolve()))
+    generated = not values.get("MCP_API_TOKEN", "").strip()
+    if generated:
+        values["MCP_API_TOKEN"] = secrets.token_urlsafe(24)
+    else:
+        values["MCP_API_TOKEN"] = values["MCP_API_TOKEN"].strip()
+    if not values.get("MCP_PUBLIC_URL"):
+        values["MCP_PUBLIC_URL"] = f"http://{values['MCP_HOST']}:{values['MCP_PORT']}/mcp"
+    # Environment-only deployments must not persist their credentials or create
+    # a config file beside an executable. Explicit --token and generated keys
+    # retain the standalone launcher's established persistence behavior.
+    return values, env_path, generated or args.token is not None
+
+
 def main(argv: list[str] | None = None) -> int:
     install_server_path()
     args = parse_args(argv)
     if args.version:
         print(f"expert-chat-mcp {SERVER_VERSION}")
         return 0
-
-    root = app_dir()
-    env_path = Path(args.env_file) if args.env_file else root / "mcp.env"
-    values = load_env_file(env_path)
-
-    if args.token:
-        values["MCP_API_TOKEN"] = args.token
-    if args.host:
-        values["MCP_HOST"] = args.host
-    if args.port is not None:
-        values["MCP_PORT"] = str(args.port)
-    if args.data_dir:
-        values["MCP_DATA_DIR"] = args.data_dir
-
-    token = (values.get("MCP_API_TOKEN") or os.environ.get("MCP_API_TOKEN") or "").strip()
-    if not token:
-        token = secrets.token_urlsafe(24)
-        values["MCP_API_TOKEN"] = token
-        print(f"未配置 Token，已生成并写入 {env_path}")
-    values.setdefault("MCP_HOST", os.environ.get("MCP_HOST", _DEFAULT_HOST))
-    values.setdefault("MCP_PORT", os.environ.get("MCP_PORT", str(_DEFAULT_PORT)))
-    values.setdefault("MCP_DATA_DIR", str((root / "mcp_data").resolve()))
-    host = values["MCP_HOST"]
-    port = int(values["MCP_PORT"])
-    if not values.get("MCP_PUBLIC_URL"):
-        values["MCP_PUBLIC_URL"] = f"http://{host}:{port}/mcp"
-
+    values, env_path, persist = resolve_runtime(args, app_dir(), os.environ)
     apply_env(values)
-    os.environ["MCP_API_TOKEN"] = token
-    os.environ["MCP_DATA_DIR"] = values["MCP_DATA_DIR"]
-    os.environ["MCP_PUBLIC_URL"] = values["MCP_PUBLIC_URL"]
-    if (
-        not env_path.exists()
-        or args.token
-        or not load_env_file(env_path).get("MCP_API_TOKEN")
-    ):
+    for key, value in values.items():
+        if key.startswith(("MCP_", "DOCUMENT_")):
+            os.environ[key] = value
+    host, port = values["MCP_HOST"], int(values["MCP_PORT"])
+    if persist:
+        env_path.parent.mkdir(parents=True, exist_ok=True)
         write_env_file(env_path, values)
+        if os.name == "posix":
+            env_path.chmod(0o600)
+        print(f"配置已写入 {env_path}")
 
     import uvicorn
     from mcp_server.app.main import app
@@ -141,10 +148,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Expert Chat MCP Server {SERVER_VERSION}")
     print(f"Endpoint: {os.environ['MCP_PUBLIC_URL']}")
     print(f"Data dir: {os.environ['MCP_DATA_DIR']}")
-    print("在 App 设置中填写上述地址和 mcp.env 里的 MCP_API_TOKEN。")
+    print("在 App 设置中填写上述地址和已配置的 MCP_API_TOKEN。")
     uvicorn.run(app, host=host, port=port, workers=1)
     return 0
 
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     raise SystemExit(main())

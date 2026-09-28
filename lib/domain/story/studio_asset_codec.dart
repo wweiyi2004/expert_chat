@@ -45,8 +45,7 @@ class StudioAssetCodec {
     if (decoded is List) {
       return [
         for (final item in decoded)
-          if (item is Map)
-            _characterFromLoose(Map<String, dynamic>.from(item)),
+          if (item is Map) _characterFromLoose(Map<String, dynamic>.from(item)),
       ];
     }
     if (decoded is! Map) {
@@ -59,8 +58,7 @@ class StudioAssetCodec {
       final list = map['characters'] as List? ?? const [];
       return [
         for (final item in list)
-          if (item is Map)
-            _characterFromLoose(Map<String, dynamic>.from(item)),
+          if (item is Map) _characterFromLoose(Map<String, dynamic>.from(item)),
       ];
     }
 
@@ -140,8 +138,7 @@ class StudioAssetCodec {
     if (decoded is List) {
       return [
         for (final item in decoded)
-          if (item is Map)
-            _worldInfoFromLoose(Map<String, dynamic>.from(item)),
+          if (item is Map) _worldInfoFromLoose(Map<String, dynamic>.from(item)),
       ];
     }
     if (decoded is! Map) {
@@ -152,8 +149,7 @@ class StudioAssetCodec {
       final list = map['entries'] as List;
       return [
         for (final item in list)
-          if (item is Map)
-            _worldInfoFromLoose(Map<String, dynamic>.from(item)),
+          if (item is Map) _worldInfoFromLoose(Map<String, dynamic>.from(item)),
       ];
     }
     // Single entry object (title/content at top level).

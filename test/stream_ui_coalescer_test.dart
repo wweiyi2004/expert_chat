@@ -26,15 +26,18 @@ void main() {
       expect(coalescer.tokenBatch, StreamUiCoalescer.shortBatch);
     });
 
-    test('flushes immediately after first paint once a short batch arrives', () {
-      final coalescer = StreamUiCoalescer();
-      coalescer.add('短');
-      coalescer.markFlushed();
+    test(
+      'flushes immediately after first paint once a short batch arrives',
+      () {
+        final coalescer = StreamUiCoalescer();
+        coalescer.add('短');
+        coalescer.markFlushed();
 
-      coalescer.add(List.filled(StreamUiCoalescer.shortBatch, '字').join());
-      expect(coalescer.shouldFlushNow, isTrue);
-      expect(coalescer.delay, StreamUiCoalescer.shortFallback);
-    });
+        coalescer.add(List.filled(StreamUiCoalescer.shortBatch, '字').join());
+        expect(coalescer.shouldFlushNow, isTrue);
+        expect(coalescer.delay, StreamUiCoalescer.shortFallback);
+      },
+    );
 
     test('does not flush immediately for a small follow-up batch', () {
       final coalescer = StreamUiCoalescer();
@@ -55,9 +58,7 @@ void main() {
 
     test('long replies wait for a larger token batch', () {
       final coalescer = StreamUiCoalescer();
-      coalescer.add(
-        List.filled(StreamUiCoalescer.longAfterTokens, '字').join(),
-      );
+      coalescer.add(List.filled(StreamUiCoalescer.longAfterTokens, '字').join());
       coalescer.markFlushed();
       expect(coalescer.tokenBatch, StreamUiCoalescer.longBatch);
       expect(coalescer.delay, StreamUiCoalescer.longFallback);
@@ -150,9 +151,7 @@ void main() {
     });
 
     test('content focus ignores a long reasoning backlog', () {
-      final dual = DualStreamUiCoalescer(
-        focusOf: () => StreamUiFocus.content,
-      );
+      final dual = DualStreamUiCoalescer(focusOf: () => StreamUiFocus.content);
       dual.addReasoning(
         List.filled(StreamUiCoalescer.longAfterTokens, '字').join(),
       );

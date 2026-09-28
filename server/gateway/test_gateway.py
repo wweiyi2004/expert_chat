@@ -71,15 +71,18 @@ class GatewayAuthenticatorTest(unittest.TestCase):
 
 class GatewayFlowTest(unittest.TestCase):
     def test_accounts_are_isolated_and_entitlements_are_enforced(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
-            os.environ,
-            {
-                "GATEWAY_DATA_DIR": temp_dir,
-                "GATEWAY_AUTH_MODE": "hybrid",
-                "GATEWAY_API_TOKEN": "migration-token",
-                "LLM_BASE_URL": "http://upstream.invalid/v1",
-                "LLM_MODEL": "test-model",
-            },
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            patch.dict(
+                os.environ,
+                {
+                    "GATEWAY_DATA_DIR": temp_dir,
+                    "GATEWAY_AUTH_MODE": "hybrid",
+                    "GATEWAY_API_TOKEN": "migration-token",
+                    "LLM_BASE_URL": "http://upstream.invalid/v1",
+                    "LLM_MODEL": "test-model",
+                },
+            ),
         ):
             from gateway.app import main
             from gateway.app.auth import Principal
@@ -102,11 +105,12 @@ class GatewayFlowTest(unittest.TestCase):
             async def fake_stream(task_id, model, messages):
                 return "完成"
 
-            with patch.object(main.AUTH, "authenticate", authenticate), patch.object(
-                main, "_completion", fake_completion
-            ), patch.object(main, "_stream_completion", fake_stream), TestClient(
-                main.app
-            ) as client:
+            with (
+                patch.object(main.AUTH, "authenticate", authenticate),
+                patch.object(main, "_completion", fake_completion),
+                patch.object(main, "_stream_completion", fake_stream),
+                TestClient(main.app) as client,
+            ):
                 user_a = {"Authorization": "Bearer user-a"}
                 user_b = {"Authorization": "Bearer user-b"}
                 admin = {"Authorization": "Bearer admin-user"}
@@ -137,8 +141,7 @@ class GatewayFlowTest(unittest.TestCase):
                 client.get("/v1/me", headers=user_b)
                 with main._db() as db:
                     db.execute(
-                        "UPDATE user_entitlements SET permissions_json = ? "
-                        "WHERE owner_sub = ?",
+                        "UPDATE user_entitlements SET permissions_json = ? WHERE owner_sub = ?",
                         (json.dumps(["gateway.use"]), "user-b"),
                     )
                 denied = client.post(
@@ -204,19 +207,17 @@ class GatewayFlowTest(unittest.TestCase):
 
                 self.assertEqual(main._cleanup_expired_tasks(now=now), 1)
                 with main._db() as db:
-                    task_ids = {
-                        row["id"] for row in db.execute("SELECT id FROM tasks")
-                    }
+                    task_ids = {row["id"] for row in db.execute("SELECT id FROM tasks")}
                     event_task_ids = {
-                        row["task_id"]
-                        for row in db.execute("SELECT task_id FROM events")
+                        row["task_id"] for row in db.execute("SELECT task_id FROM events")
                     }
                 self.assertEqual(task_ids, {"task_recent", "task_running"})
                 self.assertEqual(event_task_ids, {"task_recent", "task_running"})
 
     def test_provision_skips_writes_when_entitlement_is_unchanged(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
-            os.environ, {"GATEWAY_DATA_DIR": temp_dir}
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            patch.dict(os.environ, {"GATEWAY_DATA_DIR": temp_dir}),
         ):
             from gateway.app import main
             from gateway.app.auth import Principal
@@ -233,14 +234,12 @@ class GatewayFlowTest(unittest.TestCase):
             main._provision_principal(principal)
             with main._db() as db:
                 db.execute(
-                    "UPDATE user_entitlements SET updated_at = 'sentry' "
-                    "WHERE owner_sub = 'user-1'"
+                    "UPDATE user_entitlements SET updated_at = 'sentry' WHERE owner_sub = 'user-1'"
                 )
             main._provision_principal(principal)
             with main._db() as db:
                 row = db.execute(
-                    "SELECT updated_at FROM user_entitlements "
-                    "WHERE owner_sub = 'user-1'"
+                    "SELECT updated_at FROM user_entitlements WHERE owner_sub = 'user-1'"
                 ).fetchone()
             self.assertEqual(row["updated_at"], "sentry")
 
@@ -260,15 +259,18 @@ class GatewayFlowTest(unittest.TestCase):
             self.assertNotEqual(row["updated_at"], "sentry")
 
     def test_upload_quota_is_checked_atomically_with_the_insert(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
-            os.environ,
-            {
-                "GATEWAY_DATA_DIR": temp_dir,
-                "GATEWAY_AUTH_MODE": "hybrid",
-                "GATEWAY_API_TOKEN": "migration-token",
-                "LLM_BASE_URL": "http://upstream.invalid/v1",
-                "LLM_MODEL": "test-model",
-            },
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            patch.dict(
+                os.environ,
+                {
+                    "GATEWAY_DATA_DIR": temp_dir,
+                    "GATEWAY_AUTH_MODE": "hybrid",
+                    "GATEWAY_API_TOKEN": "migration-token",
+                    "LLM_BASE_URL": "http://upstream.invalid/v1",
+                    "LLM_MODEL": "test-model",
+                },
+            ),
         ):
             from gateway.app import main
             from gateway.app.auth import Principal
@@ -284,9 +286,10 @@ class GatewayFlowTest(unittest.TestCase):
                     auth_kind="oidc",
                 )
 
-            with patch.object(main.AUTH, "authenticate", authenticate), TestClient(
-                main.app
-            ) as client:
+            with (
+                patch.object(main.AUTH, "authenticate", authenticate),
+                TestClient(main.app) as client,
+            ):
                 headers = {"Authorization": "Bearer quota-user"}
                 main._provision_principal(
                     Principal(
@@ -316,15 +319,15 @@ class GatewayFlowTest(unittest.TestCase):
                 self.assertEqual(over.status_code, 413, over.text)
                 with main._db() as db:
                     count = db.execute(
-                        "SELECT COUNT(*) AS total FROM files "
-                        "WHERE owner_sub = 'quota-user'"
+                        "SELECT COUNT(*) AS total FROM files WHERE owner_sub = 'quota-user'"
                     ).fetchone()["total"]
                 self.assertEqual(count, 1)
                 self.assertEqual(len(list(main.UPLOAD_DIR.glob("file_*"))), 1)
 
     def test_rate_limit_windows_are_swept_after_expiry(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
-            os.environ, {"GATEWAY_DATA_DIR": temp_dir}
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            patch.dict(os.environ, {"GATEWAY_DATA_DIR": temp_dir}),
         ):
             from gateway.app import main
 
@@ -365,9 +368,11 @@ class GatewayFlowTest(unittest.TestCase):
                 return output
 
             headers = {"Authorization": "Bearer test-token"}
-            with patch.object(main, "_completion", fake_completion), patch.object(
-                main, "_stream_completion", fake_stream
-            ), TestClient(main.app) as client:
+            with (
+                patch.object(main, "_completion", fake_completion),
+                patch.object(main, "_stream_completion", fake_stream),
+                TestClient(main.app) as client,
+            ):
                 upload = client.post(
                     "/v1/files",
                     headers=headers,
@@ -428,9 +433,7 @@ class GatewayFlowTest(unittest.TestCase):
 
                 snapshot = created.json()
                 for _ in range(100):
-                    snapshot = client.get(
-                        f"/v1/tasks/{task_id}", headers=headers
-                    ).json()
+                    snapshot = client.get(f"/v1/tasks/{task_id}", headers=headers).json()
                     if snapshot["status"] in {"completed", "failed"}:
                         break
                     time.sleep(0.01)
@@ -439,9 +442,7 @@ class GatewayFlowTest(unittest.TestCase):
                 self.assertEqual(snapshot["output_text"], "这是持久化的最终结果。")
                 self.assertEqual(snapshot["progress"], 1.0)
 
-                events = client.get(
-                    f"/v1/tasks/{task_id}/events?after=0", headers=headers
-                ).json()
+                events = client.get(f"/v1/tasks/{task_id}/events?after=0", headers=headers).json()
                 event_types = [event["type"] for event in events["events"]]
                 self.assertIn("output_delta", event_types)
                 self.assertIn("completed", event_types)
@@ -456,15 +457,18 @@ class GatewayFlowTest(unittest.TestCase):
         terminal states only, and create_task counts them against
         max_concurrent_tasks until the user is permanently 429-locked.
         """
-        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
-            os.environ,
-            {
-                "GATEWAY_DATA_DIR": temp_dir,
-                "GATEWAY_AUTH_MODE": "hybrid",
-                "GATEWAY_API_TOKEN": "migration-token",
-                "LLM_BASE_URL": "http://upstream.invalid/v1",
-                "LLM_MODEL": "test-model",
-            },
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            patch.dict(
+                os.environ,
+                {
+                    "GATEWAY_DATA_DIR": temp_dir,
+                    "GATEWAY_AUTH_MODE": "hybrid",
+                    "GATEWAY_API_TOKEN": "migration-token",
+                    "LLM_BASE_URL": "http://upstream.invalid/v1",
+                    "LLM_MODEL": "test-model",
+                },
+            ),
         ):
             from gateway.app import main
             from gateway.app.auth import Principal
@@ -501,9 +505,11 @@ class GatewayFlowTest(unittest.TestCase):
             async def fake_stream(task_id, model, messages):
                 return "完成"
 
-            with patch.object(main.AUTH, "authenticate", authenticate), patch.object(
-                main, "_stream_completion", fake_stream
-            ), TestClient(main.app) as client:
+            with (
+                patch.object(main.AUTH, "authenticate", authenticate),
+                patch.object(main, "_stream_completion", fake_stream),
+                TestClient(main.app) as client,
+            ):
                 headers = {"Authorization": "Bearer user-a"}
                 with main._db() as db:
                     statuses = {
@@ -534,8 +540,9 @@ class GatewayFlowTest(unittest.TestCase):
         loser used to crash with sqlite3.IntegrityError (sync deps run on a
         thread pool, so this is real concurrency).
         """
-        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
-            os.environ, {"GATEWAY_DATA_DIR": temp_dir}
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            patch.dict(os.environ, {"GATEWAY_DATA_DIR": temp_dir}),
         ):
             from gateway.app import main
             from gateway.app.auth import Principal
@@ -564,23 +571,25 @@ class GatewayFlowTest(unittest.TestCase):
 
             with main._db() as db:
                 total = db.execute(
-                    "SELECT COUNT(*) AS total FROM user_entitlements "
-                    "WHERE owner_sub = 'user-race'"
+                    "SELECT COUNT(*) AS total FROM user_entitlements WHERE owner_sub = 'user-race'"
                 ).fetchone()["total"]
             self.assertEqual(total, 1)
 
 
 class GatewayMcpTest(unittest.TestCase):
     def test_document_tools_and_resources_use_standard_mcp(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
-            os.environ,
-            {
-                "GATEWAY_DATA_DIR": temp_dir,
-                "GATEWAY_AUTH_MODE": "legacy",
-                "GATEWAY_API_TOKEN": "mcp-test-token",
-                "GATEWAY_MCP_PUBLIC_URL": "http://127.0.0.1:8790/mcp",
-                "GATEWAY_MCP_ALLOWED_HOSTS": "127.0.0.1:*,testserver",
-            },
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            patch.dict(
+                os.environ,
+                {
+                    "GATEWAY_DATA_DIR": temp_dir,
+                    "GATEWAY_AUTH_MODE": "legacy",
+                    "GATEWAY_API_TOKEN": "mcp-test-token",
+                    "GATEWAY_MCP_PUBLIC_URL": "http://127.0.0.1:8790/mcp",
+                    "GATEWAY_MCP_ALLOWED_HOSTS": "127.0.0.1:*,testserver",
+                },
+            ),
         ):
             import httpx2
             from mcp import Client
@@ -595,9 +604,7 @@ class GatewayMcpTest(unittest.TestCase):
             with TestClient(main.app) as rest:
                 unauthenticated = rest.post("/mcp", json={})
                 self.assertEqual(unauthenticated.status_code, 401)
-                protected_resource = rest.get(
-                    "/.well-known/oauth-protected-resource/mcp"
-                )
+                protected_resource = rest.get("/.well-known/oauth-protected-resource/mcp")
                 self.assertEqual(
                     protected_resource.status_code,
                     200,
@@ -667,8 +674,7 @@ class GatewayMcpTest(unittest.TestCase):
                             listed = await client.call_tool("list_documents", {})
                             self.assertFalse(listed.is_error)
                             listed_ids = {
-                                item["file_id"]
-                                for item in listed.structured_content["documents"]
+                                item["file_id"] for item in listed.structured_content["documents"]
                             }
                             self.assertIn(source_id, listed_ids)
 
@@ -740,15 +746,18 @@ class GatewayMcpTest(unittest.TestCase):
                 asyncio.run(exercise_protocol())
 
     def test_mcp_preserves_account_isolation_and_entitlements(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
-            os.environ,
-            {
-                "GATEWAY_DATA_DIR": temp_dir,
-                "GATEWAY_AUTH_MODE": "hybrid",
-                "GATEWAY_API_TOKEN": "migration-token",
-                "GATEWAY_MCP_PUBLIC_URL": "http://127.0.0.1:8790/mcp",
-                "GATEWAY_MCP_ALLOWED_HOSTS": "127.0.0.1:*",
-            },
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            patch.dict(
+                os.environ,
+                {
+                    "GATEWAY_DATA_DIR": temp_dir,
+                    "GATEWAY_AUTH_MODE": "hybrid",
+                    "GATEWAY_API_TOKEN": "migration-token",
+                    "GATEWAY_MCP_PUBLIC_URL": "http://127.0.0.1:8790/mcp",
+                    "GATEWAY_MCP_ALLOWED_HOSTS": "127.0.0.1:*",
+                },
+            ),
         ):
             import httpx2
             from mcp import Client, MCPError
@@ -770,9 +779,10 @@ class GatewayMcpTest(unittest.TestCase):
                     auth_kind="oidc",
                 )
 
-            with patch.object(main.AUTH, "authenticate", authenticate), TestClient(
-                main.app
-            ) as rest:
+            with (
+                patch.object(main.AUTH, "authenticate", authenticate),
+                TestClient(main.app) as rest,
+            ):
                 source = rest.post(
                     "/v1/files",
                     headers={"Authorization": "Bearer user-a"},
@@ -783,8 +793,7 @@ class GatewayMcpTest(unittest.TestCase):
                 rest.get("/v1/me", headers={"Authorization": "Bearer user-b"})
                 with main._db() as db:
                     db.execute(
-                        "UPDATE user_entitlements SET permissions_json = ? "
-                        "WHERE owner_sub = ?",
+                        "UPDATE user_entitlements SET permissions_json = ? WHERE owner_sub = ?",
                         (json.dumps(["gateway.use"]), "user-b"),
                     )
 

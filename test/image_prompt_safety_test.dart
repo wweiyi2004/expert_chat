@@ -21,10 +21,7 @@ void main() {
   });
 
   test('characterPortrait strips sexual user hints and story smut', () {
-    final card = CharacterCard(
-      name: 'A',
-      description: 'red coat, silver hair',
-    );
+    final card = CharacterCard(name: 'A', description: 'red coat, silver hair');
     final prompt = ImagePromptSafety.characterPortrait(
       card,
       userHint: 'nude erotic sex 做爱 全裸 ahegao',
@@ -38,9 +35,7 @@ void main() {
   });
 
   test('freeform scrubs R18 prose from dialogue illustration prompts', () {
-    final prompt = ImagePromptSafety.freeform(
-      '两人在床上激烈做爱，全裸纠缠，描写省略',
-    );
+    final prompt = ImagePromptSafety.freeform('两人在床上激烈做爱，全裸纠缠，描写省略');
     expect(prompt, isNot(contains('做爱')));
     expect(prompt, isNot(contains('全裸')));
     expect(prompt, contains('safe for work'));

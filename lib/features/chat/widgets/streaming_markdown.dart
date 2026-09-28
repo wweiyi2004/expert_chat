@@ -315,6 +315,7 @@ extension MarkdownStylePrefTheme on MarkdownStylePref {
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       child: Table(
+        defaultColumnWidth: const IntrinsicColumnWidth(),
         defaultVerticalAlignment: TableCellVerticalAlignment.middle,
         border: TableBorder.all(width: 1, color: borderColor),
         children: [
@@ -329,7 +330,7 @@ extension MarkdownStylePrefTheme on MarkdownStylePref {
                       vertical: 6,
                     ),
                     child: Text(
-                      field.data,
+                      field.data.trim(),
                       textAlign: field.alignment,
                       style: textStyle.copyWith(
                         fontWeight: row.isHeader

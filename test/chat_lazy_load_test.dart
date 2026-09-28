@@ -66,94 +66,102 @@ class _TrackingRepo
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('ChatController loads summaries then the current conversation only', () async {
-    SharedPreferences.setMockInitialValues({});
-    final older = Conversation(
-      id: 'old',
-      title: '旧会话',
-      messages: [
-        ChatMessage(id: 'old-u', role: MessageRole.user, content: 'old text'),
-      ],
-      updatedAt: DateTime.utc(2026, 1, 1),
-    );
-    final newer = Conversation(
-      id: 'new',
-      title: '新会话',
-      messages: [
-        ChatMessage(id: 'new-u', role: MessageRole.user, content: 'new text'),
-      ],
-      updatedAt: DateTime.utc(2026, 2, 1),
-    );
-    final repo = _TrackingRepo([newer, older]);
-    final container = ProviderContainer(
-      overrides: [
-        conversationRepositoryProvider.overrideWithValue(repo),
-        settingsControllerProvider.overrideWith(_ReadySettings.new),
-        sharedPrefsProvider.overrideWithValue(
-          await SharedPreferences.getInstance(),
-        ),
-      ],
-    );
-    addTearDown(container.dispose);
+  test(
+    'ChatController loads summaries then the current conversation only',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final older = Conversation(
+        id: 'old',
+        title: '旧会话',
+        messages: [
+          ChatMessage(id: 'old-u', role: MessageRole.user, content: 'old text'),
+        ],
+        updatedAt: DateTime.utc(2026, 1, 1),
+      );
+      final newer = Conversation(
+        id: 'new',
+        title: '新会话',
+        messages: [
+          ChatMessage(id: 'new-u', role: MessageRole.user, content: 'new text'),
+        ],
+        updatedAt: DateTime.utc(2026, 2, 1),
+      );
+      final repo = _TrackingRepo([newer, older]);
+      final container = ProviderContainer(
+        overrides: [
+          conversationRepositoryProvider.overrideWithValue(repo),
+          settingsControllerProvider.overrideWith(_ReadySettings.new),
+          sharedPrefsProvider.overrideWithValue(
+            await SharedPreferences.getInstance(),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
 
-    final state = await container.read(chatControllerProvider.future);
-    expect(repo.loadSummariesCalls, 1);
-    expect(repo.loadedIds, ['new']);
-    expect(state.currentId, 'new');
-    expect(state.current?.messages.single.content, 'new text');
-    expect(state.current?.messagesLoaded, isTrue);
+      final state = await container.read(chatControllerProvider.future);
+      expect(repo.loadSummariesCalls, 1);
+      expect(repo.loadedIds, ['new']);
+      expect(state.currentId, 'new');
+      expect(state.current?.messages.single.content, 'new text');
+      expect(state.current?.messagesLoaded, isTrue);
 
-    final placeholder = state.conversations.firstWhere((c) => c.id == 'old');
-    expect(placeholder.messagesLoaded, isFalse);
-    expect(placeholder.messages, isEmpty);
+      final placeholder = state.conversations.firstWhere((c) => c.id == 'old');
+      expect(placeholder.messagesLoaded, isFalse);
+      expect(placeholder.messages, isEmpty);
 
-    await container.read(chatControllerProvider.notifier).selectConversation('old');
-    final after = container.read(chatControllerProvider).value!;
-    expect(repo.loadedIds, ['new', 'old']);
-    expect(after.currentId, 'old');
-    expect(after.current?.messagesLoaded, isTrue);
-    expect(after.current?.messages.single.content, 'old text');
-  });
+      await container
+          .read(chatControllerProvider.notifier)
+          .selectConversation('old');
+      final after = container.read(chatControllerProvider).value!;
+      expect(repo.loadedIds, ['new', 'old']);
+      expect(after.currentId, 'old');
+      expect(after.current?.messagesLoaded, isTrue);
+      expect(after.current?.messages.single.content, 'old text');
+    },
+  );
 
-  test('deleting an unloaded conversation does not load its messages', () async {
-    SharedPreferences.setMockInitialValues({});
-    final keep = Conversation(
-      id: 'keep',
-      title: '留下',
-      messages: [
-        ChatMessage(id: 'k1', role: MessageRole.user, content: 'keep me'),
-      ],
-      updatedAt: DateTime.utc(2026, 2, 1),
-    );
-    final drop = Conversation(
-      id: 'drop',
-      title: '删除',
-      messages: [
-        ChatMessage(id: 'd1', role: MessageRole.user, content: 'drop me'),
-      ],
-      updatedAt: DateTime.utc(2026, 1, 1),
-    );
-    final repo = _TrackingRepo([keep, drop]);
-    final container = ProviderContainer(
-      overrides: [
-        conversationRepositoryProvider.overrideWithValue(repo),
-        settingsControllerProvider.overrideWith(_ReadySettings.new),
-        sharedPrefsProvider.overrideWithValue(
-          await SharedPreferences.getInstance(),
-        ),
-      ],
-    );
-    addTearDown(container.dispose);
+  test(
+    'deleting an unloaded conversation does not load its messages',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final keep = Conversation(
+        id: 'keep',
+        title: '留下',
+        messages: [
+          ChatMessage(id: 'k1', role: MessageRole.user, content: 'keep me'),
+        ],
+        updatedAt: DateTime.utc(2026, 2, 1),
+      );
+      final drop = Conversation(
+        id: 'drop',
+        title: '删除',
+        messages: [
+          ChatMessage(id: 'd1', role: MessageRole.user, content: 'drop me'),
+        ],
+        updatedAt: DateTime.utc(2026, 1, 1),
+      );
+      final repo = _TrackingRepo([keep, drop]);
+      final container = ProviderContainer(
+        overrides: [
+          conversationRepositoryProvider.overrideWithValue(repo),
+          settingsControllerProvider.overrideWith(_ReadySettings.new),
+          sharedPrefsProvider.overrideWithValue(
+            await SharedPreferences.getInstance(),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
 
-    await container.read(chatControllerProvider.future);
-    expect(repo.loadedIds, ['keep']);
+      await container.read(chatControllerProvider.future);
+      expect(repo.loadedIds, ['keep']);
 
-    await container
-        .read(chatControllerProvider.notifier)
-        .deleteConversation('drop');
-    final state = container.read(chatControllerProvider).value!;
-    expect(state.conversations.map((c) => c.id), ['keep']);
-    expect(repo.loadedIds, ['keep']);
-    expect(repo.store.map((c) => c.id), ['keep']);
-  });
+      await container
+          .read(chatControllerProvider.notifier)
+          .deleteConversation('drop');
+      final state = container.read(chatControllerProvider).value!;
+      expect(state.conversations.map((c) => c.id), ['keep']);
+      expect(repo.loadedIds, ['keep']);
+      expect(repo.store.map((c) => c.id), ['keep']);
+    },
+  );
 }

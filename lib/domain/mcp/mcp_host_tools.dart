@@ -1,5 +1,6 @@
 import '../../data/gateway_config.dart';
 import '../llm/llm_provider.dart';
+import 'computer_use_policy.dart';
 
 /// Built-in document MCP, selectable per conversation like custom servers.
 class McpServerChoice {
@@ -102,6 +103,10 @@ abstract final class McpHostTools {
       if (!server.enabled || !server.toolsDiscovered) continue;
       for (final tool in server.tools) {
         if (tool.name.isEmpty) continue;
+        if (server.computerUse &&
+            !ComputerUsePolicy.allowedTools.contains(tool.name)) {
+          continue;
+        }
         final exposed = _uniqueName(tool.name, server.slug, used);
         used.add(exposed);
         out.add(
@@ -109,7 +114,9 @@ abstract final class McpHostTools {
             exposedName: exposed,
             originalName: tool.name,
             serverId: server.id,
-            tool: tool,
+            tool: server.computerUse
+                ? ComputerUsePolicy.modelTool(tool, server.allowForeground)
+                : tool,
           ),
         );
       }

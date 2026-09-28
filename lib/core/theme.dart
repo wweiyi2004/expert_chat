@@ -418,7 +418,9 @@ class AppTheme {
         labelStyle: TextStyle(color: scheme.onSurface, fontSize: 13),
         secondaryLabelStyle: TextStyle(color: scheme.onPrimaryContainer),
         padding: const EdgeInsets.symmetric(horizontal: 4),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(r - 2)),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(r - 2),
+        ),
       ),
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
@@ -426,9 +428,7 @@ class AppTheme {
           foregroundColor: scheme.onPrimary,
           minimumSize: const Size(48, 44),
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(r),
-          ),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(r)),
         ),
       ),
       outlinedButtonTheme: OutlinedButtonThemeData(
@@ -436,9 +436,7 @@ class AppTheme {
           foregroundColor: scheme.primary,
           side: BorderSide(color: border),
           minimumSize: const Size(48, 44),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(r),
-          ),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(r)),
         ),
       ),
       iconButtonTheme: IconButtonThemeData(
@@ -469,7 +467,9 @@ class AppTheme {
       ),
       dialogTheme: DialogThemeData(
         backgroundColor: scheme.surfaceContainer,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(rLg + 4)),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(rLg + 4),
+        ),
       ),
       bottomSheetTheme: BottomSheetThemeData(
         backgroundColor: scheme.surfaceContainer,
@@ -487,7 +487,9 @@ class AppTheme {
         backgroundColor: scheme.primary,
         foregroundColor: scheme.onPrimary,
         elevation: 2,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(r + 2)),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(r + 2),
+        ),
       ),
       segmentedButtonTheme: SegmentedButtonThemeData(
         style: ButtonStyle(

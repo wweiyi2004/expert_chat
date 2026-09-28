@@ -33,7 +33,8 @@ class DocumentServiceException implements Exception {
 
 /// Document capability client hosted by the standalone Expert Chat MCP Server.
 class DocumentServiceClient {
-  DocumentServiceClient({Dio? dio}) : _mcp = McpClient(dio: dio);
+  DocumentServiceClient({Dio? dio, McpClient? mcp})
+    : _mcp = mcp ?? McpClient(dio: dio);
 
   static const _uploadChunkBytes = 1024 * 1024;
   final McpClient _mcp;
@@ -90,7 +91,7 @@ class DocumentServiceClient {
     required Map<String, dynamic> arguments,
     CancelToken? cancelToken,
   }) async {
-    if (!connection.config.isConfigured) {
+    if (!connection.isConfigured) {
       throw const DocumentServiceException('Expert Chat MCP Server 尚未启用或配置');
     }
     try {
@@ -110,7 +111,93 @@ class DocumentServiceClient {
           cancelToken: cancelToken,
         );
       }
-      return (text: called.text, file: file);
+      if (file == null) {
+        final images = called.content
+            .where((block) => block['type'] == 'image')
+            .toList();
+        if (images.length > 1) {
+          throw const DocumentServiceException(
+            '当前每次 MCP 调用支持一张截图，请让服务每次返回一张图片。',
+            code: 'unsupported_images',
+          );
+        }
+        if (images.isNotEmpty) {
+          final image = images.single;
+          final mime = image['mimeType'];
+          final data = image['data'];
+          const extensions = {
+            'image/png': 'png',
+            'image/jpeg': 'jpg',
+            'image/webp': 'webp',
+          };
+          const maxImageBytes = 8 * 1024 * 1024;
+          if (mime is! String ||
+              !extensions.containsKey(mime) ||
+              data is! String ||
+              data.isEmpty ||
+              data.length > ((maxImageBytes + 2) ~/ 3) * 4) {
+            throw const DocumentServiceException(
+              'MCP 截图格式不支持或超过 8 MB 上限。',
+              code: 'invalid_image',
+            );
+          }
+          late final Uint8List bytes;
+          try {
+            bytes = base64Decode(data);
+          } on FormatException {
+            throw const DocumentServiceException(
+              'MCP 截图编码无效。',
+              code: 'invalid_image',
+            );
+          }
+          if (bytes.length > maxImageBytes ||
+              lookupMimeType('', headerBytes: bytes) != mime) {
+            throw const DocumentServiceException(
+              'MCP 截图内容与格式不符。',
+              code: 'invalid_image',
+            );
+          }
+          file = DocumentEditResult(
+            bytes: bytes,
+            filename: 'mcp-screenshot.${extensions[mime]}',
+            contentType: mime,
+          );
+        }
+      }
+      var text = called.text;
+      if (connection.computerUse) {
+        final structured = called.structuredContent;
+        final metadata = <String, dynamic>{
+          for (final key in [
+            'snapshot_id',
+            'pid',
+            'window_id',
+            'window_bounds',
+            'screenshot_width',
+            'screenshot_height',
+            'image_scale',
+            'imageScale',
+            'scale',
+          ])
+            if (structured.containsKey(key)) key: structured[key],
+          if (structured['elements'] is List)
+            'element_handles': [
+              for (final element
+                  in (structured['elements'] as List).whereType<Map>().take(
+                    250,
+                  ))
+                if (element['element_token'] is String)
+                  {
+                    'index': element['element_index'],
+                    'token': element['element_token'],
+                  },
+            ],
+        };
+        if (metadata.isNotEmpty) {
+          text = '$text\n当前窗口观察标识（仅用于下一次操作）：${jsonEncode(metadata)}';
+        }
+      }
+      return (text: text, file: file);
     } on McpClientException catch (error) {
       throw DocumentServiceException(error.message, code: error.code);
     }

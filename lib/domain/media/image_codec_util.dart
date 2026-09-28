@@ -28,34 +28,28 @@ class ImageCodecUtil {
     int maxSide = maxEditSide,
   }) async {
     if (bytes.isEmpty || maxSide <= 0) return bytes;
-    ui.Codec? probe;
-    ui.Image? probeImage;
+    ui.ImmutableBuffer? buffer;
+    ui.ImageDescriptor? descriptor;
     try {
-      // One probe decode to learn the dimensions.
-      probe = await ui.instantiateImageCodec(bytes);
-      final probeFrame = await probe.getNextFrame();
-      probeImage = probeFrame.image;
-      final w = probeImage.width;
-      final h = probeImage.height;
+      // Read dimensions without materialising a full-resolution pixel buffer.
+      buffer = await ui.ImmutableBuffer.fromUint8List(bytes);
+      descriptor = await ui.ImageDescriptor.encoded(buffer);
+      final w = descriptor.width;
+      final h = descriptor.height;
       if (w <= 0 || h <= 0) return bytes;
       if (w <= maxSide && h <= maxSide) return bytes;
 
-      final targetW =
-          w >= h ? maxSide : ((w * maxSide) / h).round().clamp(1, maxSide);
-      final targetH =
-          h > w ? maxSide : ((h * maxSide) / w).round().clamp(1, maxSide);
-
-      // Release the full-size probe before allocating the downscaled frame.
-      probeImage.dispose();
-      probeImage = null;
-      probe.dispose();
-      probe = null;
+      final targetW = w >= h
+          ? maxSide
+          : ((w * maxSide) / h).round().clamp(1, maxSide);
+      final targetH = h > w
+          ? maxSide
+          : ((h * maxSide) / w).round().clamp(1, maxSide);
 
       // targetWidth/targetHeight make Skia downsample while decoding, so the
       // full-size pixel buffer is never materialised - this is what prevents
       // the native stack overflow seen on Windows with large phone photos.
-      final codec = await ui.instantiateImageCodec(
-        bytes,
+      final codec = await descriptor.instantiateCodec(
         targetWidth: targetW,
         targetHeight: targetH,
       );
@@ -77,8 +71,8 @@ class ImageCodecUtil {
     } catch (_) {
       return bytes;
     } finally {
-      probeImage?.dispose();
-      probe?.dispose();
+      descriptor?.dispose();
+      buffer?.dispose();
     }
   }
 

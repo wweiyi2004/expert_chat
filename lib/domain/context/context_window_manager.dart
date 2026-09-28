@@ -448,6 +448,7 @@ class ContextWindowManager {
       toolCalls: message.toolCalls,
       imageDataUrls: message.imageDataUrls,
       imageFileIds: message.imageFileIds,
+      isToolImageObservation: message.isToolImageObservation,
     );
   }
 

@@ -1,0 +1,36 @@
+[project]
+name = "expert-chat-services"
+version = "1.0.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "fastapi==0.141.1",
+  "starlette==1.6.0",
+  "uvicorn[standard]==0.53.0",
+  "python-multipart==0.0.32",
+  "pypdf==6.19.0",
+  "openpyxl==3.1.5",
+  "python-docx==1.2.0",
+  "python-pptx==1.0.2",
+  "mcp==2.2.0",
+  "httpx==0.28.1",
+  "PyJWT[crypto]==2.14.0",
+]
+
+[dependency-groups]
+dev = ["pytest==9.1.1", "pytest-subtests==0.15.0", "pip-audit>=2.10,<3", "ruff>=0.15,<0.16"]
+packaging = ["pyinstaller==6.22.3"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["gateway", "mcp_server", "document_core"]
+pythonpath = [".", "gateway", "doc_edit"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+exclude = [".venv", ".venv-*", "build", "dist", "authservice/upstream"]
+
+[tool.ruff.lint]
+select = ["E9", "F63", "F7", "F82"]

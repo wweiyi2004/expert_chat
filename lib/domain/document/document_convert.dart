@@ -25,8 +25,9 @@ class DocumentConvert {
     return conversions[src]?.contains(tgt) ?? false;
   }
 
-  static Set<String> targetsFor(String from) =>
-      Set<String>.unmodifiable(conversions[from.toLowerCase().trim()] ?? const {});
+  static Set<String> targetsFor(String from) => Set<String>.unmodifiable(
+    conversions[from.toLowerCase().trim()] ?? const {},
+  );
 
   static String matrixSummary() {
     final buf = StringBuffer();

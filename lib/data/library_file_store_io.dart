@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform;
 import 'package:path_provider/path_provider.dart';
+import 'library_paths.dart';
 
 /// App-owned library folder: `ExpertChat/素材/{images|files}/`.
 class LibraryFileStore {
@@ -45,33 +46,25 @@ class LibraryFileStore {
     required bool image,
     required Uint8List bytes,
   }) async {
-    final folder = await _ensureFolder(image);
-    final ext = _safeExtension(fileName);
-    final file = File('${folder.path}${Platform.pathSeparator}$id.$ext');
+    final relative = libraryRelativePath(id, fileName, image);
+    await _ensureFolder(image);
+    final file = File('${await rootPath}/$relative');
     await file.writeAsBytes(bytes, flush: true);
-    return '${image ? 'images' : 'files'}${Platform.pathSeparator}$id.$ext';
+    return relative;
   }
 
   Future<Uint8List?> readBytes(String relativePath) async {
     final root = await rootPath;
-    final file = File('$root${Platform.pathSeparator}$relativePath');
+    final file = File('$root/${validateLibraryPath(relativePath)}');
     if (!await file.exists()) return null;
     return file.readAsBytes();
   }
 
   Future<void> delete(String relativePath) async {
     final root = await rootPath;
-    final file = File('$root${Platform.pathSeparator}$relativePath');
+    final file = File('$root/${validateLibraryPath(relativePath)}');
     if (await file.exists()) {
       await file.delete();
     }
   }
-}
-
-String _safeExtension(String fileName) {
-  final i = fileName.lastIndexOf('.');
-  if (i < 0 || i == fileName.length - 1) return 'bin';
-  final ext = fileName.substring(i + 1).toLowerCase();
-  if (ext.length > 8 || !RegExp(r'^[a-z0-9]+$').hasMatch(ext)) return 'bin';
-  return ext;
 }

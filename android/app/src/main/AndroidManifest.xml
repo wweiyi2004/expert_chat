@@ -8,6 +8,8 @@
     <!-- Completion alerts while a reply is generated in the background. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
     <!-- In-app full-package OTA: install a downloaded APK. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
     <!-- Recent-photo picker (Android 13+). Older devices use READ_EXTERNAL_STORAGE. -->
@@ -22,6 +24,11 @@
         android:roundIcon="@mipmap/ic_expert_chat"
         android:allowBackup="false"
         android:fullBackupContent="false">
+        <service
+            android:name=".GenerationService"
+            android:exported="false"
+            android:stopWithTask="true"
+            android:foregroundServiceType="dataSync" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

@@ -5,6 +5,11 @@ part 'app_database.g.dart';
 
 /// Conversation header row. Messages live in [Messages] and cascade-delete.
 class Conversations extends Table {
+  TextColumn get projectId => text().nullable().references(
+    Projects,
+    #id,
+    onDelete: KeyAction.setNull,
+  )();
   TextColumn get id => text()();
   TextColumn get title => text().withDefault(const Constant('新对话'))();
   DateTimeColumn get updatedAt => dateTime()();
@@ -160,6 +165,56 @@ class LibraryItems extends Table {
   Set<Column> get primaryKey => {id};
 }
 
+class Projects extends Table {
+  TextColumn get id => text()();
+  TextColumn get name => text()();
+  TextColumn get instructions => text().withDefault(const Constant(''))();
+  DateTimeColumn get createdAt => dateTime()();
+  DateTimeColumn get updatedAt => dateTime()();
+  @override
+  Set<Column> get primaryKey => {id};
+}
+
+class ProjectFiles extends Table {
+  TextColumn get projectId =>
+      text().references(Projects, #id, onDelete: KeyAction.cascade)();
+  TextColumn get libraryItemId =>
+      text().references(LibraryItems, #id, onDelete: KeyAction.cascade)();
+  @override
+  Set<Column> get primaryKey => {projectId, libraryItemId};
+}
+
+class GenerationRecords extends Table {
+  TextColumn get id => text()();
+  TextColumn get libraryItemId => text().nullable().references(
+    LibraryItems,
+    #id,
+    onDelete: KeyAction.setNull,
+  )();
+  TextColumn get conversationId => text().nullable()();
+  TextColumn get messageId => text().nullable()();
+  TextColumn get parentGenerationId => text().nullable()();
+  TextColumn get originalPrompt => text()();
+  TextColumn get optimizedPrompt => text()();
+  TextColumn get revisedPrompt => text().nullable()();
+  TextColumn get model => text()();
+  TextColumn get providerHost => text()();
+  TextColumn get imageSize => text()();
+  TextColumn get referencesJson => text().withDefault(const Constant('[]'))();
+  DateTimeColumn get createdAt => dateTime()();
+  @override
+  Set<Column> get primaryKey => {id};
+}
+
+/// Commit markers let startup distinguish a committed restore from an
+/// interrupted transaction before repairing the external memory/settings.
+class BackupImports extends Table {
+  TextColumn get id => text()();
+  DateTimeColumn get committedAt => dateTime()();
+  @override
+  Set<Column> get primaryKey => {id};
+}
+
 @DriftDatabase(
   tables: [
     Conversations,
@@ -169,13 +224,17 @@ class LibraryItems extends Table {
     StudyEntities,
     StudySessions,
     LibraryItems,
+    Projects,
+    ProjectFiles,
+    GenerationRecords,
+    BackupImports,
   ],
 )
 class AppDatabase extends _$AppDatabase {
   AppDatabase([QueryExecutor? executor]) : super(executor ?? _open());
 
   @override
-  int get schemaVersion => 15;
+  int get schemaVersion => 16;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -247,16 +306,35 @@ class AppDatabase extends _$AppDatabase {
       if (from < 15) {
         await m.createTable(libraryItems);
       }
+      if (from < 16) {
+        await m.createTable(projects);
+        await m.addColumn(conversations, conversations.projectId);
+        await m.createTable(projectFiles);
+        await m.createTable(generationRecords);
+        await m.createTable(backupImports);
+      }
     },
     beforeOpen: (details) async {
       // SQLite has FK enforcement off by default; needed for cascade delete.
       await customStatement('PRAGMA foreign_keys = ON');
+      await customStatement(
+        'CREATE INDEX IF NOT EXISTS idx_conversations_project_updated ON conversations (project_id, updated_at DESC)',
+      );
+      await customStatement(
+        'CREATE INDEX IF NOT EXISTS idx_generations_created ON generation_records (created_at DESC)',
+      );
+      await customStatement(
+        'CREATE INDEX IF NOT EXISTS idx_generations_library ON generation_records (library_item_id)',
+      );
       // Keep the conversation list and per-conversation history reads
       // indexed as the local archive grows. IF NOT EXISTS makes this safe
       // for both fresh installs and already-migrated databases.
       await customStatement(
         'CREATE INDEX IF NOT EXISTS idx_conversations_updated_at '
         'ON conversations (updated_at DESC)',
+      );
+      await customStatement(
+        'CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages (created_at DESC, id DESC)',
       );
       await customStatement(
         'CREATE INDEX IF NOT EXISTS idx_messages_convo_id_seq '

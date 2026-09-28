@@ -28,26 +28,25 @@ void main() {
 
     test('skips corrupt entries and keeps the healthy part', () async {
       final file = fileFor('conversations.json');
-      file.writeAsStringSync(jsonEncode([
-        {
-          'id': 'healthy',
-          'title': '健康会话',
-          'updatedAt': '2026-01-01T00:00:00.000Z',
-          'messages': [
-            {
-              'id': 'm1',
-              'role': 'user',
-              'content': 'hello',
-              'createdAt': '2026-01-01T00:00:00.000Z',
-            },
-          ],
-        },
-        {
-          'id': 'corrupt-entry',
-          'activeChildren': 'not-a-map',
-        },
-        'a bare string entry',
-      ]));
+      file.writeAsStringSync(
+        jsonEncode([
+          {
+            'id': 'healthy',
+            'title': '健康会话',
+            'updatedAt': '2026-01-01T00:00:00.000Z',
+            'messages': [
+              {
+                'id': 'm1',
+                'role': 'user',
+                'content': 'hello',
+                'createdAt': '2026-01-01T00:00:00.000Z',
+              },
+            ],
+          },
+          {'id': 'corrupt-entry', 'activeChildren': 'not-a-map'},
+          'a bare string entry',
+        ]),
+      );
       final repo = JsonConversationRepository(file: file);
 
       final all = await repo.loadAll();
@@ -84,36 +83,32 @@ void main() {
 
     test('tolerates numeric timestamps and activeChildren values', () async {
       final file = fileFor('conversations.json');
-      file.writeAsStringSync(jsonEncode([
-        {
-          'id': 'num-fields',
-          'title': '数字字段',
-          'updatedAt': 1700000000000,
-          'activeChildren': {'': 123, 'user-1': 'assistant-1'},
-          'messages': [
-            {
-              'id': 'm1',
-              'role': 'user',
-              'content': 'hi',
-              'createdAt': 1700000000000,
-            },
-          ],
-        },
-      ]));
+      file.writeAsStringSync(
+        jsonEncode([
+          {
+            'id': 'num-fields',
+            'title': '数字字段',
+            'updatedAt': 1700000000000,
+            'activeChildren': {'': 123, 'user-1': 'assistant-1'},
+            'messages': [
+              {
+                'id': 'm1',
+                'role': 'user',
+                'content': 'hi',
+                'createdAt': 1700000000000,
+              },
+            ],
+          },
+        ]),
+      );
       final repo = JsonConversationRepository(file: file);
 
       final all = await repo.loadAll();
 
       expect(all, hasLength(1));
       final conversation = all.single;
-      expect(conversation.activeChildren, {
-        '': '123',
-        'user-1': 'assistant-1',
-      });
-      expect(
-        conversation.updatedAt.millisecondsSinceEpoch,
-        1700000000000,
-      );
+      expect(conversation.activeChildren, {'': '123', 'user-1': 'assistant-1'});
+      expect(conversation.updatedAt.millisecondsSinceEpoch, 1700000000000);
       expect(
         conversation.messages.single.createdAt.millisecondsSinceEpoch,
         1700000000000,

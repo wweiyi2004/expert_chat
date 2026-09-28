@@ -121,21 +121,15 @@ void main() {
     expect(result.report.sentTokens, lessThanOrEqualTo(1024));
     // Rolling summary of dropped turns should be injected.
     expect(result.report.summaryInjected, isTrue);
-    expect(
-      result.messages.any((m) => m.content.contains('历史摘要')),
-      isTrue,
-    );
+    expect(result.messages.any((m) => m.content.contains('历史摘要')), isTrue);
   });
 
   test('summary is not injected when nothing is dropped', () {
-    final result = manager.manage(
-      const [
-        LlmRequestMessage(role: MessageRole.system, content: 'persona'),
-        LlmRequestMessage(role: MessageRole.user, content: 'hi'),
-        LlmRequestMessage(role: MessageRole.assistant, content: 'hello'),
-      ],
-      const ContextPrefs(),
-    );
+    final result = manager.manage(const [
+      LlmRequestMessage(role: MessageRole.system, content: 'persona'),
+      LlmRequestMessage(role: MessageRole.user, content: 'hi'),
+      LlmRequestMessage(role: MessageRole.assistant, content: 'hello'),
+    ], const ContextPrefs());
     expect(result.report.droppedMessages, 0);
     expect(result.report.summaryInjected, isFalse);
     expect(result.report.managed, isFalse);
@@ -232,32 +226,29 @@ void main() {
 
     // Tool follow-up turn: the newest units are tool-call protocol, so a
     // small history cap must not squeeze out the question being answered.
-    final result = manager.manage(
-      const [
-        LlmRequestMessage(role: MessageRole.user, content: 'CURRENT QUESTION'),
-        LlmRequestMessage(
-          role: MessageRole.assistant,
-          content: '',
-          toolCalls: [call1],
-        ),
-        LlmRequestMessage(
-          role: MessageRole.tool,
-          content: 'result-1',
-          toolCallId: 'call-1',
-        ),
-        LlmRequestMessage(
-          role: MessageRole.assistant,
-          content: '',
-          toolCalls: [call2],
-        ),
-        LlmRequestMessage(
-          role: MessageRole.tool,
-          content: 'result-2',
-          toolCallId: 'call-2',
-        ),
-      ],
-      const ContextPrefs(maxHistoryMessages: 4),
-    );
+    final result = manager.manage(const [
+      LlmRequestMessage(role: MessageRole.user, content: 'CURRENT QUESTION'),
+      LlmRequestMessage(
+        role: MessageRole.assistant,
+        content: '',
+        toolCalls: [call1],
+      ),
+      LlmRequestMessage(
+        role: MessageRole.tool,
+        content: 'result-1',
+        toolCallId: 'call-1',
+      ),
+      LlmRequestMessage(
+        role: MessageRole.assistant,
+        content: '',
+        toolCalls: [call2],
+      ),
+      LlmRequestMessage(
+        role: MessageRole.tool,
+        content: 'result-2',
+        toolCallId: 'call-2',
+      ),
+    ], const ContextPrefs(maxHistoryMessages: 4));
 
     expect(result.messages.map((m) => m.content), contains('CURRENT QUESTION'));
     expect(result.messages.last.toolCallId, 'call-2');
@@ -266,16 +257,13 @@ void main() {
   test('keeps a mid-conversation system message in place', () {
     // Search context is deliberately injected right before the newest user
     // message (chat_controller); management must not hoist it to the front.
-    final result = manager.manage(
-      const [
-        LlmRequestMessage(role: MessageRole.system, content: 'persona'),
-        LlmRequestMessage(role: MessageRole.user, content: 'older question'),
-        LlmRequestMessage(role: MessageRole.assistant, content: 'older answer'),
-        LlmRequestMessage(role: MessageRole.system, content: 'SEARCH CONTEXT'),
-        LlmRequestMessage(role: MessageRole.user, content: 'current question'),
-      ],
-      const ContextPrefs(),
-    );
+    final result = manager.manage(const [
+      LlmRequestMessage(role: MessageRole.system, content: 'persona'),
+      LlmRequestMessage(role: MessageRole.user, content: 'older question'),
+      LlmRequestMessage(role: MessageRole.assistant, content: 'older answer'),
+      LlmRequestMessage(role: MessageRole.system, content: 'SEARCH CONTEXT'),
+      LlmRequestMessage(role: MessageRole.user, content: 'current question'),
+    ], const ContextPrefs());
 
     final contents = result.messages.map((m) => m.content).toList();
     expect(contents.first, 'persona');

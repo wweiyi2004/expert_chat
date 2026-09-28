@@ -4,7 +4,7 @@ import '../../data/models.dart';
 import '../llm/llm_provider.dart';
 
 /// Client-side vision: the chat model never receives pixels. It calls this
-/// tool, and the controller forwards the image to the configured vision API.
+/// tool, and the executor forwards the image to the configured vision API.
 class VisionTools {
   static const analyzeImageToolName = 'analyze_image';
 
@@ -31,6 +31,21 @@ class VisionTools {
   );
 
   static const defaultQuestion = '请描述这张图片的关键信息，并转录图中可见文字。';
+
+  /// User images on the active branch, in order, without duplicate attachments.
+  static List<Attachment> attachmentsFor(Conversation convo) {
+    final out = <Attachment>[];
+    final seen = <String>{};
+    for (final message in convo.activePath) {
+      if (message.role != MessageRole.user) continue;
+      for (final a in message.attachments) {
+        if (!a.isImage || !a.hasImageData) continue;
+        if (!seen.add(a.id)) continue;
+        out.add(a);
+      }
+    }
+    return out;
+  }
 
   static AnalyzeImageArgs parseArgs(String raw) {
     try {

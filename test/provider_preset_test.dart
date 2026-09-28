@@ -1,7 +1,33 @@
 import 'package:expert_chat/data/provider_profile.dart';
+import 'package:expert_chat/domain/llm/llm_provider.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('DeepSeek Flash supports vision and switchable thinking with tools', () {
+    final preset = ProviderPreset.presets.firstWhere(
+      (p) => p.name == 'DeepSeek',
+    );
+    expect(preset.models, contains('deepseek-flash'));
+    expect(KnownModels.all, contains('deepseek-flash'));
+    expect(preset.matchesQuery('V4.1'), isTrue);
+    for (final model in ['deepseek-flash', 'deepseek-ai/DEEPSEEK-FLASH']) {
+      final caps = ModelCapabilities.resolve(model);
+      expect(caps.supportsVision, isTrue);
+      expect(caps.supportsTools, isTrue);
+      expect(caps.sendThinkingField, isTrue);
+      expect(caps.supportsReasoningEffort, isTrue);
+      expect(caps.supportsServerWebSearch, isFalse);
+    }
+    expect(
+      ModelCapabilities.resolve('deepseek-v4-pro').supportsVision,
+      isFalse,
+    );
+    expect(
+      ModelCapabilities.resolve('deepseek-flash-unknown').supportsTools,
+      isFalse,
+    );
+  });
+
   test('built-in presets keep unique names and valid endpoints', () {
     final names = ProviderPreset.presets.map((p) => p.name).toList();
     expect(names.toSet().length, names.length);

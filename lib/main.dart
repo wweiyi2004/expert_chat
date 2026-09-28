@@ -1,20 +1,28 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'core/providers.dart';
 import 'core/theme.dart';
 import 'data/db/app_database.dart';
+import 'data/backup_journal.dart';
+import 'data/full_backup_service.dart';
+import 'data/library_file_store.dart';
+import 'data/memory_file_store.dart';
 import 'data/drift_conversation_repository.dart';
 import 'data/legacy_conversation_migration.dart';
 import 'data/study_repository.dart';
 import 'data/ui_prefs.dart';
 import 'features/shell/app_shell.dart';
+import 'features/shell/startup_error_app.dart';
 import 'state/settings_controller.dart';
 
 Future<void> main() async {
-  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows) {
+  if (!kIsWeb &&
+      defaultTargetPlatform == TargetPlatform.windows &&
+      !const bool.fromEnvironment('EXPERT_CHAT_WINDOWS_SEMANTICS')) {
     // Flutter 3.44's Windows accessibility bridge can dereference a semantics
     // node whose parent is null while UI Automation clients (including some
     // IMEs) inspect a rapidly changing tree. The native crash is in
@@ -24,9 +32,8 @@ Future<void> main() async {
     // null-parent path. Other platforms retain their normal accessibility
     // behavior. Remove this binding once the engine fix is available.
     //
-    // Track: https://github.com/flutter/flutter/issues (search
-    // CreateRemoveReparentedNodesUpdate / Windows UIA). Re-enable semantics
-    // after upgrading past a fixed Flutter engine and verifying with Narrator.
+    // Exit criteria and opt-in test build: docs/WINDOWS-ACCESSIBILITY.md.
+    // Do not remove the guard based only on widget or synthetic UIA tests.
     _WindowsCrashWorkaroundBinding();
   } else {
     WidgetsFlutterBinding.ensureInitialized();
@@ -44,10 +51,17 @@ Future<void> main() async {
     final prefsFuture = SharedPreferences.getInstance();
     final db = AppDatabase();
     final prefs = await prefsFuture;
+    await FullBackupService(
+      db,
+      LibraryFileStore(),
+      MemoryFileStore(prefs),
+      prefs,
+      BackupJournal(),
+    ).recoverPending();
     final driftRepo = DriftConversationRepository(db);
     await Future.wait([
       migrateLegacyJsonToDrift(driftRepo),
-      StudyRepository(db, prefs).load(),
+      StudyRepository(db, prefs).ensureMigrated(),
     ]);
 
     runApp(
@@ -62,49 +76,13 @@ Future<void> main() async {
   } catch (e, st) {
     // Surface startup failures instead of a silent flash-exit.
     debugPrint('Expert Chat startup failed: $e\n$st');
-    runApp(_StartupErrorApp(error: e));
+    runApp(StartupErrorApp(error: e));
   }
 }
 
 class _WindowsCrashWorkaroundBinding extends WidgetsFlutterBinding {
   @override
   bool get semanticsEnabled => false;
-}
-
-/// Shown only when prefs/DB bootstrap throws — better than a silent crash.
-class _StartupErrorApp extends StatelessWidget {
-  const _StartupErrorApp({required this.error});
-
-  final Object error;
-
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      home: Scaffold(
-        body: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  '启动失败',
-                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
-                ),
-                const SizedBox(height: 12),
-                const Text('本地数据初始化出错。可尝试清除应用数据后重装，或把下面信息反馈给开发者。'),
-                const SizedBox(height: 16),
-                Expanded(
-                  child: SingleChildScrollView(child: SelectableText('$error')),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
 }
 
 class ExpertChatApp extends ConsumerStatefulWidget {
@@ -122,14 +100,13 @@ class _ExpertChatAppState extends ConsumerState<ExpertChatApp> {
 
   @override
   Widget build(BuildContext context) {
-    final settings = ref.watch(settingsControllerProvider);
-    final themeMode = settings.maybeWhen(
-      data: (s) => s.themeMode,
-      orElse: () => ThemeMode.system,
-    );
-    final ui = settings.maybeWhen(
-      data: (s) => s.ui,
-      orElse: () => const UiPrefs(),
+    final (themeMode, ui) = ref.watch(
+      settingsControllerProvider.select(
+        (settings) => (
+          settings.value?.themeMode ?? ThemeMode.system,
+          settings.value?.ui ?? const UiPrefs(),
+        ),
+      ),
     );
     final density = switch (ui.density) {
       DensityPref.spacious => VisualDensity.comfortable,
@@ -151,6 +128,9 @@ class _ExpertChatAppState extends ConsumerState<ExpertChatApp> {
 
     return MaterialApp(
       title: 'Expert Chat',
+      locale: const Locale('zh', 'CN'),
+      supportedLocales: const [Locale('zh', 'CN')],
+      localizationsDelegates: GlobalMaterialLocalizations.delegates,
       debugShowCheckedModeBanner: false,
       theme: _lightTheme,
       darkTheme: _darkTheme,

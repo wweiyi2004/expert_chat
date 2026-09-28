@@ -276,8 +276,7 @@ class AppUpdateChecker {
       } else if (abi.contains('x86_64') || abi == 'x64') {
         final hit = firstWhere(
           (n) =>
-              n.endsWith('.apk') &&
-              (n.contains('x86_64') || n.contains('x64')),
+              n.endsWith('.apk') && (n.contains('x86_64') || n.contains('x64')),
         );
         if (hit != null) return hit;
       }

@@ -21,7 +21,7 @@ class RecentPhotoPickResult {
   final List<AssetEntity> assets;
 }
 
-/// Bottom sheet: recent gallery thumbs +「从文件选择」.
+/// Mobile album picker with paged images and an optional file browser.
 ///
 /// Returns null if dismissed; [RecentPhotoPickResult.files] if user wants the
 /// system file picker; otherwise selected [AssetEntity]s.
@@ -33,7 +33,14 @@ Future<RecentPhotoPickResult?> showRecentPhotoPicker(
     return const RecentPhotoPickResult.files();
   }
 
-  final permission = await PhotoManager.requestPermissionExtend();
+  final permission = await PhotoManager.requestPermissionExtend(
+    requestOption: const PermissionRequestOption(
+      androidPermission: AndroidPermission(
+        type: RequestType.image,
+        mediaLocation: false,
+      ),
+    ),
+  );
   if (!permission.isAuth && !permission.hasAccess) {
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -66,7 +73,14 @@ class _RecentPhotoSheetBody extends StatefulWidget {
 }
 
 class _RecentPhotoSheetBodyState extends State<_RecentPhotoSheetBody> {
-  final _selected = <AssetEntity>{};
+  final _selected = <String, AssetEntity>{};
+  final _scroll = ScrollController();
+  List<AssetPathEntity> _albums = const [];
+  AssetPathEntity? _album;
+  int _generation = 0;
+  int _page = 0;
+  bool _hasMore = true;
+  static const _pageSize = 80;
   List<AssetEntity> _assets = const [];
   bool _loading = true;
   String? _error;
@@ -74,42 +88,109 @@ class _RecentPhotoSheetBodyState extends State<_RecentPhotoSheetBody> {
   @override
   void initState() {
     super.initState();
-    _load();
+    _scroll.addListener(() {
+      if (_scroll.position.extentAfter < 600 && !_loading && _error == null) {
+        _loadPage();
+      }
+    });
+    _loadAlbums();
   }
 
-  Future<void> _load() async {
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  String _albumName(AssetPathEntity album) => album.isAll
+      ? '最近图片'
+      : switch (album.name.toLowerCase()) {
+          'camera' => '相机',
+          'screenshots' => '截图',
+          'download' || 'downloads' => '下载',
+          'wechat' || 'weixin' => '微信',
+          _ => album.name,
+        };
+
+  Future<void> _loadAlbums() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
     try {
       final paths = await PhotoManager.getAssetPathList(
         type: RequestType.image,
-        onlyAll: true,
+        hasAll: true,
+        filterOption: FilterOptionGroup(
+          orders: [
+            const OrderOption(type: OrderOptionType.createDate, asc: false),
+          ],
+        ),
       );
+      if (!mounted) return;
+      _albums = paths;
       if (paths.isEmpty) {
-        if (!mounted) return;
         setState(() {
           _loading = false;
-          _error = '相册为空';
+          _hasMore = false;
         });
         return;
       }
-      final recent = await paths.first.getAssetListPaged(page: 0, size: 80);
+      _switchAlbum(paths.where((p) => p.isAll).firstOrNull ?? paths.first);
+    } catch (_) {
       if (!mounted) return;
       setState(() {
-        _assets = recent;
+        _loading = false;
+        _error = '相册暂时无法读取，请重试或从手机文件选择。';
+      });
+    }
+  }
+
+  void _switchAlbum(AssetPathEntity album) {
+    _generation++;
+    setState(() {
+      _album = album;
+      _assets = const [];
+      _page = 0;
+      _hasMore = true;
+      _loading = false;
+      _error = null;
+    });
+    if (_scroll.hasClients) _scroll.jumpTo(0);
+    _loadPage();
+  }
+
+  Future<void> _loadPage() async {
+    final album = _album;
+    if (_loading || !_hasMore || album == null) return;
+    final generation = _generation;
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final page = await album.getAssetListPaged(page: _page, size: _pageSize);
+      if (!mounted || generation != _generation) return;
+      final known = _assets.map((a) => a.id).toSet();
+      setState(() {
+        _assets = [..._assets, ...page.where((a) => known.add(a.id))];
+        _page++;
+        _hasMore = page.length == _pageSize;
         _loading = false;
       });
-    } catch (e) {
-      if (!mounted) return;
+    } catch (_) {
+      if (!mounted || generation != _generation) return;
       setState(() {
         _loading = false;
-        _error = '加载相册失败：$e';
+        _error = '图片加载失败，已选图片仍保留。';
       });
     }
   }
 
   void _toggle(AssetEntity asset) {
     setState(() {
-      if (_selected.contains(asset)) {
-        _selected.remove(asset);
+      if (_selected.containsKey(asset.id)) {
+        _selected.remove(asset.id);
       } else if (_selected.length >= widget.maxCount) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -118,7 +199,7 @@ class _RecentPhotoSheetBodyState extends State<_RecentPhotoSheetBody> {
           ),
         );
       } else {
-        _selected.add(asset);
+        _selected[asset.id] = asset;
       }
     });
   }
@@ -126,7 +207,7 @@ class _RecentPhotoSheetBodyState extends State<_RecentPhotoSheetBody> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final height = MediaQuery.sizeOf(context).height * 0.62;
+    final height = MediaQuery.sizeOf(context).height * 0.86;
     return SizedBox(
       height: height,
       child: Column(
@@ -136,48 +217,97 @@ class _RecentPhotoSheetBodyState extends State<_RecentPhotoSheetBody> {
             padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
             child: Row(
               children: [
-                Text(
-                  '最近照片',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w700,
+                Expanded(
+                  child: PopupMenuButton<AssetPathEntity>(
+                    tooltip: '切换相册',
+                    enabled: _albums.isNotEmpty,
+                    onSelected: _switchAlbum,
+                    itemBuilder: (_) => [
+                      for (final album in _albums)
+                        CheckedPopupMenuItem(
+                          value: album,
+                          checked: album.id == _album?.id,
+                          child: Text(_albumName(album)),
+                        ),
+                    ],
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      child: Row(
+                        children: [
+                          Flexible(
+                            child: Text(
+                              _album == null ? '最近图片' : _albumName(_album!),
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context).textTheme.titleMedium,
+                            ),
+                          ),
+                          const Icon(Icons.expand_more),
+                        ],
                       ),
+                    ),
+                  ),
                 ),
-                const Spacer(),
                 TextButton(
                   onPressed: () => Navigator.pop(
                     context,
                     const RecentPhotoPickResult.files(),
                   ),
-                  child: const Text('从文件选择'),
+                  child: const Text('手机文件'),
                 ),
               ],
             ),
           ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+            child: Text(
+              '按时间从新到旧 · 可跨相册选择',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ),
           Expanded(
-            child: _loading
+            child: _assets.isEmpty && _loading
                 ? const Center(child: CircularProgressIndicator())
-                : _error != null
-                ? Center(child: Text(_error!))
-                : GridView.builder(
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    gridDelegate:
-                        const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 3,
-                      mainAxisSpacing: 6,
-                      crossAxisSpacing: 6,
+                : _assets.isEmpty
+                ? Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Text(_error ?? '此相册暂无可访问的图片，可切换相册或从手机文件选择。'),
                     ),
+                  )
+                : GridView.builder(
+                    controller: _scroll,
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    gridDelegate:
+                        const SliverGridDelegateWithMaxCrossAxisExtent(
+                          maxCrossAxisExtent: 100,
+                          mainAxisSpacing: 4,
+                          crossAxisSpacing: 4,
+                        ),
                     itemCount: _assets.length,
                     itemBuilder: (context, index) {
                       final asset = _assets[index];
-                      final selected = _selected.contains(asset);
+                      final order =
+                          _selected.keys.toList().indexOf(asset.id) + 1;
                       return _AssetTile(
+                        key: ValueKey(asset.id),
                         asset: asset,
-                        selected: selected,
+                        order: order,
                         onTap: () => _toggle(asset),
                       );
                     },
                   ),
           ),
+          if (_error != null)
+            TextButton.icon(
+              onPressed: _album == null ? _loadAlbums : _loadPage,
+              icon: const Icon(Icons.refresh),
+              label: Text(_assets.isEmpty ? '重新加载' : '加载失败，点击重试'),
+            )
+          else if (_assets.isNotEmpty && _hasMore)
+            TextButton(
+              onPressed: _loading ? null : _loadPage,
+              child: Text(_loading ? '正在加载…' : '加载更多图片'),
+            ),
           SafeArea(
             top: false,
             child: Padding(
@@ -198,11 +328,11 @@ class _RecentPhotoSheetBodyState extends State<_RecentPhotoSheetBody> {
                     onPressed: _selected.isEmpty
                         ? null
                         : () => Navigator.pop(
-                              context,
-                              RecentPhotoPickResult.assets(
-                                _selected.toList(growable: false),
-                              ),
+                            context,
+                            RecentPhotoPickResult.assets(
+                              _selected.values.toList(growable: false),
                             ),
+                          ),
                     style: FilledButton.styleFrom(
                       backgroundColor: scheme.primary,
                     ),
@@ -218,54 +348,85 @@ class _RecentPhotoSheetBodyState extends State<_RecentPhotoSheetBody> {
   }
 }
 
-final Map<String, Future<Uint8List?>> _thumbnailCache = {};
-
-Future<Uint8List?> _thumbnailFor(AssetEntity asset) {
-  return _thumbnailCache.putIfAbsent(
-    asset.id,
-    () => asset.thumbnailDataWithSize(const ThumbnailSize.square(200)),
-  );
-}
-
-class _AssetTile extends StatelessWidget {
+class _AssetTile extends StatefulWidget {
   const _AssetTile({
+    super.key,
     required this.asset,
-    required this.selected,
+    required this.order,
     required this.onTap,
   });
 
   final AssetEntity asset;
-  final bool selected;
+  final int order;
   final VoidCallback onTap;
+
+  @override
+  State<_AssetTile> createState() => _AssetTileState();
+}
+
+class _AssetTileState extends State<_AssetTile> {
+  late final _thumbnail = widget.asset.thumbnailDataWithSize(
+    const ThumbnailSize.square(200),
+  );
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return InkWell(
-      onTap: onTap,
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          FutureBuilder<Uint8List?>(
-            future: _thumbnailFor(asset),
-            builder: (context, snap) {
-              final data = snap.data;
-              if (data == null) {
-                return ColoredBox(color: scheme.surfaceContainerHighest);
-              }
-              return Image.memory(data, fit: BoxFit.cover);
-            },
-          ),
-          Positioned(
-            top: 4,
-            right: 4,
-            child: Icon(
-              selected ? Icons.check_circle : Icons.circle_outlined,
-              color: selected ? scheme.primary : Colors.white,
-              shadows: const [Shadow(blurRadius: 4, color: Colors.black54)],
+    final selected = widget.order > 0;
+    return Semantics(
+      label: selected ? '图片，已选第 ${widget.order} 张' : '图片，未选择',
+      selected: selected,
+      button: true,
+      child: InkWell(
+        onTap: widget.onTap,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            FutureBuilder<Uint8List?>(
+              future: _thumbnail,
+              builder: (context, snap) {
+                final data = snap.data;
+                if (data == null) {
+                  return ColoredBox(
+                    color: scheme.surfaceContainerHighest,
+                    child: const Icon(Icons.image_outlined),
+                  );
+                }
+                return Image.memory(
+                  data,
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, error, stack) =>
+                      const Icon(Icons.broken_image_outlined),
+                );
+              },
             ),
-          ),
-        ],
+            if (selected)
+              ColoredBox(color: scheme.primary.withValues(alpha: 0.16)),
+            Positioned(
+              top: 6,
+              right: 6,
+              child: Container(
+                width: 24,
+                height: 24,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: selected ? scheme.primary : Colors.black38,
+                  border: Border.all(color: Colors.white, width: 1.5),
+                ),
+                child: selected
+                    ? Text(
+                        '${widget.order}',
+                        style: TextStyle(
+                          color: scheme.onPrimary,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      )
+                    : null,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

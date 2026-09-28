@@ -108,6 +108,26 @@ class _FakeSettingsController extends SettingsController {
   }
 }
 
+class _LongModelSettingsController extends _FakeSettingsController {
+  @override
+  Future<SettingsState> build() async {
+    final profile = ProviderProfile(
+      name: 'DeepSeek',
+      baseUrl: 'https://api.deepseek.com',
+      chatModel: KnownModels.vision,
+      reasonerModel: KnownModels.reasoner,
+      models: KnownModels.all,
+    );
+    return SettingsState(
+      profiles: [profile],
+      activeProfileId: profile.id,
+      apiKey: 'sk-test',
+      selectedModel: KnownModels.vision,
+      chatSkills: ChatSkillCatalog.factory(),
+    );
+  }
+}
+
 /// Opens the settings page with a controlled container so tests can read the
 /// controller state directly.
 ///
@@ -242,10 +262,79 @@ void main() {
     await tester.tap(find.text('数据'));
     await tester.pumpAndSettle();
     expect(find.text('导出 API 配置'), findsOneWidget);
+    expect(find.textContaining('文件含密钥，请勿分享或公开'), findsOneWidget);
+    expect(find.textContaining('不要提交到 Git'), findsNothing);
     expect(find.text('导入 API 配置'), findsOneWidget);
+    expect(find.text('完整备份与恢复'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('管理记忆'),
+      180,
+      scrollable: find.byType(Scrollable).last,
+    );
+    await tester.pumpAndSettle();
     expect(find.text('启用长期记忆'), findsOneWidget);
     expect(find.text('管理记忆'), findsOneWidget);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('narrow model dropdown ellipsizes long vision ids', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(360, 720);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final container = ProviderContainer(
+      overrides: [
+        settingsControllerProvider.overrideWith(
+          _LongModelSettingsController.new,
+        ),
+        modelUsageStoreProvider.overrideWith((ref) => _usageStore),
+      ],
+    );
+    addTearDown(container.dispose);
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const MaterialApp(home: SettingsPage(asRootTab: true)),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      tester.takeException(),
+      isNull,
+      reason: 'long model ids must ellipsize instead of overflowing',
+    );
+    expect(find.textContaining('deepseek-v4-flash-vision-exp'), findsWidgets);
+  });
+
+  testWidgets('markdown preview keeps table header cells on one row', (
+    tester,
+  ) async {
+    await pumpSettingsPage(tester, tall: true);
+    await tester.tap(find.text('外观'));
+    await tester.pumpAndSettle();
+    expect(find.text('圆角风格'), findsNothing);
+    await tester.scrollUntilVisible(
+      find.text('更多外观设置'),
+      200,
+      scrollable: find.byType(Scrollable).last,
+    );
+    await tester.tap(find.text('更多外观设置'));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('列 A'),
+      200,
+      scrollable: find.byType(Scrollable).last,
+    );
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+
+    final colA = tester.getRect(find.text('列 A'));
+    final colB = tester.getRect(find.text('列 B'));
+    expect((colA.center.dy - colB.center.dy).abs(), lessThan(8));
+    expect(colB.left, greaterThan(colA.right - 1));
   });
 
   testWidgets('capabilities tab can add a custom MCP server', (tester) async {
@@ -283,6 +372,43 @@ void main() {
       'GitHub',
     );
   });
+
+  testWidgets(
+    'local MCP editor saves program arguments and background-only default',
+    (tester) async {
+      final container = await pumpSettingsPage(tester, tall: true);
+      await tester.tap(find.text('能力'));
+      tester.view.physicalSize = const Size(480, 4000);
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('添加 MCP 服务器', skipOffstage: false),
+        400,
+        scrollable: find.byType(Scrollable).last,
+      );
+      await tester.tap(find.text('添加 MCP 服务器'));
+      await tester.pumpAndSettle();
+      // The editor also supports local programs on the Linux CI runner.
+      await tester.tap(find.text('本地 MCP 程序'));
+      await tester.pumpAndSettle();
+      await tester.enterText(fieldWithLabel('名称'), 'Desktop');
+      await tester.enterText(fieldWithLabel('程序路径'), 'cua-driver.exe');
+      await tester.enterText(fieldWithLabel('参数（每行一个）'), 'mcp\n--direct');
+      await tester.tap(find.text('电脑操作（Cua Driver）'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('保存'));
+      await tester.pumpAndSettle();
+      final server = container
+          .read(settingsControllerProvider)
+          .requireValue
+          .gateway
+          .customMcpServers
+          .single;
+      expect(server.localProcess!.arguments, ['mcp', '--direct']);
+      expect(server.computerUse, isTrue);
+      expect(server.allowForeground, isFalse);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'vision API fields remain stable while focused settings rebuild',
@@ -374,7 +500,8 @@ void main() {
 
     final serverUrl = find.byWidgetPredicate(
       (widget) =>
-          widget is TextField && widget.decoration?.labelText == 'MCP Server URL',
+          widget is TextField &&
+          widget.decoration?.labelText == 'MCP Server URL',
       skipOffstage: false,
     );
     expect(serverUrl, findsOneWidget);
@@ -786,7 +913,7 @@ void main() {
         cachedInputTokens: 600,
       ),
     );
-    await _usageStore.flush();
+    await tester.runAsync(_usageStore.flush);
 
     await pumpSettingsPage(tester, tall: true);
 
@@ -795,5 +922,5 @@ void main() {
     expect(find.text('300'), findsOneWidget);
     expect(find.text('600'), findsOneWidget);
     expect(find.textContaining('缓存命中率 50%'), findsOneWidget);
-  }, skip: true);
+  });
 }

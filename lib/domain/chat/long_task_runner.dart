@@ -5,7 +5,7 @@ import 'package:dio/dio.dart' show CancelToken;
 import '../../data/chat_skill.dart';
 import '../../data/gateway_config.dart';
 import '../../data/models.dart';
-import '../../state/settings_controller.dart';
+import 'long_task_configuration.dart';
 import '../llm/long_task_gateway_client.dart';
 import 'conversation_tree.dart';
 import 'error_describe.dart';
@@ -20,7 +20,7 @@ import 'error_describe.dart';
 class LongTaskRunner {
   LongTaskRunner({
     required LongTaskGatewayClient Function() client,
-    required Future<SettingsState> Function() readSettings,
+    required Future<LongTaskConfiguration> Function() readSettings,
     required List<Conversation> Function() conversations,
     required LongTaskState? Function(String convoId, String assistantId)
     findTask,
@@ -48,7 +48,7 @@ class LongTaskRunner {
        _reportError = reportError;
 
   final LongTaskGatewayClient Function() _client;
-  final Future<SettingsState> Function() _readSettings;
+  final Future<LongTaskConfiguration> Function() _readSettings;
   final List<Conversation> Function() _conversations;
   final LongTaskState? Function(String convoId, String assistantId) _findTask;
   final Future<void> Function(

@@ -75,6 +75,18 @@ class ConversationPersistence {
   Future<void> deletePersistedConversation(String id) =>
       enqueueWrite(() => _repository().deleteConversation(id));
 
+  Future<void> persistTitle(Conversation conversation) => enqueueWrite(() {
+    final repository = _repository();
+    if (repository is ConversationMetadataRepository) {
+      return (repository as ConversationMetadataRepository).renameConversation(
+        conversation.id,
+        conversation.title,
+        conversation.updatedAt,
+      );
+    }
+    return repository.saveConversation(conversation);
+  });
+
   /// UI callbacks should remain responsive, but persistence failures must never
   /// become unhandled async errors. Surface them in the existing error banner
   /// so the user knows a local archive operation needs attention.

@@ -35,31 +35,20 @@ class GatewayAuthenticator:
     def __init__(self) -> None:
         self.mode = os.getenv("GATEWAY_AUTH_MODE", "legacy").strip().lower()
         if self.mode not in {"legacy", "hybrid", "oidc"}:
-            raise RuntimeError(
-                "GATEWAY_AUTH_MODE must be one of: legacy, hybrid, oidc"
-            )
+            raise RuntimeError("GATEWAY_AUTH_MODE must be one of: legacy, hybrid, oidc")
         self.legacy_token = os.getenv("GATEWAY_API_TOKEN", "").strip()
         self.legacy_owner = (
-            os.getenv("GATEWAY_LEGACY_OWNER_SUB", "legacy-owner").strip()
-            or "legacy-owner"
+            os.getenv("GATEWAY_LEGACY_OWNER_SUB", "legacy-owner").strip() or "legacy-owner"
         )
-        self.legacy_admin = _boolean_env(
-            "GATEWAY_LEGACY_ADMIN", default=self.mode == "legacy"
-        )
+        self.legacy_admin = _boolean_env("GATEWAY_LEGACY_ADMIN", default=self.mode == "legacy")
         self.issuer = os.getenv("GATEWAY_OIDC_ISSUER", "").strip()
         self.audience = os.getenv("GATEWAY_OIDC_AUDIENCE", "").strip()
-        self.require_audience = _boolean_env(
-            "GATEWAY_OIDC_REQUIRE_AUDIENCE", default=True
-        )
+        self.require_audience = _boolean_env("GATEWAY_OIDC_REQUIRE_AUDIENCE", default=True)
         self.jwks_url = os.getenv("GATEWAY_OIDC_JWKS_URL", "").strip()
         if not self.jwks_url and self.issuer:
-            self.jwks_url = (
-                f"{self.issuer.rstrip('/')}/.well-known/jwks.json"
-            )
+            self.jwks_url = f"{self.issuer.rstrip('/')}/.well-known/jwks.json"
         self.admin_subjects = frozenset(
-            item.strip()
-            for item in os.getenv("GATEWAY_ADMIN_SUBS", "").split(",")
-            if item.strip()
+            item.strip() for item in os.getenv("GATEWAY_ADMIN_SUBS", "").split(",") if item.strip()
         )
         self._jwks_client: jwt.PyJWKClient | None = None
 
@@ -71,14 +60,11 @@ class GatewayAuthenticator:
         return {
             "mode": self.mode,
             "oidc_configured": bool(
-                self.issuer
-                and self.jwks_url
-                and (self.audience or not self.require_audience)
+                self.issuer and self.jwks_url and (self.audience or not self.require_audience)
             ),
             "issuer": self.issuer or None,
             "audience": self.audience or None,
-            "legacy_enabled": self.mode in {"legacy", "hybrid"}
-            and bool(self.legacy_token),
+            "legacy_enabled": self.mode in {"legacy", "hybrid"} and bool(self.legacy_token),
         }
 
     def authenticate(self, authorization: str | None) -> Principal:
@@ -104,9 +90,7 @@ class GatewayAuthenticator:
         if (
             self.mode in {"legacy", "hybrid"}
             and self.legacy_token
-            and hmac.compare_digest(
-                token.encode("utf-8"), self.legacy_token.encode("utf-8")
-            )
+            and hmac.compare_digest(token.encode("utf-8"), self.legacy_token.encode("utf-8"))
         ):
             return Principal(
                 subject=self.legacy_owner,
@@ -178,11 +162,7 @@ class GatewayAuthenticator:
             scopes = frozenset(str(item) for item in raw_scope)
         else:
             scopes = frozenset()
-        display_name = str(
-            claims.get("preferred_username")
-            or claims.get("name")
-            or subject
-        )
+        display_name = str(claims.get("preferred_username") or claims.get("name") or subject)
         return Principal(
             subject=subject,
             display_name=display_name,

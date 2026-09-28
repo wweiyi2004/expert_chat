@@ -121,8 +121,7 @@ class _RainbowRipplePainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final center =
-        origin ?? Offset(size.width * 0.5, size.height * 0.5);
+    final center = origin ?? Offset(size.width * 0.5, size.height * 0.5);
     final maxR =
         math.sqrt(
           math.max(center.dx, size.width - center.dx) *
@@ -161,7 +160,9 @@ class _RainbowRipplePainter extends CustomPainter {
         ..shader = RadialGradient(
           colors: [
             color.withValues(alpha: ringAlpha * 0.28),
-            _spectrumAt((hueT + 0.15) % 1.0).withValues(alpha: ringAlpha * 0.12),
+            _spectrumAt(
+              (hueT + 0.15) % 1.0,
+            ).withValues(alpha: ringAlpha * 0.12),
             color.withValues(alpha: 0),
           ],
           stops: const [0.0, 0.45, 1.0],

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from document_core.runtime import extract_document_text
+
 import asyncio
 import json
 import os
@@ -15,13 +17,9 @@ from threading import Lock
 from typing import Any
 
 import httpx
-from docx import Document
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
-from openpyxl import load_workbook
 from pydantic import BaseModel, Field
-from pptx import Presentation
-from pypdf import PdfReader
 from starlette.middleware.cors import CORSMiddleware
 
 from doc_edit.app.main import (
@@ -36,7 +34,7 @@ from doc_edit.app.main import (
 )
 
 from .auth import GatewayAuthenticator, Principal
-from .document_mcp import (
+from document_core.mcp_protocol import (
     DocumentMcpBackend,
     McpIdentity,
     StoredDocument,
@@ -68,9 +66,7 @@ TASK_RETENTION_DAYS = max(0, int(os.getenv("GATEWAY_TASK_RETENTION_DAYS", "30"))
 CLEANUP_INTERVAL_SECONDS = max(
     60, int(os.getenv("GATEWAY_CLEANUP_INTERVAL_SECONDS", str(6 * 60 * 60)))
 )
-DEFAULT_CONCURRENT_TASKS = max(
-    1, int(os.getenv("GATEWAY_DEFAULT_CONCURRENT_TASKS", "2"))
-)
+DEFAULT_CONCURRENT_TASKS = max(1, int(os.getenv("GATEWAY_DEFAULT_CONCURRENT_TASKS", "2")))
 DEFAULT_STORAGE_BYTES = max(
     MAX_FILE_BYTES,
     int(os.getenv("GATEWAY_DEFAULT_STORAGE_MB", "512")) * 1024 * 1024,
@@ -95,6 +91,7 @@ MCP_RESOURCE_MAX_CHARS = max(
 def _csv_env(name: str) -> list[str]:
     return [item.strip() for item in os.getenv(name, "").split(",") if item.strip()]
 
+
 PERMISSION_LABELS = {
     "gateway.use": "使用 Gateway",
     "files.write": "上传和删除文件",
@@ -106,9 +103,7 @@ PERMISSION_LABELS = {
 }
 DEFAULT_PERMISSIONS = frozenset(
     item.strip()
-    for item in os.getenv(
-        "GATEWAY_DEFAULT_PERMISSIONS", ",".join(PERMISSION_LABELS)
-    ).split(",")
+    for item in os.getenv("GATEWAY_DEFAULT_PERMISSIONS", ",".join(PERMISSION_LABELS)).split(",")
     if item.strip() in PERMISSION_LABELS
 )
 CAPABILITY_PERMISSIONS = {
@@ -150,8 +145,7 @@ MODULES = GatewayModuleRegistry(
                     id="document_convert",
                     metadata={
                         "conversions": {
-                            key: sorted(value)
-                            for key, value in DOCUMENT_CONVERSIONS.items()
+                            key: sorted(value) for key, value in DOCUMENT_CONVERSIONS.items()
                         },
                     },
                 ),
@@ -290,27 +284,21 @@ def _init_db() -> None:
             );
             """
         )
-        task_columns = {
-            row["name"] for row in db.execute("PRAGMA table_info(tasks)").fetchall()
-        }
+        task_columns = {row["name"] for row in db.execute("PRAGMA table_info(tasks)").fetchall()}
         if "client_request_id" not in task_columns:
             db.execute("ALTER TABLE tasks ADD COLUMN client_request_id TEXT")
         if "owner_sub" not in task_columns:
             db.execute(
-                "ALTER TABLE tasks ADD COLUMN owner_sub TEXT NOT NULL "
-                "DEFAULT 'legacy-owner'"
+                "ALTER TABLE tasks ADD COLUMN owner_sub TEXT NOT NULL DEFAULT 'legacy-owner'"
             )
             db.execute(
                 "UPDATE tasks SET owner_sub = ? WHERE owner_sub = 'legacy-owner'",
                 (AUTH.legacy_owner,),
             )
-        file_columns = {
-            row["name"] for row in db.execute("PRAGMA table_info(files)").fetchall()
-        }
+        file_columns = {row["name"] for row in db.execute("PRAGMA table_info(files)").fetchall()}
         if "owner_sub" not in file_columns:
             db.execute(
-                "ALTER TABLE files ADD COLUMN owner_sub TEXT NOT NULL "
-                "DEFAULT 'legacy-owner'"
+                "ALTER TABLE files ADD COLUMN owner_sub TEXT NOT NULL DEFAULT 'legacy-owner'"
             )
             db.execute(
                 "UPDATE files SET owner_sub = ? WHERE owner_sub = 'legacy-owner'",
@@ -323,20 +311,16 @@ def _init_db() -> None:
             "WHERE client_request_id IS NOT NULL"
         )
         db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_tasks_status_updated_at "
-            "ON tasks(status, updated_at)"
+            "CREATE INDEX IF NOT EXISTS idx_tasks_status_updated_at ON tasks(status, updated_at)"
         )
         db.execute(
             "CREATE INDEX IF NOT EXISTS idx_tasks_owner_status_updated "
             "ON tasks(owner_sub, status, updated_at)"
         )
         db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_files_owner_created "
-            "ON files(owner_sub, created_at)"
+            "CREATE INDEX IF NOT EXISTS idx_files_owner_created ON files(owner_sub, created_at)"
         )
-        db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at)"
-        )
+        db.execute("CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at)")
 
 
 def _cleanup_expired_tasks(*, now: datetime | None = None) -> int:
@@ -526,11 +510,7 @@ def _document_auth(
     request: Request,
     principal: Principal = Depends(_principal),
 ) -> Principal:
-    permission = (
-        "documents.convert"
-        if request.url.path.endswith("/convert")
-        else "documents.edit"
-    )
+    permission = "documents.convert" if request.url.path.endswith("/convert") else "documents.edit"
     _authorize(principal, permission, group="upload")
     return principal
 
@@ -622,53 +602,12 @@ def _set_progress(task_id: str, progress: float, detail: str) -> None:
 
 def _cancel_requested(task_id: str) -> bool:
     with _db() as db:
-        row = db.execute(
-            "SELECT cancel_requested FROM tasks WHERE id = ?", (task_id,)
-        ).fetchone()
+        row = db.execute("SELECT cancel_requested FROM tasks WHERE id = ?", (task_id,)).fetchone()
     return row is None or bool(row["cancel_requested"])
 
 
-def _read_text_file(path: Path) -> str:
-    raw = path.read_bytes()
-    for encoding in ("utf-8-sig", "utf-8", "gb18030", "latin-1"):
-        try:
-            return raw.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-    return raw.decode("utf-8", errors="replace")
-
-
 def _extract_text(path: Path, original_name: str) -> str:
-    suffix = Path(original_name).suffix.lower()
-    if suffix == ".pdf":
-        return "\n\n".join(page.extract_text() or "" for page in PdfReader(path).pages)
-    if suffix == ".docx":
-        document = Document(path)
-        blocks = [paragraph.text for paragraph in document.paragraphs]
-        for table in document.tables:
-            blocks.extend("\t".join(cell.text for cell in row.cells) for row in table.rows)
-        return "\n".join(blocks)
-    if suffix == ".xlsx":
-        workbook = load_workbook(path, read_only=True, data_only=True)
-        blocks: list[str] = []
-        try:
-            for sheet in workbook.worksheets:
-                blocks.append(f"## Sheet: {sheet.title}")
-                for row in sheet.iter_rows(values_only=True):
-                    blocks.append("\t".join("" if value is None else str(value) for value in row))
-        finally:
-            workbook.close()
-        return "\n".join(blocks)
-    if suffix == ".pptx":
-        deck = Presentation(path)
-        blocks = []
-        for index, slide in enumerate(deck.slides, start=1):
-            blocks.append(f"## Slide {index}")
-            for shape in slide.shapes:
-                if hasattr(shape, "text") and shape.text:
-                    blocks.append(shape.text)
-        return "\n".join(blocks)
-    return _read_text_file(path)
+    return extract_document_text(path, original_name)
 
 
 def _chunks(text: str, size: int = CHUNK_CHARS) -> list[str]:
@@ -720,9 +659,7 @@ async def _completion(model: str, messages: list[dict[str, str]]) -> str:
         raise RuntimeError("上游模型没有返回可识别的文本。") from error
 
 
-async def _stream_completion(
-    task_id: str, model: str, messages: list[dict[str, str]]
-) -> str:
+async def _stream_completion(task_id: str, model: str, messages: list[dict[str, str]]) -> str:
     output = ""
     pending = ""
     last_flush = time.monotonic()
@@ -844,9 +781,7 @@ async def _process_task(task_id: str) -> None:
             documents: list[tuple[str, str]] = []
             with _db() as db:
                 for file_id in file_ids:
-                    file_row = db.execute(
-                        "SELECT * FROM files WHERE id = ?", (file_id,)
-                    ).fetchone()
+                    file_row = db.execute("SELECT * FROM files WHERE id = ?", (file_id,)).fetchone()
                     if file_row is None:
                         raise RuntimeError(f"文件 {file_id} 不存在或已被删除。")
                     text = await asyncio.to_thread(
@@ -890,9 +825,7 @@ async def _process_task(task_id: str) -> None:
                 summaries.append(f"### {name} / 片段 {index + 1}\n{summary}")
 
             _set_progress(task_id, 0.75, "已完成全文阅读，正在组织回答")
-            reduced_material = await _reduce_material(
-                task_id, model, prompt, summaries
-            )
+            reduced_material = await _reduce_material(task_id, model, prompt, summaries)
             instructions = row["instructions"].strip()
             final_messages: list[dict[str, str]] = [
                 {
@@ -971,9 +904,7 @@ def _mcp_resolve_token(token: str) -> McpIdentity | None:
     if not bool(entitlement["enabled"]):
         return None
     permissions = (
-        frozenset(PERMISSION_LABELS)
-        if bool(entitlement["is_admin"])
-        else _permissions(entitlement)
+        frozenset(PERMISSION_LABELS) if bool(entitlement["is_admin"]) else _permissions(entitlement)
     )
     return McpIdentity(
         subject=principal.subject,
@@ -1065,10 +996,7 @@ def _mcp_read_document_text(owner_sub: str, file_id: str) -> str:
     text = _mcp_extract_document_text(row)
     if len(text) <= MCP_RESOURCE_MAX_CHARS:
         return text
-    return (
-        text[:MCP_RESOURCE_MAX_CHARS]
-        + f"\n\n…（资源内容已截断；原文共 {len(text)} 字符）"
-    )
+    return text[:MCP_RESOURCE_MAX_CHARS] + f"\n\n…（资源内容已截断；原文共 {len(text)} 字符）"
 
 
 def _mcp_read_document_binary(owner_sub: str, file_id: str) -> bytes:
@@ -1100,8 +1028,7 @@ def _mcp_store_output(
             if entitlement is None or not bool(entitlement["enabled"]):
                 raise RuntimeError("Gateway 账户不存在或已停用。")
             used = db.execute(
-                "SELECT COALESCE(SUM(size_bytes), 0) AS total "
-                "FROM files WHERE owner_sub = ?",
+                "SELECT COALESCE(SUM(size_bytes), 0) AS total FROM files WHERE owner_sub = ?",
                 (owner_sub,),
             ).fetchone()["total"]
             if used + size > entitlement["storage_quota_bytes"]:
@@ -1361,10 +1288,7 @@ def capabilities(principal: Principal = Depends(_require("gateway.use"))) -> dic
     visible = {
         capability_id: metadata
         for capability_id, metadata in manifest.items()
-        if is_admin
-        or CAPABILITY_PERMISSIONS.get(capability_id, frozenset()).issubset(
-            permissions
-        )
+        if is_admin or CAPABILITY_PERMISSIONS.get(capability_id, frozenset()).issubset(permissions)
     }
     return {
         "protocol_version": 1,
@@ -1435,9 +1359,7 @@ async def upload_file(
                 (principal.subject,),
             ).fetchone()["total"]
             if used + size > entitlement["storage_quota_bytes"]:
-                raise HTTPException(
-                    status_code=413, detail="账户文件存储配额不足。"
-                )
+                raise HTTPException(status_code=413, detail="账户文件存储配额不足。")
             db.execute(
                 "INSERT INTO files(id, owner_sub, name, mime_type, size_bytes, path, created_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -1464,9 +1386,7 @@ async def upload_file(
     return {"id": file_id, "name": file.filename, "size_bytes": size}
 
 
-@app.delete(
-    "/files/{file_id}", include_in_schema=False
-)
+@app.delete("/files/{file_id}", include_in_schema=False)
 @app.delete("/v1/files/{file_id}")
 def delete_file(
     file_id: str,
@@ -1572,9 +1492,7 @@ async def create_task(
     return _task_json(_task_row(task_id, principal.subject))
 
 
-@app.get(
-    "/tasks/{task_id}", include_in_schema=False
-)
+@app.get("/tasks/{task_id}", include_in_schema=False)
 @app.get("/v1/tasks/{task_id}")
 def get_task(
     task_id: str,
@@ -1664,12 +1582,10 @@ def admin_overview(
 ) -> dict[str, Any]:
     del principal
     with _db() as db:
-        users = db.execute("SELECT COUNT(*) AS total FROM user_entitlements").fetchone()[
+        users = db.execute("SELECT COUNT(*) AS total FROM user_entitlements").fetchone()["total"]
+        storage = db.execute("SELECT COALESCE(SUM(size_bytes), 0) AS total FROM files").fetchone()[
             "total"
         ]
-        storage = db.execute(
-            "SELECT COALESCE(SUM(size_bytes), 0) AS total FROM files"
-        ).fetchone()["total"]
         statuses = {
             row["status"]: row["total"]
             for row in db.execute(
@@ -1706,9 +1622,7 @@ def admin_users(
     _: Principal = Depends(_require_admin),
 ) -> dict[str, Any]:
     with _db() as db:
-        total = db.execute("SELECT COUNT(*) AS total FROM user_entitlements").fetchone()[
-            "total"
-        ]
+        total = db.execute("SELECT COUNT(*) AS total FROM user_entitlements").fetchone()["total"]
         rows = db.execute(
             """
             SELECT u.*,
@@ -1748,9 +1662,7 @@ def update_admin_user(
     if request.permissions is not None:
         unknown = sorted(set(request.permissions) - set(PERMISSION_LABELS))
         if unknown:
-            raise HTTPException(
-                status_code=400, detail=f"未知权限：{', '.join(unknown)}"
-            )
+            raise HTTPException(status_code=400, detail=f"未知权限：{', '.join(unknown)}")
         updates["permissions_json"] = json.dumps(sorted(set(request.permissions)))
     if request.max_concurrent_tasks is not None:
         updates["max_concurrent_tasks"] = request.max_concurrent_tasks

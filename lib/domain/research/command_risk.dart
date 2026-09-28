@@ -114,7 +114,9 @@ class CommandRiskClassifier {
     }
     if (RegExp(r'curl[^\n|]*\|\s*(ba)?sh').hasMatch(lower) ||
         RegExp(r'wget[^\n|]*\|\s*(ba)?sh').hasMatch(lower) ||
-        RegExp(r'\b(curl|wget)\b[^\n|]*\|\s*(python3?|perl)\b').hasMatch(lower) ||
+        RegExp(
+          r'\b(curl|wget)\b[^\n|]*\|\s*(python3?|perl)\b',
+        ).hasMatch(lower) ||
         RegExp(
           r'\b(curl|wget)\b[^\n|]*\|\s*(base64|xxd|openssl)[^\n|]*\|\s*(ba)?sh\b',
         ).hasMatch(lower)) {

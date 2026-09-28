@@ -13,20 +13,18 @@ void main() {
 
   setUp(() {
     root = Directory.systemTemp.createTempSync('update_downloader_test');
-    TestDefaultBinaryMessengerBinding
-        .instance.defaultBinaryMessenger
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(pathProvider, (call) async {
-      if (call.method == 'getDownloadsDirectory') return null;
-      if (call.method == 'getTemporaryDirectory') {
-        return '${root.path}${Platform.pathSeparator}tmp';
-      }
-      return null;
-    });
+          if (call.method == 'getDownloadsDirectory') return null;
+          if (call.method == 'getTemporaryDirectory') {
+            return '${root.path}${Platform.pathSeparator}tmp';
+          }
+          return null;
+        });
   });
 
   tearDown(() {
-    TestDefaultBinaryMessengerBinding
-        .instance.defaultBinaryMessenger
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(pathProvider, null);
     try {
       root.deleteSync(recursive: true);

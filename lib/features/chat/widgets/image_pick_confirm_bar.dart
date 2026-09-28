@@ -32,8 +32,7 @@ class ImagePickConfirmBar extends StatelessWidget {
   final VoidCallback onCancel;
   final VoidCallback onConfirm;
 
-  int get _selectedCount =>
-      candidates.where((c) => c.selected).length;
+  int get _selectedCount => candidates.where((c) => c.selected).length;
 
   @override
   Widget build(BuildContext context) {
@@ -54,7 +53,11 @@ class ImagePickConfirmBar extends StatelessWidget {
             children: [
               Row(
                 children: [
-                  Icon(Icons.photo_library_outlined, size: 18, color: scheme.primary),
+                  Icon(
+                    Icons.photo_library_outlined,
+                    size: 18,
+                    color: scheme.primary,
+                  ),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
@@ -62,8 +65,8 @@ class ImagePickConfirmBar extends StatelessWidget {
                           ? '选择要添加的图片（最多 1 张）'
                           : '勾选要添加的图片（已选 $selected / 最多 $maxSelectable）',
                       style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                            fontWeight: FontWeight.w600,
-                          ),
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ),
                 ],
@@ -187,7 +190,9 @@ class _PickThumb extends StatelessWidget {
                   child: Icon(
                     selected ? Icons.check_rounded : Icons.circle_outlined,
                     size: 16,
-                    color: selected ? scheme.onPrimary : scheme.onSurfaceVariant,
+                    color: selected
+                        ? scheme.onPrimary
+                        : scheme.onSurfaceVariant,
                   ),
                 ),
               ),
@@ -198,7 +203,10 @@ class _PickThumb extends StatelessWidget {
                   bottom: 0,
                   child: Container(
                     color: scheme.errorContainer.withValues(alpha: 0.92),
-                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 4,
+                      vertical: 2,
+                    ),
                     child: Text(
                       '无效',
                       textAlign: TextAlign.center,
@@ -217,9 +225,9 @@ class _PickThumb extends StatelessWidget {
   }
 
   Widget _fallback(ColorScheme scheme) => ColoredBox(
-        color: scheme.surfaceContainerHighest,
-        child: Icon(Icons.broken_image_outlined, color: scheme.onSurfaceVariant),
-      );
+    color: scheme.surfaceContainerHighest,
+    child: Icon(Icons.broken_image_outlined, color: scheme.onSurfaceVariant),
+  );
 
   static Uint8List? _decodeThumb(String? b64) {
     if (b64 == null || b64.isEmpty) return null;

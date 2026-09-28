@@ -345,7 +345,9 @@ void main() {
                   statusCode: 200,
                   data: {
                     'data': [
-                      {'b64_json': base64Encode(const [9, 9])},
+                      {
+                        'b64_json': base64Encode(const [9, 9]),
+                      },
                     ],
                   },
                 ),
@@ -386,7 +388,9 @@ void main() {
                   statusCode: 200,
                   data: {
                     'data': [
-                      {'b64_json': base64Encode(const [1])},
+                      {
+                        'b64_json': base64Encode(const [1]),
+                      },
                     ],
                   },
                 ),

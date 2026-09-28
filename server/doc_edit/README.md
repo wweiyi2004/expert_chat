@@ -1,21 +1,22 @@
-# Document capability module
+**旧文档 REST 适配层**
 
-这里提供文档编辑与格式转换的纯文件处理核心。当前正式部署运行独立 [`server/mcp_server`](../mcp_server)，由 MCP Tools 调用本模块；Gateway REST 入口仅保留兼容。
+纯文件处理、解析预算和隔离进程现在位于 [`document_core`](../document_core)。主部署入口为 [`mcp_server`](../mcp_server)，此模块保留 REST 兼容和 Gateway 挂载。
 
-模块仍可独立启动，主要用于兼容旧部署和开发调试：
+使用 Python 3.12 和共同锁文件，从 `server` 目录启动：
 
 ```powershell
-cd server/doc_edit
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+cd server
+uv sync --frozen
 $env:GATEWAY_API_TOKEN = 'change-me'
-uvicorn app.main:app --host 0.0.0.0 --port 8787
+uv run --frozen uvicorn doc_edit.app.main:app --host 127.0.0.1 --port 8787
 ```
 
-正式 Gateway 会直接挂载本模块导出的 `APIRouter`：
+保留 `POST /v1/documents/edit` 和 `POST /v1/documents/convert`。协议见 [文档协议](../../docs/document-edit-contract.md)。
 
-- `POST /v1/documents/edit`
-- `POST /v1/documents/convert`
+独立容器必须使用 `server` 作为构建上下文，以包含共享处理模块：
 
-协议见 [`docs/document-edit-contract.md`](../../docs/document-edit-contract.md)，模块扩展规范见 [`docs/gateway-architecture.md`](../../docs/gateway-architecture.md)。
+```sh
+docker build -f doc_edit/Dockerfile -t expert-chat-doc-edit:local .
+```
+
+资源预算、依赖更新及运行数据备份见 [维护制度](../../docs/MAINTENANCE.md)。

@@ -2,74 +2,56 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:file_picker/file_picker.dart';
 import 'package:dio/dio.dart' show CancelToken;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:photo_manager/photo_manager.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../../core/mode_style.dart';
 import '../../core/providers.dart';
 import '../../core/workspace_layout.dart';
-import '../../data/conversation_repository.dart';
-import '../../data/library_models.dart';
 import '../../data/models.dart';
 import '../../data/story_models.dart';
 import '../../data/ui_prefs.dart';
 import '../../domain/clipboard/clipboard_media.dart';
 import '../../domain/chat/conversation_outline.dart';
-import '../../domain/context/context_window_manager.dart';
 import '../../domain/export/conversation_export.dart';
-import '../../domain/media/image_codec_util.dart';
 import '../../domain/memory/memory_candidate_service.dart';
 import '../../domain/memory/memory_entry.dart';
 import '../../domain/memory/memory_safety.dart';
-import '../../domain/speech/mimo_speech_input_service.dart';
-import '../../domain/speech/speech_input_service.dart';
 import '../../domain/speech/text_to_speech_service.dart';
 import '../../domain/story/story_length_budget.dart';
 import '../../domain/llm/llm_provider.dart';
-import '../../domain/tools/file_parser.dart';
-import '../../domain/tools/local_file_reader.dart';
+import '../../domain/tools/attachment_ingestor.dart';
 import '../../state/character_controller.dart';
 import '../../state/chat_controller.dart';
 import '../../state/memory_controller.dart';
 import '../../state/settings_controller.dart';
 import '../shell/shell_tab.dart';
+import '../settings/model_setup_page.dart';
+import '../shared/recovery_notice.dart';
+import '../../domain/errors/app_failure.dart';
 import '../memory/memory_candidate_review_sheet.dart';
 import '../story/director_story_setup_page.dart';
 import '../story/ensemble_setup_page.dart';
 import '../story/story_panel.dart';
 import '../study/study_session_actions.dart';
 import 'jump_to_message.dart';
-import 'widgets/attachment_chip.dart';
+import 'chat_workspace_sidebar.dart';
+
+import 'controllers/chat_speech_controller.dart';
+import 'widgets/chat_composer.dart';
+import 'widgets/context_usage_chip.dart';
+import 'widgets/chat_work_mode_switch.dart';
 import 'widgets/conversation_outline_panel.dart';
 import 'widgets/image_pick_confirm_bar.dart';
-import 'widgets/library_picker_sheet.dart';
+import 'widgets/attachment_picker.dart';
 import 'widgets/message_bubble.dart';
-import 'widgets/recent_photo_sheet.dart';
 
-class _FileIngestSource {
-  const _FileIngestSource({
-    required this.name,
-    this.extension,
-    this.path,
-    this.bytes,
-    this.reportedSize,
-    this.stream,
-  });
-
-  final String name;
-  final String? extension;
-  final String? path;
-  final Uint8List? bytes;
-  final int? reportedSize;
-  final Stream<List<int>>? stream;
-}
+export 'chat_workspace_sidebar.dart' show ChatWorkspaceSidebar;
 
 /// Page-chrome fields that stay stable while an assistant reply streams.
 /// Message content is subscribed separately by [_ChatPageState._buildMessageList].
@@ -273,12 +255,11 @@ class _ChatPageState extends ConsumerState<ChatPage>
   final _input = TextEditingController();
   final _scroll = ScrollController();
   final List<Attachment> _attachments = [];
-  late final SpeechInputService _systemSpeechInput;
-  MimoSpeechInputService? _mimoSpeechInput;
-  bool _usingMimoAsr = false;
-  late final TextToSpeechService _textToSpeech;
-  late TextToSpeechPlayback _ttsPlayback;
+  late final ChatSpeechController _speech;
   bool _picking = false;
+  int _composerEpoch = 0;
+
+  bool _isComposerCurrent(int epoch) => mounted && epoch == _composerEpoch;
   bool _imageMode = false;
   bool _longTaskMode = false;
 
@@ -286,14 +267,6 @@ class _ChatPageState extends ConsumerState<ChatPage>
   List<PendingImagePick>? _pendingImagePicks;
   bool _pendingImageForGen = false;
   int _pendingImageMaxSlots = 1;
-  bool _speechBusy = false;
-  bool _speechListening = false;
-  bool _speechReceivedText = false;
-  bool _speechFailureReported = false;
-  int _speechSession = 0;
-  String _speechBefore = '';
-  String _speechAfter = '';
-  int _shownTtsErrorRequest = -1;
   bool _extractingMemoryCandidates = false;
   CancelToken? _memoryCandidateCancelToken;
 
@@ -312,9 +285,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
   // Keep an accidental multi-select from consuming the device's memory,
   // context window, or API request budget. The parser additionally enforces
   // format-specific limits before it extracts content.
-  static const int _maxAttachments = 8;
-  static const int _maxAttachmentBytes = 10 * 1024 * 1024;
-  static const int _maxTotalAttachmentBytes = 48 * 1024 * 1024;
+  static const int _maxAttachments = AttachmentIngestor.maxAttachments;
 
   int get _imageRefCap =>
       ref
@@ -359,10 +330,22 @@ class _ChatPageState extends ConsumerState<ChatPage>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _systemSpeechInput = ref.read(speechInputServiceProvider);
-    _textToSpeech = ref.read(textToSpeechServiceProvider);
-    _ttsPlayback = _textToSpeech.playback.value;
-    _textToSpeech.playback.addListener(_handleTextToSpeechPlayback);
+    _speech = ChatSpeechController(
+      input: _input,
+      systemSpeechInput: ref.read(speechInputServiceProvider),
+      textToSpeech: ref.read(textToSpeechServiceProvider),
+      getMimoService: () => ref.read(mimoSpeechInputServiceProvider),
+      getCloudConfig: () {
+        final settings = ref.read(settingsControllerProvider).value;
+        return settings != null && settings.asrConfigured
+            ? CloudSpeechConfig(
+                config: settings.asrApi,
+                apiKey: settings.asrApiKey,
+              )
+            : null;
+      },
+      onNotice: _showSpeechNotice,
+    )..addListener(_onSpeechChanged);
     _scroll.addListener(_onScroll);
   }
 
@@ -468,14 +451,8 @@ class _ChatPageState extends ConsumerState<ChatPage>
   void dispose() {
     _memoryCandidateCancelToken?.cancel('ChatPage disposed');
     WidgetsBinding.instance.removeObserver(this);
-    _speechSession++;
-    _systemSpeechInput.detach();
-    unawaited(_systemSpeechInput.cancel());
-    _mimoSpeechInput?.detach();
-    final mimoSpeechInput = _mimoSpeechInput;
-    if (mimoSpeechInput != null) unawaited(mimoSpeechInput.cancel());
-    _textToSpeech.playback.removeListener(_handleTextToSpeechPlayback);
-    unawaited(_textToSpeech.stop());
+    _speech.removeListener(_onSpeechChanged);
+    _speech.dispose();
     _scroll.removeListener(_onScroll);
     _input.dispose();
     _scroll.dispose();
@@ -483,20 +460,8 @@ class _ChatPageState extends ConsumerState<ChatPage>
   }
 
   @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    // Permission sheets temporarily make Android/iOS inactive. Keep the
-    // first-tap initialization alive; a real background transition will
-    // continue to paused/hidden and be cancelled below.
-    if (state == AppLifecycleState.inactive &&
-        _speechBusy &&
-        !_speechListening) {
-      return;
-    }
-    if (state != AppLifecycleState.resumed) {
-      unawaited(_cancelSpeech());
-      unawaited(_textToSpeech.stop());
-    }
-  }
+  void didChangeAppLifecycleState(AppLifecycleState state) =>
+      _speech.handleLifecycle(state);
 
   /// Re-evaluate stick-to-bottom whenever the user scrolls. Programmatic
   /// auto-scrolls also fire this, which simply keeps [_stick] true at the bottom.
@@ -587,18 +552,9 @@ class _ChatPageState extends ConsumerState<ChatPage>
   Future<void> _toggleTextToSpeech(
     ChatMessage message,
     SettingsState? settings,
-  ) async {
-    if (_ttsPlayback.isFor(message.id) && _ttsPlayback.isActive) {
-      await _textToSpeech.stop();
-      return;
-    }
-
-    // Never let speaker output feed back into the microphone recognizer.
-    if (_speechListening || _speechBusy) await _cancelSpeech();
-    if (!mounted) return;
-
+  ) {
     final ui = settings?.ui ?? const UiPrefs();
-    await _textToSpeech.speak(
+    return _speech.togglePlayback(
       TextToSpeechRequest(
         messageId: message.id,
         text: message.content,
@@ -610,260 +566,8 @@ class _ChatPageState extends ConsumerState<ChatPage>
     );
   }
 
-  void _handleTextToSpeechPlayback() {
-    if (!mounted) return;
-    final next = _textToSpeech.playback.value;
-    final error = next.errorMessage;
-    final showError = error != null && _shownTtsErrorRequest != next.requestId;
-    if (showError) _shownTtsErrorRequest = next.requestId;
-
-    setState(() => _ttsPlayback = next);
-    if (!showError) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _showSpeechNotice(error);
-    });
-  }
-
-  Future<void> _toggleSpeech() async {
-    if (_speechBusy) {
-      // A second tap during MiMo upload is an explicit cancellation request.
-      if (_usingMimoAsr) await _cancelSpeech();
-      return;
-    }
-    if (_speechListening) {
-      if (_usingMimoAsr) {
-        await _finishMimoSpeech();
-      } else {
-        await _cancelSpeech();
-      }
-      return;
-    }
-
-    await _textToSpeech.stop();
-    if (!mounted) return;
-
-    final settings = ref.read(settingsControllerProvider).value;
-    final useMimoAsr = settings?.asrConfigured ?? false;
-    final session = ++_speechSession;
-    _speechFailureReported = false;
-    _usingMimoAsr = useMimoAsr;
-    setState(() => _speechBusy = true);
-    final availability = useMimoAsr
-        ? await _mimoService.initialize(
-            onStatus: (status) => _handleSpeechStatus(session, status),
-            onError: (failure) => _handleSpeechError(session, failure),
-          )
-        : await _systemSpeechInput.initialize(
-            onStatus: (status) => _handleSpeechStatus(session, status),
-            onError: (failure) => _handleSpeechError(session, failure),
-          );
-    if (!mounted || session != _speechSession) return;
-
-    if (availability != SpeechInputAvailability.ready) {
-      setState(() => _speechBusy = false);
-      _showSpeechNotice(
-        availability == SpeechInputAvailability.permissionDenied
-            ? '未获得麦克风或语音识别权限，请在系统设置中允许后重试。'
-            : useMimoAsr
-            ? '当前设备无法录制音频，请检查麦克风是否可用。'
-            : '当前设备没有可用的系统语音识别服务。',
-      );
-      return;
-    }
-
-    final text = _input.text;
-    final selection = _input.selection;
-    final selectionValid =
-        selection.isValid &&
-        selection.start >= 0 &&
-        selection.end <= text.length;
-    final start = selectionValid ? selection.start : text.length;
-    final end = selectionValid ? selection.end : text.length;
-    _speechBefore = text.substring(0, start);
-    _speechAfter = text.substring(end);
-    _speechReceivedText = false;
-
-    final started = useMimoAsr
-        ? await _mimoService.start(
-            config: settings!.asrApi,
-            apiKey: settings.asrApiKey,
-            onResult: (result) => _handleSpeechResult(session, result),
-          )
-        : await _systemSpeechInput.start(
-            onResult: (result) => _handleSpeechResult(session, result),
-          );
-    if (!mounted || session != _speechSession) {
-      if (started) unawaited(_cancelSpeechInput(useMimoAsr));
-      return;
-    }
-    setState(() {
-      _speechBusy = false;
-      _speechListening = started;
-    });
-    if (!started) {
-      // Ensure no orphan microphone session if status never flipped active.
-      unawaited(_cancelSpeechInput(useMimoAsr));
-      if (!_speechFailureReported) {
-        _showSpeechNotice(
-          useMimoAsr
-              ? '未能启动录音，请检查麦克风权限后重试。'
-              : defaultTargetPlatform == TargetPlatform.windows
-              ? '未能启动语音识别。请检查麦克风权限，并在系统设置中安装中文语音包。'
-              : '未能启动系统语音识别，请稍后再试。',
-        );
-      }
-    } else if (useMimoAsr && mounted) {
-      // Cloud ASR has no partials; make the second-tap finish step obvious.
-      _showSpeechNotice('已开始录音。说完后再次点击麦克风即可识别。');
-    }
-  }
-
-  MimoSpeechInputService get _mimoService {
-    final existing = _mimoSpeechInput;
-    if (existing != null) return existing;
-    final created = ref.read(mimoSpeechInputServiceProvider);
-    _mimoSpeechInput = created;
-    return created;
-  }
-
-  Future<void> _finishMimoSpeech() async {
-    if (!_speechListening || !_usingMimoAsr) return;
-    final settings = ref.read(settingsControllerProvider).value;
-    if (settings == null || !settings.asrConfigured) {
-      await _cancelSpeech();
-      _showSpeechNotice('MiMo 云端语音识别配置已变更，请重新开始录音。');
-      return;
-    }
-    final session = _speechSession;
-    setState(() {
-      _speechListening = false;
-      _speechBusy = true;
-    });
-    await _mimoService.finish(
-      config: settings.asrApi,
-      apiKey: settings.asrApiKey,
-    );
-    if (!mounted || session != _speechSession) return;
-    // The service normally sends a final result or a stopped status. This
-    // fallback prevents a broken recorder implementation from leaving the
-    // composer in a perpetual loading state.
-    if (_speechBusy) setState(() => _speechBusy = false);
-  }
-
-  void _handleSpeechResult(int session, SpeechInputResult result) {
-    if (!mounted || session != _speechSession) return;
-    final spoken = result.text.trim();
-    if (spoken.isNotEmpty) {
-      _speechReceivedText = true;
-      if (_usingMimoAsr) {
-        // The composer stays editable while the MiMo upload is in flight, so
-        // the snapshot taken at recording start may be stale. Insert at the
-        // live cursor position instead of rebuilding from the old snapshot,
-        // which would discard anything typed during the upload.
-        final current = _input.value;
-        final text = current.text;
-        final selection = current.selection;
-        final valid =
-            selection.isValid &&
-            selection.start >= 0 &&
-            selection.end <= text.length;
-        final start = valid ? selection.start : text.length;
-        final end = valid ? selection.end : start;
-        final before = text.substring(0, start);
-        final after = text.substring(end);
-        _input.value = TextEditingValue(
-          text: mergeSpeechIntoDraft(
-            before: before,
-            transcript: spoken,
-            after: after,
-          ),
-          selection: TextSelection.collapsed(
-            offset: mergeSpeechIntoDraft(
-              before: before,
-              transcript: spoken,
-              after: '',
-            ).length,
-          ),
-        );
-      } else {
-        final merged = mergeSpeechIntoDraft(
-          before: _speechBefore,
-          transcript: spoken,
-          after: _speechAfter,
-        );
-        _input.value = TextEditingValue(
-          text: merged,
-          selection: TextSelection.collapsed(
-            offset: mergeSpeechIntoDraft(
-              before: _speechBefore,
-              transcript: spoken,
-              after: '',
-            ).length,
-          ),
-        );
-      }
-    }
-    // Cloud ASR emits a single final transcript after upload — that ends the
-    // session. System dictation emits one finalResult per phrase while the
-    // platform session is still open (pauseFor/listenFor); treating those as
-    // session-end hid the listening indicator and left the mic orphaned.
-    if (result.isFinal && _usingMimoAsr && (_speechListening || _speechBusy)) {
-      setState(() {
-        _speechListening = false;
-        _speechBusy = false;
-      });
-    }
-  }
-
-  void _handleSpeechStatus(int session, SpeechInputStatus status) {
-    if (!mounted || session != _speechSession) return;
-    final listening = status == SpeechInputStatus.listening;
-    if (_speechListening == listening && !_speechBusy) return;
-    setState(() {
-      _speechListening = listening;
-      _speechBusy = false;
-    });
-  }
-
-  void _handleSpeechError(int session, SpeechInputFailure failure) {
-    if (!mounted || session != _speechSession) return;
-    _speechFailureReported = true;
-    final code = failure.code.toLowerCase();
-    final wasActive = _speechListening || _speechBusy;
-    final quietTimeout =
-        _speechReceivedText &&
-        (code.contains('no_match') || code.contains('speech_timeout'));
-    if (wasActive) {
-      setState(() {
-        _speechListening = false;
-        _speechBusy = false;
-      });
-    }
-    // Some platforms keep the recognizer alive after a non-permanent error.
-    // Always terminate it here so a hidden microphone cannot outlive the UI.
-    if (wasActive) unawaited(_cancelSpeechInput(_usingMimoAsr));
-    if (!quietTimeout) _showSpeechNotice(failure.userMessage);
-  }
-
-  Future<void> _cancelSpeech() async {
-    final wasActive = _speechListening || _speechBusy;
-    final useMimoAsr = _usingMimoAsr;
-    ++_speechSession;
-    if (mounted && wasActive) {
-      setState(() {
-        _speechListening = false;
-        _speechBusy = false;
-      });
-    }
-    if (wasActive) await _cancelSpeechInput(useMimoAsr);
-  }
-
-  Future<void> _cancelSpeechInput(bool useMimoAsr) async {
-    if (useMimoAsr) {
-      await _mimoSpeechInput?.cancel();
-    } else {
-      await _systemSpeechInput.cancel();
-    }
+  void _onSpeechChanged() {
+    if (mounted) setState(() {});
   }
 
   void _showSpeechNotice(String message) {
@@ -873,8 +577,18 @@ class _ChatPageState extends ConsumerState<ChatPage>
     );
   }
 
+  Future<void> _openModelSetup() async {
+    await showModelSetup(context);
+  }
+
   Future<void> _send({bool forceDocumentEdit = false}) async {
-    if (_speechListening || _speechBusy) await _cancelSpeech();
+    final epoch = _composerEpoch;
+    if (_picking) {
+      _showAttachmentNotice('附件正在准备，请稍候再发送。');
+      return;
+    }
+    if (_speech.listening || _speech.busy) await _speech.cancelSpeech();
+    if (!_isComposerCurrent(epoch)) return;
     if (_pendingImagePicks != null) {
       _showAttachmentNotice('请先确认或取消待添加的图片');
       return;
@@ -913,7 +627,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
       _showAttachmentNotice(
         (settings?.supportsLongTasks ?? false)
             ? '长任务只支持文档附件，请移除图片后再发送。'
-            : '当前 MCP Server 未提供文件长任务；该能力仅在旧 Gateway 部署中可用。',
+            : '当前服务不支持长任务，请关闭“长任务”后再发送。',
       );
       return;
     }
@@ -957,7 +671,10 @@ class _ChatPageState extends ConsumerState<ChatPage>
     // Rejected (e.g. API key 未配置 / 正在生成中) → restore the draft so the
     // user's input isn't lost. Only restore when the field is still empty, so
     // we don't clobber anything the user started typing during the await.
-    if (!accepted && mounted && _input.text.isEmpty) {
+    if (!accepted &&
+        _isComposerCurrent(epoch) &&
+        _input.text.isEmpty &&
+        _attachments.isEmpty) {
       _input.text = text;
       _input.selection = TextSelection.collapsed(offset: text.length);
       setState(() {
@@ -970,36 +687,55 @@ class _ChatPageState extends ConsumerState<ChatPage>
   static bool attachmentsAreDocuments(List<Attachment> attachments) =>
       attachments.isNotEmpty && attachments.every((a) => !a.isImage);
 
-  static const _documentExtensions = [
-    'pdf',
-    'docx',
-    'xlsx',
-    'pptx',
-    'txt',
-    'md',
-    'csv',
-    'tsv',
-    'json',
-  ];
-  static const _imageExtensions = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'];
+  static const _documentExtensions = AttachmentIngestor.documentExtensions;
+  static const _imageExtensions = AttachmentIngestor.imageExtensions;
 
-  Future<void> _pickDocuments() => _pickFiles(imagesOnly: false);
+  Future<void> _pickDocuments() => _openAttachmentPicker();
 
-  Future<void> _pickImages() => _pickFiles(
-    imagesOnly: true,
-    // 生图模式：参考图不依赖视觉 API；普通对话看图需要视觉模型或独立视觉 API。
-    forImageGeneration: _imageMode,
-  );
+  Future<void> _pickImages() =>
+      _openAttachmentPicker(initialTab: AttachmentPickerTab.images);
 
-  Future<void> _openLibraryPicker() async {
-    if (_picking) return;
+  Future<void> _openLibraryPicker() =>
+      _openAttachmentPicker(initialTab: AttachmentPickerTab.library);
+
+  Future<void> _runAttachmentImport(
+    Future<void> Function(int epoch) action,
+  ) async {
+    if (_picking || _pendingImagePicks != null) return;
+    final epoch = _composerEpoch;
+    setState(() => _picking = true);
+    try {
+      await action(epoch);
+    } finally {
+      if (_isComposerCurrent(epoch)) setState(() => _picking = false);
+    }
+  }
+
+  Future<void> _openAttachmentPicker({
+    AttachmentPickerTab initialTab = AttachmentPickerTab.recent,
+  }) => _runAttachmentImport((epoch) async {
+    final settings = ref.read(settingsControllerProvider).value;
     final forImageGeneration = _imageMode;
-    final imagesOnly = _imageMode;
+    final visionOk =
+        settings?.canAttachImages(
+          deepThink: ref.read(chatControllerProvider).value?.deepThink ?? false,
+        ) ??
+        false;
+    if (forImageGeneration && !(settings?.imageGenerationConfigured ?? false)) {
+      _showAttachmentNotice('请先在设置中配置图片生成 API。');
+      return;
+    }
+    if (!forImageGeneration &&
+        !visionOk &&
+        initialTab == AttachmentPickerTab.images) {
+      _showAttachmentNotice('当前模型不支持看图，请选择视觉模型或配置独立视觉 API。');
+      return;
+    }
     final maxSlots = _slotCap(
       forImageGeneration: forImageGeneration,
-      imagesOnly: imagesOnly,
+      imagesOnly: forImageGeneration,
     );
-    final remaining = forImageGeneration && imagesOnly
+    final remaining = forImageGeneration
         ? (maxSlots - _attachments.where((a) => a.isImage).length).clamp(
             0,
             maxSlots,
@@ -1013,23 +749,31 @@ class _ChatPageState extends ConsumerState<ChatPage>
       );
       return;
     }
-    final picked = await showLibraryPicker(
+    final picked = await showAttachmentPicker(
       context,
       repository: ref.read(libraryRepositoryProvider),
       maxCount: remaining,
-      kind: imagesOnly ? LibraryItemKind.image : null,
+      allowImages: forImageGeneration || visionOk,
+      allowDocuments: !forImageGeneration,
+      initialTab: initialTab,
+      isCurrent: () => _isComposerCurrent(epoch),
     );
-    if (!mounted || picked == null || picked.isEmpty) return;
-    if (imagesOnly) {
-      _attachImagesDirectly(
-        picked,
-        forImageGeneration: forImageGeneration,
-        maxSlots: remaining,
-      );
-    } else {
-      setState(() => _attachments.addAll(picked.take(remaining)));
+    if (!_isComposerCurrent(epoch) ||
+        picked == null ||
+        picked.sources.isEmpty) {
+      return;
     }
-  }
+    await _ingestFileSources(
+      picked.sources,
+      epoch: epoch,
+      imagesOnly: picked.sources.every(
+        (s) => _imageExtensions.contains(s.extension),
+      ),
+      forImageGeneration: forImageGeneration,
+      confirmImages: picked.confirmImages,
+      slots: remaining,
+    );
+  });
 
   Future<void> _rememberInLibrary(Iterable<Attachment> attachments) async {
     final repo = ref.read(libraryRepositoryProvider);
@@ -1045,126 +789,12 @@ class _ChatPageState extends ConsumerState<ChatPage>
     }
   }
 
-  Future<void> _pickFiles({
-    required bool imagesOnly,
-    bool forImageGeneration = false,
-  }) async {
-    if (_picking) return;
-    setState(() => _picking = true);
-    try {
-      final settings = ref.read(settingsControllerProvider).value;
-      final visionOk =
-          settings?.canAttachImages(
-            deepThink:
-                ref.read(chatControllerProvider).value?.deepThink ?? false,
-          ) ??
-          false;
-      final imageGenOk = settings?.imageGenerationConfigured ?? false;
-      if (imagesOnly && forImageGeneration) {
-        if (!imageGenOk) {
-          _showAttachmentNotice('请先在设置中配置图片生成 API。');
-          return;
-        }
-      } else if (imagesOnly && !visionOk) {
-        _showAttachmentNotice(
-          '当前模型不支持看图。请选用视觉模型（如 ${KnownModels.vision}），'
-          '或在设置中配置独立视觉 API。',
-        );
-        return;
-      }
-      // 图生图：gpt-image-* 可多参考；其它 edits 网关仍 1 张。
-      final maxSlots = _slotCap(
-        forImageGeneration: forImageGeneration,
-        imagesOnly: imagesOnly,
-      );
-
-      // Mobile: recent album sheet first; desktop / web keep system picker.
-      if (imagesOnly && supportsRecentPhotoSheet && mounted) {
-        final remaining = forImageGeneration
-            ? (maxSlots - _attachments.where((a) => a.isImage).length).clamp(
-                0,
-                maxSlots,
-              )
-            : _maxAttachments - _attachments.length;
-        if (remaining <= 0) {
-          _showAttachmentNotice(
-            forImageGeneration
-                ? (maxSlots <= 1
-                      ? '图生图每次仅支持 1 张参考图，请先移除当前图片。'
-                      : '图生图最多 $maxSlots 张参考图，请先移除部分图片。')
-                : '最多可添加 $_maxAttachments 个附件。',
-          );
-          return;
-        }
-        final album = await showRecentPhotoPicker(context, maxCount: remaining);
-        if (!mounted) return;
-        if (album == null) return;
-        if (!album.fromFiles) {
-          await _ingestAlbumAssets(
-            album.assets,
-            forImageGeneration: forImageGeneration,
-            maxSlots: remaining,
-          );
-          return;
-        }
-        // fromFiles → fall through to FilePicker below.
-      }
-
-      final result = await FilePicker.pickFiles(
-        allowMultiple: !(forImageGeneration && imagesOnly && maxSlots <= 1),
-        withData: false,
-        withReadStream: true,
-        type: FileType.custom,
-        allowedExtensions: imagesOnly
-            ? _imageExtensions
-            : [..._documentExtensions, if (visionOk) ..._imageExtensions],
-      );
-      if (result == null) return;
-
-      final slots = forImageGeneration && imagesOnly
-          ? (maxSlots - _attachments.where((a) => a.isImage).length).clamp(
-              0,
-              maxSlots,
-            )
-          : _maxAttachments - _attachments.length;
-      if (slots <= 0) {
-        _showAttachmentNotice(
-          forImageGeneration && imagesOnly
-              ? (maxSlots <= 1
-                    ? '图生图每次仅支持 1 张参考图，请先移除当前图片。'
-                    : '图生图最多 $maxSlots 张参考图，请先移除部分图片。')
-              : '最多可添加 $_maxAttachments 个附件。',
-        );
-        return;
-      }
-
-      await _ingestFileSources(
-        [
-          for (final f in result.files)
-            _FileIngestSource(
-              name: f.name,
-              extension: f.extension,
-              path: f.path,
-              reportedSize: f.size,
-              stream: f.readStream,
-            ),
-        ],
-        imagesOnly: imagesOnly,
-        forImageGeneration: forImageGeneration,
-        confirmImages: true,
-        slots: slots,
-      );
-    } finally {
-      if (mounted) setState(() => _picking = false);
-    }
-  }
-
-  Future<void> _handleComposerPaste() async {
-    if (_picking || _speechListening) return;
+  Future<void> _handleComposerPaste() => _runAttachmentImport((epoch) async {
+    if (_speech.listening) return;
     final streaming =
         ref.read(chatControllerProvider).value?.isStreaming ?? false;
     if (streaming) {
-      await _pasteTextIntoComposer();
+      await _pasteTextIntoComposer(epoch);
       return;
     }
 
@@ -1172,9 +802,9 @@ class _ChatPageState extends ConsumerState<ChatPage>
     try {
       media = await readClipboardMedia();
     } catch (_) {}
-    if (!mounted) return;
+    if (!_isComposerCurrent(epoch)) return;
     if (!media.hasAttachable) {
-      await _pasteTextIntoComposer();
+      await _pasteTextIntoComposer(epoch);
       return;
     }
 
@@ -1191,9 +821,9 @@ class _ChatPageState extends ConsumerState<ChatPage>
       return;
     }
 
-    final sources = <_FileIngestSource>[
+    final sources = <FileIngestSource>[
       for (final path in media.filePaths)
-        _FileIngestSource(
+        FileIngestSource(
           name: fileNameFromPath(path),
           extension: extensionOfName(fileNameFromPath(path)),
           path: path,
@@ -1202,7 +832,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
     if (sources.isEmpty && media.hasImage) {
       final identity = clipboardImageIdentity(media.imageBytes!);
       sources.add(
-        _FileIngestSource(
+        FileIngestSource(
           name: identity.name,
           extension: identity.extension,
           bytes: media.imageBytes,
@@ -1211,7 +841,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
       );
     }
     if (sources.isEmpty) {
-      await _pasteTextIntoComposer();
+      await _pasteTextIntoComposer(epoch);
       return;
     }
 
@@ -1240,28 +870,23 @@ class _ChatPageState extends ConsumerState<ChatPage>
       return;
     }
 
-    if (_picking) return;
-    setState(() => _picking = true);
-    try {
-      final imagesOnly = usable.every((s) => imageExts.contains(s.extension));
-      await _ingestFileSources(
-        usable,
-        imagesOnly: imagesOnly,
-        forImageGeneration: forImageGeneration,
-        confirmImages: false,
-        extraNotice: skippedUnsupported > 0
-            ? '跳过 $skippedUnsupported 个不支持的文件'
-            : null,
-      );
-    } finally {
-      if (mounted) setState(() => _picking = false);
-    }
-  }
+    final imagesOnly = usable.every((s) => imageExts.contains(s.extension));
+    await _ingestFileSources(
+      usable,
+      epoch: epoch,
+      imagesOnly: imagesOnly,
+      forImageGeneration: forImageGeneration,
+      confirmImages: false,
+      extraNotice: skippedUnsupported > 0
+          ? '跳过 $skippedUnsupported 个不支持的文件'
+          : null,
+    );
+  });
 
-  Future<void> _pasteTextIntoComposer() async {
+  Future<void> _pasteTextIntoComposer(int epoch) async {
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     final text = data?.text;
-    if (text == null || text.isEmpty || !mounted) return;
+    if (text == null || text.isEmpty || !_isComposerCurrent(epoch)) return;
     _insertTextIntoComposer(text);
   }
 
@@ -1281,14 +906,15 @@ class _ChatPageState extends ConsumerState<ChatPage>
   }
 
   Future<void> _ingestFileSources(
-    List<_FileIngestSource> sources, {
+    List<FileIngestSource> sources, {
+    required int epoch,
     required bool imagesOnly,
     bool forImageGeneration = false,
     bool confirmImages = true,
     int? slots,
     String? extraNotice,
   }) async {
-    if (sources.isEmpty) return;
+    if (sources.isEmpty || !_isComposerCurrent(epoch)) return;
     final settings = ref.read(settingsControllerProvider).value;
     final maxSlots = _slotCap(
       forImageGeneration: forImageGeneration,
@@ -1313,96 +939,22 @@ class _ChatPageState extends ConsumerState<ChatPage>
       return;
     }
 
-    final parser = ref.read(fileParserProvider);
-    final additions = <Attachment>[];
-    var runningTotal = _attachments.fold<int>(
-      0,
-      (total, attachment) => total + attachment.sizeBytes,
-    );
-    var tooMany = 0;
-    var tooLarge = 0;
-    var overTotal = 0;
-    var unreadable = 0;
-    for (final source in sources) {
-      if (additions.length >= remaining) {
-        tooMany++;
-        continue;
-      }
-      final reported = source.reportedSize ?? 0;
-      if (reported > _maxAttachmentBytes) {
-        tooLarge++;
-        continue;
-      }
-      final Uint8List bytes;
-      if (source.bytes != null) {
-        bytes = source.bytes!;
-      } else {
-        final stream = source.stream ?? openLocalFileReadStream(source.path);
-        if (stream == null) {
-          unreadable++;
-          continue;
-        }
-        final remainingTotal = _maxTotalAttachmentBytes - runningTotal;
-        if (remainingTotal <= 0) {
-          overTotal++;
-          continue;
-        }
-        final readLimit = remainingTotal < _maxAttachmentBytes
-            ? remainingTotal
-            : _maxAttachmentBytes;
-        try {
-          bytes = await FileParser.readBytesWithLimit(
-            stream,
-            maxBytes: readLimit,
-          );
-        } on FileReadLimitExceeded {
-          if (readLimit < _maxAttachmentBytes) {
-            overTotal++;
-          } else {
-            tooLarge++;
-          }
-          continue;
-        } catch (_) {
-          unreadable++;
-          continue;
-        }
-      }
-      final sizeBytes = reported > bytes.lengthInBytes
-          ? reported
-          : bytes.lengthInBytes;
-      if (sizeBytes > _maxAttachmentBytes) {
-        tooLarge++;
-        continue;
-      }
-      if (runningTotal + sizeBytes > _maxTotalAttachmentBytes) {
-        overTotal++;
-        continue;
-      }
-      final mimeType = _mimeFor(source.extension);
-      final Attachment attachment;
-      final int attachedSize;
-      if (mimeType.startsWith('image/')) {
-        final built = await _buildImageAttachment(
-          name: source.name,
-          mimeType: mimeType,
-          sizeBytes: sizeBytes,
-          bytes: bytes,
+    final result =
+        await AttachmentIngestor(parser: ref.read(fileParserProvider)).ingest(
+          sources,
+          slots: remaining,
+          existingBytes: _attachments.fold<int>(
+            0,
+            (total, a) => total + a.sizeBytes,
+          ),
+          isCurrent: () => _isComposerCurrent(epoch),
         );
-        attachment = built;
-        attachedSize = built.sizeBytes;
-      } else {
-        attachment = await parser.parseAsync(
-          name: source.name,
-          mimeType: mimeType,
-          sizeBytes: sizeBytes,
-          bytes: bytes,
-        );
-        attachedSize = sizeBytes;
-      }
-      if (!mounted) return;
-      additions.add(attachment);
-      runningTotal += attachedSize;
-    }
+    if (result.cancelled || !_isComposerCurrent(epoch)) return;
+    final additions = result.attachments;
+    final tooMany = result.tooMany;
+    final tooLarge = result.tooLarge;
+    final overTotal = result.overTotal;
+    final unreadable = result.unreadable;
     final notices = <String>[];
     if (tooMany > 0) {
       final cap = forImageGeneration && imagesOnly
@@ -1492,135 +1044,12 @@ class _ChatPageState extends ConsumerState<ChatPage>
     unawaited(_rememberInLibrary(take));
   }
 
-  /// Turn album [AssetEntity]s into the same pending confirm strip as file pick.
-  Future<void> _ingestAlbumAssets(
-    List<AssetEntity> assets, {
-    required bool forImageGeneration,
-    required int maxSlots,
-  }) async {
-    final additions = <Attachment>[];
-    var runningTotal = _attachments.fold<int>(
-      0,
-      (total, attachment) => total + attachment.sizeBytes,
-    );
-    var tooLarge = 0;
-    var unreadable = 0;
-    for (final asset in assets) {
-      if (additions.length >= maxSlots) break;
-      try {
-        final bytes = await loadAssetImageBytes(asset);
-        if (bytes == null || bytes.isEmpty) {
-          unreadable++;
-          continue;
-        }
-        if (bytes.lengthInBytes > _maxAttachmentBytes) {
-          tooLarge++;
-          continue;
-        }
-        if (runningTotal + bytes.lengthInBytes > _maxTotalAttachmentBytes) {
-          tooLarge++;
-          continue;
-        }
-        final title = asset.title?.trim();
-        final name = (title == null || title.isEmpty)
-            ? 'photo_${DateTime.now().microsecondsSinceEpoch}.jpg'
-            : (title.contains('.') ? title : '$title.jpg');
-        final built = await _buildImageAttachment(
-          name: name,
-          mimeType: 'image/jpeg',
-          sizeBytes: bytes.lengthInBytes,
-          bytes: bytes,
-        );
-        if (built.parseError != null || !built.hasImageData) {
-          unreadable++;
-          continue;
-        }
-        additions.add(built);
-        runningTotal += built.sizeBytes;
-      } catch (_) {
-        unreadable++;
-      }
-    }
-    if (!mounted) return;
-    final notices = <String>[];
-    if (tooLarge > 0) notices.add('跳过 $tooLarge 个（过大）');
-    if (unreadable > 0) notices.add('跳过 $unreadable 个（无法读取）');
-    if (additions.isEmpty) {
-      notices.add('没有可用的图片');
-      if (notices.isNotEmpty) _showAttachmentNotice(notices.join('；'));
-      return;
-    }
-    setState(() {
-      _pendingImageForGen = forImageGeneration;
-      _pendingImageMaxSlots = maxSlots;
-      _pendingImagePicks = [
-        for (var i = 0; i < additions.length; i++)
-          PendingImagePick(
-            attachment: additions[i],
-            selected: maxSlots <= 1 ? i == 0 : i < maxSlots,
-          ),
-      ];
-    });
-    if (notices.isNotEmpty) _showAttachmentNotice(notices.join('；'));
-  }
-
-  /// Build an image [Attachment] with the bytes pre-scaled to ≤1536px on the
-  /// long edge. Mirrors [FileParser.maxImageBytes] so an oversized image
-  /// surfaces a parse error instead of stalling the decode.
-  Future<Attachment> _buildImageAttachment({
-    required String name,
-    required String mimeType,
-    required int sizeBytes,
-    required Uint8List bytes,
-  }) async {
-    if (bytes.lengthInBytes > FileParser.maxImageBytes) {
-      return Attachment(
-        name: name,
-        mimeType: mimeType,
-        sizeBytes: sizeBytes,
-        parseError: '图片过大（超过 5MB），未附加。',
-      );
-    }
-    final prepared = await ImageCodecUtil.prepareReferenceImage(
-      bytes,
-      mimeType: mimeType,
-      name: name,
-    );
-    return Attachment(
-      name: prepared.name,
-      mimeType: prepared.mimeType,
-      sizeBytes: prepared.bytes.lengthInBytes,
-      imageBase64: base64Encode(prepared.bytes),
-    );
-  }
-
   void _showAttachmentNotice(String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(SnackBar(content: Text(message)));
   }
-
-  String _mimeFor(String? ext) => switch (ext?.toLowerCase()) {
-    'png' => 'image/png',
-    'jpg' || 'jpeg' => 'image/jpeg',
-    'gif' => 'image/gif',
-    'webp' => 'image/webp',
-    'bmp' => 'image/bmp',
-    'pdf' => 'application/pdf',
-    'docx' =>
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    'xlsx' =>
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    'pptx' =>
-      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-    'csv' => 'text/csv',
-    'tsv' => 'text/tab-separated-values',
-    'json' => 'application/json',
-    'md' => 'text/markdown',
-    'txt' => 'text/plain',
-    _ => 'text/plain',
-  };
 
   void _removeAttachment(String id) {
     setState(() {
@@ -1738,7 +1167,56 @@ class _ChatPageState extends ConsumerState<ChatPage>
     ref.read(chatControllerProvider.notifier).setCustomMcpServerIds(result);
   }
 
+  bool _confirmingStepRetry = false;
+  Future<void> _retryProcessStep(
+    String convoId,
+    String msgId,
+    SearchActivity step,
+  ) async {
+    if (_confirmingStepRetry) return;
+    _confirmingStepRetry = true;
+    try {
+      var confirmed = !step.retryNeedsConfirmation;
+      if (!confirmed) {
+        confirmed =
+            await showDialog<bool>(
+              context: context,
+              builder: (dialog) => AlertDialog(
+                title: const Text('重新提交生图？'),
+                content: const Text(
+                  '这将发起一次新的收费请求。停止本地等待不代表远端已取消；'
+                  '如果上次状态不明，请先在服务商处检查结果，避免重复扣费。',
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(dialog, false),
+                    child: const Text('先检查'),
+                  ),
+                  FilledButton(
+                    onPressed: () => Navigator.pop(dialog, true),
+                    child: const Text('确认重新提交'),
+                  ),
+                ],
+              ),
+            ) ??
+            false;
+      }
+      if (!mounted || !confirmed) return;
+      await ref
+          .read(chatControllerProvider.notifier)
+          .retryTaskStep(
+            convoId,
+            msgId,
+            step.id,
+            confirmedPaidRequest: confirmed,
+          );
+    } finally {
+      _confirmingStepRetry = false;
+    }
+  }
+
   void _toggleImageMode() {
+    if (_picking || _pendingImagePicks != null) return;
     if (_imageMode) {
       setState(() => _imageMode = false);
       return;
@@ -1839,7 +1317,9 @@ class _ChatPageState extends ConsumerState<ChatPage>
               maxLines: 8,
               maxLength: MemorySafety.maxContentChars,
               decoration: InputDecoration(
-                labelText: '保存为长期记忆',
+                labelText: conversation.projectId == null
+                    ? '保存为全局记忆'
+                    : '仅保存在当前项目',
                 helperText: '保存前请整理为准确、独立的一条事实或偏好。',
                 helperMaxLines: 2,
                 errorText: validationError,
@@ -1877,6 +1357,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
           .add(
             content: content,
             sourceConversationId: conversation.id,
+            projectId: conversation.projectId,
             sourceMessageId: message.id,
             sourceRole: message.role.wire,
           );
@@ -1955,7 +1436,9 @@ class _ChatPageState extends ConsumerState<ChatPage>
           .extract(
             config: settings.config.copyWith(model: chatModel),
             messages: conversation.activePath,
-            existingMemories: existing.entries,
+            existingMemories: existing.entries
+                .where((e) => e.projectId == conversation.projectId)
+                .toList(),
             cancelToken: cancelToken,
           );
       if (!mounted || cancelToken.isCancelled) return;
@@ -1985,6 +1468,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
           .applyConfirmedCandidates(
             selected,
             sourceConversationId: conversation.id,
+            projectId: conversation.projectId,
           );
       if (!mounted) return;
       final summary = <String>[
@@ -2082,7 +1566,12 @@ class _ChatPageState extends ConsumerState<ChatPage>
     // Switching conversations resumes following and snaps to the latest turn.
     ref.listen(chatControllerProvider, (prev, next) {
       if (prev?.value?.currentId != next.value?.currentId) {
-        unawaited(_cancelSpeech());
+        _composerEpoch++;
+        if (prev?.value?.currentId != null) {
+          unawaited(_speech.stopAll());
+        } else {
+          unawaited(_speech.cancelSpeech());
+        }
         _stick = true;
         _messageKeys.clear();
         if (_selecting) {
@@ -2090,11 +1579,14 @@ class _ChatPageState extends ConsumerState<ChatPage>
           _selectedIds.clear();
         }
         // Do not carry composer draft / reference images across conversations.
-        if (_attachments.isNotEmpty ||
+        if (_picking ||
+            _longTaskMode ||
+            _attachments.isNotEmpty ||
             _input.text.isNotEmpty ||
             _imageMode ||
             _pendingImagePicks != null) {
           setState(() {
+            _picking = false;
             _attachments.clear();
             _input.clear();
             _imageMode = false;
@@ -2233,120 +1725,129 @@ class _ChatPageState extends ConsumerState<ChatPage>
                 !slice.isStudy;
             return Scaffold(
               appBar: AppBar(
+                toolbarHeight: constraints.maxWidth < 600 && showWorkMode
+                    ? 72
+                    : null,
                 titleSpacing: dualPane ? 20 : 8,
                 title: LayoutBuilder(
                   builder: (context, constraints) {
-                    return SizedBox(
-                      width: constraints.maxWidth,
-                      height: constraints.maxHeight.isFinite
-                          ? constraints.maxHeight
-                          : 56,
-                      child: Stack(
-                        alignment: Alignment.center,
-                        children: [
-                          Align(
-                            alignment: Alignment.centerLeft,
+                    final compactTitle =
+                        showWorkMode && constraints.maxWidth < 240;
+                    final modeIcon = Container(
+                      width: 32,
+                      height: 32,
+                      decoration: BoxDecoration(
+                        color: modeColor.withValues(alpha: 0.14),
+                        borderRadius: BorderRadius.circular(11),
+                        border: Border.all(
+                          color: modeColor.withValues(alpha: 0.28),
+                        ),
+                      ),
+                      child: Icon(
+                        ModeStyle.icon(mode, outlined: false),
+                        size: 17,
+                        color: modeColor,
+                      ),
+                    );
+                    final titleBlock = Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(titleText, overflow: TextOverflow.ellipsis),
+                        if (slice.hasCurrent && storyLike)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 2),
                             child: Row(
+                              mainAxisSize: MainAxisSize.min,
                               children: [
-                                Container(
-                                  width: 32,
-                                  height: 32,
-                                  decoration: BoxDecoration(
-                                    color: modeColor.withValues(alpha: 0.14),
-                                    borderRadius: BorderRadius.circular(11),
-                                    border: Border.all(
-                                      color: modeColor.withValues(alpha: 0.28),
-                                    ),
-                                  ),
-                                  child: Icon(
-                                    ModeStyle.icon(mode, outlined: false),
-                                    size: 17,
-                                    color: modeColor,
-                                  ),
+                                _ModePill(
+                                  label: slice.hasLocalCast
+                                      ? '导演故事'
+                                      : ModeStyle.label(mode),
+                                  color: modeColor,
+                                  icon: ModeStyle.icon(mode),
                                 ),
-                                const SizedBox(width: 10),
-                                Flexible(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Text(
-                                        titleText,
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                      if (slice.hasCurrent && storyLike)
-                                        Padding(
-                                          padding: const EdgeInsets.only(
-                                            top: 2,
-                                          ),
-                                          child: Row(
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: [
-                                              _ModePill(
-                                                label: slice.hasLocalCast
-                                                    ? '导演故事'
-                                                    : ModeStyle.label(mode),
-                                                color: modeColor,
-                                                icon: ModeStyle.icon(mode),
-                                              ),
-                                              if (beatProgress != null) ...[
-                                                const SizedBox(width: 8),
-                                                Text(
-                                                  beatProgress,
-                                                  style: Theme.of(context)
-                                                      .textTheme
-                                                      .labelSmall
-                                                      ?.copyWith(
-                                                        color: scheme
-                                                            .onSurfaceVariant,
-                                                      ),
-                                                ),
-                                              ],
-                                              if (storyLike) ...[
-                                                const SizedBox(width: 6),
-                                                GestureDetector(
-                                                  onTap: () {
-                                                    final convo = ref
-                                                        .read(
-                                                          chatControllerProvider,
-                                                        )
-                                                        .value
-                                                        ?.current;
-                                                    if (convo != null) {
-                                                      _openPlot(
-                                                        convo,
-                                                        canPinTools: triplePane,
-                                                      );
-                                                    }
-                                                  },
-                                                  child: Text(
-                                                    '情节',
-                                                    style: Theme.of(context)
-                                                        .textTheme
-                                                        .labelSmall
-                                                        ?.copyWith(
-                                                          color: modeColor,
-                                                          fontWeight:
-                                                              FontWeight.w700,
-                                                        ),
-                                                  ),
-                                                ),
-                                              ],
-                                            ],
-                                          ),
+                                if (beatProgress != null) ...[
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    beatProgress,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .labelSmall
+                                        ?.copyWith(
+                                          color: scheme.onSurfaceVariant,
                                         ),
-                                    ],
+                                  ),
+                                ],
+                                const SizedBox(width: 6),
+                                GestureDetector(
+                                  onTap: () {
+                                    final convo = ref
+                                        .read(chatControllerProvider)
+                                        .value
+                                        ?.current;
+                                    if (convo != null) {
+                                      _openPlot(convo, canPinTools: triplePane);
+                                    }
+                                  },
+                                  child: Text(
+                                    '情节',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .labelSmall
+                                        ?.copyWith(
+                                          color: modeColor,
+                                          fontWeight: FontWeight.w700,
+                                        ),
                                   ),
                                 ),
                               ],
                             ),
                           ),
-                          if (showWorkMode)
-                            _ComposerWorkModeSwitch(
-                              workMode: slice.workMode,
-                              onChanged: controller.setWorkMode,
-                            ),
+                      ],
+                    );
+                    return SizedBox(
+                      width: constraints.maxWidth,
+                      height: constraints.maxHeight.isFinite
+                          ? constraints.maxHeight
+                          : 56,
+                      child: Row(
+                        children: [
+                          if (!compactTitle) ...[
+                            modeIcon,
+                            const SizedBox(width: 8),
+                          ],
+                          if (showWorkMode && compactTitle)
+                            Expanded(
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    titleText,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: Theme.of(
+                                      context,
+                                    ).textTheme.labelMedium,
+                                  ),
+                                  ChatWorkModeSwitch(
+                                    workMode: slice.workMode,
+                                    onChanged: controller.setWorkMode,
+                                  ),
+                                ],
+                              ),
+                            )
+                          else ...[
+                            Expanded(child: titleBlock),
+                            if (showWorkMode) ...[
+                              const SizedBox(width: 8),
+                              ChatWorkModeSwitch(
+                                workMode: slice.workMode,
+                                onChanged: controller.setWorkMode,
+                              ),
+                            ],
+                          ],
                         ],
                       ),
                     );
@@ -2364,7 +1865,8 @@ class _ChatPageState extends ConsumerState<ChatPage>
                     Padding(
                       padding: const EdgeInsets.only(right: 4),
                       child: Center(
-                        child: _ContextUsageChip(
+                        child: ContextUsageChip(
+                          compact: constraints.maxWidth < 480,
                           report: contextReport,
                           inputBudget: contextInputBudget,
                         ),
@@ -2560,7 +2062,19 @@ class _ChatPageState extends ConsumerState<ChatPage>
                     child: slice.isLoading
                         ? const Center(child: CircularProgressIndicator())
                         : slice.hasError
-                        ? Center(child: Text('出错了：${slice.loadError}'))
+                        ? Center(
+                            child: SingleChildScrollView(
+                              padding: const EdgeInsets.all(20),
+                              child: RecoveryNotice(
+                                error: slice.loadError!,
+                                title: '会话暂时无法加载',
+                                onRetry: () async {
+                                  ref.invalidate(chatControllerProvider);
+                                  await ref.read(chatControllerProvider.future);
+                                },
+                              ),
+                            ),
+                          )
                         : _chatColumn(
                             slice,
                             controller,
@@ -2639,22 +2153,38 @@ class _ChatPageState extends ConsumerState<ChatPage>
         slice.error != null &&
         (slice.errorConvoId == null || slice.errorConvoId == slice.currentId);
     final needsSetup =
-        showError && slice.error != null && slice.error!.contains('API Key');
+        showError && AppFailure.from(slice.error!).needsConfiguration;
     final settings = ref.watch(settingsControllerProvider).value;
     final ui = settings?.ui ?? const UiPrefs();
     return Column(
       children: [
+        if (convo?.recoveredStorage.isNotEmpty == true)
+          const Padding(
+            padding: EdgeInsets.all(12),
+            child: Text('部分会话资料无法读取，原始数据已保留。请先导出完整备份，再联系维护者处理。'),
+          ),
         if (showError && slice.error != null)
-          _ErrorBanner(
-            message: slice.error!,
+          RecoveryNotice(
+            error: slice.error!,
+            secrets: [
+              if (settings != null) settings.apiKey,
+              if (settings != null) settings.searchApiKey,
+              if (settings != null) settings.imageGenerationApiKey,
+            ],
             onRetry:
                 slice.isStreaming ||
                     slice.retryConversationId == null ||
                     slice.retryConversationId != slice.currentId
                 ? null
                 : () => controller.retryLast(),
-            onOpenSettings: needsSetup
-                ? () => openShellTab(ref, ShellTab.settings)
+            onConfigure: needsSetup
+                ? () {
+                    if (settings?.config.isReady ?? false) {
+                      openShellTab(ref, ShellTab.settings);
+                    } else {
+                      _openModelSetup();
+                    }
+                  }
                 : null,
           ),
         if (convo != null && slice.isStory)
@@ -2726,7 +2256,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
               shrinkWrap: true,
               slivers: [
                 SliverToBoxAdapter(
-                  child: _Composer(
+                  child: ChatComposer(
                     controller: _input,
                     isStreaming: slice.isStreaming,
                     deepThink: slice.deepThink,
@@ -2761,9 +2291,9 @@ class _ChatPageState extends ConsumerState<ChatPage>
                         (settings?.supportsDocumentEdit ?? false) &&
                         _attachments.any((a) => a.isEditableDocument) &&
                         !_imageMode,
-                    speechBusy: _speechBusy,
-                    speechListening: _speechListening,
-                    speechUsesCloudAsr: _usingMimoAsr,
+                    speechBusy: _speech.busy,
+                    speechListening: _speech.listening,
+                    speechUsesCloudAsr: _speech.usesCloudAsr,
                     onToggleDeepThink: controller.toggleDeepThink,
                     onReasoningEffortChanged: controller.setReasoningEffort,
                     mcpAvailable:
@@ -2776,7 +2306,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
                         : slice.customMcpServerIds.split(',').length,
                     onToggleSearch: controller.toggleSearch,
                     onPickMcpServers: _openConversationMcpPicker,
-                    onToggleImageGenMode: controller.toggleImageGenMode,
+                    onSetImageGenMode: controller.setImageGenMode,
                     onToggleImageMode: _toggleImageMode,
                     onToggleLongTask: () =>
                         setState(() => _longTaskMode = !_longTaskMode),
@@ -2785,7 +2315,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
                     onPickLibrary: _openLibraryPicker,
                     onPaste: _handleComposerPaste,
                     onRemoveAttachment: _removeAttachment,
-                    onToggleSpeech: _toggleSpeech,
+                    onToggleSpeech: _speech.toggleSpeech,
                     onSend: () => _send(),
                     onDocumentEdit: () => _send(forceDocumentEdit: true),
                     onStop: controller.stop,
@@ -2817,7 +2347,22 @@ class _ChatPageState extends ConsumerState<ChatPage>
         ? const EdgeInsets.fromLTRB(16, 12, 16, 20)
         : const EdgeInsets.fromLTRB(24, 18, 24, 28);
     final controller = ref.read(chatControllerProvider.notifier);
-    if (messages.isEmpty) return const _EmptyState();
+    if (messages.isEmpty) {
+      return Consumer(
+        builder: (context, ref, _) => _EmptyState(
+          needsSetup:
+              !(ref.watch(settingsControllerProvider).value?.config.isReady ??
+                  false),
+          onSetup: _openModelSetup,
+          onExample: (text) {
+            if (_input.text.trim().isEmpty) {
+              _input.text = text;
+              _input.selection = TextSelection.collapsed(offset: text.length);
+            }
+          },
+        ),
+      );
+    }
     return Stack(
       children: [
         Center(
@@ -2833,12 +2378,35 @@ class _ChatPageState extends ConsumerState<ChatPage>
                 final isLastAssistant =
                     isLast && m.role == MessageRole.assistant;
                 final (bIdx, bCount) = convo!.branchInfo(m.id);
-                final ttsForMessage = _ttsPlayback.isFor(m.id);
+                final ttsForMessage = _speech.playback.isFor(m.id);
                 return KeyedSubtree(
                   key: _keyForMessage(m.id),
                   child: MessageBubble(
                     key: ValueKey(m.id),
                     message: m,
+                    onAnswerFromResults:
+                        !_selecting &&
+                            m.role == MessageRole.assistant &&
+                            m.kind != MessageKind.generatedImage &&
+                            !convo.isStoryLike &&
+                            !convo.isStudy &&
+                            ((streamingHere && isLastAssistant) ||
+                                (state?.isStreaming != true &&
+                                    m.searchActivities.any(
+                                      (a) =>
+                                          a.status == SearchActivityStatus.done,
+                                    )))
+                        ? () => unawaited(
+                            controller.answerFromResults(convo.id, m.id),
+                          )
+                        : null,
+                    onStopTask: streamingHere && isLastAssistant && !_selecting
+                        ? controller.stop
+                        : null,
+                    onRetryStep: state?.isStreaming != true && !_selecting
+                        ? (step) =>
+                              unawaited(_retryProcessStep(convo.id, m.id, step))
+                        : null,
                     isStreaming: streamingHere && isLastAssistant,
                     speakerName: m.role == MessageRole.assistant
                         ? (m.speakerName ?? speakerName)
@@ -2877,10 +2445,10 @@ class _ChatPageState extends ConsumerState<ChatPage>
                         : null,
                     isSpeechLoading:
                         ttsForMessage &&
-                        _ttsPlayback.phase == TextToSpeechPhase.loading,
+                        _speech.playback.phase == TextToSpeechPhase.loading,
                     isSpeaking:
                         ttsForMessage &&
-                        _ttsPlayback.phase == TextToSpeechPhase.speaking,
+                        _speech.playback.phase == TextToSpeechPhase.speaking,
                     onRemember:
                         settings?.memoryEnabled == true &&
                             !_selecting &&
@@ -2979,1073 +2547,6 @@ class _SelectionShareBar extends StatelessWidget {
   }
 }
 
-class _Composer extends StatefulWidget {
-  const _Composer({
-    required this.controller,
-    required this.isStreaming,
-    required this.deepThink,
-    this.reasoningEffort = ReasoningEffort.high,
-    this.supportsReasoningEffort = false,
-    required this.searchMode,
-    required this.imageGenMode,
-    required this.attachments,
-    required this.picking,
-    required this.storyLike,
-    this.isStudy = false,
-    required this.directorMode,
-    required this.canAttachImages,
-    required this.imageGenerationConfigured,
-    required this.imageMode,
-    required this.longTaskMode,
-    required this.longTaskAvailable,
-    this.maxImageEditReferences = 1,
-    this.documentEditAvailable = false,
-    required this.speechBusy,
-    required this.speechListening,
-    required this.speechUsesCloudAsr,
-    required this.onToggleDeepThink,
-    this.onReasoningEffortChanged,
-    required this.onToggleSearch,
-    this.mcpAvailable = false,
-    this.mcpSelectedCount = 0,
-    this.onPickMcpServers,
-    required this.onToggleImageGenMode,
-    required this.onToggleImageMode,
-    required this.onToggleLongTask,
-    required this.onPickDocuments,
-    required this.onPickImages,
-    required this.onPickLibrary,
-    required this.onPaste,
-    required this.onRemoveAttachment,
-    required this.onToggleSpeech,
-    required this.onSend,
-    this.onDocumentEdit,
-    required this.onStop,
-  });
-
-  final TextEditingController controller;
-  final bool isStreaming;
-  final bool deepThink;
-  final ReasoningEffort reasoningEffort;
-  final bool supportsReasoningEffort;
-  final SearchMode searchMode;
-  final ImageGenMode imageGenMode;
-  final List<Attachment> attachments;
-  final bool picking;
-  final bool storyLike;
-  final bool isStudy;
-  final bool directorMode;
-  final bool canAttachImages;
-  final bool imageGenerationConfigured;
-  final bool imageMode;
-  final bool longTaskMode;
-  final bool longTaskAvailable;
-  final int maxImageEditReferences;
-  final bool documentEditAvailable;
-  final bool speechBusy;
-  final bool speechListening;
-  final bool speechUsesCloudAsr;
-  final VoidCallback onToggleDeepThink;
-  final ValueChanged<ReasoningEffort>? onReasoningEffortChanged;
-  final VoidCallback onToggleSearch;
-  final bool mcpAvailable;
-  final int mcpSelectedCount;
-  final VoidCallback? onPickMcpServers;
-  final VoidCallback onToggleImageGenMode;
-  final VoidCallback onToggleImageMode;
-  final VoidCallback onToggleLongTask;
-  final VoidCallback onPickDocuments;
-  final VoidCallback onPickImages;
-  final VoidCallback onPickLibrary;
-  final Future<void> Function() onPaste;
-  final ValueChanged<String> onRemoveAttachment;
-  final VoidCallback onToggleSpeech;
-  final VoidCallback onSend;
-  final VoidCallback? onDocumentEdit;
-  final VoidCallback onStop;
-
-  @override
-  State<_Composer> createState() => _ComposerState();
-}
-
-class _ComposerState extends State<_Composer> {
-  /// DeepSeek-style expandable “+” tray for upload / image actions.
-  bool _plusOpen = false;
-  late final FocusNode _focusNode;
-
-  @override
-  void initState() {
-    super.initState();
-    _focusNode = FocusNode();
-    HardwareKeyboard.instance.addHandler(_onHardwareKey);
-  }
-
-  @override
-  void dispose() {
-    HardwareKeyboard.instance.removeHandler(_onHardwareKey);
-    _focusNode.dispose();
-    super.dispose();
-  }
-
-  bool _onHardwareKey(KeyEvent event) {
-    if (event is! KeyDownEvent) return false;
-    if (!_focusNode.hasFocus) return false;
-    if (widget.controller.value.composing.isValid) return false;
-    if (event.logicalKey != LogicalKeyboardKey.keyV) return false;
-    if (HardwareKeyboard.instance.isAltPressed) return false;
-    if (!HardwareKeyboard.instance.isControlPressed &&
-        !HardwareKeyboard.instance.isMetaPressed) {
-      return false;
-    }
-    widget.onPaste();
-    return true;
-  }
-
-  void _togglePlus() {
-    if (widget.isStreaming) return;
-    setState(() => _plusOpen = !_plusOpen);
-  }
-
-  void _closePlus() {
-    if (_plusOpen) setState(() => _plusOpen = false);
-  }
-
-  void _runAndClose(VoidCallback action) {
-    _closePlus();
-    action();
-  }
-
-  @override
-  void didUpdateWidget(covariant _Composer oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    // Collapse the tray while a turn is in flight so it doesn't sit open over
-    // the stop button / streaming UI.
-    if (widget.isStreaming && _plusOpen) {
-      _plusOpen = false;
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final compactHeight = MediaQuery.sizeOf(context).height < 720;
-    final hint = widget.imageMode
-        ? (widget.attachments.any((a) => a.isImage)
-              ? '描述如何修改参考图（图生图）…'
-              : '描述要生成的图片；可点 + 上传参考图…')
-        : widget.directorMode
-        ? '发导演指令，或使用“写下一场 / 续写当前场”…'
-        : widget.storyLike
-        ? '续写反应，或输入旁白…'
-        : '写下你的想法…';
-    final canAttachDocs =
-        !widget.isStreaming && !widget.picking && !widget.imageMode;
-    final canAttachImages =
-        !widget.isStreaming &&
-        !widget.picking &&
-        ((widget.imageMode && widget.imageGenerationConfigured) ||
-            (!widget.imageMode && widget.canAttachImages));
-    return Container(
-      key: const ValueKey('chat-composer'),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            scheme.surface.withValues(alpha: 0),
-            scheme.surface.withValues(alpha: 0.94),
-            scheme.surface,
-          ],
-          stops: const [0, 0.32, 1],
-        ),
-      ),
-      child: SafeArea(
-        top: false,
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 900),
-            child: Padding(
-              padding: EdgeInsets.fromLTRB(12, 8, 12, compactHeight ? 8 : 13),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  // 深度思考 stays on the strip. 对话|任务 lives in the top bar.
-                  // Tool toggles live in the “+” tray.
-                  SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: Row(
-                      children: [
-                        _ComposerToggleChip(
-                          selected: widget.deepThink,
-                          icon: Icons.psychology_outlined,
-                          label: '深度思考',
-                          onSelected: widget.onToggleDeepThink,
-                        ),
-                        if (widget.deepThink &&
-                            widget.supportsReasoningEffort) ...[
-                          const SizedBox(width: 8),
-                          _ReasoningEffortSlider(
-                            value: widget.reasoningEffort,
-                            onChanged: widget.onReasoningEffortChanged,
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
-                  AnimatedSize(
-                    duration: const Duration(milliseconds: 180),
-                    curve: Curves.easeOutCubic,
-                    alignment: Alignment.topCenter,
-                    child: _plusOpen
-                        ? Padding(
-                            padding: const EdgeInsets.only(top: 8),
-                            child: _ComposerPlusTray(
-                              imageGenerationConfigured:
-                                  widget.imageGenerationConfigured,
-                              imageMode: widget.imageMode,
-                              picking: widget.picking,
-                              searchMode: widget.searchMode,
-                              imageGenMode: widget.imageGenMode,
-                              mcpAvailable: widget.mcpAvailable,
-                              mcpSelectedCount: widget.mcpSelectedCount,
-                              documentEditAvailable:
-                                  widget.documentEditAvailable &&
-                                  !widget.isStreaming,
-                              longTaskAvailable: widget.longTaskAvailable,
-                              longTaskMode: widget.longTaskMode,
-                              onPickDocuments: canAttachDocs
-                                  ? () => _runAndClose(widget.onPickDocuments)
-                                  : null,
-                              onPickImages: canAttachImages
-                                  ? () => _runAndClose(widget.onPickImages)
-                                  : null,
-                              onPickLibrary: widget.isStreaming
-                                  ? null
-                                  : () => _runAndClose(widget.onPickLibrary),
-                              onToggleImageMode: widget.isStreaming
-                                  ? null
-                                  : () =>
-                                        _runAndClose(widget.onToggleImageMode),
-                              onToggleSearch: widget.storyLike || widget.isStudy
-                                  ? null
-                                  : widget.onToggleSearch,
-                              onToggleImageGenMode:
-                                  widget.imageGenerationConfigured &&
-                                      !widget.imageMode &&
-                                      !widget.isStudy
-                                  ? widget.onToggleImageGenMode
-                                  : null,
-                              onPickMcpServers: widget.mcpAvailable
-                                  ? () => _runAndClose(
-                                      widget.onPickMcpServers ?? () {},
-                                    )
-                                  : null,
-                              onDocumentEdit: widget.documentEditAvailable
-                                  ? () => _runAndClose(
-                                      widget.onDocumentEdit ?? () {},
-                                    )
-                                  : null,
-                              onToggleLongTask: widget.longTaskAvailable
-                                  ? widget.onToggleLongTask
-                                  : null,
-                            ),
-                          )
-                        : const SizedBox.shrink(),
-                  ),
-                  const SizedBox(height: 6),
-                  Container(
-                    padding: const EdgeInsets.fromLTRB(6, 4, 6, 4),
-                    decoration: BoxDecoration(
-                      color: scheme.surfaceContainer,
-                      borderRadius: BorderRadius.circular(22),
-                      border: Border.all(
-                        color: scheme.outlineVariant.withValues(alpha: 0.72),
-                      ),
-                      boxShadow: [
-                        BoxShadow(
-                          color: scheme.shadow.withValues(alpha: 0.08),
-                          blurRadius: 24,
-                          offset: const Offset(0, 10),
-                        ),
-                      ],
-                    ),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        if (widget.attachments.isNotEmpty)
-                          Padding(
-                            padding: const EdgeInsets.fromLTRB(4, 2, 4, 4),
-                            child: SingleChildScrollView(
-                              key: const ValueKey('composer-attachment-strip'),
-                              scrollDirection: Axis.horizontal,
-                              child: Row(
-                                children: [
-                                  for (
-                                    var i = 0;
-                                    i < widget.attachments.length;
-                                    i++
-                                  )
-                                    Padding(
-                                      padding: EdgeInsets.only(
-                                        right:
-                                            i == widget.attachments.length - 1
-                                            ? 0
-                                            : 6,
-                                      ),
-                                      child: AttachmentChip(
-                                        attachment: widget.attachments[i],
-                                        onRemove: () =>
-                                            widget.onRemoveAttachment(
-                                              widget.attachments[i].id,
-                                            ),
-                                      ),
-                                    ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        if (widget.speechListening)
-                          Padding(
-                            key: const ValueKey('speech-listening-indicator'),
-                            padding: const EdgeInsets.fromLTRB(8, 3, 8, 1),
-                            child: Row(
-                              children: [
-                                Icon(
-                                  Icons.graphic_eq_rounded,
-                                  size: 16,
-                                  color: scheme.error,
-                                ),
-                                const SizedBox(width: 6),
-                                Expanded(
-                                  child: Text(
-                                    // Cloud ASR only transcribes after a second
-                                    // mic tap; system ASR streams partial text.
-                                    widget.speechUsesCloudAsr
-                                        ? '正在录音… 说完后再点麦克风识别（不会自动发送）'
-                                        : '正在听… 识别文字不会自动发送',
-                                    style: Theme.of(context).textTheme.bodySmall
-                                        ?.copyWith(
-                                          color: scheme.onSurfaceVariant,
-                                          fontWeight: FontWeight.w600,
-                                        ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        Row(
-                          crossAxisAlignment: CrossAxisAlignment.end,
-                          children: [
-                            _ComposerPlusButton(
-                              open: _plusOpen,
-                              enabled: !widget.isStreaming,
-                              picking: widget.picking,
-                              onPressed: _togglePlus,
-                            ),
-                            Expanded(
-                              child: CallbackShortcuts(
-                                bindings: {
-                                  const SingleActivator(
-                                    LogicalKeyboardKey.enter,
-                                  ): () {
-                                    if (!widget.isStreaming &&
-                                        !widget.speechBusy &&
-                                        !widget.speechListening &&
-                                        !widget
-                                            .controller
-                                            .value
-                                            .composing
-                                            .isValid) {
-                                      onSendViaWidget();
-                                    }
-                                  },
-                                },
-                                child: TextField(
-                                  key: const ValueKey('composer-text-field'),
-                                  controller: widget.controller,
-                                  focusNode: _focusNode,
-                                  minLines: 1,
-                                  maxLines: compactHeight ? 3 : 5,
-                                  readOnly: widget.speechListening,
-                                  textInputAction: TextInputAction.newline,
-                                  onTap: _closePlus,
-                                  contextMenuBuilder: (context, editableTextState) {
-                                    return AdaptiveTextSelectionToolbar.buttonItems(
-                                      anchors:
-                                          editableTextState.contextMenuAnchors,
-                                      buttonItems: [
-                                        for (final item
-                                            in editableTextState
-                                                .contextMenuButtonItems)
-                                          if (item.type ==
-                                              ContextMenuButtonType.paste)
-                                            ContextMenuButtonItem(
-                                              onPressed: () {
-                                                editableTextState.hideToolbar();
-                                                widget.onPaste();
-                                              },
-                                              type: ContextMenuButtonType.paste,
-                                            )
-                                          else
-                                            item,
-                                      ],
-                                    );
-                                  },
-                                  decoration: InputDecoration(
-                                    hintText: hint,
-                                    filled: false,
-                                    border: InputBorder.none,
-                                    enabledBorder: InputBorder.none,
-                                    focusedBorder: InputBorder.none,
-                                    contentPadding: const EdgeInsets.symmetric(
-                                      horizontal: 4,
-                                      vertical: 7,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 4),
-                            IconButton.filledTonal(
-                              key: const ValueKey('composer-microphone-button'),
-                              onPressed:
-                                  widget.isStreaming ||
-                                      (widget.speechBusy &&
-                                          !widget.speechUsesCloudAsr)
-                                  ? null
-                                  : () {
-                                      _closePlus();
-                                      widget.onToggleSpeech();
-                                    },
-                              icon: widget.speechBusy
-                                  ? const SizedBox.square(
-                                      dimension: 18,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                      ),
-                                    )
-                                  : Icon(
-                                      widget.speechListening
-                                          ? Icons.mic_rounded
-                                          : Icons.mic_none_rounded,
-                                    ),
-                              tooltip: widget.speechBusy
-                                  ? widget.speechUsesCloudAsr
-                                        ? '正在上传语音；点按取消'
-                                        : '正在准备语音输入'
-                                  : widget.speechListening
-                                  ? widget.speechUsesCloudAsr
-                                        ? '结束录音并识别'
-                                        : '停止语音输入'
-                                  : '语音输入',
-                              style: IconButton.styleFrom(
-                                fixedSize: const Size.square(40),
-                                backgroundColor: widget.speechListening
-                                    ? scheme.errorContainer
-                                    : scheme.secondaryContainer,
-                                foregroundColor: widget.speechListening
-                                    ? scheme.onErrorContainer
-                                    : scheme.onSecondaryContainer,
-                              ),
-                            ),
-                            const SizedBox(width: 4),
-                            widget.isStreaming
-                                ? IconButton.filled(
-                                    onPressed: widget.onStop,
-                                    icon: const Icon(Icons.stop_rounded),
-                                    tooltip: '停止',
-                                    style: IconButton.styleFrom(
-                                      fixedSize: const Size.square(40),
-                                      backgroundColor: scheme.errorContainer,
-                                      foregroundColor: scheme.onErrorContainer,
-                                    ),
-                                  )
-                                : IconButton.filled(
-                                    onPressed: () {
-                                      _closePlus();
-                                      widget.onSend();
-                                    },
-                                    icon: const Icon(
-                                      Icons.arrow_upward_rounded,
-                                    ),
-                                    tooltip: '发送',
-                                    style: IconButton.styleFrom(
-                                      fixedSize: const Size.square(40),
-                                      backgroundColor: scheme.primary,
-                                      foregroundColor: scheme.onPrimary,
-                                    ),
-                                  ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  void onSendViaWidget() {
-    _closePlus();
-    widget.onSend();
-  }
-}
-
-/// Circular “+” control that expands the media tray (DeepSeek-style).
-class _ComposerPlusButton extends StatelessWidget {
-  const _ComposerPlusButton({
-    required this.open,
-    required this.enabled,
-    required this.picking,
-    required this.onPressed,
-  });
-
-  final bool open;
-  final bool enabled;
-  final bool picking;
-  final VoidCallback onPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final active = open;
-    return Semantics(
-      key: const ValueKey('composer-plus-button'),
-      button: true,
-      enabled: enabled,
-      label: open ? '收起附件菜单' : '展开附件菜单',
-      excludeSemantics: true,
-      child: Tooltip(
-        message: open ? '收起' : '添加',
-        child: Padding(
-          padding: const EdgeInsets.only(bottom: 2, right: 2),
-          child: Material(
-            color: active
-                ? scheme.primaryContainer
-                : scheme.surfaceContainerHighest,
-            shape: const CircleBorder(),
-            child: InkWell(
-              customBorder: const CircleBorder(),
-              onTap: enabled ? onPressed : null,
-              child: SizedBox(
-                width: 36,
-                height: 36,
-                child: Center(
-                  child: picking
-                      ? SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: scheme.primary,
-                          ),
-                        )
-                      : AnimatedRotation(
-                          turns: open ? 0.125 : 0,
-                          duration: const Duration(milliseconds: 180),
-                          child: Icon(
-                            Icons.add_rounded,
-                            size: 22,
-                            color: enabled
-                                ? (active
-                                      ? scheme.onPrimaryContainer
-                                      : scheme.onSurfaceVariant)
-                                : scheme.onSurface.withValues(alpha: 0.38),
-                          ),
-                        ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// Expandable action tray revealed by the composer “+” button.
-class _ComposerPlusTray extends StatelessWidget {
-  const _ComposerPlusTray({
-    required this.imageGenerationConfigured,
-    required this.imageMode,
-    required this.picking,
-    required this.searchMode,
-    required this.imageGenMode,
-    required this.mcpAvailable,
-    required this.mcpSelectedCount,
-    required this.documentEditAvailable,
-    required this.longTaskAvailable,
-    required this.longTaskMode,
-    required this.onPickDocuments,
-    required this.onPickImages,
-    required this.onPickLibrary,
-    required this.onToggleImageMode,
-    required this.onToggleSearch,
-    required this.onToggleImageGenMode,
-    required this.onPickMcpServers,
-    required this.onDocumentEdit,
-    required this.onToggleLongTask,
-  });
-
-  final bool imageGenerationConfigured;
-  final bool imageMode;
-  final bool picking;
-  final SearchMode searchMode;
-  final ImageGenMode imageGenMode;
-  final bool mcpAvailable;
-  final int mcpSelectedCount;
-  final bool documentEditAvailable;
-  final bool longTaskAvailable;
-  final bool longTaskMode;
-  final VoidCallback? onPickDocuments;
-  final VoidCallback? onPickImages;
-  final VoidCallback? onPickLibrary;
-  final VoidCallback? onToggleImageMode;
-  final VoidCallback? onToggleSearch;
-  final VoidCallback? onToggleImageGenMode;
-  final VoidCallback? onPickMcpServers;
-  final VoidCallback? onDocumentEdit;
-  final VoidCallback? onToggleLongTask;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final actions = <Widget>[
-      _ComposerPlusAction(
-        icon: Icons.folder_open_outlined,
-        label: '上传文件',
-        enabled: onPickDocuments != null && !picking,
-        onTap: onPickDocuments,
-      ),
-      _ComposerPlusAction(
-        icon: Icons.image_outlined,
-        label: imageMode ? '参考图' : '上传图片',
-        enabled: onPickImages != null && !picking,
-        onTap: onPickImages,
-      ),
-      _ComposerPlusAction(
-        icon: Icons.photo_library_outlined,
-        label: '素材库',
-        enabled: onPickLibrary != null && !picking,
-        onTap: onPickLibrary,
-      ),
-      if (imageGenerationConfigured)
-        _ComposerPlusAction(
-          icon: imageMode ? Icons.auto_awesome : Icons.auto_awesome_outlined,
-          label: imageMode ? '退出生图' : '图片生成',
-          selected: imageMode,
-          enabled: onToggleImageMode != null,
-          onTap: onToggleImageMode,
-        ),
-      if (onToggleSearch != null)
-        _ComposerPlusAction(
-          icon: Icons.travel_explore,
-          label: searchMode.composerLabel,
-          selected: searchMode != SearchMode.off,
-          enabled: true,
-          onTap: onToggleSearch,
-        ),
-      if (onToggleImageGenMode != null)
-        _ComposerPlusAction(
-          icon: Icons.image_outlined,
-          label: imageGenMode.composerLabel,
-          selected: imageGenMode != ImageGenMode.off,
-          enabled: true,
-          onTap: onToggleImageGenMode,
-        ),
-      if (mcpAvailable)
-        _ComposerPlusAction(
-          icon: Icons.extension_outlined,
-          label: mcpSelectedCount == 0 ? 'MCP' : 'MCP·$mcpSelectedCount',
-          selected: mcpSelectedCount > 0,
-          enabled: onPickMcpServers != null,
-          onTap: onPickMcpServers,
-        ),
-      if (documentEditAvailable)
-        _ComposerPlusAction(
-          icon: Icons.edit_document,
-          label: '改文档',
-          enabled: onDocumentEdit != null,
-          onTap: onDocumentEdit,
-        ),
-      if (longTaskAvailable)
-        _ComposerPlusAction(
-          icon: Icons.schedule_send_outlined,
-          label: '长任务',
-          selected: longTaskMode,
-          enabled: onToggleLongTask != null,
-          onTap: onToggleLongTask,
-        ),
-    ];
-    return Container(
-      key: const ValueKey('composer-plus-tray'),
-      padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
-      decoration: BoxDecoration(
-        color: scheme.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: scheme.outlineVariant.withValues(alpha: 0.85),
-        ),
-      ),
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          const gap = 8.0;
-          const columns = 4;
-          final width = (constraints.maxWidth - gap * (columns - 1)) / columns;
-          return Wrap(
-            spacing: gap,
-            runSpacing: gap,
-            children: [
-              for (final action in actions)
-                SizedBox(width: width, child: action),
-            ],
-          );
-        },
-      ),
-    );
-  }
-}
-
-class _ComposerPlusAction extends StatelessWidget {
-  const _ComposerPlusAction({
-    required this.icon,
-    required this.label,
-    required this.enabled,
-    required this.onTap,
-    this.selected = false,
-  });
-
-  final IconData icon;
-  final String label;
-  final bool enabled;
-  final bool selected;
-  final VoidCallback? onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final fg = !enabled
-        ? scheme.onSurface.withValues(alpha: 0.38)
-        : selected
-        ? scheme.primary
-        : scheme.onSurface;
-    final bg = selected
-        ? scheme.primaryContainer.withValues(alpha: 0.7)
-        : scheme.surface;
-    return Semantics(
-      button: true,
-      enabled: enabled,
-      label: label,
-      excludeSemantics: true,
-      child: Material(
-        color: bg,
-        borderRadius: BorderRadius.circular(14),
-        child: InkWell(
-          onTap: enabled ? onTap : null,
-          borderRadius: BorderRadius.circular(14),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 6),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 36,
-                  height: 36,
-                  decoration: BoxDecoration(
-                    color: selected
-                        ? scheme.primary.withValues(alpha: 0.14)
-                        : scheme.surfaceContainerHighest,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Icon(icon, size: 20, color: fg),
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  label,
-                  textAlign: TextAlign.center,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    color: fg,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _ContextUsageChip extends StatelessWidget {
-  const _ContextUsageChip({required this.report, required this.inputBudget});
-
-  final ContextWindowReport? report;
-  final int inputBudget;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final current = report?.sentTokens ?? 0;
-    final budget = report?.inputBudgetTokens ?? inputBudget;
-    final fraction = budget <= 0 ? 0.0 : (current / budget).clamp(0.0, 1.0);
-    final managed = report?.managed ?? false;
-    final pct = (fraction * 100).round();
-    final color = fraction >= 0.9
-        ? scheme.error
-        : fraction >= 0.7
-        ? scheme.tertiary
-        : scheme.primary;
-
-    final detail = report == null
-        ? '上下文预算 ${_compactTokens(budget)}（发送后显示本轮用量）'
-        : report!.userFacingNote;
-
-    // Compact label for the app bar.
-    String label;
-    if (report == null) {
-      label = _compactTokens(budget);
-    } else if (managed) {
-      final bits = <String>[
-        '$pct%',
-        if (report!.droppedMessages > 0) '−${report!.droppedMessages}',
-        if (report!.summaryInjected) '摘要',
-      ];
-      label = bits.join(' · ');
-    } else {
-      label = '$pct%';
-    }
-
-    return Semantics(
-      key: const ValueKey('chat-context-usage'),
-      label: detail,
-      value: '$pct%',
-      excludeSemantics: true,
-      child: Tooltip(
-        message: detail,
-        child: Container(
-          height: 32,
-          padding: const EdgeInsets.symmetric(horizontal: 9),
-          decoration: BoxDecoration(
-            color: managed
-                ? color.withValues(alpha: 0.12)
-                : scheme.surfaceContainerHighest,
-            borderRadius: BorderRadius.circular(999),
-            border: managed
-                ? Border.all(color: color.withValues(alpha: 0.28))
-                : null,
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              SizedBox.square(
-                dimension: 16,
-                child: CircularProgressIndicator(
-                  semanticsLabel: detail,
-                  semanticsValue: '$pct%',
-                  value: fraction,
-                  strokeWidth: 2,
-                  color: color,
-                  backgroundColor: scheme.outlineVariant,
-                ),
-              ),
-              const SizedBox(width: 6),
-              Text(
-                label,
-                style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: managed ? color : scheme.onSurfaceVariant,
-                  fontWeight: managed ? FontWeight.w700 : FontWeight.w600,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  static String _compactTokens(int value) {
-    if (value >= 1000000) {
-      return '${(value / 1000000).toStringAsFixed(1)}M';
-    }
-    if (value >= 1000) {
-      return '${(value / 1000).toStringAsFixed(value % 1000 == 0 ? 0 : 1)}K';
-    }
-    return '$value';
-  }
-}
-
-class _ReasoningEffortSlider extends StatelessWidget {
-  const _ReasoningEffortSlider({required this.value, this.onChanged});
-
-  final ReasoningEffort value;
-  final ValueChanged<ReasoningEffort>? onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Semantics(
-      label: '思考强度 ${value.label}',
-      slider: true,
-      value: value.label,
-      child: Material(
-        color: scheme.primaryContainer.withValues(alpha: 0.75),
-        borderRadius: BorderRadius.circular(999),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(10, 2, 10, 2),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                '强度',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: scheme.primary,
-                ),
-              ),
-              SizedBox(
-                width: 108,
-                child: SliderTheme(
-                  data: SliderTheme.of(context).copyWith(
-                    trackHeight: 2,
-                    thumbShape: const RoundSliderThumbShape(
-                      enabledThumbRadius: 6,
-                    ),
-                    overlayShape: const RoundSliderOverlayShape(
-                      overlayRadius: 12,
-                    ),
-                  ),
-                  child: Slider(
-                    min: 0,
-                    max: 2,
-                    divisions: 2,
-                    value: value.index.toDouble(),
-                    label: value.label,
-                    onChanged: onChanged == null
-                        ? null
-                        : (v) => onChanged!(ReasoningEffort.values[v.round()]),
-                  ),
-                ),
-              ),
-              Text(
-                value.label,
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: scheme.primary,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _ComposerWorkModeSwitch extends StatelessWidget {
-  const _ComposerWorkModeSwitch({required this.workMode, this.onChanged});
-
-  final bool workMode;
-  final ValueChanged<bool>? onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    return Semantics(
-      key: const ValueKey('chat-work-mode-switch'),
-      label: workMode ? '任务模式' : '对话模式',
-      child: SegmentedButton<bool>(
-        showSelectedIcon: false,
-        style: ButtonStyle(
-          visualDensity: VisualDensity.compact,
-          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          padding: const WidgetStatePropertyAll(
-            EdgeInsets.symmetric(horizontal: 10),
-          ),
-          textStyle: WidgetStatePropertyAll(
-            Theme.of(
-              context,
-            ).textTheme.labelMedium?.copyWith(fontWeight: FontWeight.w600),
-          ),
-        ),
-        segments: const [
-          ButtonSegment<bool>(value: false, label: Text('对话')),
-          ButtonSegment<bool>(value: true, label: Text('任务')),
-        ],
-        selected: {workMode},
-        onSelectionChanged: onChanged == null
-            ? null
-            : (selection) => onChanged!(selection.first),
-        emptySelectionAllowed: false,
-      ),
-    );
-  }
-}
-
-class _ComposerToggleChip extends StatelessWidget {
-  const _ComposerToggleChip({
-    required this.selected,
-    required this.icon,
-    required this.label,
-    required this.onSelected,
-  });
-
-  final bool selected;
-  final IconData icon;
-  final String label;
-  final VoidCallback onSelected;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final fg = selected ? scheme.primary : scheme.onSurfaceVariant;
-    return Semantics(
-      button: true,
-      toggled: selected,
-      label: label,
-      excludeSemantics: true,
-      child: Material(
-        color: selected
-            ? scheme.primaryContainer.withValues(alpha: 0.75)
-            : scheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(999),
-        child: InkWell(
-          onTap: onSelected,
-          borderRadius: BorderRadius.circular(999),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(icon, size: 17, color: fg),
-                const SizedBox(width: 5),
-                Text(
-                  label,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: fg,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class _ModePill extends StatelessWidget {
   const _ModePill({
     required this.label,
@@ -4090,797 +2591,6 @@ class _HistoryDrawer extends StatelessWidget {
   @override
   Widget build(BuildContext context) =>
       const Drawer(child: ChatWorkspaceSidebar());
-}
-
-/// Unified desktop workspace navigation and conversation history.
-///
-/// This is public so [AppShell] can own a single left sidebar instead of
-/// stacking a navigation rail beside a second history pane.
-@immutable
-class _HistoryListSlice {
-  const _HistoryListSlice({required this.currentId, required this.items});
-
-  final String? currentId;
-  final List<_HistoryItemSlice> items;
-
-  @override
-  bool operator ==(Object other) {
-    if (other is! _HistoryListSlice) return false;
-    if (currentId != other.currentId || items.length != other.items.length) {
-      return false;
-    }
-    for (var i = 0; i < items.length; i++) {
-      if (items[i] != other.items[i]) return false;
-    }
-    return true;
-  }
-
-  @override
-  int get hashCode => Object.hash(currentId, Object.hashAll(items));
-}
-
-@immutable
-class _HistoryItemSlice {
-  const _HistoryItemSlice({
-    required this.id,
-    required this.title,
-    required this.mode,
-  });
-
-  final String id;
-  final String title;
-  final ConversationMode mode;
-
-  @override
-  bool operator ==(Object other) =>
-      other is _HistoryItemSlice &&
-      id == other.id &&
-      title == other.title &&
-      mode == other.mode;
-
-  @override
-  int get hashCode => Object.hash(id, title, mode);
-}
-
-class ChatWorkspaceSidebar extends ConsumerStatefulWidget {
-  const ChatWorkspaceSidebar({super.key, this.onCollapse});
-
-  final VoidCallback? onCollapse;
-
-  @override
-  ConsumerState<ChatWorkspaceSidebar> createState() =>
-      _ChatWorkspaceSidebarState();
-}
-
-class _ChatWorkspaceSidebarState extends ConsumerState<ChatWorkspaceSidebar> {
-  String _query = '';
-  List<SearchHit> _searchHits = const [];
-
-  /// null = all modes.
-  ConversationMode? _modeFilter;
-  String? _renamingId; // id of the conversation being renamed inline
-  final _renameCtrl = TextEditingController();
-  Timer? _searchDebounce;
-
-  @override
-  void dispose() {
-    _searchDebounce?.cancel();
-    _renameCtrl.dispose();
-    super.dispose();
-  }
-
-  void _scheduleSearch(String value) {
-    _searchDebounce?.cancel();
-    _searchDebounce = Timer(const Duration(milliseconds: 250), () {
-      unawaited(_runSearch(value.trim()));
-    });
-  }
-
-  Future<void> _runSearch(String query) async {
-    if (query.isEmpty) {
-      if (mounted) {
-        setState(() {
-          _query = '';
-          _searchHits = const [];
-        });
-      }
-      return;
-    }
-    final hits = await ref
-        .read(conversationRepositoryProvider)
-        .searchMessages(query);
-    if (!mounted) return;
-    setState(() {
-      _query = query;
-      _searchHits = hits;
-    });
-  }
-
-  bool _matches(Conversation c, String q) {
-    if (_modeFilter != null && c.mode != _modeFilter) return false;
-    if (q.isEmpty) return true;
-    return _searchHits.any((hit) => hit.convoId == c.id);
-  }
-
-  void _startRename(Conversation c) {
-    _renameCtrl.text = c.title;
-    setState(() => _renamingId = c.id);
-  }
-
-  void _commitRename() {
-    final id = _renamingId;
-    final text = _renameCtrl.text.trim();
-    setState(() => _renamingId = null);
-    if (id != null && text.isNotEmpty) {
-      ref.read(chatControllerProvider.notifier).renameConversation(id, text);
-    }
-  }
-
-  Future<void> _confirmDelete(Conversation conversation) async {
-    final scheme = Theme.of(context).colorScheme;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        icon: Icon(Icons.delete_outline, color: scheme.error),
-        title: const Text('删除这段对话？'),
-        content: Text('“${conversation.title}”及其中的全部消息会从本机删除，且无法恢复。'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            style: FilledButton.styleFrom(
-              backgroundColor: scheme.error,
-              foregroundColor: scheme.onError,
-            ),
-            child: const Text('删除'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed == true && mounted) {
-      ref
-          .read(chatControllerProvider.notifier)
-          .deleteConversation(conversation.id);
-    }
-  }
-
-  /// Close the drawer if we're in single-pane mode (no-op in two-pane).
-  void _closeDrawerIfAny() {
-    final scaffold = Scaffold.maybeOf(context);
-    if (scaffold != null && scaffold.isDrawerOpen) {
-      Navigator.of(context).pop();
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final controller = ref.read(chatControllerProvider.notifier);
-    final scheme = Theme.of(context).colorScheme;
-    ref.watch(
-      chatControllerProvider.select((async) {
-        final s = async.value;
-        return _HistoryListSlice(
-          currentId: s?.currentId,
-          items: [
-            for (final c in s?.conversations ?? const <Conversation>[])
-              _HistoryItemSlice(id: c.id, title: c.title, mode: c.mode),
-          ],
-        );
-      }),
-    );
-    final state = ref.read(chatControllerProvider).value;
-    final settings = ref.watch(settingsControllerProvider).value;
-    final selectedTab = ref.watch(shellTabProvider);
-    final workspaceTabs = ShellTab.visible(
-      researchModeEnabled: settings?.researchModeEnabled ?? false,
-      studyModeEnabled: settings?.studyModeEnabled ?? true,
-      creationModeEnabled: settings?.creationModeEnabled ?? true,
-    ).where((tab) => tab != ShellTab.settings).toList();
-    final showWorkspaceLinks = MediaQuery.sizeOf(context).height >= 600;
-    final showSettingsFooter = MediaQuery.sizeOf(context).height >= 480;
-    final all = state?.conversations ?? const <Conversation>[];
-    final visible = [
-      for (final c in all)
-        if (_matches(c, _query)) c,
-    ];
-
-    void openWorkspace(ShellTab tab) {
-      openShellTab(ref, tab);
-      _closeDrawerIfAny();
-    }
-
-    void newConversation() {
-      controller.newConversation();
-      openWorkspace(ShellTab.chat);
-    }
-
-    // Header remains fixed while the recent conversation list scrolls.
-    final header = Material(
-      color: scheme.surfaceContainerLow.withValues(alpha: 0.98),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(14, 14, 8, 10),
-            child: Row(
-              children: [
-                Container(
-                  width: 34,
-                  height: 34,
-                  decoration: BoxDecoration(
-                    color: scheme.primary,
-                    borderRadius: BorderRadius.circular(11),
-                  ),
-                  child: Icon(
-                    Icons.auto_awesome_rounded,
-                    size: 19,
-                    color: scheme.onPrimary,
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    'Expert Chat',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: -0.2,
-                    ),
-                  ),
-                ),
-                if (widget.onCollapse != null)
-                  IconButton(
-                    tooltip: '收起侧边栏',
-                    onPressed: widget.onCollapse,
-                    icon: const Icon(Icons.menu_open_rounded),
-                  ),
-              ],
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-            child: Row(
-              children: [
-                Expanded(
-                  child: FilledButton.icon(
-                    key: const ValueKey('sidebar-new-chat'),
-                    onPressed: newConversation,
-                    icon: const Icon(Icons.add_rounded, size: 20),
-                    label: const Text('新对话'),
-                    style: FilledButton.styleFrom(
-                      minimumSize: const Size.fromHeight(42),
-                      alignment: Alignment.centerLeft,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 6),
-                PopupMenuButton<String>(
-                  tooltip: '更多新建方式',
-                  icon: const Icon(Icons.expand_more_rounded),
-                  onSelected: (value) {
-                    if (value == 'story') {
-                      Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => const DirectorStorySetupPage(),
-                        ),
-                      );
-                    } else if (value == 'ensemble') {
-                      Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => const EnsembleSetupPage(),
-                        ),
-                      );
-                    }
-                  },
-                  itemBuilder: (_) => const [
-                    PopupMenuItem(
-                      value: 'story',
-                      child: ListTile(
-                        dense: true,
-                        contentPadding: EdgeInsets.zero,
-                        leading: Icon(Icons.auto_stories_outlined),
-                        title: Text('导演故事'),
-                      ),
-                    ),
-                    PopupMenuItem(
-                      value: 'ensemble',
-                      child: ListTile(
-                        dense: true,
-                        contentPadding: EdgeInsets.zero,
-                        leading: Icon(Icons.groups_outlined),
-                        title: Text('角色大乱斗'),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
-            child: TextField(
-              key: const ValueKey('conversation-search-field'),
-              decoration: InputDecoration(
-                isDense: true,
-                prefixIcon: const Icon(Icons.search, size: 19),
-                hintText: '搜索会话',
-                filled: true,
-                fillColor: scheme.surfaceContainer,
-              ),
-              onChanged: _scheduleSearch,
-            ),
-          ),
-          if (showWorkspaceLinks) ...[
-            const _SidebarSectionLabel('工作区'),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(8, 2, 8, 10),
-              child: Column(
-                children: [
-                  for (final tab in workspaceTabs)
-                    _WorkspaceDestination(
-                      tab: tab,
-                      selected: selectedTab == tab,
-                      onTap: () => openWorkspace(tab),
-                    ),
-                ],
-              ),
-            ),
-          ],
-          const _SidebarSectionLabel('最近会话'),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 4, 12, 10),
-            child: _ModeFilterBar(
-              selected: _modeFilter,
-              onSelected: (mode) => setState(() => _modeFilter = mode),
-            ),
-          ),
-          Divider(
-            height: 1,
-            color: scheme.outlineVariant.withValues(alpha: 0.85),
-          ),
-        ],
-      ),
-    );
-
-    return Material(
-      color: scheme.surfaceContainerLow.withValues(alpha: 0.92),
-      child: SafeArea(
-        child: Column(
-          children: [
-            header,
-            Expanded(
-              child: visible.isEmpty
-                  ? Center(
-                      child: Text(
-                        '没有匹配的会话',
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    )
-                  : ListView.builder(
-                      padding: const EdgeInsets.fromLTRB(8, 8, 8, 16),
-                      itemCount: visible.length,
-                      itemBuilder: (context, index) {
-                        final c = visible[index];
-                        final modeColor = ModeStyle.color(c.mode);
-                        if (c.id == _renamingId) {
-                          return Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 2),
-                            child: ListTile(
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(14),
-                              ),
-                              tileColor: scheme.surfaceContainer,
-                              leading: Icon(
-                                ModeStyle.icon(c.mode),
-                                color: modeColor,
-                              ),
-                              title: TextField(
-                                controller: _renameCtrl,
-                                autofocus: true,
-                                decoration: const InputDecoration(
-                                  isDense: true,
-                                ),
-                                onSubmitted: (_) => _commitRename(),
-                              ),
-                              trailing: IconButton(
-                                icon: const Icon(Icons.check, size: 20),
-                                tooltip: '保存',
-                                onPressed: _commitRename,
-                              ),
-                            ),
-                          );
-                        }
-                        final selected = c.id == state?.currentId;
-                        final hit = _query.isEmpty
-                            ? const SearchHit(
-                                convoId: '',
-                                messageId: '',
-                                snippet: '',
-                              )
-                            : _searchHits.firstWhere(
-                                (h) => h.convoId == c.id,
-                                orElse: () => const SearchHit(
-                                  convoId: '',
-                                  messageId: '',
-                                  snippet: '',
-                                ),
-                              );
-                        final preview = hit.snippet.isNotEmpty
-                            ? hit.snippet
-                            : _conversationPreview(c);
-                        return Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 1),
-                          child: Material(
-                            color: selected
-                                ? scheme.primaryContainer.withValues(
-                                    alpha: 0.52,
-                                  )
-                                : Colors.transparent,
-                            borderRadius: BorderRadius.circular(11),
-                            child: InkWell(
-                              borderRadius: BorderRadius.circular(11),
-                              onTap: () {
-                                controller.selectConversation(c.id);
-                                openShellTab(ref, ShellTab.chat);
-                                if (hit.messageId.isNotEmpty) {
-                                  ref
-                                      .read(
-                                        pendingJumpMessageIdProvider.notifier,
-                                      )
-                                      .set(hit.messageId);
-                                }
-                                _closeDrawerIfAny();
-                              },
-                              child: Padding(
-                                padding: const EdgeInsets.fromLTRB(10, 7, 2, 7),
-                                child: Row(
-                                  crossAxisAlignment: CrossAxisAlignment.center,
-                                  children: [
-                                    Container(
-                                      width: 30,
-                                      height: 30,
-                                      decoration: BoxDecoration(
-                                        color: modeColor.withValues(
-                                          alpha: 0.10,
-                                        ),
-                                        borderRadius: BorderRadius.circular(9),
-                                      ),
-                                      child: Icon(
-                                        ModeStyle.icon(c.mode),
-                                        size: 16,
-                                        color: modeColor,
-                                      ),
-                                    ),
-                                    const SizedBox(width: 10),
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            c.title,
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .bodyMedium
-                                                ?.copyWith(
-                                                  fontWeight: selected
-                                                      ? FontWeight.w700
-                                                      : FontWeight.w600,
-                                                ),
-                                          ),
-                                          if (preview.isNotEmpty) ...[
-                                            const SizedBox(height: 3),
-                                            Text(
-                                              hit.snippet.isNotEmpty
-                                                  ? '匹配：$preview'
-                                                  : preview,
-                                              maxLines: 1,
-                                              overflow: TextOverflow.ellipsis,
-                                              style: Theme.of(context)
-                                                  .textTheme
-                                                  .bodySmall
-                                                  ?.copyWith(
-                                                    color:
-                                                        hit.snippet.isNotEmpty
-                                                        ? scheme.primary
-                                                        : scheme
-                                                              .onSurfaceVariant,
-                                                    fontWeight:
-                                                        hit.snippet.isNotEmpty
-                                                        ? FontWeight.w600
-                                                        : null,
-                                                  ),
-                                            ),
-                                          ],
-                                        ],
-                                      ),
-                                    ),
-                                    PopupMenuButton<String>(
-                                      tooltip: '会话操作',
-                                      icon: const Icon(
-                                        Icons.more_horiz,
-                                        size: 19,
-                                      ),
-                                      padding: EdgeInsets.zero,
-                                      onSelected: (v) {
-                                        if (v == 'rename') _startRename(c);
-                                        if (v == 'delete') _confirmDelete(c);
-                                      },
-                                      itemBuilder: (_) => [
-                                        const PopupMenuItem(
-                                          value: 'rename',
-                                          child: Text('重命名'),
-                                        ),
-                                        PopupMenuItem(
-                                          value: 'delete',
-                                          child: Text(
-                                            '删除',
-                                            style: TextStyle(
-                                              color: scheme.error,
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-            ),
-            if (showSettingsFooter) ...[
-              Divider(
-                height: 1,
-                color: scheme.outlineVariant.withValues(alpha: 0.72),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
-                child: _WorkspaceDestination(
-                  tab: ShellTab.settings,
-                  selected: selectedTab == ShellTab.settings,
-                  onTap: () => openWorkspace(ShellTab.settings),
-                ),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _SidebarSectionLabel extends StatelessWidget {
-  const _SidebarSectionLabel(this.label);
-
-  final String label;
-
-  @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.fromLTRB(16, 2, 16, 2),
-    child: Text(
-      label,
-      style: Theme.of(context).textTheme.labelSmall?.copyWith(
-        color: Theme.of(context).colorScheme.onSurfaceVariant,
-        fontWeight: FontWeight.w700,
-        letterSpacing: 0.4,
-      ),
-    ),
-  );
-}
-
-class _WorkspaceDestination extends StatelessWidget {
-  const _WorkspaceDestination({
-    required this.tab,
-    required this.selected,
-    required this.onTap,
-  });
-
-  final ShellTab tab;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 1),
-      child: ListTile(
-        dense: true,
-        minTileHeight: 40,
-        selected: selected,
-        leading: Icon(
-          selected ? tab.selectedIcon : tab.icon,
-          size: 20,
-          color: selected ? scheme.primary : scheme.onSurfaceVariant,
-        ),
-        title: Text(
-          tab.label,
-          style: TextStyle(
-            fontSize: 13.5,
-            fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-          ),
-        ),
-        trailing: selected
-            ? Container(
-                width: 5,
-                height: 5,
-                decoration: BoxDecoration(
-                  color: scheme.primary,
-                  shape: BoxShape.circle,
-                ),
-              )
-            : null,
-        onTap: onTap,
-      ),
-    );
-  }
-}
-
-String _conversationPreview(Conversation c) {
-  final path = c.activePath;
-  for (var i = path.length - 1; i >= 0; i--) {
-    final text = path[i].content.trim().replaceAll(RegExp(r'\s+'), ' ');
-    if (text.isNotEmpty) {
-      return text.length > 48 ? '${text.substring(0, 48)}…' : text;
-    }
-  }
-  return '';
-}
-
-class _ModeFilterBar extends StatelessWidget {
-  const _ModeFilterBar({required this.selected, required this.onSelected});
-
-  final ConversationMode? selected;
-  final ValueChanged<ConversationMode?> onSelected;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final options =
-        <({String id, String label, IconData icon, ConversationMode? mode})>[
-          (id: 'all', label: '全部', icon: Icons.apps_rounded, mode: null),
-          (
-            id: ConversationMode.chat.name,
-            label: ModeStyle.label(ConversationMode.chat),
-            icon: ModeStyle.icon(ConversationMode.chat),
-            mode: ConversationMode.chat,
-          ),
-        ];
-
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final showIcons =
-            constraints.maxWidth >= 264 &&
-            MediaQuery.textScalerOf(context).scale(12) <= 14.4;
-        return Container(
-          key: const ValueKey('conversation-mode-filter'),
-          height: 44,
-          padding: const EdgeInsets.all(3),
-          decoration: BoxDecoration(
-            color: scheme.surfaceContainerHighest.withValues(alpha: 0.68),
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(
-              color: scheme.outlineVariant.withValues(alpha: 0.72),
-            ),
-          ),
-          child: Row(
-            children: [
-              for (var index = 0; index < options.length; index++) ...[
-                if (index > 0) const SizedBox(width: 2),
-                Expanded(
-                  child: _ModeFilterSegment(
-                    key: ValueKey(
-                      'conversation-mode-filter-${options[index].id}',
-                    ),
-                    label: options[index].label,
-                    icon: showIcons ? options[index].icon : null,
-                    selected: selected == options[index].mode,
-                    onTap: () => onSelected(options[index].mode),
-                  ),
-                ),
-              ],
-            ],
-          ),
-        );
-      },
-    );
-  }
-}
-
-class _ModeFilterSegment extends StatelessWidget {
-  const _ModeFilterSegment({
-    super.key,
-    required this.label,
-    required this.icon,
-    required this.selected,
-    required this.onTap,
-  });
-
-  final String label;
-  final IconData? icon;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final foreground = selected ? scheme.primary : scheme.onSurfaceVariant;
-
-    return Semantics(
-      button: true,
-      selected: selected,
-      label: '$label会话筛选',
-      child: ExcludeSemantics(
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 160),
-          curve: Curves.easeOutCubic,
-          decoration: BoxDecoration(
-            color: selected
-                ? Color.alphaBlend(
-                    scheme.primary.withValues(alpha: 0.10),
-                    scheme.surface,
-                  )
-                : Colors.transparent,
-            borderRadius: BorderRadius.circular(11),
-            border: Border.all(
-              color: selected
-                  ? scheme.primary.withValues(alpha: 0.24)
-                  : Colors.transparent,
-            ),
-            boxShadow: selected
-                ? [
-                    BoxShadow(
-                      color: scheme.shadow.withValues(alpha: 0.08),
-                      blurRadius: 4,
-                      offset: const Offset(0, 1),
-                    ),
-                  ]
-                : null,
-          ),
-          child: Material(
-            color: Colors.transparent,
-            child: InkWell(
-              borderRadius: BorderRadius.circular(11),
-              onTap: onTap,
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  if (icon != null) ...[
-                    Icon(icon, size: 16, color: foreground),
-                    const SizedBox(width: 5),
-                  ],
-                  Flexible(
-                    child: Text(
-                      label,
-                      maxLines: 1,
-                      softWrap: false,
-                      overflow: TextOverflow.fade,
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: selected
-                            ? FontWeight.w700
-                            : FontWeight.w600,
-                        color: foreground,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
 }
 
 /// Ensemble controls: next speaker / auto-play / venue.
@@ -5148,56 +2858,6 @@ class _SessionMiniButton extends StatelessWidget {
   }
 }
 
-class _ErrorBanner extends StatelessWidget {
-  const _ErrorBanner({
-    required this.message,
-    this.onRetry,
-    this.onOpenSettings,
-  });
-  final String message;
-  final VoidCallback? onRetry;
-  final VoidCallback? onOpenSettings;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Container(
-      width: double.infinity,
-      color: scheme.errorContainer,
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      child: Row(
-        children: [
-          Icon(Icons.error_outline, size: 18, color: scheme.onErrorContainer),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              message,
-              style: TextStyle(color: scheme.onErrorContainer),
-            ),
-          ),
-          if (onOpenSettings != null)
-            TextButton(
-              onPressed: onOpenSettings,
-              style: TextButton.styleFrom(
-                foregroundColor: scheme.onErrorContainer,
-              ),
-              child: const Text('去填写'),
-            ),
-          if (onRetry != null)
-            TextButton.icon(
-              onPressed: onRetry,
-              icon: const Icon(Icons.refresh, size: 16),
-              label: const Text('重试'),
-              style: TextButton.styleFrom(
-                foregroundColor: scheme.onErrorContainer,
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
 /// Thin drag strip between workspace panes.
 class _PaneResizeHandle extends StatelessWidget {
   const _PaneResizeHandle({required this.onDrag});
@@ -5269,7 +2929,14 @@ class _JumpToBottomButton extends StatelessWidget {
 }
 
 class _EmptyState extends StatelessWidget {
-  const _EmptyState();
+  const _EmptyState({
+    required this.needsSetup,
+    required this.onSetup,
+    required this.onExample,
+  });
+  final bool needsSetup;
+  final VoidCallback onSetup;
+  final ValueChanged<String> onExample;
 
   @override
   Widget build(BuildContext context) {
@@ -5344,14 +3011,41 @@ class _EmptyState extends StatelessWidget {
                       ),
                       SizedBox(height: compact ? 6 : 8),
                       Text(
-                        '在下方输入消息；API Key 在底栏「设置」里配置。\n'
-                        '也可点右上角新建：普通对话 / 角色故事 / 大乱斗。',
+                        needsSetup
+                            ? '先连接你使用的模型服务，验证成功后即可开始。'
+                            : '写下你的问题，或从一个小任务开始。',
                         textAlign: TextAlign.center,
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
                           color: scheme.onSurfaceVariant,
                           height: compact ? 1.35 : 1.5,
                         ),
                       ),
+                      const SizedBox(height: 20),
+                      if (needsSetup)
+                        FilledButton.icon(
+                          key: const ValueKey('chat-connect-model'),
+                          onPressed: onSetup,
+                          icon: const Icon(Icons.add),
+                          label: const Text('连接模型，开始使用'),
+                        )
+                      else
+                        Wrap(
+                          alignment: WrapAlignment.center,
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            OutlinedButton(
+                              onPressed: () =>
+                                  onExample('帮我梳理一个问题，并给出清晰的行动步骤。'),
+                              child: const Text('梳理思路'),
+                            ),
+                            OutlinedButton(
+                              onPressed: () =>
+                                  onExample('请帮我解读接下来提供的资料，提炼重点和待确认的问题。'),
+                              child: const Text('解读资料'),
+                            ),
+                          ],
+                        ),
                     ],
                   ),
                 ),

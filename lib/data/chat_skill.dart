@@ -2,7 +2,7 @@ import 'dart:convert';
 
 const kChatSkillMinConfidence = 0.6;
 
-enum ChatSkillSource { prefix, model, fallback }
+enum ChatSkillSource { prefix, model, fallback, jev }
 
 class TurnSkillMark {
   const TurnSkillMark({

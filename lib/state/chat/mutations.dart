@@ -1,6 +1,63 @@
 part of '../chat_controller.dart';
 
+// Internal library mixin; the public controller composes these implementation parts.
+// ignore: library_private_types_in_public_api
 mixin ChatMutations on _ChatControllerBase {
+  ChatMessage? _messageById(String convoId, String msgId) => _s.conversations
+      .where((c) => c.id == convoId)
+      .firstOrNull
+      ?.messages
+      .where((m) => m.id == msgId)
+      .firstOrNull;
+
+  void _endPendingActivities(String convoId, String msgId, String reason) {
+    final message = _messageById(convoId, msgId);
+    if (message == null) return;
+    for (final activity in message.searchActivities) {
+      if (activity.status == SearchActivityStatus.running) {
+        _upsertSearchActivity(
+          convoId,
+          msgId,
+          activity.copyWith(status: SearchActivityStatus.failed, error: reason),
+        );
+      }
+    }
+  }
+
+  void _recordToolResult(
+    String convoId,
+    String msgId,
+    ToolCall call,
+    String result,
+    Set<String> priorIds,
+  ) {
+    final message = _messageById(convoId, msgId);
+    if (message == null) return;
+    final created = message.searchActivities
+        .where((a) => !priorIds.contains(a.id))
+        .toList();
+    final activity = created.isEmpty
+        ? SearchActivity(
+            kind: SearchActivityKind.mcp,
+            query: call.name ?? '未知工具',
+            status: SearchActivityStatus.failed,
+            error: '未执行或没有可恢复的步骤记录',
+          )
+        : created.last;
+    _upsertSearchActivity(
+      convoId,
+      msgId,
+      activity.copyWith(
+        toolName: created.isEmpty ? null : call.name,
+        toolArguments: created.isEmpty ? null : call.argumentsJson,
+        resultText: result.length > 64000
+            ? '${result.substring(0, 64000)}\n【结果过长，已截断】'
+            : result,
+      ),
+    );
+    _persistence.checkpointSoon(convoId);
+  }
+
   void _appendAssistantAttachment(
     String convoId,
     String msgId,
@@ -21,83 +78,44 @@ mixin ChatMutations on _ChatControllerBase {
     );
   }
 
-  Future<void> _importImageToLibrary(Attachment attachment) async {
-    if (!attachment.hasDownloadableBytes) return;
+  Future<void> _recordImageVersion({
+    required Attachment output,
+    required SettingsState settings,
+    required String originalPrompt,
+    required String sentPrompt,
+    String? revisedPrompt,
+    required String convoId,
+    required String messageId,
+    String? parentGenerationId,
+    List<ImageEditReference> references = const [],
+  }) async {
     try {
       await ref
-          .read(libraryRepositoryProvider)
-          .importBytes(
-            name: attachment.name,
-            mimeType: attachment.mimeType,
-            bytes: Uint8List.fromList(base64Decode(attachment.imageBase64!)),
+          .read(generationRepositoryProvider)
+          .record(
+            output: output,
+            config: settings.imageGenerationApi,
+            originalPrompt: originalPrompt,
+            sentPrompt: sentPrompt,
+            revisedPrompt: revisedPrompt,
+            conversationId: convoId,
+            messageId: messageId,
+            references: references,
+            parentGenerationId: parentGenerationId,
           );
-    } catch (_) {}
-  }
-
-  ({String? prompt, String? briefHint}) _imageToolArgs(String raw) {
-    try {
-      final decoded = jsonDecode(raw);
-      if (decoded is Map) {
-        final prompt = decoded['prompt'] is String
-            ? (decoded['prompt'] as String).trim()
-            : null;
-        final hint = decoded['brief_hint'] is String
-            ? (decoded['brief_hint'] as String).trim()
-            : (decoded['briefHint'] is String
-                  ? (decoded['briefHint'] as String).trim()
-                  : null);
-        return (
-          prompt: prompt?.isEmpty ?? true ? null : prompt,
-          briefHint: hint?.isEmpty ?? true ? null : hint,
-        );
-      }
-    } catch (_) {
-      // Malformed JSON from the model.
+    } catch (e) {
+      // A local archive error must never discard an already paid image.
+      _upsertSearchActivity(
+        convoId,
+        messageId,
+        SearchActivity(
+          kind: SearchActivityKind.image,
+          query: '保存生图版本记录',
+          status: SearchActivityStatus.failed,
+          error: '图片仍保留在会话中；记录保存失败：$e',
+        ),
+      );
     }
-    return (prompt: null, briefHint: null);
-  }
-
-  String _searchQueryFromArgs(String raw, String fallback) {
-    try {
-      final decoded = jsonDecode(raw);
-      if (decoded is Map && decoded['query'] is String) {
-        final query = normalizeSearchQuery(decoded['query'] as String);
-        if (query.isNotEmpty) return query;
-      }
-    } catch (_) {
-      // Fall through to the user turn if the model returned malformed JSON.
-    }
-    return normalizeSearchQuery(fallback);
-  }
-
-  /// Parse a single URL from a tool-call arguments JSON blob.
-  String? _urlFromArgs(String raw) {
-    try {
-      final decoded = jsonDecode(raw);
-      if (decoded is Map && decoded['url'] is String) {
-        final url = (decoded['url'] as String).trim();
-        if (url.isNotEmpty && HttpSearchProvider.isSafeHttpUrl(url)) {
-          return url;
-        }
-      }
-    } catch (_) {
-      // Malformed JSON from the model.
-    }
-    return null;
-  }
-
-  /// Canonical comparison key for the per-turn fetch allow-list.
-  String _fetchUrlKey(String url) {
-    final uri = Uri.parse(url);
-    return uri
-        .replace(
-          scheme: uri.scheme.toLowerCase(),
-          host: uri.host.toLowerCase(),
-          path: uri.path.isEmpty ? '/' : uri.path,
-          fragment: '',
-        )
-        .normalizePath()
-        .toString();
   }
 
   /// Tool-capable config for the "搜索大脑" planner, or null when the chosen
@@ -172,7 +190,43 @@ mixin ChatMutations on _ChatControllerBase {
   ) {
     final idx = _s.conversations.indexWhere((c) => c.id == convoId);
     if (idx < 0) return; // conversation was deleted mid-stream
-    final convo = _s.conversations[idx];
+    var convo = _s.conversations[idx];
+    // Count actual search steps, including planner rounds and hosted events.
+    final existingMessage = convo.messages
+        .where((m) => m.id == msgId)
+        .firstOrNull;
+    if (activity.toolName == null &&
+        (activity.kind == SearchActivityKind.search ||
+            activity.kind == SearchActivityKind.fetch)) {
+      // Search/fetch are safe to repeat and need no model planning to recover.
+      activity = activity.copyWith(
+        toolName: activity.kind == SearchActivityKind.search
+            ? 'web_search'
+            : 'fetch_url',
+        toolArguments: jsonEncode({
+          activity.kind == SearchActivityKind.search ? 'query' : 'url':
+              activity.query,
+        }),
+      );
+    }
+    if ((activity.kind == SearchActivityKind.search ||
+            (activity.kind == SearchActivityKind.fetch &&
+                !_execution.isExecutingTool)) &&
+        activity.status == SearchActivityStatus.running &&
+        !(existingMessage?.searchActivities.any((a) => a.id == activity.id) ??
+            false) &&
+        ((!_execution.isExecutingTool &&
+                !(_execution.budget?.takeTool() ?? true)) ||
+            (activity.kind == SearchActivityKind.search &&
+                !(_execution.budget?.takeSearch() ?? true)))) {
+      activity = activity.copyWith(
+        status: SearchActivityStatus.failed,
+        error: _execution.budget?.reason ?? '搜索预算已用完',
+      );
+      // Exhaustion flushes buffered text synchronously; keep that new state.
+      convo =
+          _s.conversations.where((c) => c.id == convoId).firstOrNull ?? convo;
+    }
     final messages = [
       for (final m in convo.messages)
         if (m.id == msgId)
@@ -196,10 +250,26 @@ mixin ChatMutations on _ChatControllerBase {
   ) {
     for (final existing in message.searchActivities) {
       if (existing.id == activity.id) {
-        return activity.copyWith(reasoningOffset: existing.reasoningOffset);
+        return activity.copyWith(
+          reasoningOffset: existing.reasoningOffset,
+          startedAt: existing.startedAt,
+          finishedAt: activity.status == SearchActivityStatus.running
+              ? null
+              : activity.finishedAt ?? existing.finishedAt ?? DateTime.now(),
+          toolName: existing.toolName,
+          toolArguments: existing.toolArguments,
+          resultText: existing.resultText,
+          retryOfId: existing.retryOfId,
+        );
       }
     }
-    return activity.copyWith(reasoningOffset: message.reasoning.length);
+    return activity.copyWith(
+      reasoningOffset: message.reasoning.length,
+      startedAt: activity.startedAt ?? DateTime.now(),
+      finishedAt: activity.status == SearchActivityStatus.running
+          ? null
+          : DateTime.now(),
+    );
   }
 
   static List<SearchActivity> _mergeActivity(
@@ -243,57 +313,6 @@ mixin ChatMutations on _ChatControllerBase {
     ];
     _set(
       _s.copyWith(conversations: _replace(convo.copyWith(messages: messages))),
-    );
-  }
-
-  /// Turn a stored [ChatMessage] into a request message: text attachments are
-  /// inlined into the content; image attachments are sent as `image_url` parts
-  /// when [vision] is true, otherwise described in text. Messages with no
-  /// attachments pass through unchanged.
-  LlmRequestMessage _toRequestMessage(
-    ChatMessage m, {
-    required bool vision,
-    bool imageToolAvailable = false,
-  }) {
-    if (m.attachments.isEmpty || m.role != MessageRole.user) {
-      return LlmRequestMessage.fromChatMessage(m);
-    }
-
-    final buffer = StringBuffer();
-    final images = <String>[];
-    for (final a in m.attachments) {
-      if (a.isImage) {
-        if (vision && a.hasImageData) {
-          images.add(a.imageDataUrl); // sent through the image channel
-        } else {
-          buffer.writeln('【图片：${a.name}】');
-          if (imageToolAvailable) {
-            buffer.writeln(
-              '（像素未发送给对话模型；需要看图时请调用 analyze_image，'
-              'attachment_name 用此文件名）',
-            );
-          } else {
-            buffer.writeln(a.parseError ?? '（当前模型不支持图片，未发送图片内容）');
-          }
-          buffer.writeln();
-        }
-        continue;
-      }
-      buffer.writeln('【文件：${a.name}】');
-      if (a.parseError != null) {
-        buffer.writeln('（${a.parseError}）');
-      } else {
-        buffer.writeln(a.text);
-        if (a.truncated) buffer.writeln('…（内容过长，已截断）');
-      }
-      buffer.writeln();
-    }
-    if (m.content.isNotEmpty) buffer.write(m.content);
-
-    return LlmRequestMessage(
-      role: m.role,
-      content: buffer.toString(),
-      imageDataUrls: images,
     );
   }
 

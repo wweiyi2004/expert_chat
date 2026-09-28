@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 /// research / creation / study mode flags — never hard-code indexes elsewhere.
 enum ShellTab {
   chat,
+  tools,
   terminal,
   study,
   studio,
@@ -12,6 +13,7 @@ enum ShellTab {
 
   String get label => switch (this) {
     ShellTab.chat => '会话',
+    ShellTab.tools => '工具',
     ShellTab.terminal => '终端',
     ShellTab.study => '学习',
     ShellTab.studio => '创作',
@@ -20,6 +22,7 @@ enum ShellTab {
 
   IconData get icon => switch (this) {
     ShellTab.chat => Icons.forum_outlined,
+    ShellTab.tools => Icons.extension_outlined,
     ShellTab.terminal => Icons.terminal_rounded,
     ShellTab.study => Icons.school_outlined,
     ShellTab.studio => Icons.menu_book_outlined,
@@ -28,21 +31,31 @@ enum ShellTab {
 
   IconData get selectedIcon => switch (this) {
     ShellTab.chat => Icons.forum,
+    ShellTab.tools => Icons.extension_outlined,
     ShellTab.terminal => Icons.terminal,
     ShellTab.study => Icons.school,
     ShellTab.studio => Icons.menu_book,
     ShellTab.settings => Icons.settings,
   };
 
-  /// Visible tabs for the current mode flags.
+  /// Primary navigation stays compact while optional pages keep their state.
+  static const navigation = [ShellTab.chat, ShellTab.tools, ShellTab.settings];
+
+  ShellTab get navigationTab => switch (this) {
+    ShellTab.terminal || ShellTab.study || ShellTab.studio => ShellTab.tools,
+    _ => this,
+  };
+
+  /// Available destinations, including internal optional pages.
   ///
-  /// Order: 会话 → [终端] → [学习] → [创作] → 设置.
+  /// Optional pages are available only while their saved mode flag is on.
   static List<ShellTab> visible({
     required bool researchModeEnabled,
     bool studyModeEnabled = true,
     bool creationModeEnabled = true,
   }) => [
     ShellTab.chat,
+    ShellTab.tools,
     if (researchModeEnabled) ShellTab.terminal,
     if (studyModeEnabled) ShellTab.study,
     if (creationModeEnabled) ShellTab.studio,
@@ -59,7 +72,9 @@ class ShellTabController extends Notifier<ShellTab> {
   @override
   ShellTab build() => ShellTab.chat;
 
-  void set(ShellTab tab) => state = tab;
+  void set(ShellTab tab) {
+    if (ref.mounted) state = tab;
+  }
 
   /// Keep selection valid when the visible set changes (e.g. research off).
   void ensureVisible(List<ShellTab> visible) {
@@ -77,8 +92,9 @@ class ShellTabController extends Notifier<ShellTab> {
 /// (or other overlay dismissals) do not rebuild [IndexedStack] mid-layout,
 /// which triggers `debugNeedsLayout is not true` red screens.
 void openShellTab(WidgetRef ref, ShellTab tab) {
+  final controller = ref.read(shellTabProvider.notifier);
   WidgetsBinding.instance.addPostFrameCallback((_) {
-    ref.read(shellTabProvider.notifier).set(tab);
+    controller.set(tab);
   });
 }
 

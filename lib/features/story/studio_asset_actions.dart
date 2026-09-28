@@ -19,10 +19,7 @@ void _toast(BuildContext context, String message) {
 /// Saves each imported card individually, tolerating per-item failures, and
 /// reports how many actually landed so a mid-batch failure cannot masquerade
 /// as a complete one (and the user knows a re-import may duplicate).
-Future<void> importCharactersAction(
-  BuildContext context,
-  WidgetRef ref,
-) async {
+Future<void> importCharactersAction(BuildContext context, WidgetRef ref) async {
   final messenger = ScaffoldMessenger.of(context);
   try {
     final cards = await ref.read(studioAssetIoProvider).importCharacters();

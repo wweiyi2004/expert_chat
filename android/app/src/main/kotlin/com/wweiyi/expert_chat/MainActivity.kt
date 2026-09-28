@@ -4,6 +4,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import androidx.core.content.FileProvider
+import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -11,9 +12,33 @@ import java.io.File
 
 class MainActivity : FlutterActivity() {
     private val installChannel = "expert_chat/install"
+    private var generationChannel: MethodChannel? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        generationChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger, "expert_chat/generation",
+        ).also { channel ->
+            channel.setMethodCallHandler { call, result ->
+                try {
+                    when (call.method) {
+                        "start" -> {
+                            ContextCompat.startForegroundService(
+                                this, Intent(this, GenerationService::class.java),
+                            )
+                            result.success(null)
+                        }
+                        "stop" -> {
+                            stopService(Intent(this, GenerationService::class.java))
+                            result.success(null)
+                        }
+                        else -> result.notImplemented()
+                    }
+                } catch (error: Exception) {
+                    result.error("generation_service_unavailable", error.message, null)
+                }
+            }
+        }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, installChannel)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
@@ -47,6 +72,13 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+    }
+
+    override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        generationChannel?.setMethodCallHandler(null)
+        generationChannel = null
+        stopService(Intent(this, GenerationService::class.java))
+        super.cleanUpFlutterEngine(flutterEngine)
     }
 
     private fun primaryAbi(): String {

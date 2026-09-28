@@ -1,8 +1,7 @@
 import 'package:dio/dio.dart' show CancelToken, DioException;
 
 /// True when [e] is a cancellation raised by stop() firing the CancelToken.
-bool isCancelError(Object e) =>
-    e is DioException && CancelToken.isCancel(e);
+bool isCancelError(Object e) => e is DioException && CancelToken.isCancel(e);
 
 /// Error-banner text for a caught throwable.
 ///

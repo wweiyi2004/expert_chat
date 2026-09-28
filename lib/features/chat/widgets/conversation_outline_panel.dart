@@ -32,11 +32,7 @@ class ConversationOutlinePanel extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
             child: Row(
               children: [
-                Icon(
-                  Icons.list_alt_outlined,
-                  size: 18,
-                  color: scheme.primary,
-                ),
+                Icon(Icons.list_alt_outlined, size: 18, color: scheme.primary),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
@@ -59,9 +55,9 @@ class ConversationOutlinePanel extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
             child: Text(
               '点条目跳转到对应消息',
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                color: scheme.onSurfaceVariant,
-              ),
+              style: Theme.of(
+                context,
+              ).textTheme.labelSmall?.copyWith(color: scheme.onSurfaceVariant),
             ),
           ),
           Divider(
@@ -88,16 +84,16 @@ class ConversationOutlinePanel extends StatelessWidget {
                     itemBuilder: (context, index) {
                       final entry = entries[index];
                       final isUser = entry.role == MessageRole.user;
-                      final indent = isUser ? 0.0 : 10.0 + (entry.depth - 1) * 12;
+                      final indent = isUser
+                          ? 0.0
+                          : 10.0 + (entry.depth - 1) * 12;
                       return Padding(
                         padding: const EdgeInsets.symmetric(vertical: 1),
                         child: Material(
                           color: Colors.transparent,
                           borderRadius: BorderRadius.circular(11),
                           child: InkWell(
-                            key: ValueKey(
-                              'outline-${entry.messageId}-$index',
-                            ),
+                            key: ValueKey('outline-${entry.messageId}-$index'),
                             borderRadius: BorderRadius.circular(11),
                             onTap: () => onJump(entry.messageId),
                             child: Padding(

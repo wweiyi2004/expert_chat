@@ -13,7 +13,11 @@ binaries = []
 hiddenimports = [
     "mcp_server.app.main",
     "doc_edit.app.main",
-    "gateway.app.document_mcp",
+    "document_core.mcp_protocol",
+    "document_core.runtime",
+    "document_core.extraction",
+    "document_core.operations",
+    "mcp_server.upload_store",
     "uvicorn.logging",
     "uvicorn.loops.auto",
     "uvicorn.protocols.http.auto",

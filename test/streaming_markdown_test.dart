@@ -1,3 +1,4 @@
+import 'package:expert_chat/data/ui_prefs.dart';
 import 'package:expert_chat/features/chat/widgets/streaming_markdown.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -84,5 +85,33 @@ void main() {
 
     await pump('```html\n<div>\n```', isFinal: true);
     expect(find.text('fence-closed'), findsOneWidget);
+  });
+
+  testWidgets('renders a two-column markdown table on one row', (tester) async {
+    tester.view.physicalSize = const Size(360, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: Padding(
+            padding: EdgeInsets.all(12),
+            child: StreamingGptMarkdown(
+              '| 列 A | 列 B |\n| --- | --- |\n| 左 | 右 |',
+              markdownStyle: MarkdownStylePref.notion,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+
+    final colA = tester.getRect(find.text('列 A'));
+    final colB = tester.getRect(find.text('列 B'));
+    expect((colA.center.dy - colB.center.dy).abs(), lessThan(8));
+    expect(colB.left, greaterThan(colA.right - 1));
   });
 }

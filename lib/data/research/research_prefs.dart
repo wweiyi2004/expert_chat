@@ -31,8 +31,7 @@ class ResearchPrefs {
   Future<void> saveAiContextLines(int lines) =>
       _prefs.setInt(aiContextLinesKey, lines);
 
-  bool loadBlockCtrlC() =>
-      _prefs.getBool(blockCtrlCKey) ?? defaultBlockCtrlC;
+  bool loadBlockCtrlC() => _prefs.getBool(blockCtrlCKey) ?? defaultBlockCtrlC;
 
   Future<void> saveBlockCtrlC(bool value) =>
       _prefs.setBool(blockCtrlCKey, value);

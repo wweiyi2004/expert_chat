@@ -169,61 +169,56 @@ void main() {
     },
   );
 
-  test(
-    'cancel during a pending stop still cancels the recorder and deletes '
-    'the file',
-    () async {
-      final directory = await Directory.systemTemp.createTemp(
-        'expert-chat-asr-',
-      );
-      final recorder = _FakeRecorder()..stopGate = Completer<void>();
-      final service = MimoSpeechInputService(
-        mediaProvider: OpenAiCompatibleMediaProvider(),
-        recorder: recorder,
-        temporaryDirectory: () async => directory,
-      );
-      addTearDown(() async {
-        await service.dispose();
-        if (await directory.exists()) await directory.delete(recursive: true);
-      });
+  test('cancel during a pending stop still cancels the recorder and deletes '
+      'the file', () async {
+    final directory = await Directory.systemTemp.createTemp('expert-chat-asr-');
+    final recorder = _FakeRecorder()..stopGate = Completer<void>();
+    final service = MimoSpeechInputService(
+      mediaProvider: OpenAiCompatibleMediaProvider(),
+      recorder: recorder,
+      temporaryDirectory: () async => directory,
+    );
+    addTearDown(() async {
+      await service.dispose();
+      if (await directory.exists()) await directory.delete(recursive: true);
+    });
 
-      final statuses = <SpeechInputStatus>[];
-      final failures = <SpeechInputFailure>[];
-      final results = <SpeechInputResult>[];
-      await service.initialize(onStatus: statuses.add, onError: failures.add);
-      const config = MediaApiConfig(
-        baseUrl: MediaApiConfig.mimoBaseUrl,
-        model: MediaApiConfig.mimoAsrModel,
-      );
-      expect(
-        await service.start(
-          config: config,
-          apiKey: 'secret',
-          onResult: results.add,
-        ),
-        isTrue,
-      );
+    final statuses = <SpeechInputStatus>[];
+    final failures = <SpeechInputFailure>[];
+    final results = <SpeechInputResult>[];
+    await service.initialize(onStatus: statuses.add, onError: failures.add);
+    const config = MediaApiConfig(
+      baseUrl: MediaApiConfig.mimoBaseUrl,
+      model: MediaApiConfig.mimoAsrModel,
+    );
+    expect(
+      await service.start(
+        config: config,
+        apiKey: 'secret',
+        onResult: results.add,
+      ),
+      isTrue,
+    );
 
-      // finish() is now suspended inside the fake recorder's pending stop().
-      final finishFuture = service.finish(config: config, apiKey: 'secret');
-      expect(recorder.stopPending, isTrue);
+    // finish() is now suspended inside the fake recorder's pending stop().
+    final finishFuture = service.finish(config: config, apiKey: 'secret');
+    expect(recorder.stopPending, isTrue);
 
-      await service.cancel();
+    await service.cancel();
 
-      // The recorder must be told to cancel even though finish() already
-      // cleared the service-side recording flag.
-      expect(recorder.cancelled, isTrue);
+    // The recorder must be told to cancel even though finish() already
+    // cleared the service-side recording flag.
+    expect(recorder.cancelled, isTrue);
 
-      // Let stop() complete; the "plugin" re-finalises the WAV file, which is
-      // what used to leak on disk.
-      recorder.stopGate!.complete();
-      await finishFuture;
+    // Let stop() complete; the "plugin" re-finalises the WAV file, which is
+    // what used to leak on disk.
+    recorder.stopGate!.complete();
+    await finishFuture;
 
-      expect(await File(recorder.path!).exists(), isFalse);
-      expect(failures, isEmpty);
-      expect(results, isEmpty);
-    },
-  );
+    expect(await File(recorder.path!).exists(), isFalse);
+    expect(failures, isEmpty);
+    expect(results, isEmpty);
+  });
 
   test(
     'automatically cancels a recording that exceeds the duration cap',
@@ -273,20 +268,20 @@ void main() {
       expect(failures.single.code, 'recording_timeout');
       expect(failures.single.userFacingMessage, contains('秒上限'));
       expect(recorder.cancelled, isTrue);
-      expect(
-        statuses,
-        [SpeechInputStatus.listening, SpeechInputStatus.stopped],
-      );
+      expect(statuses, [
+        SpeechInputStatus.listening,
+        SpeechInputStatus.stopped,
+      ]);
       expect(results, isEmpty);
       expect(await File(recorder.path!).exists(), isFalse);
 
       // The one-shot timer must not fire again after the auto-cancel.
       await Future<void>.delayed(const Duration(milliseconds: 50));
       expect(failures, hasLength(1));
-      expect(
-        statuses,
-        [SpeechInputStatus.listening, SpeechInputStatus.stopped],
-      );
+      expect(statuses, [
+        SpeechInputStatus.listening,
+        SpeechInputStatus.stopped,
+      ]);
     },
   );
 
@@ -355,10 +350,10 @@ void main() {
       expect(failures, hasLength(1));
       expect(failures.single.code, 'cloud_asr_failed');
       expect(failures.single.userFacingMessage, contains('MB 限制'));
-      expect(
-        statuses,
-        [SpeechInputStatus.listening, SpeechInputStatus.stopped],
-      );
+      expect(statuses, [
+        SpeechInputStatus.listening,
+        SpeechInputStatus.stopped,
+      ]);
       expect(await File(recorder.path!).exists(), isFalse);
     },
   );
@@ -397,11 +392,7 @@ void main() {
         model: MediaApiConfig.mimoAsrModel,
       );
       expect(
-        await service.start(
-          config: config,
-          apiKey: 'secret',
-          onResult: (_) {},
-        ),
+        await service.start(config: config, apiKey: 'secret', onResult: (_) {}),
         isTrue,
       );
 
@@ -439,11 +430,7 @@ void main() {
         model: MediaApiConfig.mimoAsrModel,
       );
       expect(
-        await service.start(
-          config: config,
-          apiKey: 'secret',
-          onResult: (_) {},
-        ),
+        await service.start(config: config, apiKey: 'secret', onResult: (_) {}),
         isTrue,
       );
 
@@ -457,51 +444,39 @@ void main() {
     },
   );
 
-  test(
-    'network failures keep the cloud troubleshooting copy',
-    () async {
-      final directory = await Directory.systemTemp.createTemp(
-        'expert-chat-asr-',
+  test('network failures keep the cloud troubleshooting copy', () async {
+    final directory = await Directory.systemTemp.createTemp('expert-chat-asr-');
+    final recorder = _FakeRecorder()
+      ..stopError = DioException(
+        requestOptions: RequestOptions(path: 'https://example.com'),
+        type: DioExceptionType.connectionError,
       );
-      final recorder = _FakeRecorder()
-        ..stopError = DioException(
-          requestOptions: RequestOptions(path: 'https://example.com'),
-          type: DioExceptionType.connectionError,
-        );
-      final service = MimoSpeechInputService(
-        mediaProvider: OpenAiCompatibleMediaProvider(),
-        recorder: recorder,
-        temporaryDirectory: () async => directory,
-      );
-      addTearDown(() async {
-        await service.dispose();
-        if (await directory.exists()) await directory.delete(recursive: true);
-      });
+    final service = MimoSpeechInputService(
+      mediaProvider: OpenAiCompatibleMediaProvider(),
+      recorder: recorder,
+      temporaryDirectory: () async => directory,
+    );
+    addTearDown(() async {
+      await service.dispose();
+      if (await directory.exists()) await directory.delete(recursive: true);
+    });
 
-      final failures = <SpeechInputFailure>[];
-      await service.initialize(onStatus: (_) {}, onError: failures.add);
-      const config = MediaApiConfig(
-        baseUrl: MediaApiConfig.mimoBaseUrl,
-        model: MediaApiConfig.mimoAsrModel,
-      );
-      expect(
-        await service.start(
-          config: config,
-          apiKey: 'secret',
-          onResult: (_) {},
-        ),
-        isTrue,
-      );
+    final failures = <SpeechInputFailure>[];
+    await service.initialize(onStatus: (_) {}, onError: failures.add);
+    const config = MediaApiConfig(
+      baseUrl: MediaApiConfig.mimoBaseUrl,
+      model: MediaApiConfig.mimoAsrModel,
+    );
+    expect(
+      await service.start(config: config, apiKey: 'secret', onResult: (_) {}),
+      isTrue,
+    );
 
-      await service.finish(config: config, apiKey: 'secret');
+    await service.finish(config: config, apiKey: 'secret');
 
-      expect(failures, hasLength(1));
-      expect(
-        failures.single.userFacingMessage,
-        '云端语音识别失败，请检查 API 配置和网络后重试。',
-      );
-    },
-  );
+    expect(failures, hasLength(1));
+    expect(failures.single.userFacingMessage, '云端语音识别失败，请检查 API 配置和网络后重试。');
+  });
 
   test(
     'keeps the humanized cloud API detail instead of a generic copy',
@@ -546,11 +521,7 @@ void main() {
         model: MediaApiConfig.mimoAsrModel,
       );
       expect(
-        await service.start(
-          config: config,
-          apiKey: 'secret',
-          onResult: (_) {},
-        ),
+        await service.start(config: config, apiKey: 'secret', onResult: (_) {}),
         isTrue,
       );
 

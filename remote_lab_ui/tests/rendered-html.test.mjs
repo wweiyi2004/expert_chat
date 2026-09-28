@@ -1,26 +1,31 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
+import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 
 async function render() {
-  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
-  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
-  const { default: worker } = await import(workerUrl.href);
-
-  return worker.fetch(
-    new Request("http://localhost/", {
-      headers: { accept: "text/html" },
-    }),
-    {
-      ASSETS: {
-        fetch: async () => new Response("Not found", { status: 404 }),
-      },
-    },
-    {
-      waitUntil() {},
-      passThroughOnException() {},
-    },
-  );
+  // Exercise the actual Cloudflare runtime, including cloudflare: imports.
+  const root = fileURLToPath(new URL("../dist/server/", import.meta.url));
+  const files = await readdir(root, { recursive: true });
+  const modules = ["index.js", ...files.filter((name) => name.endsWith(".js") && name !== "index.js")]
+    .map((name) => ({ type: "ESModule", path: `${root}/${name}` }));
+  const worker = new Miniflare(convertV4MiniflareOptions({
+    workers: [{
+    name: "expert-chat-test",
+    modules,
+    modulesRoot: fileURLToPath(new URL("../dist/server/", import.meta.url)),
+    compatibilityDate: "2026-09-22",
+    compatibilityFlags: ["nodejs_compat"],
+    serviceBindings: { ASSETS: async () => new Response("Not found", { status: 404 }) },
+    }],
+  }));
+  try {
+    const response = await worker.dispatchFetch("http://localhost/", { headers: { accept: "text/html" } });
+    return new Response(await response.text(), { status: response.status, headers: response.headers });
+  } finally {
+    await worker.dispose();
+  }
 }
 
 test("server-renders the Expert Chat research settings entry", async () => {

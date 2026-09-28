@@ -70,8 +70,9 @@ class DocumentPatch {
       'output_filename': outputFilename,
   };
 
-  String toJsonString({bool pretty = false}) =>
-      pretty ? const JsonEncoder.withIndent('  ').convert(toJson()) : jsonEncode(toJson());
+  String toJsonString({bool pretty = false}) => pretty
+      ? const JsonEncoder.withIndent('  ').convert(toJson())
+      : jsonEncode(toJson());
 
   /// Parses and validates. Throws [DocumentPatchException] on any violation.
   ///
@@ -116,7 +117,9 @@ class DocumentPatch {
     final outName = map['output_filename'] ?? map['outputFilename'];
     String? outputFilename;
     if (outName != null) {
-      outputFilename = _sanitizeOutputFilename(_asString(outName, path: 'output_filename'));
+      outputFilename = _sanitizeOutputFilename(
+        _asString(outName, path: 'output_filename'),
+      );
     }
 
     return DocumentPatch(
@@ -131,7 +134,10 @@ class DocumentPatch {
   factory DocumentPatch.parseJson(String raw, {bool p0Only = true}) {
     final trimmed = raw.trim();
     if (trimmed.isEmpty) {
-      throw const DocumentPatchException('patch JSON 为空', code: 'patch_invalid');
+      throw const DocumentPatchException(
+        'patch JSON 为空',
+        code: 'patch_invalid',
+      );
     }
     late final Object? decoded;
     try {
@@ -227,10 +233,7 @@ class SetTextOp extends DocumentOp {
   String get op => 'set_text';
 
   @override
-  Map<String, dynamic> toJson() => {
-    'op': op,
-    'text': text,
-  };
+  Map<String, dynamic> toJson() => {'op': op, 'text': text};
 
   factory SetTextOp.parse(Map<String, dynamic> map, {required String path}) {
     final raw = map['text'];
@@ -274,7 +277,10 @@ class ReplaceTextOp extends DocumentOp {
     'all': all,
   };
 
-  factory ReplaceTextOp.parse(Map<String, dynamic> map, {required String path}) {
+  factory ReplaceTextOp.parse(
+    Map<String, dynamic> map, {
+    required String path,
+  }) {
     final find = _asString(map['find'], path: '$path.find');
     if (find.isEmpty) {
       throw DocumentPatchException('$path.find 不能为空', code: 'patch_invalid');
@@ -310,7 +316,10 @@ class SetShapeTextOp extends DocumentOp {
     'text': text,
   };
 
-  factory SetShapeTextOp.parse(Map<String, dynamic> map, {required String path}) {
+  factory SetShapeTextOp.parse(
+    Map<String, dynamic> map, {
+    required String path,
+  }) {
     final slide = _asInt(map['slide'] ?? 1, path: '$path.slide');
     if (slide < 1) {
       throw DocumentPatchException('$path.slide 必须 ≥ 1', code: 'patch_invalid');
@@ -348,16 +357,10 @@ class SetCellsOp extends DocumentOp {
     final sheet = _optionalSheet(map, path: path);
     final cellsRaw = map['cells'];
     if (cellsRaw is! Map) {
-      throw DocumentPatchException(
-        '$path.cells 必须是对象',
-        code: 'patch_invalid',
-      );
+      throw DocumentPatchException('$path.cells 必须是对象', code: 'patch_invalid');
     }
     if (cellsRaw.isEmpty) {
-      throw DocumentPatchException(
-        '$path.cells 不能为空',
-        code: 'patch_invalid',
-      );
+      throw DocumentPatchException('$path.cells 不能为空', code: 'patch_invalid');
     }
     if (cellsRaw.length > DocumentPatch.maxCellsPerOp) {
       throw DocumentPatchException(
@@ -382,11 +385,7 @@ class SetCellsOp extends DocumentOp {
 
 /// Write a 2D block starting at [start] (A1).
 class SetRangeOp extends DocumentOp {
-  const SetRangeOp({
-    required this.start,
-    required this.values,
-    this.sheet,
-  });
+  const SetRangeOp({required this.start, required this.values, this.sheet});
 
   final String? sheet;
   final String start;
@@ -405,7 +404,10 @@ class SetRangeOp extends DocumentOp {
 
   factory SetRangeOp.parse(Map<String, dynamic> map, {required String path}) {
     final sheet = _optionalSheet(map, path: path);
-    final start = _asString(map['start'], path: '$path.start').trim().toUpperCase();
+    final start = _asString(
+      map['start'],
+      path: '$path.start',
+    ).trim().toUpperCase();
     if (!_isA1Address(start)) {
       throw DocumentPatchException(
         '$path.start 不是合法 A1 地址: "$start"',
@@ -461,10 +463,7 @@ class AddSheetOp extends DocumentOp {
   String get op => ensureOnly ? 'ensure_sheet' : 'add_sheet';
 
   @override
-  Map<String, dynamic> toJson() => {
-    'op': op,
-    'name': name,
-  };
+  Map<String, dynamic> toJson() => {'op': op, 'name': name};
 
   factory AddSheetOp.parse(
     Map<String, dynamic> map, {
@@ -473,10 +472,7 @@ class AddSheetOp extends DocumentOp {
   }) {
     final name = _asString(map['name'], path: '$path.name').trim();
     if (name.isEmpty) {
-      throw DocumentPatchException(
-        '$path.name 不能为空',
-        code: 'patch_invalid',
-      );
+      throw DocumentPatchException('$path.name 不能为空', code: 'patch_invalid');
     }
     if (name.length > 31) {
       throw DocumentPatchException(

@@ -44,6 +44,7 @@ class MemoryController extends AsyncNotifier<MemoryState> {
 
   Future<MemorySaveResult> add({
     required String content,
+    String? projectId,
     String? sourceConversationId,
     String? sourceMessageId,
     String? sourceRole,
@@ -52,6 +53,7 @@ class MemoryController extends AsyncNotifier<MemoryState> {
         .read(memoryRepositoryProvider)
         .add(
           content: content,
+          projectId: projectId,
           sourceConversationId: sourceConversationId,
           sourceMessageId: sourceMessageId,
           sourceRole: sourceRole,
@@ -66,6 +68,7 @@ class MemoryController extends AsyncNotifier<MemoryState> {
   Future<MemoryCandidateApplyResult> applyConfirmedCandidates(
     Iterable<MemoryCandidateSelection> selections, {
     required String sourceConversationId,
+    String? projectId,
   }) async {
     var added = 0;
     var replaced = 0;
@@ -78,6 +81,7 @@ class MemoryController extends AsyncNotifier<MemoryState> {
           : candidate.sourceMessageIds.first;
       if (selection.mode == MemoryCandidateWriteMode.replace) {
         final result = await repository.replace(
+          projectId: projectId,
           replacedIds: candidate.relatedMemories.map((entry) => entry.id),
           content: candidate.content,
           sourceConversationId: sourceConversationId,
@@ -91,6 +95,7 @@ class MemoryController extends AsyncNotifier<MemoryState> {
         }
       } else {
         final result = await repository.add(
+          projectId: projectId,
           content: candidate.content,
           sourceConversationId: sourceConversationId,
           sourceMessageId: sourceMessageId,
@@ -153,6 +158,7 @@ class MemoryController extends AsyncNotifier<MemoryState> {
           additions.add(
             MemoryEntry(
               content: item.imported.content,
+              projectId: item.imported.projectId,
               pinned: item.imported.pinned,
               sourceConversationId: item.imported.sourceConversationId,
               sourceMessageId: item.imported.sourceMessageId,

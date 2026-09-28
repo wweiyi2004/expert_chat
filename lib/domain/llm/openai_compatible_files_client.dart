@@ -67,6 +67,7 @@ class OpenAiCompatibleFilesClient {
           imageDataUrls: leftoverUrls,
           imageFileIds: fileIds,
           responseOutputItems: message.responseOutputItems,
+          isToolImageObservation: message.isToolImageObservation,
         ),
       );
     }

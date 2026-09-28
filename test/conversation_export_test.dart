@@ -53,10 +53,9 @@ void main() {
     test('escapes the share title heading too', () {
       final user = ChatMessage(role: MessageRole.user, content: 'hi');
 
-      final md = ConversationExport.messagesToMarkdown(
-        [user],
-        title: 'Share [x](https://evil.com)',
-      );
+      final md = ConversationExport.messagesToMarkdown([
+        user,
+      ], title: 'Share [x](https://evil.com)');
       expect(md, contains(r'# Share \[x\]\(https://evil.com\)'));
     });
 

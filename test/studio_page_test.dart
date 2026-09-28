@@ -126,8 +126,7 @@ class _MemoryWorldInfoRepository implements WorldInfoRepository {
 /// Character library that fails every save whose 0-based index matches
 /// [failOnSaveIndex], simulating a mid-batch storage failure.
 class _FailingCharacterRepository extends _MemoryCharacterRepository {
-  _FailingCharacterRepository({required this.failOnSaveIndex})
-    : super();
+  _FailingCharacterRepository({required this.failOnSaveIndex}) : super();
 
   final int failOnSaveIndex;
   int _saves = 0;
@@ -144,8 +143,7 @@ class _FailingCharacterRepository extends _MemoryCharacterRepository {
 /// World-info library that fails every save whose 0-based index matches
 /// [failOnSaveIndex], simulating a mid-batch storage failure.
 class _FailingWorldInfoRepository extends _MemoryWorldInfoRepository {
-  _FailingWorldInfoRepository({required this.failOnSaveIndex})
-    : super();
+  _FailingWorldInfoRepository({required this.failOnSaveIndex}) : super();
 
   final int failOnSaveIndex;
   int _saves = 0;
@@ -354,10 +352,12 @@ void main() {
             _MemoryWorldInfoRepository(),
           ),
           studioAssetIoProvider.overrideWithValue(
-            _FakeStudioAssetIo(cards: [
-              CharacterCard(name: '甲'),
-              CharacterCard(name: '乙'),
-            ]),
+            _FakeStudioAssetIo(
+              cards: [
+                CharacterCard(name: '甲'),
+                CharacterCard(name: '乙'),
+              ],
+            ),
           ),
         ],
         child: const MaterialApp(home: StudioPage(initialTab: 1)),
@@ -391,10 +391,12 @@ void main() {
           ),
           worldInfoRepositoryProvider.overrideWithValue(worldRepo),
           studioAssetIoProvider.overrideWithValue(
-            _FakeStudioAssetIo(entries: [
-              WorldInfoEntry(title: '夜雨'),
-              WorldInfoEntry(title: '海雾'),
-            ]),
+            _FakeStudioAssetIo(
+              entries: [
+                WorldInfoEntry(title: '夜雨'),
+                WorldInfoEntry(title: '海雾'),
+              ],
+            ),
           ),
         ],
         child: const MaterialApp(home: StudioPage(initialTab: 2)),

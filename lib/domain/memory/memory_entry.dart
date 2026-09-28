@@ -10,6 +10,7 @@ class MemoryEntry {
   MemoryEntry({
     String? id,
     required String content,
+    this.projectId,
     this.sourceConversationId,
     this.sourceMessageId,
     this.sourceRole,
@@ -23,6 +24,9 @@ class MemoryEntry {
 
   final String id;
   final String content;
+
+  /// Null is global; deleted projects retain their scope (never leak globally).
+  final String? projectId;
   final String? sourceConversationId;
   final String? sourceMessageId;
   final String? sourceRole;
@@ -36,6 +40,7 @@ class MemoryEntry {
   MemoryEntry copyWith({String? content, bool? pinned, DateTime? updatedAt}) =>
       MemoryEntry(
         id: id,
+        projectId: projectId,
         content: content ?? this.content,
         sourceConversationId: sourceConversationId,
         sourceMessageId: sourceMessageId,

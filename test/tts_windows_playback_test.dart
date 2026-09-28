@@ -113,8 +113,7 @@ class FakeAudioPlayerPlatform extends AudioPlayerPlatform {
   int playCalls = 0;
 
   @override
-  Stream<PlaybackEventMessage> get playbackEventMessageStream =>
-      _events.stream;
+  Stream<PlaybackEventMessage> get playbackEventMessageStream => _events.stream;
 
   @override
   Stream<PlayerDataMessage> get playerDataMessageStream => _data.stream;
@@ -318,80 +317,78 @@ Future<void> runTests() async {
         ),
       );
 
-      await waitForSettledIdle(service, 1, timeout: const Duration(seconds: 10));
+      await waitForSettledIdle(
+        service,
+        1,
+        timeout: const Duration(seconds: 10),
+      );
       expect(platform.totalPlayCalls, 2);
     },
   );
 
-  test(
-    'audio that ends before play() returns is not skipped',
-    () async {
-      // Ultra-short audio can finish on the native side before the play()
-      // future resolves. The idle signal must still count as completion, not
-      // wait out the duration-bounded fallback (duration + 500ms).
-      final platform = FakeJustAudioPlatform(
-        knownDuration: const Duration(milliseconds: 3000),
-        completionDelay: Duration.zero,
-      );
-      final previous = JustAudioPlatform.instance;
-      JustAudioPlatform.instance = platform;
-      addTearDown(() => JustAudioPlatform.instance = previous);
+  test('audio that ends before play() returns is not skipped', () async {
+    // Ultra-short audio can finish on the native side before the play()
+    // future resolves. The idle signal must still count as completion, not
+    // wait out the duration-bounded fallback (duration + 500ms).
+    final platform = FakeJustAudioPlatform(
+      knownDuration: const Duration(milliseconds: 3000),
+      completionDelay: Duration.zero,
+    );
+    final previous = JustAudioPlatform.instance;
+    JustAudioPlatform.instance = platform;
+    addTearDown(() => JustAudioPlatform.instance = previous);
 
-      final service = tts_io.ApiTextToSpeechService(
-        mediaProvider: OpenAiCompatibleMediaProvider(dio: _shortAudioDio()),
-        initialAudioPlayer: AudioPlayer(handleAudioSessionActivation: false),
-      );
-      addTearDown(service.dispose);
+    final service = tts_io.ApiTextToSpeechService(
+      mediaProvider: OpenAiCompatibleMediaProvider(dio: _shortAudioDio()),
+      initialAudioPlayer: AudioPlayer(handleAudioSessionActivation: false),
+    );
+    addTearDown(service.dispose);
 
-      unawaited(
-        service.speak(
-          const TextToSpeechRequest(
-            messageId: 'assistant-1',
-            text: '你好。',
-            apiConfig: config,
-            apiKey: 'secret',
-          ),
+    unawaited(
+      service.speak(
+        const TextToSpeechRequest(
+          messageId: 'assistant-1',
+          text: '你好。',
+          apiConfig: config,
+          apiKey: 'secret',
         ),
-      );
+      ),
+    );
 
-      await waitForSettledIdle(service, 1, timeout: const Duration(seconds: 2));
-    },
-  );
+    await waitForSettledIdle(service, 1, timeout: const Duration(seconds: 2));
+  });
 
-  test(
-    'false completed-at-load still plays instead of silent skip',
-    () async {
-      // Regression: just_audio_windows reports completed when
-      // Position == NaturalDuration == 0 right after load. The old wait loop
-      // treated that as "already finished" and never called play().
-      final platform = FakeJustAudioPlatform(
-        knownDuration: null,
-        completionDelay: const Duration(milliseconds: 40),
-        reportCompletedOnLoad: true,
-      );
-      final previous = JustAudioPlatform.instance;
-      JustAudioPlatform.instance = platform;
-      addTearDown(() => JustAudioPlatform.instance = previous);
+  test('false completed-at-load still plays instead of silent skip', () async {
+    // Regression: just_audio_windows reports completed when
+    // Position == NaturalDuration == 0 right after load. The old wait loop
+    // treated that as "already finished" and never called play().
+    final platform = FakeJustAudioPlatform(
+      knownDuration: null,
+      completionDelay: const Duration(milliseconds: 40),
+      reportCompletedOnLoad: true,
+    );
+    final previous = JustAudioPlatform.instance;
+    JustAudioPlatform.instance = platform;
+    addTearDown(() => JustAudioPlatform.instance = previous);
 
-      final service = tts_io.ApiTextToSpeechService(
-        mediaProvider: OpenAiCompatibleMediaProvider(dio: _shortAudioDio()),
-        initialAudioPlayer: AudioPlayer(handleAudioSessionActivation: false),
-      );
-      addTearDown(service.dispose);
+    final service = tts_io.ApiTextToSpeechService(
+      mediaProvider: OpenAiCompatibleMediaProvider(dio: _shortAudioDio()),
+      initialAudioPlayer: AudioPlayer(handleAudioSessionActivation: false),
+    );
+    addTearDown(service.dispose);
 
-      unawaited(
-        service.speak(
-          const TextToSpeechRequest(
-            messageId: 'assistant-1',
-            text: '你好。世界。',
-            apiConfig: config,
-            apiKey: 'secret',
-          ),
+    unawaited(
+      service.speak(
+        const TextToSpeechRequest(
+          messageId: 'assistant-1',
+          text: '你好。世界。',
+          apiConfig: config,
+          apiKey: 'secret',
         ),
-      );
+      ),
+    );
 
-      await waitForSettledIdle(service, 1, timeout: const Duration(seconds: 5));
-      expect(platform.totalPlayCalls, 2);
-    },
-  );
+    await waitForSettledIdle(service, 1, timeout: const Duration(seconds: 5));
+    expect(platform.totalPlayCalls, 2);
+  });
 }

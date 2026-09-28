@@ -87,9 +87,7 @@ class UpdateDownloader {
         try {
           await file.delete();
         } catch (_) {}
-        throw Exception(
-          '安装包校验失败（SHA-256 不匹配）。请从 GitHub 重新下载，或检查网络是否被篡改。',
-        );
+        throw Exception('安装包校验失败（SHA-256 不匹配）。请从 GitHub 重新下载，或检查网络是否被篡改。');
       }
     }
 
@@ -130,7 +128,9 @@ class UpdateDownloader {
 
   static String _nameFromUrl(String url) {
     final uri = Uri.tryParse(url);
-    if (uri == null || uri.pathSegments.isEmpty) return 'expert-chat-update.bin';
+    if (uri == null || uri.pathSegments.isEmpty) {
+      return 'expert-chat-update.bin';
+    }
     return uri.pathSegments.last;
   }
 }

@@ -4,6 +4,8 @@ import 'dart:typed_data';
 import 'package:dio/dio.dart';
 
 import '../../data/gateway_config.dart';
+import 'stdio_transport.dart';
+import 'computer_use_policy.dart';
 
 const _protocolVersion = '2026-07-28';
 
@@ -75,34 +77,98 @@ class McpClient {
 
   final Dio _dio;
   int _nextId = 0;
+  final Map<String, StdioTransport> _local = {};
+  final _computer = ComputerUsePolicy();
+  bool _computerBusy = false;
+
+  Future<void> stopLocalServers() async {
+    _computer.reset();
+    final transports = _local.values.toList();
+    _local.clear();
+    await Future.wait(transports.map((transport) => transport.close()));
+  }
+
+  Future<void> close() async {
+    await stopLocalServers();
+    _dio.close(force: true);
+  }
+
+  Future<StdioTransport> _localTransport(
+    GatewayConnection connection,
+    CancelToken? cancel,
+  ) async {
+    if (!connection.isConfigured) {
+      throw const McpClientException('本地 MCP 尚未启用或配置');
+    }
+    final config = connection.localProcess!;
+    var transport = _local[config.identity];
+    if (transport == null || transport.isClosed) {
+      _computer.reset();
+      transport = StdioTransport(config);
+      _local[config.identity] = transport;
+    }
+    try {
+      await transport.initialize(
+        cancelToken: cancel,
+        timeout: connection.config.requestTimeout,
+      );
+      return transport;
+    } catch (error) {
+      if (identical(_local[config.identity], transport)) {
+        _local.remove(config.identity);
+      }
+      await transport.close();
+      throw McpClientException(
+        error.toString(),
+        code: 'local_connection_failed',
+      );
+    }
+  }
 
   Future<McpServerDescription> discover({
     required GatewayConnection connection,
     CancelToken? cancelToken,
   }) async {
-    final discovered = await _request(
-      connection: connection,
-      method: 'server/discover',
-      params: const {},
-      cancelToken: cancelToken,
-    );
+    final discovered = connection.localProcess == null
+        ? await _request(
+            connection: connection,
+            method: 'server/discover',
+            params: const {},
+            cancelToken: cancelToken,
+          )
+        : <String, dynamic>{
+            '_meta': {
+              'io.modelcontextprotocol/serverInfo': (await _localTransport(
+                connection,
+                cancelToken,
+              )).serverInfo,
+            },
+          };
     final meta = _stringMap(discovered['_meta']);
-    final serverInfo = _stringMap(
-      meta['io.modelcontextprotocol/serverInfo'],
-    );
-    final listed = await _request(
-      connection: connection,
-      method: 'tools/list',
-      params: const {},
-      cancelToken: cancelToken,
-    );
-    final tools = <McpToolDefinition>[
-      for (final raw in listed['tools'] is List
-          ? listed['tools'] as List<dynamic>
-          : const <dynamic>[])
-        if (raw is Map)
-          McpToolDefinition.fromJson(Map<String, dynamic>.from(raw)),
-    ];
+    final serverInfo = _stringMap(meta['io.modelcontextprotocol/serverInfo']);
+    final tools = <McpToolDefinition>[];
+    String? cursor;
+    final cursors = <String>{};
+    do {
+      final listed = await _request(
+        connection: connection,
+        method: 'tools/list',
+        params: {'cursor': ?cursor},
+        cancelToken: cancelToken,
+      );
+      tools.addAll([
+        for (final raw
+            in listed['tools'] is List
+                ? listed['tools'] as List<dynamic>
+                : const <dynamic>[])
+          if (raw is Map)
+            McpToolDefinition.fromJson(Map<String, dynamic>.from(raw)),
+      ]);
+      cursor = listed['nextCursor'] as String?;
+      if (cursor != null && (!cursors.add(cursor) || cursors.length > 50)) {
+        throw const McpClientException('MCP 工具分页无效或过多');
+      }
+    } while (cursor != null && cursor.isNotEmpty);
     return McpServerDescription(
       name: serverInfo['name']?.toString() ?? 'MCP Server',
       version: serverInfo['version']?.toString() ?? '?',
@@ -116,6 +182,84 @@ class McpClient {
     required Map<String, dynamic> arguments,
     CancelToken? cancelToken,
   }) async {
+    if (connection.computerUse) {
+      if (_computerBusy) throw const McpClientException('另一个电脑操作正在执行');
+      _computerBusy = true;
+      try {
+        if (connection.localProcess != null) {
+          await _localTransport(connection, cancelToken);
+        }
+        final safeArgs = _computer.prepare(connection, name, arguments);
+        final result = await _callTool(
+          connection: connection,
+          name: name,
+          arguments: safeArgs,
+          cancelToken: cancelToken,
+        );
+        if (name == 'get_window_state') {
+          _computer.observed(connection, safeArgs);
+        }
+        if (!ComputerUsePolicy.actions.contains(name)) return result;
+        // Read back the exact window after each mutation, never replay the action.
+        final verificationArgs = _computer.prepare(
+          connection,
+          'get_window_state',
+          {'pid': safeArgs['pid'], 'window_id': safeArgs['window_id']},
+        );
+        try {
+          final after = await _callTool(
+            connection: connection,
+            name: 'get_window_state',
+            arguments: verificationArgs,
+            cancelToken: cancelToken,
+          );
+          _computer.observed(connection, verificationArgs);
+          return McpToolResult(
+            content: [
+              {
+                'type': 'text',
+                'text': '操作已返回，以下是操作后的新观察。请据此核验结果，旧元素标识已失效。\n${result.text}',
+              },
+              ...after.content,
+            ],
+            structuredContent: after.structuredContent,
+            isError: false,
+          );
+        } catch (_) {
+          throw const McpClientException(
+            '操作可能已执行，但无法核验结果。请重新观察，不要直接重试该操作。',
+            code: 'outcome_unknown',
+          );
+        }
+      } on McpClientException catch (error) {
+        if (error.code.startsWith('background_') ||
+            error.message.contains('background_unavailable')) {
+          _computer.refused(connection, arguments);
+        }
+        rethrow;
+      } on StateError catch (error) {
+        throw McpClientException(
+          error.message.toString(),
+          code: 'computer_use_policy',
+        );
+      } finally {
+        _computerBusy = false;
+      }
+    }
+    return _callTool(
+      connection: connection,
+      name: name,
+      arguments: arguments,
+      cancelToken: cancelToken,
+    );
+  }
+
+  Future<McpToolResult> _callTool({
+    required GatewayConnection connection,
+    required String name,
+    required Map<String, dynamic> arguments,
+    CancelToken? cancelToken,
+  }) async {
     final result = await _request(
       connection: connection,
       method: 'tools/call',
@@ -124,9 +268,10 @@ class McpClient {
       cancelToken: cancelToken,
     );
     final content = <Map<String, dynamic>>[
-      for (final raw in result['content'] is List
-          ? result['content'] as List<dynamic>
-          : const <dynamic>[])
+      for (final raw
+          in result['content'] is List
+              ? result['content'] as List<dynamic>
+              : const <dynamic>[])
         if (raw is Map) Map<String, dynamic>.from(raw),
     ];
     final callResult = McpToolResult(
@@ -139,7 +284,7 @@ class McpClient {
         callResult.text.trim().isEmpty
             ? 'MCP 工具 $name 执行失败'
             : callResult.text.trim(),
-        code: 'tool_error',
+        code: callResult.structuredContent['code']?.toString() ?? 'tool_error',
       );
     }
     return callResult;
@@ -183,8 +328,28 @@ class McpClient {
     CancelToken? cancelToken,
   }) async {
     final config = connection.config;
-    if (!config.isConfigured) {
+    if (!connection.isConfigured) {
       throw const McpClientException('MCP Server 尚未启用或配置');
+    }
+    if (connection.localProcess != null) {
+      final transport = await _localTransport(connection, cancelToken);
+      try {
+        return await transport.request(
+          method,
+          params,
+          cancelToken: cancelToken,
+          timeout: config.requestTimeout,
+        );
+      } catch (error) {
+        if (!transport.isAlive) {
+          _local.remove(connection.localProcess!.identity);
+          await transport.close();
+        }
+        throw McpClientException(
+          error.toString(),
+          code: 'local_request_failed',
+        );
+      }
     }
     final endpoint = _endpoint(config.normalizedBaseUrl);
     final token = await connection.resolveApiToken();
@@ -252,6 +417,13 @@ class McpClient {
       throw const McpClientException('MCP Server 返回了无效的 JSON-RPC 结果');
     } on DioException catch (error) {
       if (CancelToken.isCancel(error)) rethrow;
+      final status = error.response?.statusCode;
+      if (status != null && status >= 500 && status < 600) {
+        throw McpClientException(
+          '文档服务暂时不可用（HTTP $status）：请检查服务器或反向代理，稍后重试。',
+          code: 'service_unavailable',
+        );
+      }
       if (error.type == DioExceptionType.connectionTimeout ||
           error.type == DioExceptionType.receiveTimeout ||
           error.type == DioExceptionType.sendTimeout) {

@@ -76,7 +76,7 @@ class _ScriptedLlmProvider implements LlmProvider {
     final response = responses[index.clamp(0, responses.length - 1)];
     yield ChatChunk(contentDelta: response);
     if (index == hangOn) {
-      await Completer<void>().future; // held open until the stream is cancelled
+      await (cancelToken?.whenCancel ?? Completer<void>().future);
     }
   }
 }
@@ -623,8 +623,20 @@ void main() {
     );
     final ctrl = container.read(chatControllerProvider.notifier);
     await container.read(chatControllerProvider.future);
+    // This test exercises cancelling an LLM stream, not the tool-less model's
+    // network pre-search. Keep it independent of HTTP and search timeouts.
+    ctrl.applyComposerPrefs(
+      searchMode: SearchMode.off,
+      imageGenMode: ImageGenMode.off,
+      reasoningEffort: ReasoningEffort.high,
+    );
     unawaited(ctrl.sendMessage('随便聊聊'));
-    await tester.pump();
+    // isStreaming becomes true before the provider is subscribed. Wait for
+    // the intended background request to claim the hanging scripted response.
+    for (var i = 0; i < 20 && llm.calls.isEmpty; i++) {
+      await tester.pump(const Duration(milliseconds: 10));
+    }
+    expect(llm.calls, hasLength(1));
     expect(
       container.read(chatControllerProvider).requireValue.isStreaming,
       isTrue,

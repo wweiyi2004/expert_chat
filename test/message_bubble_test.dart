@@ -140,7 +140,7 @@ void main() {
       ),
     );
 
-    expect(find.text('已思考'), findsOneWidget);
+    expect(find.text('处理完成 · 2 个步骤'), findsOneWidget);
     expect(find.text('已调用 list_files'), findsOneWidget);
     expect(find.text('已编辑文档'), findsOneWidget);
     expect(find.text('报告.docx'), findsOneWidget);
@@ -218,27 +218,37 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('assistant bubble shows turn skill chip', (tester) async {
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: MessageBubble(
-            message: ChatMessage(
-              role: MessageRole.assistant,
-              content: '按你的要求改写好了。',
-              turnSkill: const TurnSkillMark(
-                id: 'writing',
-                name: '写作',
-                source: ChatSkillSource.model,
+  for (final source in ChatSkillSource.values) {
+    testWidgets(
+      'assistant bubble only shows explicitly selected task: $source',
+      (tester) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: MessageBubble(
+                message: ChatMessage(
+                  role: MessageRole.assistant,
+                  content: '按你的要求改写好了。',
+                  turnSkill: TurnSkillMark(
+                    id: 'writing',
+                    name: '写作',
+                    source: source,
+                  ),
+                ),
+                isStreaming: false,
               ),
             ),
-            isStreaming: false,
           ),
-        ),
-      ),
-    );
+        );
 
-    expect(find.textContaining('本轮：写作'), findsOneWidget);
-    expect(find.text('自动'), findsOneWidget);
-  });
+        expect(
+          find.text('写作'),
+          source == ChatSkillSource.prefix ? findsOneWidget : findsNothing,
+        );
+        expect(find.text('自动'), findsNothing);
+        expect(find.text('回退'), findsNothing);
+        expect(find.text('已指定'), findsNothing);
+      },
+    );
+  }
 }

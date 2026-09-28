@@ -9,21 +9,14 @@ void main() {
   const fallback = '全局预设';
 
   test('story, study, and ensemble inject no catalog prompt', () {
-    final route = ChatSkillRoute(
-      skill: writing,
-      source: ChatSkillSource.model,
-    );
+    final route = ChatSkillRoute(skill: writing, source: ChatSkillSource.model);
     for (final mode in [
       ConversationMode.story,
       ConversationMode.study,
       ConversationMode.ensemble,
     ]) {
       expect(
-        chatPresetPrompt(
-          mode: mode,
-          route: route,
-          fallbackPrompt: fallback,
-        ),
+        chatPresetPrompt(mode: mode, route: route, fallbackPrompt: fallback),
         isEmpty,
         reason: mode.name,
       );
@@ -34,10 +27,7 @@ void main() {
     expect(
       chatPresetPrompt(
         mode: ConversationMode.chat,
-        route: ChatSkillRoute(
-          skill: writing,
-          source: ChatSkillSource.model,
-        ),
+        route: ChatSkillRoute(skill: writing, source: ChatSkillSource.model),
         fallbackPrompt: fallback,
       ),
       writing.prompt.trim(),

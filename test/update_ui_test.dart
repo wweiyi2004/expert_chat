@@ -15,18 +15,16 @@ void main() {
 
     test('does not install when the cached APK file was evicted', () async {
       final installs = <String>[];
-      TestDefaultBinaryMessengerBinding
-          .instance.defaultBinaryMessenger
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, (call) async {
-        if (call.method == 'canRequestPackageInstalls') return true;
-        if (call.method == 'installApk') {
-          installs.add((call.arguments as Map)['path'] as String);
-        }
-        return null;
-      });
+            if (call.method == 'canRequestPackageInstalls') return true;
+            if (call.method == 'installApk') {
+              installs.add((call.arguments as Map)['path'] as String);
+            }
+            return null;
+          });
       addTearDown(
-        () => TestDefaultBinaryMessengerBinding
-            .instance.defaultBinaryMessenger
+        () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
             .setMockMethodCallHandler(channel, null),
       );
 
@@ -44,18 +42,16 @@ void main() {
     });
 
     test('clears the pending path after an install failure', () async {
-      TestDefaultBinaryMessengerBinding
-          .instance.defaultBinaryMessenger
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, (call) async {
-        if (call.method == 'canRequestPackageInstalls') return true;
-        if (call.method == 'installApk') {
-          throw PlatformException(code: 'install_failed');
-        }
-        return null;
-      });
+            if (call.method == 'canRequestPackageInstalls') return true;
+            if (call.method == 'installApk') {
+              throw PlatformException(code: 'install_failed');
+            }
+            return null;
+          });
       addTearDown(
-        () => TestDefaultBinaryMessengerBinding
-            .instance.defaultBinaryMessenger
+        () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
             .setMockMethodCallHandler(channel, null),
       );
 
@@ -79,18 +75,16 @@ void main() {
     test('keeps the pending path while permission is not granted', () async {
       var allowed = false;
       final installs = <String>[];
-      TestDefaultBinaryMessengerBinding
-          .instance.defaultBinaryMessenger
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, (call) async {
-        if (call.method == 'canRequestPackageInstalls') return allowed;
-        if (call.method == 'installApk') {
-          installs.add((call.arguments as Map)['path'] as String);
-        }
-        return null;
-      });
+            if (call.method == 'canRequestPackageInstalls') return allowed;
+            if (call.method == 'installApk') {
+              installs.add((call.arguments as Map)['path'] as String);
+            }
+            return null;
+          });
       addTearDown(
-        () => TestDefaultBinaryMessengerBinding
-            .instance.defaultBinaryMessenger
+        () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
             .setMockMethodCallHandler(channel, null),
       );
 
@@ -123,9 +117,13 @@ void main() {
     final downloader = _CancelOnDemandDownloader();
     final result = _updateResult();
 
-    await tester.pumpWidget(_testApp(onDownload: (ctx) {
-      downloadAndApplyUpdate(ctx, result, downloader: downloader);
-    }));
+    await tester.pumpWidget(
+      _testApp(
+        onDownload: (ctx) {
+          downloadAndApplyUpdate(ctx, result, downloader: downloader);
+        },
+      ),
+    );
 
     // 下层页面(模拟设置页)在导航栈上。
     await tester.tap(find.text('进入设置'));
@@ -161,9 +159,13 @@ void main() {
     );
     final result = _updateResult();
 
-    await tester.pumpWidget(_testApp(onDownload: (ctx) {
-      downloadAndApplyUpdate(ctx, result, downloader: downloader);
-    }));
+    await tester.pumpWidget(
+      _testApp(
+        onDownload: (ctx) {
+          downloadAndApplyUpdate(ctx, result, downloader: downloader);
+        },
+      ),
+    );
 
     await tester.tap(find.text('进入设置'));
     await tester.pumpAndSettle();

@@ -24,7 +24,8 @@ import 'package:expert_chat/state/settings_controller.dart';
 import 'package:file_picker/file_picker.dart' show FileType;
 // ignore: implementation_imports
 import 'package:file_picker/src/platform/file_picker_platform_interface.dart';
-import 'package:flutter/foundation.dart' show debugDefaultTargetPlatformOverride;
+import 'package:flutter/foundation.dart'
+    show debugDefaultTargetPlatformOverride;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -228,7 +229,9 @@ void main() {
   group('sensitiveReason 凭证拦截', () {
     test('拦截 Google/Gemini AIzaSy 密钥', () {
       expect(
-        MemorySafety.sensitiveReason('AIzaSy1234567890abcdefghijklmnopqrstuvwxyz'),
+        MemorySafety.sensitiveReason(
+          'AIzaSy1234567890abcdefghijklmnopqrstuvwxyz',
+        ),
         isNotNull,
       );
     });
@@ -1065,30 +1068,30 @@ void main() {
     expect(duplicate.created, isFalse);
   });
 
-  test('recall caps pinned memories so on-demand matches can still enter', () async {
-    final repository = MemoryRepository(_MemoryStore());
-    for (var i = 0; i < 8; i++) {
-      await repository.add(content: '固定的团队偏好条目 $i。');
-    }
-    await repository.add(
-      content: '项目使用 Flutter 架构开发。',
-      pinned: false,
-    );
+  test(
+    'recall caps pinned memories so on-demand matches can still enter',
+    () async {
+      final repository = MemoryRepository(_MemoryStore());
+      for (var i = 0; i < 8; i++) {
+        await repository.add(content: '固定的团队偏好条目 $i。');
+      }
+      await repository.add(content: '项目使用 Flutter 架构开发。', pinned: false);
 
-    final recall = await repository.recall(
-      'Flutter 架构',
-      maxItems: 8,
-      maxChars: 4000,
-    );
-    final contents = recall.entries.map((entry) => entry.content).toList();
+      final recall = await repository.recall(
+        'Flutter 架构',
+        maxItems: 8,
+        maxChars: 4000,
+      );
+      final contents = recall.entries.map((entry) => entry.content).toList();
 
-    expect(contents, contains('项目使用 Flutter 架构开发。'));
-    final pinnedIncluded = contents
-        .where((content) => content.startsWith('固定的团队偏好条目'))
-        .length;
-    // 常驻记忆最多占 60% 的条数配额,剩余配额留给按需匹配。
-    expect(pinnedIncluded, lessThanOrEqualTo(4));
-  });
+      expect(contents, contains('项目使用 Flutter 架构开发。'));
+      final pinnedIncluded = contents
+          .where((content) => content.startsWith('固定的团队偏好条目'))
+          .length;
+      // 常驻记忆最多占 60% 的条数配额,剩余配额留给按需匹配。
+      expect(pinnedIncluded, lessThanOrEqualTo(4));
+    },
+  );
 
   test('recall breaks score ties deterministically by id', () async {
     final store = _MemoryStore();
@@ -1110,20 +1113,21 @@ void main() {
       ),
     );
 
-    final recall = await MemoryRepository(store).recall(
-      '无关查询',
-      maxItems: 8,
-    );
+    final recall = await MemoryRepository(store).recall('无关查询', maxItems: 8);
 
-    expect(
-      recall.entries.map((entry) => entry.id),
-      ['id-00', 'id-01', 'id-02', 'id-03'],
-    );
+    expect(recall.entries.map((entry) => entry.id), [
+      'id-00',
+      'id-01',
+      'id-02',
+      'id-03',
+    ]);
   });
 
-  test('codec reads pinned case-insensitively and keeps missing pinned as 常驻', () {
-    const codec = MemoryMarkdownCodec();
-    final document = codec.decode('''
+  test(
+    'codec reads pinned case-insensitively and keeps missing pinned as 常驻',
+    () {
+      const codec = MemoryMarkdownCodec();
+      final document = codec.decode('''
 - [id:upper-false] 大写 False
   - pinned: False
   - created_at: 2026-01-01T00:00:00Z
@@ -1139,12 +1143,13 @@ void main() {
   - updated_at: 2026-01-01T00:00:00Z
 ''');
 
-    bool pinnedOf(String id) =>
-        document.entries.singleWhere((entry) => entry.id == id).pinned;
-    expect(pinnedOf('upper-false'), isFalse);
-    expect(pinnedOf('missing'), isTrue);
-    expect(pinnedOf('upper-true'), isTrue);
-  });
+      bool pinnedOf(String id) =>
+          document.entries.singleWhere((entry) => entry.id == id).pinned;
+      expect(pinnedOf('upper-false'), isFalse);
+      expect(pinnedOf('missing'), isTrue);
+      expect(pinnedOf('upper-true'), isTrue);
+    },
+  );
 
   test('export appends .md when the save name lacks the extension', () async {
     TestWidgetsFlutterBinding.ensureInitialized();

@@ -9,7 +9,10 @@ import '../shared/recovery_notice.dart';
 import 'shell_tab.dart';
 
 class ToolsPage extends ConsumerStatefulWidget {
-  const ToolsPage({super.key});
+  const ToolsPage({super.key, this.onBack});
+
+  /// Phone shell: back to the chat (there is no bottom bar).
+  final VoidCallback? onBack;
   @override
   ConsumerState<ToolsPage> createState() => _ToolsPageState();
 }
@@ -111,7 +114,13 @@ class _ToolsPageState extends ConsumerState<ToolsPage> {
   Widget build(BuildContext context) {
     final settings = ref.watch(settingsControllerProvider);
     return Scaffold(
-      appBar: AppBar(title: const Text('工具'), automaticallyImplyLeading: false),
+      appBar: AppBar(
+        title: const Text('工具'),
+        automaticallyImplyLeading: false,
+        leading: widget.onBack == null
+            ? null
+            : BackButton(onPressed: widget.onBack),
+      ),
       body: settings.when(
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (error, _) => Padding(

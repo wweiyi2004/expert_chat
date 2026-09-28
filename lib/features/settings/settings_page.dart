@@ -101,10 +101,14 @@ class _SettingsCategoryBar extends StatelessWidget {
 }
 
 class SettingsPage extends ConsumerStatefulWidget {
-  const SettingsPage({super.key, this.asRootTab = false});
+  const SettingsPage({super.key, this.asRootTab = false, this.onBack});
 
-  /// When true (bottom-nav「设置」), hide the back affordance.
+  /// When true (a shell tab, not a pushed route), hide the implied back
+  /// button; [onBack] then decides whether a back button is shown.
   final bool asRootTab;
+
+  /// Phone shell: back to the chat (there is no bottom bar).
+  final VoidCallback? onBack;
 
   @override
   ConsumerState<SettingsPage> createState() => _SettingsPageState();
@@ -380,6 +384,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       appBar: AppBar(
         title: const Text('设置'),
         automaticallyImplyLeading: !widget.asRootTab,
+        leading: widget.onBack == null
+            ? null
+            : BackButton(onPressed: widget.onBack),
       ),
       body: asyncSettings.when(
         loading: () => const Center(child: CircularProgressIndicator()),

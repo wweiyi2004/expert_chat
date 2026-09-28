@@ -25,7 +25,6 @@ class MemorySettingsCard extends ConsumerWidget {
           SwitchListTile(
             secondary: const Icon(Icons.psychology_alt_outlined),
             title: const Text('启用长期记忆'),
-            subtitle: const Text('在回答中参考你保存的信息和偏好，不会自动记住新内容。'),
             value: enabled,
             onChanged: onEnabledChanged,
           ),

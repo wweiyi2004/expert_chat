@@ -123,13 +123,6 @@ class _SupportPageState extends State<SupportPage> {
           child: ListView(
             padding: const EdgeInsets.all(20),
             children: [
-              Text(
-                '把问题说明白，方便定位',
-                style: Theme.of(context).textTheme.headlineSmall,
-              ),
-              const SizedBox(height: 8),
-              const Text('复制诊断摘要，再到反馈页面补充操作步骤、期望结果和实际结果。'),
-              const SizedBox(height: 20),
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(16),
@@ -149,13 +142,11 @@ class _SupportPageState extends State<SupportPage> {
                 ),
               ),
               const SizedBox(height: 20),
-              const Text('摘要默认仅含版本、平台和错误类别，不包含聊天内容、密钥、文件名或服务地址。应用不会自动发送或提交报告。'),
+              const Text('摘要不含聊天内容和密钥，不会自动发送。'),
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
                 title: const Text('记录本次运行的诊断步骤'),
-                subtitle: const Text(
-                  '仅记录阶段与耗时，不包含聊天内容；关闭或退出应用后清空。开启后可返回聊天复现问题。',
-                ),
+                subtitle: const Text('不含聊天内容，退出后清空'),
                 value: DiagnosticTrace.instance.enabled,
                 onChanged: (value) =>
                     setState(() => DiagnosticTrace.instance.setEnabled(value)),

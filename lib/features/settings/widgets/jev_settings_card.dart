@@ -103,7 +103,6 @@ class _JevSettingsCardState extends State<JevSettingsCard> {
       SwitchListTile.adaptive(
         contentPadding: EdgeInsets.zero,
         title: const Text('Jev 技能自动路由'),
-        subtitle: const Text('用 Jev 选择提示词，当前聊天模型负责回答。'),
         value: widget.config.enabled,
         onChanged: _saving
             ? null
@@ -122,7 +121,6 @@ class _JevSettingsCardState extends State<JevSettingsCard> {
         onSaved: widget.onApiKeySaved,
         decoration: const InputDecoration(
           labelText: 'TypeSafe API Key',
-          helperText: '密钥保存在本机安全存储中',
           border: OutlineInputBorder(),
         ),
       ),

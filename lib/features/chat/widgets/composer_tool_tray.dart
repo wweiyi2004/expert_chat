@@ -90,7 +90,6 @@ class ComposerToolTray extends StatelessWidget {
                       ListTile(
                         leading: const Icon(Icons.auto_awesome),
                         title: Text(imageMode ? '退出生图' : '图片生成'),
-                        subtitle: const Text('只生成图片；上传的图片作为参考图'),
                         onTap: onToggleImageMode == null
                             ? null
                             : () {
@@ -101,7 +100,6 @@ class ComposerToolTray extends StatelessWidget {
                     const ListTile(
                       leading: Icon(Icons.chat_bubble_outline),
                       title: Text('回答配图'),
-                      subtitle: Text('在文字回答中生成图片'),
                     ),
                     if (imageMode)
                       const Padding(
@@ -195,7 +193,6 @@ class ComposerToolTray extends StatelessWidget {
                       SwitchListTile(
                         secondary: const Icon(Icons.schedule_send_outlined),
                         title: const Text('后台执行'),
-                        subtitle: const Text('由已配置的任务服务执行，可稍后查看结果'),
                         value: longTaskMode,
                         onChanged: onToggleLongTask == null
                             ? null

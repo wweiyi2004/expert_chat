@@ -121,9 +121,7 @@ class _BackupPageState extends ConsumerState<BackupPage> {
           ListView(
             padding: const EdgeInsets.all(20),
             children: [
-              const Text('备份聊天和资料，或从备份恢复。'),
-              const SizedBox(height: 12),
-              const Text('备份未加密，包含个人聊天和资料，请妥善保管。'),
+              const Text('备份未加密，请妥善保管。'),
               const ExpansionTile(
                 tilePadding: EdgeInsets.zero,
                 title: Text('备份范围与注意事项'),

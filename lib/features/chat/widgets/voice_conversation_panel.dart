@@ -19,31 +19,31 @@ class VoiceConversationPanel extends StatelessWidget {
         final (label, hint, icon, color) = switch (controller.phase) {
           VoiceConversationPhase.listening => (
             '正在听',
-            '说完停顿一下就会发送；点按可立即发送',
+            '停顿即发送',
             Icons.mic_rounded,
             scheme.error,
           ),
           VoiceConversationPhase.replying when controller.speaking => (
             '正在说',
-            '点按打断并重新说话',
+            '点按打断',
             Icons.volume_up_rounded,
             scheme.primary,
           ),
           VoiceConversationPhase.replying => (
             '正在想',
-            '点按打断并重新说话',
+            '点按打断',
             Icons.more_horiz_rounded,
             scheme.primary,
           ),
           VoiceConversationPhase.paused => (
             '已暂停',
-            '点按继续对话',
+            '点按继续',
             Icons.play_arrow_rounded,
             scheme.secondary,
           ),
           VoiceConversationPhase.starting || VoiceConversationPhase.off => (
             '准备中',
-            '正在打开麦克风',
+            '',
             Icons.mic_none_rounded,
             scheme.outline,
           ),
@@ -94,7 +94,7 @@ class VoiceConversationPanel extends StatelessWidget {
                       ),
                     Semantics(
                       button: true,
-                      label: '$label，$hint',
+                      label: hint.isEmpty ? label : '$label，$hint',
                       child: SizedBox.square(
                         dimension: 72,
                         child:
@@ -118,16 +118,17 @@ class VoiceConversationPanel extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(height: 8),
-                    Padding(
-                      padding: const EdgeInsets.only(right: 8),
-                      child: Text(
-                        hint,
-                        textAlign: TextAlign.center,
-                        style: text.bodySmall?.copyWith(
-                          color: scheme.onSurfaceVariant,
+                    if (hint.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: Text(
+                          hint,
+                          textAlign: TextAlign.center,
+                          style: text.bodySmall?.copyWith(
+                            color: scheme.onSurfaceVariant,
+                          ),
                         ),
                       ),
-                    ),
                   ],
                 ),
               ),

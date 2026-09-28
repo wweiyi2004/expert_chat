@@ -481,10 +481,6 @@ class ModelUsageCard extends ConsumerWidget {
               contentPadding: EdgeInsets.zero,
               leading: Icon(Icons.bar_chart_rounded, color: scheme.primary),
               title: const Text('模型用量'),
-              subtitle: Text(
-                '统计服务商返回的真实 Token；仅保存在本机',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
               trailing: IconButton(
                 tooltip: '清除当前服务商用量',
                 onPressed: records.isEmpty ? null : clearUsage,
@@ -493,7 +489,7 @@ class ModelUsageCard extends ConsumerWidget {
             ),
             if (records.isEmpty)
               Text(
-                '完成一次模型请求后，这里会显示输入、输出和缓存命中用量。',
+                '暂无用量',
                 style: Theme.of(
                   context,
                 ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
@@ -700,7 +696,6 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
             decoration: const InputDecoration(
               labelText: '深度思考模型',
               hintText: '没有则与对话模型相同',
-              helperText: 'DeepSeek V4 等自带思考开关的模型不会切换，只在当前模型上开启思考',
             ),
           ),
         ],

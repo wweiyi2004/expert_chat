@@ -275,10 +275,7 @@ class _ModelSetupPageState extends ConsumerState<ModelSetupPage> {
                       autocorrect: false,
                       keyboardType: TextInputType.url,
                       validator: _validateUrl,
-                      decoration: const InputDecoration(
-                        labelText: '服务地址',
-                        helperText: '预设已填写；自建或中转服务可修改',
-                      ),
+                      decoration: const InputDecoration(labelText: '服务地址'),
                       onChanged: (value) {
                         // A key copied from an existing profile must not silently
                         // travel to a different host when the endpoint is edited.
@@ -304,7 +301,6 @@ class _ModelSetupPageState extends ConsumerState<ModelSetupPage> {
                           : null,
                       decoration: InputDecoration(
                         labelText: 'API Key',
-                        helperText: '使用你在所选服务商处创建的密钥',
                         suffixIcon: IconButton(
                           tooltip: _obscure ? '显示密钥' : '隐藏密钥',
                           onPressed: () => setState(() => _obscure = !_obscure),
@@ -323,10 +319,7 @@ class _ModelSetupPageState extends ConsumerState<ModelSetupPage> {
                       autocorrect: false,
                       validator: (v) =>
                           (v?.trim().isEmpty ?? true) ? '请填写模型名称' : null,
-                      decoration: const InputDecoration(
-                        labelText: '模型名称',
-                        helperText: '可使用预设，或填写账户已开通的模型',
-                      ),
+                      decoration: const InputDecoration(labelText: '模型名称'),
                     ),
                     const SizedBox(height: 20),
                     Text(

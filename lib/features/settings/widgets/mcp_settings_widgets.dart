@@ -88,7 +88,6 @@ class _CustomMcpEditorDialogState extends State<CustomMcpEditorDialog> {
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
                   title: const Text('本地 MCP 程序'),
-                  subtitle: const Text('启动本机程序，通过标准输入输出连接'),
                   value: _local,
                   onChanged: (v) => setState(() => _local = v),
                 ),
@@ -131,7 +130,7 @@ class _CustomMcpEditorDialogState extends State<CustomMcpEditorDialog> {
                   maxLines: 5,
                   decoration: const InputDecoration(
                     labelText: '参数（每行一个）',
-                    helperText: '直接传给程序，无需加引号；不要在这里填写密钥',
+                    helperText: '不要在这里填写密钥',
                   ),
                 ),
                 TextField(
@@ -141,7 +140,6 @@ class _CustomMcpEditorDialogState extends State<CustomMcpEditorDialog> {
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
                   title: const Text('电脑操作（Cua Driver）'),
-                  subtitle: const Text('只在任务模式下提供桌面工具，操作后读取新状态核验'),
                   value: _computer,
                   onChanged: (v) => setState(() => _computer = v),
                 ),
@@ -149,7 +147,7 @@ class _CustomMcpEditorDialogState extends State<CustomMcpEditorDialog> {
                   SwitchListTile(
                     contentPadding: EdgeInsets.zero,
                     title: const Text('允许必要时切换前台'),
-                    subtitle: const Text('默认关闭。开启后，后台操作被拒绝时可切换窗口并使用鼠标键盘。'),
+                    subtitle: const Text('会切换窗口并使用鼠标键盘'),
                     value: _foreground,
                     onChanged: (v) => setState(() => _foreground = v),
                   ),
@@ -162,7 +160,7 @@ class _CustomMcpEditorDialogState extends State<CustomMcpEditorDialog> {
                   keyboardType: TextInputType.url,
                   decoration: const InputDecoration(
                     labelText: 'Server URL',
-                    helperText: 'Streamable HTTP，例如 https://example.com/mcp',
+                    hintText: 'https://example.com/mcp',
                   ),
                 ),
                 const SizedBox(height: 12),

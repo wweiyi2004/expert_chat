@@ -675,13 +675,11 @@ class _ChatPageState extends ConsumerState<ChatPage>
     final settings = ref.read(settingsControllerProvider).value;
     if (forceDocumentEdit) {
       if (settings == null || !settings.supportsDocumentEdit) {
-        _showAttachmentNotice('请先在设置中连接并发现支持文档编辑的 MCP Tools');
+        _showAttachmentNotice('请先在设置中连接文档服务');
         return false;
       }
       if (!_attachments.any((a) => a.isEditableDocument)) {
-        _showAttachmentNotice(
-          '请先上传可编辑的 .xlsx / .docx / .pptx / .txt / .md / .csv / .tsv',
-        );
+        _showAttachmentNotice('请先上传 Office 或文本文件');
         return false;
       }
       if (_imageMode) {
@@ -937,10 +935,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
     if (usable.isEmpty) {
       if (!allowImages &&
           sources.every((s) => imageExts.contains(s.extension))) {
-        _showAttachmentNotice(
-          '当前模型不支持看图。请选用视觉模型（如 ${KnownModels.vision}），'
-          '或在设置中配置独立视觉 API。',
-        );
+        _showAttachmentNotice('当前模型不支持看图');
       } else if (forImageGeneration) {
         _showAttachmentNotice('生图模式只能粘贴图片作为参考图。');
       } else {
@@ -1296,11 +1291,6 @@ class _ChatPageState extends ConsumerState<ChatPage>
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
                     const SizedBox(height: 8),
-                    Text(
-                      '只把勾选的服务器工具交给模型。新对话默认不勾选。',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                    const SizedBox(height: 8),
                     for (final choice in choices)
                       CheckboxListTile(
                         contentPadding: EdgeInsets.zero,
@@ -1354,10 +1344,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
               context: context,
               builder: (dialog) => AlertDialog(
                 title: const Text('重新提交生图？'),
-                content: const Text(
-                  '这将发起一次新的收费请求。停止本地等待不代表远端已取消；'
-                  '如果上次状态不明，请先在服务商处检查结果，避免重复扣费。',
-                ),
+                content: const Text('会再次收费。上次若状态不明，建议先到服务商处确认。'),
                 actions: [
                   TextButton(
                     onPressed: () => Navigator.pop(dialog, false),

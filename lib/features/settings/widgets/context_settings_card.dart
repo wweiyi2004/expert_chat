@@ -49,7 +49,6 @@ class ContextSettingsCard extends StatelessWidget {
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               title: const Text('自动管理上下文'),
-              subtitle: const Text('只裁剪发送给模型的临时请求，不修改已保存的聊天记录。'),
               value: prefs.enabled,
               onChanged: (value) => onChanged(prefs.copyWith(enabled: value)),
             ),

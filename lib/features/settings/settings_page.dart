@@ -442,7 +442,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                 title: Text(
                                   s.config.isReady ? '验证模型连接' : '连接模型，开始使用',
                                 ),
-                                subtitle: const Text('填写服务信息，测试成功后开始对话'),
                                 trailing: const Icon(Icons.chevron_right),
                                 onTap: () async {
                                   final saved = await showModelSetup(context);
@@ -487,9 +486,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                               decoration: InputDecoration(
                                 labelText: 'API Key',
                                 hintText: 'sk-...',
-                                helperText: active == null
-                                    ? null
-                                    : '用于 ${active.name}（${active.baseUrl}）',
                                 suffixIcon: IconButton(
                                   tooltip: _obscure
                                       ? '显示 API Key'
@@ -557,21 +553,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                           ],
                           if (_category == _SettingsCategory.capabilities) ...[
                             const SettingsSectionTitle('多媒体能力（可选）'),
-                            Text(
-                              '对话模型本身支持视觉时（如 deepseek-flash、deepseek-v4-flash-vision-exp、GPT-4o）可直接看图。'
-                              '也可单独配置视觉 API，由对话模型通过 analyze_image 调用。'
-                              '视觉、生图和语音的 API Key 与聊天服务互不共用。'
-                              'MiMo 的 ASR 与 TTS 走 /chat/completions；'
-                              'TTS 也支持阿里百炼和 OpenAI /audio/speech。'
-                              '粘贴服务地址或模型时会自动选用正确协议。',
-                              style: Theme.of(context).textTheme.bodySmall,
-                            ),
-                            const SizedBox(height: 12),
                             MediaApiSettingsCard(
                               title: '视觉理解',
-                              description:
-                                  '给不支持看图的对话模型用。DeepSeek 请填 deepseek-flash，'
-                                  '也可直接把聊天模型换成该视觉模型',
                               icon: Icons.visibility_outlined,
                               config: s.visionApi,
                               apiKey: s.visionApiKey,
@@ -593,7 +576,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                             const SizedBox(height: 10),
                             MediaApiSettingsCard(
                               title: '图片生成',
-                              description: '使用 /images/generations 生成图片',
                               icon: Icons.auto_awesome_outlined,
                               config: s.imageGenerationApi,
                               apiKey: s.imageGenerationApiKey,
@@ -619,8 +601,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                             const SizedBox(height: 10),
                             MediaApiSettingsCard(
                               title: '云端语音识别（MiMo ASR）',
-                              description:
-                                  '录音结束后上传到 MiMo /chat/completions；配置后优先使用它',
                               icon: Icons.mic_none_outlined,
                               config: s.asrApi,
                               apiKey: s.asrApiKey,
@@ -645,7 +625,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                             const SizedBox(height: 10),
                             MediaApiSettingsCard(
                               title: '云端语音合成',
-                              description: '阿里百炼 Qwen/CosyVoice、OpenAI 或 MiMo',
                               icon: Icons.record_voice_over_outlined,
                               config: s.ttsApi,
                               apiKey: s.ttsApiKey,
@@ -682,13 +661,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                             ),
                             const SizedBox(height: 24),
                             const SettingsSectionTitle('语音朗读'),
-                            Text(
-                              '每条已完成的 AI 回复都可点“朗读”。开启自动语气后，会按句子'
-                              '推断情绪（开心/感伤/叙事等）并调整演绎；也可一键套用'
-                              '动漫风自制音色。',
-                              style: Theme.of(context).textTheme.bodySmall,
-                            ),
-                            const SizedBox(height: 12),
                             SettingsPrefRow(
                               label: '朗读速度',
                               child: SegmentedButton<TtsSpeedPref>(
@@ -710,7 +682,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                             SwitchListTile(
                               contentPadding: EdgeInsets.zero,
                               title: const Text('自动语气'),
-                              subtitle: const Text('按每句内容自动选择情绪与演绎方式，长文更有感情'),
                               value: s.ui.ttsAutoEmotion,
                               onChanged: (value) => controller.setUiPrefs(
                                 s.ui.copyWith(ttsAutoEmotion: value),
@@ -722,17 +693,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                               style: Theme.of(context).textTheme.titleSmall,
                             ),
                             const SizedBox(height: 4),
-                            Text(
-                              '基于角色人设的文案设计音色；有样本时也可走克隆。'
-                              '并非搬运正版动漫原声，避免版权问题。',
-                              style: Theme.of(context).textTheme.bodySmall
-                                  ?.copyWith(
-                                    color: Theme.of(
-                                      context,
-                                    ).colorScheme.onSurfaceVariant,
-                                  ),
-                            ),
-                            const SizedBox(height: 10),
                             AnimeVoicePackGrid(
                               selectedId: s.ui.ttsVoicePackId,
                               onSelect: (pack) async {
@@ -829,11 +789,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                   ),
                             ),
                             const SizedBox(height: 6),
-                            Text(
-                              '点选即时生效 · 已选「${s.ui.colorTheme.label}」',
-                              style: Theme.of(context).textTheme.bodySmall,
-                            ),
-                            const SizedBox(height: 12),
                             ColorThemeLivePreview(
                               theme: s.ui.colorTheme,
                               themeMode: s.themeMode,
@@ -868,7 +823,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                               key: const ValueKey('advanced-appearance'),
                               tilePadding: EdgeInsets.zero,
                               title: const Text('更多外观设置'),
-                              subtitle: const Text('圆角、背景、消息样式与排版'),
                               children: [
                                 SettingsPrefRow(
                                   label: '圆角风格',
@@ -907,11 +861,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                   ),
                                 ),
                                 const SizedBox(height: 6),
-                                Text(
-                                  s.ui.chatSurface.description,
-                                  style: Theme.of(context).textTheme.bodySmall,
-                                ),
-                                const SizedBox(height: 22),
                                 Text(
                                   '阅读与布局',
                                   style: Theme.of(context).textTheme.labelLarge
@@ -986,11 +935,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                   ],
                                 ),
                                 const SizedBox(height: 6),
-                                Text(
-                                  s.ui.markdownStyle.description,
-                                  style: Theme.of(context).textTheme.bodySmall,
-                                ),
-                                const SizedBox(height: 10),
                                 MarkdownStylePreview(style: s.ui.markdownStyle),
                                 const SizedBox(height: 12),
                                 SettingsPrefRow(
@@ -1013,17 +957,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                   ),
                                 ),
                                 const SizedBox(height: 4),
-                                Text(
-                                  '内容宽度主要影响平板 / 桌面宽屏；手机上消息仍铺满可用宽度。',
-                                  style: Theme.of(context).textTheme.bodySmall,
-                                ),
-                                const SizedBox(height: 12),
                                 SwitchListTile(
                                   contentPadding: EdgeInsets.zero,
                                   title: const Text('流式实时 Markdown'),
-                                  subtitle: const Text(
-                                    '开启后生成过程中即渲染格式；关闭则先纯文本、结束后再排版。',
-                                  ),
                                   value: s.ui.liveMarkdown,
                                   onChanged: (v) => controller.setUiPrefs(
                                     s.ui.copyWith(liveMarkdown: v),
@@ -1035,14 +971,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                           ],
                           if (_category == _SettingsCategory.capabilities) ...[
                             const SettingsSectionTitle('联网搜索'),
-                            Text(
-                              '聊天输入框的「联网」开关分三档：关闭 / 自动（模型自行判断）/ '
-                              '强制（先搜索再回答）。搜索过程会在回答上方逐步展示。\n'
-                              '「API 提供商官方联网」使用 DeepSeek Responses 的服务端 '
-                              'web_search（flash / pro / vision-exp），无需搜索 Key。',
-                              style: Theme.of(context).textTheme.bodySmall,
-                            ),
-                            const SizedBox(height: 12),
                             DropdownButtonFormField<SearchBackend>(
                               isExpanded: true,
                               initialValue: s.searchBackend,
@@ -1138,10 +1066,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                   : null,
                               decoration: const InputDecoration(
                                 labelText: '搜索规划模型（搜索大脑）',
-                                helperText:
-                                    '为深度思考等不支持工具调用的模型改写搜索词并编排多轮检索；'
-                                    '默认跟随当前配置的对话模型。',
-                                helperMaxLines: 3,
                               ),
                               items: [
                                 const DropdownMenuItem<String>(
@@ -1197,11 +1121,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                             const SettingsSectionTitle(
                               'Expert Chat MCP Server',
                             ),
-                            Text(
-                              '连接文档服务后，可编辑和转换文件。',
-                              style: Theme.of(context).textTheme.bodySmall,
-                            ),
-                            const SizedBox(height: 12),
                             SwitchListTile(
                               contentPadding: EdgeInsets.zero,
                               title: const Text('启用 MCP Server'),
@@ -1217,8 +1136,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                               keyboardType: TextInputType.url,
                               decoration: const InputDecoration(
                                 labelText: 'MCP Server URL',
-                                helperText:
-                                    '例如 http://192.168.1.10:8790；也可直接填写以 /mcp 结尾的地址',
+                                hintText: 'http://192.168.1.10:8790',
                               ),
                               onChanged: (v) => controller.setGatewayConfig(
                                 s.gateway.copyWith(baseUrl: v),
@@ -1232,7 +1150,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                               enableSuggestions: false,
                               decoration: InputDecoration(
                                 labelText: 'MCP Token',
-                                helperText: '填写服务提供方给你的访问令牌',
                                 suffixIcon: IconButton(
                                   tooltip: _obscureGatewayToken
                                       ? '显示 Token'
@@ -1330,11 +1247,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                             ],
                             const SizedBox(height: 32),
                             const SettingsSectionTitle('自定义 MCP 服务器'),
-                            Text(
-                              '连接外部工具，扩展对话能力。',
-                              style: Theme.of(context).textTheme.bodySmall,
-                            ),
-                            const SizedBox(height: 12),
                             for (final server
                                 in s.gateway.customMcpServers) ...[
                               CustomMcpServerCard(
@@ -1361,7 +1273,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                               child: ListTile(
                                 leading: const Icon(Icons.extension_outlined),
                                 title: const Text('可选工具'),
-                                subtitle: const Text('学习、创作和科研终端的入口与开关'),
                                 trailing: const Icon(Icons.chevron_right),
                                 onTap: () {
                                   openShellTab(ref, ShellTab.tools);
@@ -1378,7 +1289,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                               child: ListTile(
                                 leading: const Icon(Icons.folder_outlined),
                                 title: const Text('资料'),
-                                subtitle: const Text('项目、素材库与生图记录'),
                                 trailing: const Icon(Icons.chevron_right),
                                 onTap: () => Navigator.of(context).push(
                                   MaterialPageRoute<void>(
@@ -1391,7 +1301,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                               child: ListTile(
                                 leading: const Icon(Icons.save_outlined),
                                 title: const Text('完整备份与恢复'),
-                                subtitle: const Text('会话、记忆、学习和素材；校验后导入副本'),
                                 trailing: const Icon(Icons.chevron_right),
                                 onTap: () => Navigator.of(context).push(
                                   MaterialPageRoute<void>(
@@ -1410,9 +1319,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                       Icons.file_download_outlined,
                                     ),
                                     title: const Text('导出 API 配置'),
-                                    subtitle: const Text(
-                                      '用于在其他设备导入配置。文件含密钥，请勿分享或公开。',
-                                    ),
+                                    subtitle: const Text('文件含密钥，请勿分享或公开'),
                                     trailing: _exportingSettings
                                         ? const SizedBox.square(
                                             dimension: 20,
@@ -1431,9 +1338,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                       Icons.file_upload_outlined,
                                     ),
                                     title: const Text('导入 API 配置'),
-                                    subtitle: const Text(
-                                      '从 JSON 覆盖本机的服务商、密钥、网关和多媒体设置。',
-                                    ),
+                                    subtitle: const Text('会覆盖本机配置'),
                                     trailing: _importingSettings
                                         ? const SizedBox.square(
                                             dimension: 20,
@@ -1463,10 +1368,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                   Icons.cleaning_services_outlined,
                                 ),
                                 title: const Text('清除软件缓存'),
-                                subtitle: const Text(
-                                  '清除临时网页预览、图片内存和联网搜索缓存；'
-                                  '不会删除聊天、角色、生成图片、设置或 API Key。',
-                                ),
+                                subtitle: const Text('不影响聊天和设置'),
                                 trailing: _clearingCache
                                     ? const SizedBox.square(
                                         dimension: 20,
@@ -1479,17 +1381,11 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                               ),
                             ),
                             const SizedBox(height: 32),
-                            Text(
-                              'API Key 保存在本机系统安全存储中，仅用于向你配置的服务发送请求认证。',
-                              style: Theme.of(context).textTheme.bodySmall,
-                            ),
-                            const SizedBox(height: 32),
                             const SettingsSectionTitle('关于与更新'),
                             Card(
                               child: ListTile(
                                 leading: const Icon(Icons.info_outline),
                                 title: const Text('帮助与反馈'),
-                                subtitle: const Text('检查常见问题，预览并复制诊断摘要'),
                                 trailing: const Icon(Icons.chevron_right),
                                 onTap: () {
                                   final database = ref.read(

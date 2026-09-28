@@ -17,7 +17,7 @@ class MediaApiSettingsCard extends StatefulWidget {
   const MediaApiSettingsCard({
     super.key,
     required this.title,
-    required this.description,
+    this.description,
     required this.icon,
     required this.config,
     required this.apiKey,
@@ -34,7 +34,9 @@ class MediaApiSettingsCard extends StatefulWidget {
   });
 
   final String title;
-  final String description;
+
+  /// Optional one-line note; most cards show only the title.
+  final String? description;
   final IconData icon;
   final MediaApiConfig config;
   final String apiKey;
@@ -449,7 +451,7 @@ class _OptionalApiCardState extends State<MediaApiSettingsCard> {
       child: ExpansionTile(
         leading: Icon(widget.icon, color: scheme.primary),
         title: Text(widget.title),
-        subtitle: Text(widget.description),
+        subtitle: widget.description == null ? null : Text(widget.description!),
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -847,7 +849,6 @@ class _OptionalApiCardState extends State<MediaApiSettingsCard> {
               labelText: '音色描述（必填）',
               alignLabelWithHint: true,
               hintText: '例如：二十多岁年轻女性，声音清亮柔和，语速适中，像电台深夜主播。',
-              helperText: '用自然语言描述性别、年龄、质感、情绪与语速；中英文均可。',
               helperMaxLines: 3,
               border: OutlineInputBorder(),
             ),
@@ -919,7 +920,6 @@ class _OptionalApiCardState extends State<MediaApiSettingsCard> {
               labelText: '风格指令（可选）',
               alignLabelWithHint: true,
               hintText: '例如：温和、沉稳，适合连续阅读；或加入方言/情绪标签说明。',
-              helperText: '会作为 user 指令发送，不影响克隆音色本身。',
               helperMaxLines: 2,
               border: OutlineInputBorder(),
             ),
@@ -936,7 +936,6 @@ class _OptionalApiCardState extends State<MediaApiSettingsCard> {
               labelText: '风格 / 导演指令（可选）',
               alignLabelWithHint: true,
               hintText: '例如：轻快上扬、略快语速；或（温柔）式标签说明。',
-              helperText: '留空则使用默认「自然清晰、适合连续阅读」指令。',
               helperMaxLines: 2,
               border: OutlineInputBorder(),
             ),
@@ -953,9 +952,6 @@ class _OptionalApiCardState extends State<MediaApiSettingsCard> {
               labelText: '风格 / 情绪指令（可选）',
               alignLabelWithHint: true,
               hintText: '例如：温柔亲切，像朋友聊天；语速稍慢，重点词轻微加重。',
-              helperText: widget.config.isAliyunQwen3TtsModel
-                  ? 'Qwen3 Instruct 会优化这条指令；开启自动语气后还会按句调整。'
-                  : 'Qwen-Audio/CosyVoice 使用 instruction；自动语气可按句覆盖演绎。',
               helperMaxLines: 3,
               border: const OutlineInputBorder(),
             ),

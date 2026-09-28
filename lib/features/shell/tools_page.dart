@@ -140,8 +140,6 @@ class _ToolsPageState extends ConsumerState<ToolsPage> {
             child: ListView(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
               children: [
-                const Text('按需开启学习、创作与科研功能，已有内容会保留。'),
-                const SizedBox(height: 16),
                 if (_error != null)
                   RecoveryNotice(error: _error!, title: '功能设置未完成'),
                 AbsorbPointer(
@@ -157,7 +155,7 @@ class _ToolsPageState extends ConsumerState<ToolsPage> {
                             ? () => openShellTab(ref, ShellTab.study)
                             : null,
                       ),
-                      const SizedBox(height: 24),
+                      const SizedBox(height: 12),
                       _CreationModeCard(
                         enabled: s.creationModeEnabled,
                         onChanged: (enabled) =>
@@ -166,9 +164,19 @@ class _ToolsPageState extends ConsumerState<ToolsPage> {
                             ? () => openShellTab(ref, ShellTab.studio)
                             : null,
                       ),
-                      const SizedBox(height: 24),
-                      const Text('实验功能'),
-                      const SizedBox(height: 8),
+                      const SizedBox(height: 20),
+                      Padding(
+                        padding: const EdgeInsets.only(left: 4, bottom: 8),
+                        child: Text(
+                          '实验功能',
+                          style: Theme.of(context).textTheme.labelMedium
+                              ?.copyWith(
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.onSurfaceVariant,
+                              ),
+                        ),
+                      ),
                       _ResearchModeCard(
                         enabled: s.researchModeEnabled,
                         onChanged: (enabled, origin) => _change(
@@ -198,7 +206,96 @@ class _ToolsPageState extends ConsumerState<ToolsPage> {
   }
 }
 
-/// Optional workspace cards retain each feature's existing enablement state.
+/// One optional feature: icon, name and switch; an entry row appears once on.
+/// Turning a feature off only hides it; its data stays on the device.
+class _FeatureCard extends StatelessWidget {
+  const _FeatureCard({
+    required this.icon,
+    required this.title,
+    required this.toggle,
+    required this.openLabel,
+    this.onOpen,
+    this.badge,
+    this.note,
+  });
+
+  final IconData icon;
+  final String title;
+  final Widget toggle;
+  final String openLabel;
+  final VoidCallback? onOpen;
+  final String? badge;
+  final String? note;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final text = Theme.of(context).textTheme;
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 6, 8, 6),
+            child: Row(
+              children: [
+                Icon(icon, color: scheme.onSurfaceVariant),
+                const SizedBox(width: 14),
+                Text(
+                  title,
+                  style: text.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                if (badge != null) ...[
+                  const SizedBox(width: 8),
+                  Text(
+                    badge!,
+                    style: text.labelSmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+                const Spacer(),
+                toggle,
+              ],
+            ),
+          ),
+          if (note != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(54, 0, 16, 12),
+              child: Text(
+                note!,
+                style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+              ),
+            ),
+          if (onOpen != null)
+            InkWell(
+              onTap: onOpen,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(54, 12, 16, 14),
+                child: Row(
+                  children: [
+                    Text(
+                      openLabel,
+                      style: text.bodyMedium?.copyWith(color: scheme.primary),
+                    ),
+                    const Spacer(),
+                    Icon(
+                      Icons.chevron_right_rounded,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
 class _StudyModeCard extends StatelessWidget {
   const _StudyModeCard({
     required this.enabled,
@@ -211,72 +308,13 @@ class _StudyModeCard extends StatelessWidget {
   final VoidCallback? onOpenStudy;
 
   @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  width: 40,
-                  height: 40,
-                  decoration: BoxDecoration(
-                    color: scheme.secondaryContainer,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Icon(
-                    Icons.school_rounded,
-                    color: scheme.onSecondaryContainer,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '学习模式',
-                        style: Theme.of(context).textTheme.titleMedium
-                            ?.copyWith(fontWeight: FontWeight.w600),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        '导师、课程、刷题与间隔复习。',
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    ],
-                  ),
-                ),
-                Switch.adaptive(value: enabled, onChanged: onChanged),
-              ],
-            ),
-          ),
-        ),
-        const SizedBox(height: 8),
-        Text(
-          '关闭后隐藏学习入口；课程、卡片与错题本仍保留在本机。',
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-        if (enabled && onOpenStudy != null) ...[
-          const SizedBox(height: 12),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: OutlinedButton.icon(
-              onPressed: onOpenStudy,
-              icon: const Icon(Icons.school_outlined, size: 18),
-              label: const Text('进入学习中心'),
-            ),
-          ),
-        ],
-      ],
-    );
-  }
+  Widget build(BuildContext context) => _FeatureCard(
+    icon: Icons.school_outlined,
+    title: '学习模式',
+    toggle: Switch.adaptive(value: enabled, onChanged: onChanged),
+    openLabel: '进入学习中心',
+    onOpen: enabled ? onOpenStudy : null,
+  );
 }
 
 class _CreationModeCard extends StatelessWidget {
@@ -291,72 +329,13 @@ class _CreationModeCard extends StatelessWidget {
   final VoidCallback? onOpenStudio;
 
   @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  width: 40,
-                  height: 40,
-                  decoration: BoxDecoration(
-                    color: scheme.primaryContainer,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Icon(
-                    Icons.menu_book_rounded,
-                    color: scheme.onPrimaryContainer,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '创作模式',
-                        style: Theme.of(context).textTheme.titleMedium
-                            ?.copyWith(fontWeight: FontWeight.w600),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        '导演故事、角色库与世界书。',
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    ],
-                  ),
-                ),
-                Switch.adaptive(value: enabled, onChanged: onChanged),
-              ],
-            ),
-          ),
-        ),
-        const SizedBox(height: 8),
-        Text(
-          '关闭后停用创作中心；角色与草稿仍保留。聊天里仍可直接开导演故事。',
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-        if (enabled && onOpenStudio != null) ...[
-          const SizedBox(height: 12),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: OutlinedButton.icon(
-              onPressed: onOpenStudio,
-              icon: const Icon(Icons.menu_book_outlined, size: 18),
-              label: const Text('进入创作中心'),
-            ),
-          ),
-        ],
-      ],
-    );
-  }
+  Widget build(BuildContext context) => _FeatureCard(
+    icon: Icons.menu_book_outlined,
+    title: '创作模式',
+    toggle: Switch.adaptive(value: enabled, onChanged: onChanged),
+    openLabel: '进入创作中心',
+    onOpen: enabled ? onOpenStudio : null,
+  );
 }
 
 /// Experimental SSH workspace.
@@ -388,103 +367,23 @@ class _ResearchModeCardState extends State<_ResearchModeCard> {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final webBlocked = kIsWeb;
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  width: 40,
-                  height: 40,
-                  decoration: BoxDecoration(
-                    color: scheme.primaryContainer,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Icon(
-                    Icons.terminal_rounded,
-                    color: scheme.onPrimaryContainer,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Text(
-                            '科研模式',
-                            style: Theme.of(context).textTheme.titleMedium
-                                ?.copyWith(fontWeight: FontWeight.w600),
-                          ),
-                          const SizedBox(width: 8),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 8,
-                              vertical: 2,
-                            ),
-                            decoration: BoxDecoration(
-                              color: scheme.secondaryContainer,
-                              borderRadius: BorderRadius.circular(999),
-                            ),
-                            child: Text(
-                              '实验性',
-                              style: Theme.of(context).textTheme.labelSmall
-                                  ?.copyWith(
-                                    color: scheme.onSecondaryContainer,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        webBlocked
-                            ? '浏览器无法直接建立原生 SSH 连接。'
-                            : '启用 SSH 终端、tmux 会话和 AI 命令审批。',
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    ],
-                  ),
-                ),
-                KeyedSubtree(
-                  key: _switchKey,
-                  child: Switch.adaptive(
-                    value: widget.enabled && !webBlocked,
-                    onChanged: webBlocked
-                        ? null
-                        : (v) => widget.onChanged(v, _switchCenterGlobal()),
-                  ),
-                ),
-              ],
-            ),
-          ),
+    const webBlocked = kIsWeb;
+    return _FeatureCard(
+      icon: Icons.terminal_rounded,
+      title: '科研模式',
+      badge: '实验性',
+      note: webBlocked ? '浏览器不支持 SSH' : null,
+      toggle: KeyedSubtree(
+        key: _switchKey,
+        child: Switch.adaptive(
+          value: widget.enabled && !webBlocked,
+          onChanged: webBlocked
+              ? null
+              : (v) => widget.onChanged(v, _switchCenterGlobal()),
         ),
-        const SizedBox(height: 8),
-        Text(
-          '关闭时，终端入口不会显示，服务器配置也不会进入普通 AI 会话。',
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-        if (widget.enabled && !webBlocked && widget.onOpenTerminal != null) ...[
-          const SizedBox(height: 12),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: OutlinedButton.icon(
-              onPressed: widget.onOpenTerminal,
-              icon: const Icon(Icons.terminal_rounded, size: 18),
-              label: const Text('进入科研终端'),
-            ),
-          ),
-        ],
-      ],
+      ),
+      openLabel: '进入科研终端',
+      onOpen: widget.enabled && !webBlocked ? widget.onOpenTerminal : null,
     );
   }
 }

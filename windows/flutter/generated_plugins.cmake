@@ -5,6 +5,7 @@
 list(APPEND FLUTTER_PLUGIN_LIST
   desktop_webview_window
   flutter_secure_storage_windows
+  flutter_tts
   just_audio_windows
   pasteboard
   record_windows

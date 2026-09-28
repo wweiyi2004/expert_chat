@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import '../media/openai_compatible_media_provider.dart';
@@ -33,6 +35,12 @@ class ApiTextToSpeechService implements TextToSpeechService {
         errorMessage: '当前平台不支持语音朗读。',
       ),
     );
+  }
+
+  @override
+  TextToSpeechStream startStream(TextToSpeechRequest request) {
+    unawaited(speak(request));
+    return SpeechChunkQueue()..finish(false);
   }
 
   @override

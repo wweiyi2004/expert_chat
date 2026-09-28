@@ -51,6 +51,9 @@ class ApiTextToSpeechService implements TextToSpeechService {
   final Set<File> _ownedAudioFiles = {};
   int _requestId = 0;
   bool _disposed = false;
+
+  /// Sentences of the request currently owning the speaker.
+  SpeechChunkQueue? _activeQueue;
   bool _tempDirCleaned = false;
 
   @override
@@ -60,6 +63,7 @@ class ApiTextToSpeechService implements TextToSpeechService {
   Future<void> speak(TextToSpeechRequest request) async {
     final text = prepareTextForSpeech(request.text);
     final requestId = ++_requestId;
+    _retireQueue();
     await _stopEngine();
     if (!_isCurrent(requestId)) return;
 
@@ -75,8 +79,48 @@ class ApiTextToSpeechService implements TextToSpeechService {
       return;
     }
 
+    // One sentence per chunk so playback can overlap with look-ahead
+    // downloads (packSentences: false). Oversized sentences still split.
+    final queue = SpeechChunkQueue(maxChunkLength: speechChunkLength)
+      ..addChunks(
+        splitTextForSpeech(
+          text,
+          maxChunkLength: speechChunkLength,
+          packSentences: false,
+        ),
+      )
+      ..close();
+    _activeQueue = queue;
+    _begin(requestId, request, queue);
+  }
+
+  @override
+  TextToSpeechStream startStream(TextToSpeechRequest request) {
+    final queue = SpeechChunkQueue(maxChunkLength: speechChunkLength)
+      ..append(request.text);
+    final requestId = ++_requestId;
+    _retireQueue();
+    _activeQueue = queue;
+    unawaited(() async {
+      await _stopEngine();
+      if (!_isCurrent(requestId)) {
+        queue.finish(false);
+        return;
+      }
+      _begin(requestId, request, queue);
+    }());
+    return queue;
+  }
+
+  /// Validates the API configuration, then starts the play loop for [queue].
+  void _begin(
+    int requestId,
+    TextToSpeechRequest request,
+    SpeechChunkQueue queue,
+  ) {
     final config = request.apiConfig;
     if (config == null || !config.isConfiguredWith(request.apiKey)) {
+      queue.finish(false);
       _setPlayback(
         TextToSpeechPlayback(
           phase: TextToSpeechPhase.error,
@@ -97,12 +141,20 @@ class ApiTextToSpeechService implements TextToSpeechService {
         requestId: requestId,
       ),
     );
-    unawaited(_synthesizeAndPlay(requestId, request, config, text));
+    unawaited(_synthesizeAndPlay(requestId, request, config, queue));
+  }
+
+  /// Cancels the queue of a request that is being replaced or stopped, which
+  /// also wakes a play loop that is waiting for more streamed text.
+  void _retireQueue() {
+    _activeQueue?.cancel();
+    _activeQueue = null;
   }
 
   @override
   Future<void> stop() async {
     final requestId = ++_requestId;
+    _retireQueue();
     await _stopEngine();
     if (_isCurrent(requestId)) {
       _setPlayback(TextToSpeechPlayback(requestId: requestId));
@@ -113,23 +165,19 @@ class ApiTextToSpeechService implements TextToSpeechService {
     int requestId,
     TextToSpeechRequest request,
     MediaApiConfig config,
-    String text,
+    SpeechChunkQueue queue,
   ) async {
     final cancelToken = CancelToken();
     _cancelToken = cancelToken;
+    var completed = false;
     try {
       final player = _ensureAudioPlayer();
-      // One sentence per chunk so playback can overlap with look-ahead
-      // downloads (packSentences: false). Oversized sentences still split.
-      final chunks = splitTextForSpeech(
-        text,
-        maxChunkLength: speechChunkLength,
-        packSentences: false,
-      );
-      if (chunks.isEmpty) {
-        if (_isCurrent(requestId)) {
-          _setPlayback(TextToSpeechPlayback(requestId: requestId));
-        }
+      // A stream may start before its first sentence has arrived.
+      await queue.waitFor(0);
+      if (!_isCurrent(requestId)) return;
+      if (queue.length == 0) {
+        completed = true;
+        _setPlayback(TextToSpeechPlayback(requestId: requestId));
         return;
       }
 
@@ -148,7 +196,7 @@ class ApiTextToSpeechService implements TextToSpeechService {
             requestId: requestId,
             request: request,
             config: config,
-            text: chunks[index],
+            text: queue[index],
             chunkIndex: index,
             speed: speed,
             cancelToken: cancelToken,
@@ -160,8 +208,9 @@ class ApiTextToSpeechService implements TextToSpeechService {
       }
 
       void ensurePrefetchThrough(int playIndex) {
+        if (queue.length == 0) return;
         // Keep [prefetchAhead] sentences ahead of the one about to play / playing.
-        final last = (playIndex + prefetchAhead).clamp(0, chunks.length - 1);
+        final last = (playIndex + prefetchAhead).clamp(0, queue.length - 1);
         for (var i = playIndex; i <= last; i++) {
           if (pending.containsKey(i)) continue;
           // Attach an onError so a failed look-ahead is not an unhandled async
@@ -172,11 +221,31 @@ class ApiTextToSpeechService implements TextToSpeechService {
         }
       }
 
+      // Streamed sentences extend the look-ahead window as they arrive.
+      var playHead = 0;
+      queue.onAppend = () {
+        if (_isCurrent(requestId)) ensurePrefetchThrough(playHead);
+      };
+
       // Prime: sentence 0 plus look-ahead before the first await.
       ensurePrefetchThrough(0);
 
-      for (var index = 0; index < chunks.length; index++) {
+      for (var index = 0; ; index++) {
         if (!_isCurrent(requestId)) return;
+        if (index >= queue.length && !queue.isClosed) {
+          // Played everything streamed so far; wait for the next sentence.
+          _setPlayback(
+            TextToSpeechPlayback(
+              phase: TextToSpeechPhase.loading,
+              messageId: request.messageId,
+              requestId: requestId,
+            ),
+          );
+          await queue.waitFor(index);
+          if (!_isCurrent(requestId)) return;
+        }
+        if (index >= queue.length) break;
+        playHead = index;
 
         // Top up the window as the play head advances.
         ensurePrefetchThrough(index);
@@ -227,6 +296,7 @@ class ApiTextToSpeechService implements TextToSpeechService {
       }
 
       if (_isCurrent(requestId)) {
+        completed = true;
         _setPlayback(TextToSpeechPlayback(requestId: requestId));
       }
     } on DioException catch (error) {
@@ -253,6 +323,7 @@ class ApiTextToSpeechService implements TextToSpeechService {
       if (!_isCurrent(requestId)) return;
       _setPlayback(_apiErrorPlayback(request, requestId, error));
     } finally {
+      queue.finish(completed);
       if (identical(_cancelToken, cancelToken)) {
         _cancelToken = null;
       }
@@ -677,6 +748,7 @@ class ApiTextToSpeechService implements TextToSpeechService {
     if (_disposed) return;
     _disposed = true;
     ++_requestId;
+    _retireQueue();
     await _stopEngine();
     try {
       await _audioPlayer?.dispose();

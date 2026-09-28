@@ -13,5 +13,6 @@
 | archive / xml / Office 解析 | Flutter 端存在已有版本组合限制，未因“存在新版”而盲目跨版本升级；检查当前安全公告，同时保留输入/展开资源限制 |
 | file_picker / share_plus / win32 | 作为一组验证升级，避免单包升级破坏桌面插件解析。优先跟踪修复公告和平台迁移，不能无限期只靠旧注释固定版本 |
 | speech_to_text_windows 本地补丁 | 来源 1.0.1，当前补丁负责 SAPI 事件订阅、语言枚举及 JSON 转义；上游等效修复经中文实机识别验证后删除 override。见 third_party 下的补丁说明 |
+| flutter_tts 4.2.x | 2026-09-28 加入，作为未配置云端语音合成时的系统朗读兜底（`SystemTextToSpeechService`）。播放结束依赖平台回调，不用 `awaitSpeakCompletion`，因为停止时各平台行为不一致。插件仍使用 KGP，与上面 Android 构建一行的情况相同；Windows/macOS 朗读仍需实机验收 |
 
 参考：[AGP 8.11 官方兼容信息](https://developer.android.com/build/releases/agp-8-11-0-release-notes)、[Flutter Built-in Kotlin 迁移条件](https://docs.flutter.dev/release/breaking-changes/migrate-to-built-in-kotlin/for-app-developers)。不隐藏插件警告，不通过关闭依赖校验取得发布“通过”。

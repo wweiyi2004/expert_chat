@@ -43,6 +43,7 @@ class _System extends FakeSpeechInputService {
   Future<bool> start({
     required SpeechInputResultCallback onResult,
     String preferredLanguageCode = 'zh',
+    Duration pauseFor = dictationPause,
   }) async {
     startEntered++;
     results.add(onResult);
@@ -51,6 +52,7 @@ class _System extends FakeSpeechInputService {
     return super.start(
       onResult: onResult,
       preferredLanguageCode: preferredLanguageCode,
+      pauseFor: pauseFor,
     );
   }
 

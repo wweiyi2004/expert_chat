@@ -8,6 +8,7 @@
 
 #include <desktop_webview_window/desktop_webview_window_plugin.h>
 #include <flutter_secure_storage_windows/flutter_secure_storage_windows_plugin.h>
+#include <flutter_tts/flutter_tts_plugin.h>
 #include <just_audio_windows/just_audio_windows_plugin.h>
 #include <pasteboard/pasteboard_plugin.h>
 #include <record_windows/record_windows_plugin_c_api.h>
@@ -22,6 +23,8 @@ void RegisterPlugins(flutter::PluginRegistry* registry) {
       registry->GetRegistrarForPlugin("DesktopWebviewWindowPlugin"));
   FlutterSecureStorageWindowsPluginRegisterWithRegistrar(
       registry->GetRegistrarForPlugin("FlutterSecureStorageWindowsPlugin"));
+  FlutterTtsPluginRegisterWithRegistrar(
+      registry->GetRegistrarForPlugin("FlutterTtsPlugin"));
   JustAudioWindowsPluginRegisterWithRegistrar(
       registry->GetRegistrarForPlugin("JustAudioWindowsPlugin"));
   PasteboardPluginRegisterWithRegistrar(

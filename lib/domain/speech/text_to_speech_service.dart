@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:characters/characters.dart';
 import 'package:flutter/foundation.dart';
 
@@ -56,6 +58,20 @@ class TextToSpeechRequest {
   final bool autoEmotion;
 }
 
+/// A read-aloud whose text keeps arriving while it already speaks, so voice
+/// conversation mode can start reading a reply before it finishes streaming.
+abstract class TextToSpeechStream {
+  /// Queues more text; it is cleaned and split into sentences like [speak].
+  void append(String text);
+
+  /// No more text follows; playback ends once the queued sentences are read.
+  void close();
+
+  /// True once every queued sentence was spoken; false when the stream was
+  /// stopped, replaced by another request, or failed. Never errors.
+  Future<bool> get done;
+}
+
 abstract class TextToSpeechService {
   ValueListenable<TextToSpeechPlayback> get playback;
 
@@ -63,9 +79,90 @@ abstract class TextToSpeechService {
   /// earlier one; callers can use [playback] for UI state.
   Future<void> speak(TextToSpeechRequest request);
 
+  /// Starts an incremental read-aloud seeded with [TextToSpeechRequest.text]
+  /// (which may be empty). Replaces any earlier request, like [speak].
+  TextToSpeechStream startStream(TextToSpeechRequest request);
+
   Future<void> stop();
 
   Future<void> dispose();
+}
+
+/// Sentence queue behind a [TextToSpeechStream]. Callers append while the
+/// owning service's play loop consumes chunks in order.
+class SpeechChunkQueue implements TextToSpeechStream {
+  SpeechChunkQueue({this.maxChunkLength = 280});
+
+  final int maxChunkLength;
+  final List<String> _chunks = [];
+  final Completer<bool> _done = Completer<bool>();
+  Completer<void>? _waiter;
+  bool _closed = false;
+  bool _cancelled = false;
+
+  /// Called after new chunks arrive so the service can top up its prefetch.
+  VoidCallback? onAppend;
+
+  int get length => _chunks.length;
+
+  String operator [](int index) => _chunks[index];
+
+  /// No further chunks can arrive (closed by the caller, or cancelled).
+  bool get isClosed => _closed || _cancelled;
+
+  bool get isCancelled => _cancelled;
+
+  @override
+  void append(String text) => addChunks(
+    splitTextForSpeech(
+      prepareTextForSpeech(text),
+      maxChunkLength: maxChunkLength,
+      packSentences: false,
+    ),
+  );
+
+  /// Queues chunks that were already cleaned and split.
+  void addChunks(List<String> chunks) {
+    if (isClosed || chunks.isEmpty) return;
+    _chunks.addAll(chunks);
+    _wake();
+    onAppend?.call();
+  }
+
+  @override
+  void close() {
+    _closed = true;
+    _wake();
+  }
+
+  /// Stops accepting text and wakes a waiting play loop; [done] is false.
+  void cancel() {
+    _cancelled = true;
+    _wake();
+    finish(false);
+  }
+
+  /// Waits until chunk [index] exists or no more chunks can arrive.
+  Future<void> waitFor(int index) async {
+    while (_chunks.length <= index && !isClosed) {
+      await (_waiter ??= Completer<void>()).future;
+    }
+  }
+
+  /// Settles [done] once; later calls are ignored.
+  void finish(bool completed) {
+    onAppend = null;
+    if (!_done.isCompleted) _done.complete(completed);
+  }
+
+  @override
+  Future<bool> get done => _done.future;
+
+  void _wake() {
+    final waiter = _waiter;
+    _waiter = null;
+    waiter?.complete();
+  }
 }
 
 /// Removes markup that is useful on screen but distracting when spoken:

@@ -47,6 +47,7 @@ class ChatComposer extends StatefulWidget {
     required this.onPaste,
     required this.onRemoveAttachment,
     required this.onToggleSpeech,
+    this.onVoiceConversation,
     required this.onSend,
     this.onDocumentEdit,
     required this.onStop,
@@ -89,6 +90,9 @@ class ChatComposer extends StatefulWidget {
   final Future<void> Function() onPaste;
   final ValueChanged<String> onRemoveAttachment;
   final VoidCallback onToggleSpeech;
+
+  /// Opens hands-free voice conversation mode; hidden when null.
+  final VoidCallback? onVoiceConversation;
   final VoidCallback onSend;
   final VoidCallback? onDocumentEdit;
   final VoidCallback onStop;
@@ -436,6 +440,30 @@ class _ComposerState extends State<ChatComposer> {
                             else
                               Expanded(child: editor),
                             const SizedBox(width: 4),
+                            if (widget.onVoiceConversation != null) ...[
+                              IconButton.filledTonal(
+                                key: const ValueKey(
+                                  'composer-voice-conversation-button',
+                                ),
+                                onPressed:
+                                    widget.isStreaming ||
+                                        widget.speechBusy ||
+                                        widget.speechListening
+                                    ? null
+                                    : () {
+                                        _closePlus();
+                                        widget.onVoiceConversation!();
+                                      },
+                                icon: const Icon(Icons.headset_mic_rounded),
+                                tooltip: '语音对话（说完自动发送并朗读回复）',
+                                style: IconButton.styleFrom(
+                                  fixedSize: const Size.square(40),
+                                  backgroundColor: scheme.secondaryContainer,
+                                  foregroundColor: scheme.onSecondaryContainer,
+                                ),
+                              ),
+                              const SizedBox(width: 4),
+                            ],
                             IconButton.filledTonal(
                               key: const ValueKey('composer-microphone-button'),
                               onPressed:

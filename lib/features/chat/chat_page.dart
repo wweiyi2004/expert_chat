@@ -45,6 +45,7 @@ import 'pending_share.dart';
 import 'chat_workspace_sidebar.dart';
 
 import 'controllers/chat_speech_controller.dart';
+import 'controllers/voice_conversation_controller.dart';
 import 'widgets/chat_composer.dart';
 import 'widgets/context_usage_chip.dart';
 import 'widgets/chat_work_mode_switch.dart';
@@ -52,6 +53,7 @@ import 'widgets/conversation_outline_panel.dart';
 import 'widgets/image_pick_confirm_bar.dart';
 import 'widgets/attachment_picker.dart';
 import 'widgets/message_bubble.dart';
+import 'widgets/voice_conversation_panel.dart';
 
 export 'chat_workspace_sidebar.dart' show ChatWorkspaceSidebar;
 
@@ -258,6 +260,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
   final _scroll = ScrollController();
   final List<Attachment> _attachments = [];
   late final ChatSpeechController _speech;
+  late final VoiceConversationController _voice;
   bool _picking = false;
   int _composerEpoch = 0;
 
@@ -346,6 +349,19 @@ class _ChatPageState extends ConsumerState<ChatPage>
               )
             : null;
       },
+      onNotice: _showSpeechNotice,
+    )..addListener(_onSpeechChanged);
+    _voice = VoiceConversationController(
+      speechInput: ref.read(speechInputServiceProvider),
+      textToSpeech: ref.read(textToSpeechServiceProvider),
+      send: _sendVoiceTurn,
+      stopReply: () => ref.read(chatControllerProvider.notifier).stopAndWait(),
+      readReply: _currentVoiceReply,
+      speechRequest: (messageId) => _speechRequestFor(
+        messageId: messageId,
+        text: '',
+        settings: ref.read(settingsControllerProvider).value,
+      ),
       onNotice: _showSpeechNotice,
     )..addListener(_onSpeechChanged);
     _scroll.addListener(_onScroll);
@@ -457,6 +473,8 @@ class _ChatPageState extends ConsumerState<ChatPage>
   void dispose() {
     _memoryCandidateCancelToken?.cancel('ChatPage disposed');
     WidgetsBinding.instance.removeObserver(this);
+    _voice.removeListener(_onSpeechChanged);
+    _voice.dispose();
     _speech.removeListener(_onSpeechChanged);
     _speech.dispose();
     _scroll.removeListener(_onScroll);
@@ -466,8 +484,10 @@ class _ChatPageState extends ConsumerState<ChatPage>
   }
 
   @override
-  void didChangeAppLifecycleState(AppLifecycleState state) =>
-      _speech.handleLifecycle(state);
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _voice.handleLifecycle(state);
+    _speech.handleLifecycle(state);
+  }
 
   /// Re-evaluate stick-to-bottom whenever the user scrolls. Programmatic
   /// auto-scrolls also fire this, which simply keeps [_stick] true at the bottom.
@@ -558,17 +578,67 @@ class _ChatPageState extends ConsumerState<ChatPage>
   Future<void> _toggleTextToSpeech(
     ChatMessage message,
     SettingsState? settings,
-  ) {
+  ) => _speech.togglePlayback(
+    _speechRequestFor(
+      messageId: message.id,
+      text: message.content,
+      settings: settings,
+    ),
+  );
+
+  TextToSpeechRequest _speechRequestFor({
+    required String messageId,
+    required String text,
+    required SettingsState? settings,
+  }) {
     final ui = settings?.ui ?? const UiPrefs();
-    return _speech.togglePlayback(
-      TextToSpeechRequest(
-        messageId: message.id,
-        text: message.content,
-        rate: ui.ttsSpeed.speechRate,
-        autoEmotion: ui.ttsAutoEmotion,
-        apiConfig: settings?.ttsApi,
-        apiKey: settings?.ttsApiKey ?? '',
-      ),
+    return TextToSpeechRequest(
+      messageId: messageId,
+      text: text,
+      rate: ui.ttsSpeed.speechRate,
+      autoEmotion: ui.ttsAutoEmotion,
+      apiConfig: settings?.ttsApi,
+      apiKey: settings?.ttsApiKey ?? '',
+    );
+  }
+
+  /// Opens hands-free voice mode on a plain text turn.
+  Future<void> _startVoiceConversation() async {
+    await _speech.stopAll();
+    if (!mounted) return;
+    if (_imageMode || _longTaskMode) {
+      setState(() {
+        _imageMode = false;
+        _longTaskMode = false;
+      });
+    }
+    await _voice.start();
+  }
+
+  /// One spoken turn goes through the normal send path (draft checks,
+  /// attachments, rejection restore).
+  Future<bool> _sendVoiceTurn(String text) {
+    _input.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+    return _send();
+  }
+
+  VoiceReply? _currentVoiceReply() {
+    final state = ref.read(chatControllerProvider).value;
+    final convo = state?.current;
+    final last = convo?.activePath.lastOrNull;
+    if (state == null ||
+        convo == null ||
+        last == null ||
+        last.role != MessageRole.assistant) {
+      return null;
+    }
+    return VoiceReply(
+      messageId: last.id,
+      content: last.content,
+      failed: state.error != null && state.errorConvoId == convo.id,
     );
   }
 
@@ -587,37 +657,39 @@ class _ChatPageState extends ConsumerState<ChatPage>
     await showModelSetup(context);
   }
 
-  Future<void> _send({bool forceDocumentEdit = false}) async {
+  /// Sends the composer. Completes after the reply finished: true when the
+  /// turn was accepted, false when it was rejected and the draft kept.
+  Future<bool> _send({bool forceDocumentEdit = false}) async {
     final epoch = _composerEpoch;
     if (_picking) {
       _showAttachmentNotice('附件正在准备，请稍候再发送。');
-      return;
+      return false;
     }
     if (_speech.listening || _speech.busy) await _speech.cancelSpeech();
-    if (!_isComposerCurrent(epoch)) return;
+    if (!_isComposerCurrent(epoch)) return false;
     if (_pendingImagePicks != null) {
       _showAttachmentNotice('请先确认或取消待添加的图片');
-      return;
+      return false;
     }
     final text = _input.text;
     final settings = ref.read(settingsControllerProvider).value;
     if (forceDocumentEdit) {
       if (settings == null || !settings.supportsDocumentEdit) {
         _showAttachmentNotice('请先在设置中连接并发现支持文档编辑的 MCP Tools');
-        return;
+        return false;
       }
       if (!_attachments.any((a) => a.isEditableDocument)) {
         _showAttachmentNotice(
           '请先上传可编辑的 .xlsx / .docx / .pptx / .txt / .md / .csv / .tsv',
         );
-        return;
+        return false;
       }
       if (_imageMode) {
         _showAttachmentNotice('请先退出生图模式再改文档');
-        return;
+        return false;
       }
     } else if (text.trim().isEmpty && _attachments.isEmpty) {
-      return;
+      return false;
     }
     final useImageGeneration =
         !forceDocumentEdit &&
@@ -635,19 +707,19 @@ class _ChatPageState extends ConsumerState<ChatPage>
             ? '长任务只支持文档附件，请移除图片后再发送。'
             : '当前服务不支持长任务，请关闭“长任务”后再发送。',
       );
-      return;
+      return false;
     }
     if (useImageGeneration) {
       if (text.trim().isEmpty) {
         _showAttachmentNotice(
           _attachments.any((a) => a.isImage) ? '图生图请写明如何修改参考图。' : '请描述要生成的图片。',
         );
-        return;
+        return false;
       }
       final nonImages = _attachments.where((a) => !a.isImage).toList();
       if (nonImages.isNotEmpty) {
         _showAttachmentNotice('生图模式仅支持图片参考，请移除非图片附件。');
-        return;
+        return false;
       }
     }
     final attachments = List<Attachment>.of(_attachments);
@@ -688,6 +760,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
         _longTaskMode = useLongTask;
       });
     }
+    return accepted;
   }
 
   static bool attachmentsAreDocuments(List<Attachment> attachments) =>
@@ -1664,6 +1737,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
     // Switching conversations resumes following and snaps to the latest turn.
     ref.listen(chatControllerProvider, (prev, next) {
       if (prev?.value?.currentId != next.value?.currentId) {
+        if (_voice.active) unawaited(_voice.exit());
         _composerEpoch++;
         if (prev?.value?.currentId != null) {
           unawaited(_speech.stopAll());
@@ -1692,6 +1766,15 @@ class _ChatPageState extends ConsumerState<ChatPage>
             _pendingImagePicks = null;
             _pendingImageForGen = false;
           });
+        }
+      }
+      if (_voice.phase == VoiceConversationPhase.replying) {
+        final value = next.value;
+        final reply = _currentVoiceReply();
+        if (reply != null &&
+            value != null &&
+            value.streamingConvoId == value.currentId) {
+          _voice.onReplyProgress(reply);
         }
       }
       _scrollToBottom();
@@ -2349,7 +2432,9 @@ class _ChatPageState extends ConsumerState<ChatPage>
           ),
         if (!_selecting && convo != null && convo.isStudy)
           StudySessionActions(conversation: convo),
-        if (!_selecting)
+        if (!_selecting && _voice.active)
+          VoiceConversationPanel(controller: _voice),
+        if (!_selecting && !_voice.active)
           ConstrainedBox(
             constraints: BoxConstraints(
               maxHeight: MediaQuery.sizeOf(context).height * 0.55,
@@ -2418,6 +2503,9 @@ class _ChatPageState extends ConsumerState<ChatPage>
                     onPaste: _handleComposerPaste,
                     onRemoveAttachment: _removeAttachment,
                     onToggleSpeech: _speech.toggleSpeech,
+                    onVoiceConversation: kIsWeb
+                        ? null
+                        : _startVoiceConversation,
                     onSend: () => _send(),
                     onDocumentEdit: () => _send(forceDocumentEdit: true),
                     onStop: controller.stop,

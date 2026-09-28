@@ -71,15 +71,21 @@ typedef SpeechInputResultCallback = void Function(SpeechInputResult result);
 typedef SpeechInputStatusCallback = void Function(SpeechInputStatus status);
 typedef SpeechInputErrorCallback = void Function(SpeechInputFailure failure);
 
+/// Default silence allowed during dictation before the session stops.
+const Duration dictationPause = Duration(seconds: 8);
+
 abstract class SpeechInputService {
   Future<SpeechInputAvailability> initialize({
     required SpeechInputStatusCallback onStatus,
     required SpeechInputErrorCallback onError,
   });
 
+  /// [pauseFor] is how much silence ends the session: dictation tolerates
+  /// long thinking pauses, voice conversation mode ends a turn quickly.
   Future<bool> start({
     required SpeechInputResultCallback onResult,
     String preferredLanguageCode = 'zh',
+    Duration pauseFor = dictationPause,
   });
 
   Future<void> cancel();
@@ -150,6 +156,7 @@ class SystemSpeechInputService implements SpeechInputService {
   Future<bool> start({
     required SpeechInputResultCallback onResult,
     String preferredLanguageCode = 'zh',
+    Duration pauseFor = dictationPause,
   }) async {
     final hasPreviousSession =
         _speech.isListening ||
@@ -185,7 +192,7 @@ class SystemSpeechInputService implements SpeechInputService {
           listenMode: ListenMode.dictation,
           autoPunctuation: true,
           // Dictation: allow brief thinking pauses without cutting the session.
-          pauseFor: const Duration(seconds: 8),
+          pauseFor: pauseFor,
           listenFor: const Duration(seconds: 90),
           localeId: localeId,
         ),

@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -38,6 +39,8 @@ import '../domain/memory/memory_candidate_service.dart';
 import '../domain/memory/memory_transfer.dart';
 import '../domain/speech/mimo_speech_input_service.dart';
 import '../domain/speech/speech_input_service.dart';
+import '../domain/speech/fallback_text_to_speech_service.dart';
+import '../domain/speech/system_text_to_speech_service.dart';
 import '../domain/speech/text_to_speech_service.dart';
 import '../domain/document/document_service_client.dart';
 import '../domain/tools/file_parser.dart';
@@ -248,10 +251,18 @@ final mimoSpeechInputServiceProvider = Provider<MimoSpeechInputService>((ref) {
 
 /// One app-wide speaker: beginning a new message cleanly replaces any older
 /// read-aloud operation, even when the user changes conversations.
+/// Without a configured cloud speech API, native builds fall back to the
+/// device speech engine.
 final textToSpeechServiceProvider = Provider<TextToSpeechService>((ref) {
-  final service = ApiTextToSpeechService(
+  final cloud = ApiTextToSpeechService(
     mediaProvider: ref.read(mediaApiProvider),
   );
+  final TextToSpeechService service = kIsWeb
+      ? cloud
+      : FallbackTextToSpeechService(
+          cloud: cloud,
+          system: SystemTextToSpeechService(),
+        );
   ref.onDispose(() => unawaited(service.dispose()));
   return service;
 });

@@ -685,6 +685,7 @@ class FakeSpeechInputService implements SpeechInputService {
   int initializeCount = 0;
   int startCount = 0;
   int cancelCount = 0;
+  Duration? lastPauseFor;
 
   @override
   Future<SpeechInputAvailability> initialize({
@@ -701,8 +702,10 @@ class FakeSpeechInputService implements SpeechInputService {
   Future<bool> start({
     required SpeechInputResultCallback onResult,
     String preferredLanguageCode = 'zh',
+    Duration pauseFor = dictationPause,
   }) async {
     startCount++;
+    lastPauseFor = pauseFor;
     _resultCallback = onResult;
     _statusCallback?.call(SpeechInputStatus.listening);
     return true;
@@ -715,6 +718,9 @@ class FakeSpeechInputService implements SpeechInputService {
   void fail(String code) {
     _errorCallback?.call(SpeechInputFailure(code: code, permanent: false));
   }
+
+  /// The platform ended the session (silence reached pauseFor).
+  void endSession() => _statusCallback?.call(SpeechInputStatus.stopped);
 
   @override
   Future<void> cancel() async {
@@ -812,9 +818,38 @@ class FakeTextToSpeechService implements TextToSpeechService {
     );
   }
 
+  /// Streams started through [startStream], newest last.
+  final List<SpeechChunkQueue> streams = [];
+
+  @override
+  TextToSpeechStream startStream(TextToSpeechRequest request) {
+    for (final old in streams) {
+      old.cancel();
+    }
+    requests.add(request);
+    final queue = SpeechChunkQueue()..append(request.text);
+    streams.add(queue);
+    _playback.value = TextToSpeechPlayback(
+      phase: TextToSpeechPhase.speaking,
+      messageId: request.messageId,
+      requestId: ++_requestId,
+    );
+    return queue;
+  }
+
+  /// Finishes the newest stream as if every sentence had been read.
+  void finishStream() {
+    final queue = streams.last;
+    queue.finish(!queue.isCancelled);
+    _playback.value = TextToSpeechPlayback(requestId: ++_requestId);
+  }
+
   @override
   Future<void> stop() async {
     stopCount++;
+    for (final queue in streams) {
+      queue.cancel();
+    }
     _playback.value = TextToSpeechPlayback(requestId: ++_requestId);
   }
 

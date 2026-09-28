@@ -429,4 +429,192 @@ print('不该朗读的代码');
     expect(pipelined, hasLength(3));
     expect(pipelined.join(), source);
   });
+
+  group('SpeechChunkQueue', () {
+    test('cleans and splits appended text into sentences', () {
+      final queue = SpeechChunkQueue()
+        ..append('第一句。**第二句**！')
+        ..append('看 https://example.com 第三句？');
+      expect(
+        [for (var i = 0; i < queue.length; i++) queue[i]],
+        ['第一句。', '第二句！', '看 第三句？'],
+      );
+    });
+
+    test('waitFor wakes on append, close and cancel', () async {
+      final queue = SpeechChunkQueue();
+      var woke = false;
+      unawaited(queue.waitFor(0).then((_) => woke = true));
+      await Future<void>.delayed(Duration.zero);
+      expect(woke, isFalse);
+      queue.append('来了。');
+      await Future<void>.delayed(Duration.zero);
+      expect(woke, isTrue);
+
+      final closing = SpeechChunkQueue();
+      final closed = closing.waitFor(0);
+      closing.close();
+      await closed;
+      expect(closing.isClosed, isTrue);
+
+      final cancelling = SpeechChunkQueue();
+      final cancelled = cancelling.waitFor(0);
+      cancelling.cancel();
+      await cancelled;
+      expect(await cancelling.done, isFalse);
+    });
+
+    test('ignores text after close and settles done only once', () async {
+      final queue = SpeechChunkQueue()
+        ..append('一。')
+        ..close()
+        ..append('二。');
+      expect(queue.length, 1);
+      queue
+        ..finish(true)
+        ..finish(false);
+      expect(await queue.done, isTrue);
+    });
+  });
+
+  group('ApiTextToSpeechService.startStream', () {
+    const config = MediaApiConfig(
+      baseUrl: 'http://placeholder',
+      model: 'tts-1',
+    );
+
+    ({
+      ApiTextToSpeechService service,
+      List<String> started,
+      List<Completer<void>> gates,
+    })
+    gatedService() {
+      final started = <String>[];
+      final gates = <Completer<void>>[];
+      final dio = Dio()
+        ..interceptors.add(
+          InterceptorsWrapper(
+            onRequest: (options, handler) async {
+              final body = jsonDecode(options.data as String) as Map;
+              started.add(body['input'] as String? ?? '');
+              final gate = Completer<void>();
+              gates.add(gate);
+              await gate.future;
+              handler.resolve(
+                Response<List<int>>(
+                  requestOptions: options,
+                  statusCode: 200,
+                  data: List<int>.filled(32, 1),
+                ),
+              );
+            },
+          ),
+        );
+      final service = ApiTextToSpeechService(
+        mediaProvider: OpenAiCompatibleMediaProvider(dio: dio),
+      );
+      return (service: service, started: started, gates: gates);
+    }
+
+    test('synthesizes sentences appended after the stream started', () async {
+      final h = gatedService();
+      addTearDown(h.service.dispose);
+      final stream = h.service.startStream(
+        const TextToSpeechRequest(
+          messageId: 'a',
+          text: '',
+          apiConfig: config,
+          apiKey: 'secret',
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(h.started, isEmpty);
+      expect(h.service.playback.value.phase, TextToSpeechPhase.loading);
+
+      stream.append('第一句。');
+      stream.append('第二句。第三句。');
+      for (var i = 0; i < 50 && h.started.length < 3; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+      // Look-ahead follows appends while sentence one is still downloading.
+      expect(h.started, ['第一句。', '第二句。', '第三句。']);
+
+      for (final gate in h.gates) {
+        gate.complete();
+      }
+      await h.service.stop();
+      expect(await stream.done, isFalse);
+    });
+
+    test('stop wakes a stream waiting for text and reports not done', () async {
+      final h = gatedService();
+      addTearDown(h.service.dispose);
+      final stream = h.service.startStream(
+        const TextToSpeechRequest(
+          messageId: 'a',
+          text: '',
+          apiConfig: config,
+          apiKey: 'secret',
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await h.service.stop();
+      expect(await stream.done, isFalse);
+      expect(h.service.playback.value.phase, TextToSpeechPhase.idle);
+    });
+
+    test('closing an empty stream finishes quietly as done', () async {
+      final h = gatedService();
+      addTearDown(h.service.dispose);
+      final stream = h.service.startStream(
+        const TextToSpeechRequest(
+          messageId: 'a',
+          text: '',
+          apiConfig: config,
+          apiKey: 'secret',
+        ),
+      );
+      stream.close();
+      expect(await stream.done, isTrue);
+      expect(h.service.playback.value.phase, TextToSpeechPhase.idle);
+    });
+
+    test('a newer request cancels the older stream', () async {
+      final h = gatedService();
+      addTearDown(h.service.dispose);
+      final first = h.service.startStream(
+        const TextToSpeechRequest(
+          messageId: 'a',
+          text: '',
+          apiConfig: config,
+          apiKey: 'secret',
+        ),
+      );
+      h.service.startStream(
+        const TextToSpeechRequest(
+          messageId: 'b',
+          text: '',
+          apiConfig: config,
+          apiKey: 'secret',
+        ),
+      );
+      expect(await first.done, isFalse);
+      await h.service.stop();
+    });
+
+    test('missing configuration errors and reports not done', () async {
+      final h = gatedService();
+      addTearDown(h.service.dispose);
+      final stream = h.service.startStream(
+        const TextToSpeechRequest(
+          messageId: 'a',
+          text: '你好。',
+          apiConfig: null,
+          apiKey: '',
+        ),
+      );
+      expect(await stream.done, isFalse);
+      expect(h.service.playback.value.phase, TextToSpeechPhase.error);
+    });
+  });
 }

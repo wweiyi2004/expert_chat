@@ -344,7 +344,7 @@ class ColorThemePicker extends StatelessWidget {
                                   const SizedBox(width: 4),
                                   _Dot(color: accent),
                                   const Spacer(),
-                                  if (theme == ColorThemePref.inkTeal)
+                                  if (theme == ColorThemePref.minimal)
                                     Text(
                                       '默认',
                                       style: TextStyle(

@@ -102,6 +102,21 @@ class _Palette {
   final Color darkInk;
 
   static _Palette of(ColorThemePref theme) => switch (theme) {
+    // Default since 2026-09: white page, light gray panels, one blue accent.
+    ColorThemePref.minimal => const _Palette(
+      seed: Color(0xFF4D6BFE),
+      accent: Color(0xFF111827),
+      lightSurface: Color(0xFFFFFFFF),
+      lightPanel: Color(0xFFF7F7F8),
+      lightInput: Color(0xFFF3F4F6),
+      lightBorder: Color(0xFFE5E7EB),
+      lightInk: Color(0xFF111827),
+      darkSurface: Color(0xFF0F0F10),
+      darkPanel: Color(0xFF1C1C1E),
+      darkInput: Color(0xFF26262A),
+      darkBorder: Color(0xFF2C2C2E),
+      darkInk: Color(0xFFECECEC),
+    ),
     ColorThemePref.inkTeal => const _Palette(
       seed: Color(0xFF1F5C6B),
       accent: Color(0xFFC45C26),
@@ -368,11 +383,11 @@ class AppTheme {
       extensions: [metrics],
       dividerTheme: DividerThemeData(color: border, thickness: 1, space: 1),
       appBarTheme: AppBarTheme(
-        backgroundColor: scheme.surface.withValues(alpha: 0.92),
+        backgroundColor: scheme.surface,
         surfaceTintColor: Colors.transparent,
         elevation: 0,
         scrolledUnderElevation: 0,
-        centerTitle: false,
+        centerTitle: true,
         foregroundColor: scheme.onSurface,
         titleTextStyle: textTheme.titleMedium?.copyWith(
           fontWeight: FontWeight.w700,
@@ -383,10 +398,8 @@ class AppTheme {
         color: scheme.surfaceContainer,
         elevation: 0,
         margin: EdgeInsets.zero,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(rLg),
-          side: BorderSide(color: border.withValues(alpha: 0.9)),
-        ),
+        // Tone, not outlines, separates cards from the page.
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(rLg)),
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
@@ -401,7 +414,7 @@ class AppTheme {
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(r),
-          borderSide: BorderSide(color: border),
+          borderSide: BorderSide.none,
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(r),
@@ -414,7 +427,7 @@ class AppTheme {
       chipTheme: ChipThemeData(
         backgroundColor: inputFill,
         selectedColor: scheme.primaryContainer,
-        side: BorderSide(color: border),
+        side: BorderSide.none,
         labelStyle: TextStyle(color: scheme.onSurface, fontSize: 13),
         secondaryLabelStyle: TextStyle(color: scheme.onPrimaryContainer),
         padding: const EdgeInsets.symmetric(horizontal: 4),

@@ -45,4 +45,29 @@ void main() {
     expect(MarkdownStylePref.fromWire('compact'), MarkdownStylePref.terminal);
     expect(MarkdownStylePref.fromWire('article'), MarkdownStylePref.notion);
   });
+
+  group('2026-09 palette migration', () {
+    test('new installs and unknown values use the minimal palette', () {
+      expect(const UiPrefs().colorTheme, ColorThemePref.minimal);
+      expect(ColorThemePref.fromWire('gone'), ColorThemePref.minimal);
+    });
+
+    test('an old save with the former default moves to minimal once', () {
+      final migrated = UiPrefs.fromJson({'colorTheme': 'inkTeal'});
+      expect(migrated.colorTheme, ColorThemePref.minimal);
+      expect(migrated.toJson()['styleVersion'], UiPrefs.currentStyleVersion);
+    });
+
+    test('an explicit choice after the redesign is kept', () {
+      final chosen = UiPrefs.fromJson({
+        'colorTheme': 'inkTeal',
+        'styleVersion': UiPrefs.currentStyleVersion,
+      });
+      expect(chosen.colorTheme, ColorThemePref.inkTeal);
+      expect(
+        UiPrefs.fromJson({'colorTheme': 'forest'}).colorTheme,
+        ColorThemePref.forest,
+      );
+    });
+  });
 }

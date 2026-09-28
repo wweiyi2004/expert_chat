@@ -137,6 +137,7 @@ enum ContentWidthPref {
 /// Material 3 tonal systems, Apple HIG system colors, Nord, GitHub Primer,
 /// Stripe indigo, Solarized (Ethan Schoonover), warm editorial clay.
 enum ColorThemePref {
+  minimal,
   inkTeal,
   ocean,
   forest,
@@ -152,6 +153,7 @@ enum ColorThemePref {
   solar;
 
   String get label => switch (this) {
+    ColorThemePref.minimal => '极简',
     ColorThemePref.inkTeal => '墨青',
     ColorThemePref.ocean => '海雾',
     ColorThemePref.forest => '松绿',
@@ -168,6 +170,7 @@ enum ColorThemePref {
   };
 
   String get description => switch (this) {
+    ColorThemePref.minimal => '白底黑字',
     ColorThemePref.inkTeal => '冷静编辑台',
     ColorThemePref.ocean => '清爽信息蓝',
     ColorThemePref.forest => '自然阅读绿',
@@ -185,6 +188,7 @@ enum ColorThemePref {
 
   /// Preview swatch for settings chips (light-mode primary-ish).
   int get previewArgb => switch (this) {
+    ColorThemePref.minimal => 0xFF4D6BFE,
     ColorThemePref.inkTeal => 0xFF1F5C6B,
     ColorThemePref.ocean => 0xFF2B6CB0,
     ColorThemePref.forest => 0xFF2F6B4F,
@@ -202,6 +206,7 @@ enum ColorThemePref {
 
   /// Secondary preview (accent) for dual-tone swatches.
   int get accentPreviewArgb => switch (this) {
+    ColorThemePref.minimal => 0xFF111827,
     ColorThemePref.inkTeal => 0xFFC45C26,
     ColorThemePref.ocean => 0xFF0D9488,
     ColorThemePref.forest => 0xFFB45309,
@@ -221,7 +226,7 @@ enum ColorThemePref {
 
   static ColorThemePref fromWire(String? v) => ColorThemePref.values.firstWhere(
     (e) => e.name == v,
-    orElse: () => ColorThemePref.inkTeal,
+    orElse: () => ColorThemePref.minimal,
   );
 }
 
@@ -321,7 +326,7 @@ class UiPrefs {
     this.messageStyle = MessageStylePref.bubble,
     this.markdownStyle = MarkdownStylePref.standard,
     this.contentWidth = ContentWidthPref.regular,
-    this.colorTheme = ColorThemePref.inkTeal,
+    this.colorTheme = ColorThemePref.minimal,
     this.cornerStyle = CornerStylePref.medium,
     this.chatSurface = ChatSurfacePref.plain,
     this.liveMarkdown = true,
@@ -387,6 +392,7 @@ class UiPrefs {
     'markdownStyle': markdownStyle.wire,
     'contentWidth': contentWidth.wire,
     'colorTheme': colorTheme.wire,
+    'styleVersion': currentStyleVersion,
     'cornerStyle': cornerStyle.wire,
     'chatSurface': chatSurface.wire,
     'liveMarkdown': liveMarkdown,
@@ -394,6 +400,21 @@ class UiPrefs {
     'ttsAutoEmotion': ttsAutoEmotion,
     'ttsVoicePackId': ttsVoicePackId,
   };
+
+  /// Bumped when a redesign changes defaults that older saves still carry.
+  static const int currentStyleVersion = 2;
+
+  /// Saves from before the 2026-09 redesign stored the old default palette;
+  /// move them to the new one once. A later explicit choice is kept.
+  static ColorThemePref _migrateColorTheme(
+    ColorThemePref saved,
+    Object? version,
+  ) {
+    final old = version is! int || version < currentStyleVersion;
+    return old && saved == ColorThemePref.inkTeal
+        ? ColorThemePref.minimal
+        : saved;
+  }
 
   factory UiPrefs.fromJson(Map<String, dynamic>? json) {
     if (json == null) return const UiPrefs();
@@ -408,7 +429,10 @@ class UiPrefs {
       messageStyle: MessageStylePref.fromWire(str('messageStyle')),
       markdownStyle: MarkdownStylePref.fromWire(str('markdownStyle')),
       contentWidth: ContentWidthPref.fromWire(str('contentWidth')),
-      colorTheme: ColorThemePref.fromWire(str('colorTheme')),
+      colorTheme: _migrateColorTheme(
+        ColorThemePref.fromWire(str('colorTheme')),
+        json['styleVersion'],
+      ),
       cornerStyle: CornerStylePref.fromWire(str('cornerStyle')),
       chatSurface: ChatSurfacePref.fromWire(str('chatSurface')),
       liveMarkdown: flag('liveMarkdown') ?? true,

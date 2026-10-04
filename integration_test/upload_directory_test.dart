@@ -22,7 +22,7 @@ void main() {
       );
       await tester.runAsync(() async {
         const browser = UploadDirectoryBrowser();
-        stdout.writeln('UPLOAD_DIRECTORY_READY');
+      print('UPLOAD_DIRECTORY_READY');
         final picked = await browser.choose().timeout(
           const Duration(minutes: 3),
         );
@@ -84,7 +84,7 @@ void main() {
           }),
           throwsA(isA<PlatformException>()),
         );
-        stdout.writeln(
+      print(
           'UPLOAD_DIRECTORY_RESULT ${jsonEncode({'passed': true, 'files': files.length, 'childDirectories': picked.entries.where((entry) => entry.isDirectory).length, 'restored': true, 'outsideRejected': true, 'oversizeRejected': true})}',
         );
       });

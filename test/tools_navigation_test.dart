@@ -104,11 +104,12 @@ void main() {
         find.byKey(const ValueKey('composer-text-field')),
         '保留这份草稿',
       );
-      // Phones have no bottom bar; tools and settings live in the drawer.
-      expect(find.byType(NavigationBar), findsNothing);
+      final nav = find.byType(NavigationBar);
+      expect(tester.widget<NavigationBar>(nav).destinations.length, 3);
       tester.view.viewInsets = FakeViewPadding(bottom: 300);
       addTearDown(tester.view.resetViewInsets);
       await tester.pumpAndSettle();
+      expect(nav, findsNothing);
       final editorRect = tester.getRect(
         find.byKey(const ValueKey('composer-text-field')),
       );
@@ -119,14 +120,10 @@ void main() {
       expect(tester.takeException(), isNull);
       tester.view.resetViewInsets();
       await tester.pumpAndSettle();
+      expect(nav, findsOneWidget);
 
-      await tester.tap(find.byIcon(Icons.menu));
+      await tester.tap(find.descendant(of: nav, matching: find.text('工具')));
       await settle();
-      await tester.tap(
-        find.descendant(of: find.byType(Drawer), matching: find.text('工具')),
-      );
-      await settle();
-      expect(container.read(shellTabProvider), ShellTab.tools);
       expect(
         tester
             .widget<TextField>(
@@ -151,7 +148,7 @@ void main() {
       await tester.tap(find.text('进入学习中心'));
       await settle();
       expect(find.text('学习空间'), findsOneWidget);
-      expect(container.read(shellTabProvider), ShellTab.study);
+      expect(tester.widget<NavigationBar>(nav).selectedIndex, 1);
       await tester.tap(find.byTooltip('返回工具'));
       await settle();
       await tester.ensureVisible(find.widgetWithText(Card, '创作模式'));
@@ -169,10 +166,8 @@ void main() {
       await tester.binding.handlePopRoute();
       await settle();
       expect(container.read(shellTabProvider), ShellTab.tools);
-      // The tools page leads back to the chat, with the draft intact.
-      await tester.tap(find.byType(BackButton));
+      await tester.tap(find.descendant(of: nav, matching: find.text('会话')));
       await settle();
-      expect(container.read(shellTabProvider), ShellTab.chat);
       expect(
         tester
             .widget<TextField>(

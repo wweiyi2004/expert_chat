@@ -4168,7 +4168,6 @@ void main() {
         find.byKey(const ValueKey('composer-text-field')),
         'hi',
       );
-      await tester.pump();
       await tester.tap(find.byTooltip('发送'));
       await _drain(tester);
       await tester.tap(find.byTooltip('朗读'));
@@ -4255,13 +4254,8 @@ void main() {
         find.byKey(const ValueKey('composer-text-field')),
       );
       expect(field.controller?.text, '帮我写一封邮件');
-      expect(find.text('正在听…'), findsOneWidget);
+      expect(find.text('正在听… 识别文字不会自动发送'), findsOneWidget);
       expect(llm.callCount, 0);
-      // The round button stays the microphone while listening; stopping
-      // dictation turns it into send.
-      expect(find.byTooltip('发送'), findsNothing);
-      await tester.tap(find.byTooltip('停止语音输入'));
-      await tester.pump();
 
       await tester.tap(find.byTooltip('发送'));
       await _drain(tester);
@@ -4314,7 +4308,6 @@ void main() {
       await _pumpChat(tester, c);
 
       await tester.enterText(find.byType(TextField).first, 'hi');
-      await tester.pump();
       await tester.tap(find.byTooltip('发送'));
       await _drain(tester);
 
@@ -4405,10 +4398,9 @@ void main() {
       await _pumpChat(tester, c);
 
       // Fresh conversation → empty state visible.
-      expect(find.text('有什么可以帮你？'), findsOneWidget);
+      expect(find.text('开始一段对话'), findsOneWidget);
 
       await tester.enterText(find.byType(TextField).first, 'hi');
-      await tester.pump();
       await tester.tap(find.byTooltip('发送'));
       await _drain(tester);
 
@@ -4421,7 +4413,7 @@ void main() {
           .last;
       expect(assistant.content, 'hello there');
       // The message list replaced the empty state.
-      expect(find.text('有什么可以帮你？'), findsNothing);
+      expect(find.text('开始一段对话'), findsNothing);
     });
 
     testWidgets('深度思考 chip toggles deep-think state', (tester) async {
@@ -4449,7 +4441,6 @@ void main() {
       await _pumpChat(tester, c);
 
       await tester.enterText(find.byType(TextField).first, 'hi');
-      await tester.pump();
       await tester.tap(find.byTooltip('发送'));
       await _drain(tester);
 

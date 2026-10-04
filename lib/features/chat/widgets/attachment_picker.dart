@@ -1,5 +1,6 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import '../../../domain/tools/upload_directory.dart';
 
 import '../../../data/library_models.dart';
 import '../../../data/library_repository.dart';
@@ -12,6 +13,7 @@ enum AttachmentPickerTab {
   recent('最近使用', Icons.history),
   images('图片', Icons.image_outlined),
   documents('文档', Icons.description_outlined),
+  folder('目录', Icons.folder_open),
   library('素材库', Icons.folder_copy_outlined);
 
   const AttachmentPickerTab(this.label, this.icon);
@@ -33,6 +35,7 @@ Future<AttachmentPickerResult?> showAttachmentPicker(
   required bool allowDocuments,
   required bool Function() isCurrent,
   AttachmentPickerTab initialTab = AttachmentPickerTab.recent,
+  UploadDirectoryBrowser directoryBrowser = const UploadDirectoryBrowser(),
 }) {
   final size = MediaQuery.sizeOf(context);
   final panel = AttachmentPicker(
@@ -42,6 +45,7 @@ Future<AttachmentPickerResult?> showAttachmentPicker(
     allowDocuments: allowDocuments,
     isCurrent: isCurrent,
     initialTab: initialTab,
+    directoryBrowser: directoryBrowser,
   );
   if (size.width >= 700) {
     return showDialog<AttachmentPickerResult>(
@@ -83,6 +87,7 @@ class AttachmentPicker extends StatefulWidget {
     required this.allowDocuments,
     required this.isCurrent,
     this.initialTab = AttachmentPickerTab.recent,
+    this.directoryBrowser = const UploadDirectoryBrowser(),
   });
 
   final LibraryRepository repository;
@@ -91,6 +96,7 @@ class AttachmentPicker extends StatefulWidget {
   final bool allowDocuments;
   final bool Function() isCurrent;
   final AttachmentPickerTab initialTab;
+  final UploadDirectoryBrowser directoryBrowser;
 
   @override
   State<AttachmentPicker> createState() => _AttachmentPickerState();
@@ -100,6 +106,12 @@ class _AttachmentPickerState extends State<AttachmentPicker> {
   late AttachmentPickerTab _tab = widget.initialTab;
   final _search = TextEditingController();
   final _selected = <String, LibraryItem>{};
+  final _directorySelected =
+      <String, ({String root, UploadDirectoryEntry entry})>{};
+  UploadDirectory? _folder;
+  final _parents = <UploadDirectory>[];
+  bool _folderLoading = false;
+  int _directoryVersion = 0;
   List<LibraryItem> _items = const [];
   bool _loading = true;
   bool _browsing = false;
@@ -112,13 +124,116 @@ class _AttachmentPickerState extends State<AttachmentPicker> {
     super.initState();
     if (!_enabled(_tab)) _tab = AttachmentPickerTab.recent;
     _reload();
+    _restoreDirectory();
   }
 
   bool _enabled(AttachmentPickerTab tab) => switch (tab) {
     AttachmentPickerTab.images => widget.allowImages,
     AttachmentPickerTab.documents => widget.allowDocuments,
+    AttachmentPickerTab.folder => widget.directoryBrowser.supported,
     _ => true,
   };
+
+  int get _selectedCount => _selected.length + _directorySelected.length;
+
+  bool _acceptsDirectoryEntry(UploadDirectoryEntry entry) =>
+      entry.isDirectory ||
+      (widget.allowImages &&
+          AttachmentIngestor.imageExtensions.contains(entry.extension)) ||
+      (widget.allowDocuments &&
+          AttachmentIngestor.documentExtensions.contains(entry.extension));
+
+  Future<void> _restoreDirectory() async {
+    if (!widget.directoryBrowser.supported) return;
+    final version = ++_directoryVersion;
+    try {
+      final folder = await widget.directoryBrowser.restore();
+      if (!mounted ||
+          version != _directoryVersion ||
+          !widget.isCurrent() ||
+          folder == null) {
+        return;
+      }
+      setState(() {
+        _folder = folder;
+        if (_tab == AttachmentPickerTab.recent &&
+            _selectedCount == 0 &&
+            _search.text.isEmpty) {
+          _tab = AttachmentPickerTab.folder;
+        }
+      });
+    } catch (_) {
+      // A revoked permission or removed directory never blocks the library.
+    }
+  }
+
+  Future<void> _openDirectory({
+    UploadDirectoryEntry? child,
+    bool back = false,
+    bool refresh = false,
+  }) async {
+    if (_browsing || !widget.directoryBrowser.supported) return;
+    if (!widget.isCurrent()) {
+      Navigator.of(context).pop();
+      return;
+    }
+    final version = ++_directoryVersion;
+    final previous = _folder;
+    setState(() {
+      _browsing = true;
+      _folderLoading = true;
+      _error = null;
+    });
+    try {
+      final target = back ? _parents.last : previous;
+      final folder = child != null || back || refresh
+          ? await widget.directoryBrowser.list(
+              root: target!.root,
+              uri: child?.uri ?? target.uri,
+            )
+          : await widget.directoryBrowser.choose();
+      if (!mounted || version != _directoryVersion) return;
+      if (!widget.isCurrent()) {
+        Navigator.of(context).pop();
+        return;
+      }
+      if (folder == null) return;
+      setState(() {
+        if (child != null && previous != null) {
+          _parents.add(previous);
+        } else if (back) {
+          _parents.removeLast();
+        } else if (!refresh) {
+          _parents.clear();
+        }
+        _folder = folder;
+        _tab = AttachmentPickerTab.folder;
+        _search.clear();
+      });
+    } catch (_) {
+      if (mounted && version == _directoryVersion) {
+        setState(() => _error = '无法读取所选目录，请重新选择目录或使用“浏览本机文件”。');
+      }
+    } finally {
+      if (mounted && version == _directoryVersion) {
+        setState(() {
+          _browsing = false;
+          _folderLoading = false;
+        });
+      }
+    }
+  }
+
+  void _toggleDirectoryEntry(UploadDirectoryEntry entry) {
+    if (_browsing || _folder == null) return;
+    setState(() {
+      if (_directorySelected.containsKey(entry.uri)) {
+        _directorySelected.remove(entry.uri);
+      } else if (_selectedCount < widget.maxCount) {
+        _directorySelected[entry.uri] = (root: _folder!.root, entry: entry);
+      }
+    });
+  }
 
   bool _accepts(LibraryItem item) => item.isImage
       ? widget.allowImages &&
@@ -167,7 +282,7 @@ class _AttachmentPickerState extends State<AttachmentPicker> {
     setState(() {
       if (_selected.containsKey(item.id)) {
         _selected.remove(item.id);
-      } else if (_selected.length < widget.maxCount) {
+      } else if (_selectedCount < widget.maxCount) {
         _selected[item.id] = item;
       }
     });
@@ -191,14 +306,27 @@ class _AttachmentPickerState extends State<AttachmentPicker> {
           loadBytes: () => widget.repository.readBytes(item),
         ),
       ...extra,
+      for (final selected in _directorySelected.values)
+        FileIngestSource(
+          name: selected.entry.name,
+          extension: selected.entry.extension,
+          reportedSize: selected.entry.sizeBytes,
+          loadBytes: () => widget.directoryBrowser.readBytes(
+            root: selected.root,
+            entry: selected.entry,
+          ),
+        ),
     ];
-    Navigator.of(
-      context,
-    ).pop(AttachmentPickerResult(sources, confirmImages: confirmImages));
+    Navigator.of(context).pop(
+      AttachmentPickerResult(
+        sources,
+        confirmImages: confirmImages || _directorySelected.isNotEmpty,
+      ),
+    );
   }
 
   Future<void> _browse({bool album = false}) async {
-    if (_browsing || _selected.length >= widget.maxCount) return;
+    if (_browsing || _selectedCount >= widget.maxCount) return;
     if (!widget.isCurrent()) {
       Navigator.of(context).pop();
       return;
@@ -208,7 +336,7 @@ class _AttachmentPickerState extends State<AttachmentPicker> {
       _error = null;
     });
     try {
-      final remaining = widget.maxCount - _selected.length;
+      final remaining = widget.maxCount - _selectedCount;
       if (album) {
         final picked = await showRecentPhotoPicker(
           context,
@@ -316,7 +444,8 @@ class _AttachmentPickerState extends State<AttachmentPicker> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final error = _error ?? _loadError;
+    final error =
+        _error ?? (_tab == AttachmentPickerTab.folder ? null : _loadError);
     final query = _search.text.trim().toLowerCase();
     var items = _items
         .where(
@@ -329,13 +458,24 @@ class _AttachmentPickerState extends State<AttachmentPicker> {
         .toList();
     if (_tab == AttachmentPickerTab.recent) items = items.take(24).toList();
     if (_tab == AttachmentPickerTab.library) {
-      items.sort(
-        (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
-      );
+      items.sort((a, b) {
+        final recent = b.createdAt.compareTo(a.createdAt);
+        return recent != 0
+            ? recent
+            : a.name.toLowerCase().compareTo(b.name.toLowerCase());
+      });
     }
     items = items
         .where((item) => item.name.toLowerCase().contains(query))
         .toList();
+    final directoryEntries =
+        (_folder?.entries ?? const <UploadDirectoryEntry>[])
+            .where(_acceptsDirectoryEntry)
+            .where((entry) => entry.name.toLowerCase().contains(query))
+            .toList();
+    final loading = _tab == AttachmentPickerTab.folder
+        ? _folderLoading
+        : _loading;
     return Material(
       color: scheme.surface,
       child: SafeArea(
@@ -412,7 +552,7 @@ class _AttachmentPickerState extends State<AttachmentPicker> {
               ),
             ),
             Expanded(
-              child: _loading
+              child: loading
                   ? const Center(child: CircularProgressIndicator())
                   : error != null
                   ? SingleChildScrollView(
@@ -429,6 +569,8 @@ class _AttachmentPickerState extends State<AttachmentPicker> {
                         ),
                       ),
                     )
+                  : _tab == AttachmentPickerTab.folder
+                  ? _directoryList(directoryEntries)
                   : items.isEmpty
                   ? const Center(
                       child: SingleChildScrollView(
@@ -472,7 +614,7 @@ class _AttachmentPickerState extends State<AttachmentPicker> {
     builder: (context, constraints) {
       final browse = OutlinedButton.icon(
         key: const ValueKey('attachment-browse-local'),
-        onPressed: _browsing || _selected.length >= widget.maxCount
+        onPressed: _browsing || _selectedCount >= widget.maxCount
             ? null
             : _browse,
         icon: const Icon(Icons.folder_open, size: 18),
@@ -480,7 +622,7 @@ class _AttachmentPickerState extends State<AttachmentPicker> {
       );
       final album = widget.allowImages && supportsRecentPhotoSheet
           ? TextButton.icon(
-              onPressed: _browsing || _selected.length >= widget.maxCount
+              onPressed: _browsing || _selectedCount >= widget.maxCount
                   ? null
                   : () => _browse(album: true),
               icon: const Icon(Icons.photo_library_outlined, size: 18),
@@ -488,26 +630,50 @@ class _AttachmentPickerState extends State<AttachmentPicker> {
             )
           : null;
       final count = Text(
-        '已选 ${_selected.length} / ${widget.maxCount}',
+        '已选 $_selectedCount / ${widget.maxCount}',
         style: Theme.of(context).textTheme.labelMedium,
       );
-      final clear = _selected.isEmpty
+      final clear = _selectedCount == 0
           ? null
           : TextButton(
-              onPressed: _browsing ? null : () => setState(_selected.clear),
+              onPressed: _browsing
+                  ? null
+                  : () => setState(() {
+                      _selected.clear();
+                      _directorySelected.clear();
+                    }),
               child: const Text('清空'),
             );
       final confirm = FilledButton(
         key: const ValueKey('attachment-picker-confirm'),
-        onPressed: _selected.isEmpty || _browsing ? null : _finish,
+        onPressed: _selectedCount == 0 || _browsing ? null : _finish,
         child: const Text('添加'),
       );
+      final directory = widget.directoryBrowser.supported
+          ? constraints.maxWidth >= 650
+                ? TextButton.icon(
+                    key: const ValueKey('attachment-choose-directory'),
+                    onPressed: _browsing ? null : () => _openDirectory(),
+                    icon: const Icon(Icons.folder_open, size: 18),
+                    label: const Text('选择目录'),
+                  )
+                : IconButton.filledTonal(
+                    key: const ValueKey('attachment-choose-directory'),
+                    onPressed: _browsing ? null : () => _openDirectory(),
+                    tooltip: '选择目录',
+                    icon: const Icon(Icons.folder_open, size: 18),
+                  )
+          : null;
       return Padding(
         padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
         child: constraints.maxWidth >= 650
             ? Row(
                 children: [
                   browse,
+                  if (directory != null) ...[
+                    const SizedBox(width: 8),
+                    directory,
+                  ],
                   if (album != null) ...[const SizedBox(width: 8), album],
                   const Spacer(),
                   count,
@@ -519,7 +685,7 @@ class _AttachmentPickerState extends State<AttachmentPicker> {
             : Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Wrap(spacing: 8, children: [browse, ?album]),
+                  Wrap(spacing: 8, children: [browse, ?directory, ?album]),
                   const SizedBox(height: 6),
                   Row(
                     children: [
@@ -532,6 +698,94 @@ class _AttachmentPickerState extends State<AttachmentPicker> {
               ),
       );
     },
+  );
+
+  Widget _directoryList(List<UploadDirectoryEntry> entries) => Column(
+    children: [
+      if (_folder != null)
+        ListTile(
+          dense: true,
+          leading: _parents.isEmpty
+              ? const Icon(Icons.folder_open)
+              : IconButton(
+                  tooltip: '返回上级目录',
+                  onPressed: _browsing
+                      ? null
+                      : () => _openDirectory(back: true),
+                  icon: const Icon(Icons.arrow_back),
+                ),
+          title: Text(
+            [
+              ..._parents.map((folder) => folder.name),
+              _folder!.name,
+            ].join(' / '),
+            key: const ValueKey('attachment-directory-name'),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          subtitle: const Text('按修改时间从新到旧'),
+          trailing: IconButton(
+            tooltip: '刷新目录',
+            onPressed: _browsing ? null : () => _openDirectory(refresh: true),
+            icon: const Icon(Icons.refresh),
+          ),
+        ),
+      Expanded(
+        child: entries.isEmpty
+            ? Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Text(
+                    _folder == null ? '请选择要上传的目录' : '这个目录里没有当前可上传的文件',
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              )
+            : ListView.builder(
+                itemCount: entries.length,
+                itemBuilder: (_, index) {
+                  final entry = entries[index];
+                  final selected = _directorySelected.containsKey(entry.uri);
+                  final time = entry.modifiedAt;
+                  final stamp = time.millisecondsSinceEpoch <= 0
+                      ? '时间未知'
+                      : '${time.year}-${time.month.toString().padLeft(2, '0')}-${time.day.toString().padLeft(2, '0')} ${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
+                  return ListTile(
+                    key: ValueKey('attachment-directory-item-${entry.uri}'),
+                    leading: Icon(
+                      entry.isDirectory
+                          ? Icons.folder_open
+                          : Icons.description_outlined,
+                    ),
+                    title: Text(
+                      entry.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    subtitle: Text(
+                      entry.isDirectory
+                          ? '文件夹'
+                          : '${(entry.sizeBytes / 1024).toStringAsFixed(0)} KB · $stamp',
+                    ),
+                    selected: selected,
+                    onTap: _browsing
+                        ? null
+                        : entry.isDirectory
+                        ? () => _openDirectory(child: entry)
+                        : () => _toggleDirectoryEntry(entry),
+                    trailing: entry.isDirectory
+                        ? const Icon(Icons.chevron_right)
+                        : Checkbox(
+                            value: selected,
+                            onChanged: _browsing
+                                ? null
+                                : (_) => _toggleDirectoryEntry(entry),
+                          ),
+                  );
+                },
+              ),
+      ),
+    ],
   );
 
   Widget _fileTile(LibraryItem item) => ListTile(

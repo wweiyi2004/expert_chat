@@ -24,7 +24,6 @@ class ComposerToolTray extends StatelessWidget {
     required this.onPickMcpServers,
     required this.onDocumentEdit,
     required this.onToggleLongTask,
-    this.onVoiceConversation,
   });
 
   final bool imageGenerationConfigured;
@@ -46,9 +45,6 @@ class ComposerToolTray extends StatelessWidget {
   final VoidCallback? onPickMcpServers;
   final VoidCallback? onDocumentEdit;
   final VoidCallback? onToggleLongTask;
-
-  /// Opens hands-free voice mode; hidden when null.
-  final VoidCallback? onVoiceConversation;
 
   @override
   Widget build(BuildContext context) {
@@ -90,6 +86,7 @@ class ComposerToolTray extends StatelessWidget {
                       ListTile(
                         leading: const Icon(Icons.auto_awesome),
                         title: Text(imageMode ? '退出生图' : '图片生成'),
+                        subtitle: const Text('只生成图片；上传的图片作为参考图'),
                         onTap: onToggleImageMode == null
                             ? null
                             : () {
@@ -100,6 +97,7 @@ class ComposerToolTray extends StatelessWidget {
                     const ListTile(
                       leading: Icon(Icons.chat_bubble_outline),
                       title: Text('回答配图'),
+                      subtitle: Text('在文字回答中生成图片'),
                     ),
                     if (imageMode)
                       const Padding(
@@ -138,13 +136,13 @@ class ComposerToolTray extends StatelessWidget {
             ),
           ),
         ),
-      if (onVoiceConversation != null)
+      if (onToggleSearch != null)
         _ComposerPlusAction(
-          key: const ValueKey('composer-voice-conversation-button'),
-          icon: Icons.headset_mic_outlined,
-          label: '语音对话',
+          icon: Icons.travel_explore,
+          label: searchMode.composerLabel,
+          selected: searchMode != SearchMode.off,
           enabled: true,
-          onTap: onVoiceConversation,
+          onTap: onToggleSearch,
         ),
       if (documentEditAvailable)
         _ComposerPlusAction(
@@ -193,6 +191,7 @@ class ComposerToolTray extends StatelessWidget {
                       SwitchListTile(
                         secondary: const Icon(Icons.schedule_send_outlined),
                         title: const Text('后台执行'),
+                        subtitle: const Text('由已配置的任务服务执行，可稍后查看结果'),
                         value: longTaskMode,
                         onChanged: onToggleLongTask == null
                             ? null
@@ -212,8 +211,11 @@ class ComposerToolTray extends StatelessWidget {
       key: const ValueKey('composer-plus-tray'),
       padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
       decoration: BoxDecoration(
-        color: scheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(20),
+        color: scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: scheme.outlineVariant.withValues(alpha: 0.85),
+        ),
       ),
       child: LayoutBuilder(
         builder: (context, constraints) {
@@ -236,7 +238,6 @@ class ComposerToolTray extends StatelessWidget {
 
 class _ComposerPlusAction extends StatelessWidget {
   const _ComposerPlusAction({
-    super.key,
     required this.icon,
     required this.label,
     required this.enabled,

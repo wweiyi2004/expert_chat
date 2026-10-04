@@ -193,14 +193,8 @@ class _ChatWorkspaceSidebarState extends ConsumerState<ChatWorkspaceSidebar> {
     final workspaceTabs = ShellTab.navigation
         .where((tab) => tab != ShellTab.settings)
         .toList();
-    // Phones have no bottom bar, so the drawer is the only way to tools and
-    // settings: pin both to its footer at every height. Wide layouts keep
-    // the workspace list in the header.
-    final inDrawer = context.findAncestorWidgetOfExactType<Drawer>() != null;
-    final showWorkspaceLinks =
-        !inDrawer && MediaQuery.sizeOf(context).height >= 600;
-    final showSettingsFooter =
-        inDrawer || MediaQuery.sizeOf(context).height >= 480;
+    final showWorkspaceLinks = MediaQuery.sizeOf(context).height >= 600;
+    final showSettingsFooter = MediaQuery.sizeOf(context).height >= 480;
     final all = state?.conversations ?? const <Conversation>[];
     final visible = [
       for (final c in all)
@@ -418,23 +412,10 @@ class _ChatWorkspaceSidebarState extends ConsumerState<ChatWorkspaceSidebar> {
               ),
               Padding(
                 padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (inDrawer)
-                      for (final tab in workspaceTabs)
-                        if (tab != ShellTab.chat)
-                          _WorkspaceDestination(
-                            tab: tab,
-                            selected: selectedTab == tab,
-                            onTap: () => openWorkspace(tab),
-                          ),
-                    _WorkspaceDestination(
-                      tab: ShellTab.settings,
-                      selected: selectedTab == ShellTab.settings,
-                      onTap: () => openWorkspace(ShellTab.settings),
-                    ),
-                  ],
+                child: _WorkspaceDestination(
+                  tab: ShellTab.settings,
+                  selected: selectedTab == ShellTab.settings,
+                  onTap: () => openWorkspace(ShellTab.settings),
                 ),
               ),
             ],

@@ -34,7 +34,7 @@
 
 ## 语音对话模式
 
-在输入框「+」菜单选「语音对话」，或长按麦克风，打开免手动对话。`VoiceConversationController`（页面持有）按下面的循环运行，面板 `VoiceConversationPanel` 在此期间替代输入框：
+点击输入框旁独立的「语音对话」按钮，打开免手动对话。`VoiceConversationController`（页面持有）按下面的循环运行，面板 `VoiceConversationPanel` 在此期间替代输入框：
 
 ```
 正在听 ──停顿约 2 秒──▶ 自动发送 ──▶ 正在想/正在说（边生成边朗读）──读完──▶ 正在听

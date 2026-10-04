@@ -110,8 +110,7 @@ class _AppShellState extends ConsumerState<AppShell>
     required bool desktopShell,
   }) => switch (tab) {
     ShellTab.chat => ChatPage(desktopShell: desktopShell),
-    // Phones have no bottom bar: root pages lead back to the chat.
-    ShellTab.tools => ToolsPage(onBack: desktopShell ? null : _backToChat),
+    ShellTab.tools => const ToolsPage(),
     // Only mount heavy tabs when their mode is on; other stack slots stay put.
     ShellTab.terminal =>
       researchOn
@@ -121,13 +120,8 @@ class _AppShellState extends ConsumerState<AppShell>
       studyOn ? StudyHubPage(onBack: _backToTools) : const SizedBox.shrink(),
     ShellTab.studio =>
       creationOn ? StudioPage(onBack: _backToTools) : const SizedBox.shrink(),
-    ShellTab.settings => SettingsPage(
-      asRootTab: true,
-      onBack: desktopShell ? null : _backToChat,
-    ),
+    ShellTab.settings => const SettingsPage(asRootTab: true),
   };
-
-  void _backToChat() => ref.read(shellTabProvider.notifier).set(ShellTab.chat);
 
   void _backToTools() =>
       ref.read(shellTabProvider.notifier).set(ShellTab.tools);
@@ -164,25 +158,15 @@ class _AppShellState extends ConsumerState<AppShell>
       }
     }
 
+    final navIndex = visible.indexOf(selected.navigationTab);
     final stackIndex = _stackOrder
         .indexOf(selected)
         .clamp(0, _stackOrder.length - 1);
 
-    final phoneShell =
-        MediaQuery.sizeOf(context).width < WorkspaceBreakpoints.shellRail;
     return PopScope(
-      // Back walks up: sub-page → tools → chat; only the chat exits the app
-      // on phones.
-      canPop: phoneShell
-          ? selected == ShellTab.chat
-          : selected.navigationTab == selected,
+      canPop: selected.navigationTab == selected,
       onPopInvokedWithResult: (didPop, result) {
-        if (didPop) return;
-        if (selected.navigationTab != selected) {
-          _backToTools();
-        } else {
-          _backToChat();
-        }
+        if (!didPop) _backToTools();
       },
       child: LayoutBuilder(
         builder: (context, constraints) {
@@ -252,10 +236,34 @@ class _AppShellState extends ConsumerState<AppShell>
               // On the research terminal tab, do not shrink the body for the
               // soft keyboard — nested Scaffold + IME otherwise collapses the
               // terminal Expanded to 0 height (blank/white screen on dismiss).
-              // Phones: full-screen pages, reached from the chat drawer.
               : Scaffold(
                   resizeToAvoidBottomInset: selected != ShellTab.terminal,
                   body: stack,
+                  bottomNavigationBar:
+                      MediaQuery.viewInsetsOf(context).bottom > 0
+                      ? null
+                      : NavigationBar(
+                          selectedIndex: navIndex,
+                          onDestinationSelected: (i) => ref
+                              .read(shellTabProvider.notifier)
+                              .set(visible[i]),
+                          backgroundColor: scheme.surfaceContainer.withValues(
+                            alpha: 0.96,
+                          ),
+                          indicatorColor: scheme.primaryContainer.withValues(
+                            alpha: 0.85,
+                          ),
+                          labelBehavior:
+                              NavigationDestinationLabelBehavior.alwaysShow,
+                          destinations: [
+                            for (final tab in visible)
+                              NavigationDestination(
+                                icon: Icon(tab.icon),
+                                selectedIcon: Icon(tab.selectedIcon),
+                                label: tab.label,
+                              ),
+                          ],
+                        ),
                 );
 
           return KeyedSubtree(

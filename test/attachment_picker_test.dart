@@ -10,6 +10,8 @@ import 'package:expert_chat/data/library_models.dart';
 import 'package:expert_chat/data/library_repository.dart';
 import 'package:expert_chat/data/models.dart';
 import 'package:expert_chat/domain/tools/file_parser.dart';
+import 'package:expert_chat/domain/tools/upload_directory.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:expert_chat/features/chat/widgets/attachment_picker.dart';
 import 'package:expert_chat/features/projects/project_document_page.dart';
 import 'package:file_picker/file_picker.dart';
@@ -46,6 +48,33 @@ class _Picker extends FilePickerPlatform {
     extensions = allowedExtensions;
     multiple = allowMultiple;
     return respond();
+  }
+}
+
+class _DirectoryBrowser extends UploadDirectoryBrowser {
+  UploadDirectory? selected;
+  UploadDirectory? restored;
+  final nodes = <String, UploadDirectory>{};
+  int reads = 0;
+  Future<UploadDirectory?> Function()? pendingChoice;
+
+  @override
+  Future<UploadDirectory?> restore() async => restored;
+  @override
+  Future<UploadDirectory?> choose() async =>
+      pendingChoice == null ? selected : await pendingChoice!();
+  @override
+  Future<UploadDirectory> list({
+    required String root,
+    required String uri,
+  }) async => nodes[uri]!;
+  @override
+  Future<Uint8List?> readBytes({
+    required String root,
+    required UploadDirectoryEntry entry,
+  }) async {
+    reads++;
+    return Uint8List.fromList(utf8.encode(entry.name));
   }
 }
 
@@ -99,6 +128,7 @@ void main() {
   });
 
   setUp(() async {
+    SharedPreferences.setMockInitialValues({});
     db = AppDatabase(NativeDatabase.memory());
     library = _Library(db, InMemoryLibraryFileStore());
     document = await library.importBytes(
@@ -145,6 +175,7 @@ void main() {
     AttachmentPickerTab initialTab = AttachmentPickerTab.recent,
     double scale = 1,
     double keyboard = 0,
+    UploadDirectoryBrowser directoryBrowser = const UploadDirectoryBrowser(),
   }) async {
     tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1;
@@ -183,6 +214,7 @@ void main() {
                       allowImages: images,
                       allowDocuments: documents,
                       initialTab: initialTab,
+                      directoryBrowser: directoryBrowser,
                       isCurrent: () => current,
                     ),
                     child: const Text('打开'),
@@ -215,6 +247,120 @@ void main() {
   FilePickerResult local(String name) => FilePickerResult([
     PlatformFile(name: name, size: 4, bytes: Uint8List.fromList([1, 2, 3, 4])),
   ]);
+
+  testWidgets(
+    'chosen directory replaces the list, preserves selection across folders and reads only on confirmation',
+    (tester) async {
+      final browser = _DirectoryBrowser();
+      final old = UploadDirectoryEntry(
+        uri: '/chosen/old.txt',
+        name: 'a-old.txt',
+        isDirectory: false,
+        sizeBytes: 20,
+        modifiedAt: DateTime(2026, 10, 1),
+      );
+      final recent = UploadDirectoryEntry(
+        uri: '/chosen/new.txt',
+        name: 'z-new.txt',
+        isDirectory: false,
+        sizeBytes: 20,
+        modifiedAt: DateTime(2026, 10, 5),
+      );
+      final unsupported = UploadDirectoryEntry(
+        uri: '/chosen/app.exe',
+        name: 'app.exe',
+        isDirectory: false,
+        sizeBytes: 20,
+        modifiedAt: DateTime(2026, 10, 5),
+      );
+      final child = UploadDirectoryEntry(
+        uri: '/chosen/child',
+        name: 'child',
+        isDirectory: true,
+        sizeBytes: 0,
+        modifiedAt: DateTime(2026, 10, 5),
+      );
+      final childFile = UploadDirectoryEntry(
+        uri: '/chosen/child/report.txt',
+        name: 'child-report.txt',
+        isDirectory: false,
+        sizeBytes: 20,
+        modifiedAt: DateTime(2026, 10, 5),
+      );
+      final directory = UploadDirectory(
+        root: '/chosen',
+        uri: '/chosen',
+        name: 'chosen',
+        entries: sortUploadDirectoryEntries([old, recent, unsupported, child]),
+      );
+      browser.selected = directory;
+      browser.nodes['/chosen'] = directory;
+      browser.nodes[child.uri] = UploadDirectory(
+        root: '/chosen',
+        uri: child.uri,
+        name: child.name,
+        entries: [childFile],
+      );
+      await setup(tester, directoryBrowser: browser);
+      await tester.tap(
+        find.byKey(const ValueKey('attachment-choose-directory')),
+      );
+      await drain(tester);
+      expect(find.text('chosen'), findsOneWidget);
+      expect(find.text('app.exe'), findsNothing);
+      expect(
+        tester.getTopLeft(find.text(recent.name)).dy,
+        lessThan(tester.getTopLeft(find.text(old.name)).dy),
+      );
+      expect(browser.reads, 0);
+      await tester.tap(find.text(recent.name));
+      await tester.tap(find.text(child.name));
+      await drain(tester);
+      await tester.tap(find.text(childFile.name));
+      await tester.tap(find.byTooltip('返回上级目录'));
+      await drain(tester);
+      expect(find.text('已选 2 / 3'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('attachment-picker-confirm')));
+      await drain(tester);
+      expect(result!.sources.map((source) => source.name), [
+        recent.name,
+        childFile.name,
+      ]);
+      expect(browser.reads, 0);
+      expect(
+        utf8.decode((await result!.sources.first.loadBytes!())!),
+        recent.name,
+      );
+      expect(browser.reads, 1);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'late directory selection cannot add files after switching conversations',
+    (tester) async {
+      final choice = Completer<UploadDirectory?>();
+      final browser = _DirectoryBrowser()..pendingChoice = () => choice.future;
+      await setup(tester, directoryBrowser: browser);
+      await tester.tap(
+        find.byKey(const ValueKey('attachment-choose-directory')),
+      );
+      await tester.pump();
+      current = false;
+      choice.complete(
+        const UploadDirectory(
+          root: '/old',
+          uri: '/old',
+          name: 'old',
+          entries: [],
+        ),
+      );
+      await drain(tester);
+      expect(result, isNull);
+      expect(find.byType(AttachmentPicker), findsNothing);
+      expect(browser.reads, 0);
+    },
+  );
 
   testWidgets(
     'recent order, search and categories preserve a shared selection',

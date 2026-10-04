@@ -4,6 +4,47 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  testWidgets(
+    'folded live reasoning follows the newest lines locally and hides when finished',
+    (tester) async {
+      var reasoning = List.generate(12, (index) => '思考步骤 $index').join('\n');
+      Widget panel(bool streaming) => MaterialApp(
+        home: Scaffold(
+          body: ThinkingPanel(reasoning: reasoning, isStreaming: streaming),
+        ),
+      );
+      await tester.pumpWidget(panel(true));
+      await tester.tap(find.byKey(const ValueKey('thinking-panel-toggle')));
+      await tester.pump(const Duration(milliseconds: 200));
+      final viewport = find.byKey(const ValueKey('thinking-collapsed-scroll'));
+      expect(viewport, findsOneWidget);
+      final scroll = tester.widget<SingleChildScrollView>(viewport).controller!;
+      expect(scroll.offset, closeTo(scroll.position.maxScrollExtent, 1));
+      final previousOffset = scroll.offset;
+      reasoning += '\n正在核对最后一项\n得到新的结果';
+      await tester.pumpWidget(panel(true));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 350));
+      expect(scroll.offset, greaterThan(previousOffset));
+      expect(scroll.offset, closeTo(scroll.position.maxScrollExtent, 1));
+      await tester.tap(find.byKey(const ValueKey('thinking-panel-toggle')));
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(
+        tester.widget<SelectableText>(find.byType(SelectableText)).data,
+        reasoning,
+      );
+      await tester.tap(find.byKey(const ValueKey('thinking-panel-toggle')));
+      await tester.pump(const Duration(milliseconds: 200));
+      await tester.pumpWidget(panel(false));
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(
+        find.byKey(const ValueKey('thinking-collapsed-preview')),
+        findsNothing,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets('steps expose recovery, duration and saved results', (
     tester,
   ) async {

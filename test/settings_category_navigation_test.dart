@@ -136,6 +136,8 @@ class _LongModelSettingsController extends _FakeSettingsController {
 Future<ProviderContainer> pumpSettingsPage(
   WidgetTester tester, {
   bool tall = false,
+  Size? size,
+  double scale = 1,
 }) async {
   final container = ProviderContainer(
     overrides: [
@@ -144,16 +146,23 @@ Future<ProviderContainer> pumpSettingsPage(
     ],
   );
   addTearDown(container.dispose);
-  tester.view.physicalSize = tall
-      ? const Size(480, 1600)
-      : const Size(360, 720);
+  tester.view.physicalSize =
+      size ?? (tall ? const Size(480, 1600) : const Size(360, 720));
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
   await tester.pumpWidget(
     UncontrolledProviderScope(
       container: container,
-      child: const MaterialApp(home: SettingsPage(asRootTab: true)),
+      child: MaterialApp(
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(
+            context,
+          ).copyWith(textScaler: TextScaler.linear(scale)),
+          child: child!,
+        ),
+        home: const SettingsPage(asRootTab: true),
+      ),
     ),
   );
   await tester.pumpAndSettle();
@@ -202,6 +211,26 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     _usageStore = ModelUsageStore(await SharedPreferences.getInstance());
   });
+
+  testWidgets(
+    'four settings categories fit a narrow phone at large text without scrolling',
+    (tester) async {
+      await pumpSettingsPage(tester, size: const Size(320, 720), scale: 1.24);
+      final bar = find.byKey(const ValueKey('settings-category-bar'));
+      expect(
+        find.descendant(of: bar, matching: find.byType(Scrollable)),
+        findsNothing,
+      );
+      for (final label in ['模型', '能力', '外观', '数据']) {
+        final item = find.descendant(of: bar, matching: find.text(label));
+        expect(item.hitTestable(), findsOneWidget);
+        final bounds = tester.getRect(item);
+        expect(bounds.left, greaterThanOrEqualTo(12));
+        expect(bounds.right, lessThanOrEqualTo(308));
+      }
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('settings categories replace the long single-page list', (
     tester,

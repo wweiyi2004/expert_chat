@@ -377,11 +377,7 @@ class _MessageBubbleState extends State<MessageBubble> {
                 horizontal: doc ? 4 : 16,
                 vertical: doc ? 8 : 12,
               ),
-              constraints: BoxConstraints(
-                maxWidth: doc
-                    ? 900
-                    : (MediaQuery.sizeOf(context).width * 0.8).clamp(0, 560),
-              ),
+              constraints: BoxConstraints(maxWidth: doc ? 900 : 560),
               width: doc ? double.infinity : null,
               decoration: doc
                   ? BoxDecoration(
@@ -392,14 +388,32 @@ class _MessageBubbleState extends State<MessageBubble> {
                         ),
                       ),
                     )
-                  // A flat, light bubble keeps the user's turn distinct
-                  // without competing with the reply.
                   : BoxDecoration(
-                      color: scheme.surfaceContainerHighest,
-                      borderRadius: BorderRadius.circular(
-                        Theme.of(context).extension<AppMetrics>()?.bubbleMain ??
-                            20,
+                      gradient: LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [
+                          scheme.primary,
+                          Color.lerp(scheme.primary, scheme.secondary, 0.22)!,
+                        ],
                       ),
+                      borderRadius:
+                          Theme.of(
+                            context,
+                          ).extension<AppMetrics>()?.bubbleUser ??
+                          const BorderRadius.only(
+                            topLeft: Radius.circular(20),
+                            topRight: Radius.circular(20),
+                            bottomLeft: Radius.circular(20),
+                            bottomRight: Radius.circular(6),
+                          ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: scheme.primary.withValues(alpha: 0.18),
+                          blurRadius: 16,
+                          offset: const Offset(0, 6),
+                        ),
+                      ],
                     ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -419,7 +433,7 @@ class _MessageBubbleState extends State<MessageBubble> {
                   SelectableText(
                     m.content,
                     style: TextStyle(
-                      color: scheme.onSurface,
+                      color: doc ? scheme.onSurface : scheme.onPrimary,
                       height: 1.55,
                       fontSize: 15,
                     ),
@@ -642,11 +656,37 @@ class _MessageBubbleState extends State<MessageBubble> {
               if (m.content.isNotEmpty)
                 Container(
                   margin: EdgeInsets.only(top: hasReasoning ? 10 : 0),
-                  // Replies sit directly on the page, like a document.
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 2,
-                    vertical: 4,
+                  padding: EdgeInsets.symmetric(
+                    horizontal: doc ? 2 : 16,
+                    vertical: doc ? 4 : 14,
                   ),
+                  decoration: doc
+                      ? null
+                      : BoxDecoration(
+                          color: scheme.surfaceContainer,
+                          borderRadius:
+                              Theme.of(
+                                context,
+                              ).extension<AppMetrics>()?.bubbleAssistant ??
+                              const BorderRadius.only(
+                                topLeft: Radius.circular(6),
+                                topRight: Radius.circular(20),
+                                bottomLeft: Radius.circular(20),
+                                bottomRight: Radius.circular(20),
+                              ),
+                          border: Border.all(
+                            color: scheme.outlineVariant.withValues(
+                              alpha: 0.95,
+                            ),
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: scheme.shadow.withValues(alpha: 0.05),
+                              blurRadius: 18,
+                              offset: const Offset(0, 8),
+                            ),
+                          ],
+                        ),
                   child: _assistantMarkdown(m),
                 ),
             ],

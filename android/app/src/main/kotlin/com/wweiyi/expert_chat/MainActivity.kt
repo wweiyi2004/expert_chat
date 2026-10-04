@@ -15,6 +15,7 @@ class MainActivity : FlutterActivity() {
     private val installChannel = "expert_chat/install"
     private var generationChannel: MethodChannel? = null
     private val sharedIntake by lazy { SharedIntake(applicationContext) }
+    private val uploadDirectory by lazy { UploadDirectory(this) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -29,6 +30,9 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        uploadDirectory.attach(
+            MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "expert_chat/upload_directory"),
+        )
         sharedIntake.attach(
             MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "expert_chat/share"),
         )
@@ -91,11 +95,18 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        uploadDirectory.detach()
         generationChannel?.setMethodCallHandler(null)
         generationChannel = null
         sharedIntake.detach()
         stopService(Intent(this, GenerationService::class.java))
         super.cleanUpFlutterEngine(flutterEngine)
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (!uploadDirectory.onActivityResult(requestCode, resultCode, data)) {
+            super.onActivityResult(requestCode, resultCode, data)
+        }
     }
 
     private fun primaryAbi(): String {

@@ -113,6 +113,7 @@ class _ThinkingPanelState extends State<ThinkingPanel>
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           InkWell(
+            key: const ValueKey('thinking-panel-toggle'),
             borderRadius: BorderRadius.circular(8),
             onTap: () {
               setState(() {
@@ -164,7 +165,10 @@ class _ThinkingPanelState extends State<ThinkingPanel>
             ),
           ),
           AnimatedCrossFade(
-            firstChild: const SizedBox(width: double.infinity, height: 0),
+            firstChild:
+                !_expanded && widget.isStreaming && widget.reasoning.isNotEmpty
+                ? _CollapsedReasoningPreview(text: widget.reasoning)
+                : const SizedBox(width: double.infinity, height: 0),
             secondChild: Padding(
               padding: const EdgeInsets.only(top: 4, bottom: 4),
               child: Column(
@@ -221,6 +225,110 @@ class _ThinkingPanelState extends State<ThinkingPanel>
             duration: const Duration(milliseconds: 180),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// A short live viewport keeps the latest thought visible after folding the
+/// full timeline. Its scroll is local to the panel, so it never moves the chat.
+class _CollapsedReasoningPreview extends StatefulWidget {
+  const _CollapsedReasoningPreview({required this.text});
+
+  final String text;
+
+  @override
+  State<_CollapsedReasoningPreview> createState() =>
+      _CollapsedReasoningPreviewState();
+}
+
+class _CollapsedReasoningPreviewState
+    extends State<_CollapsedReasoningPreview> {
+  final _scroll = ScrollController();
+  bool _followScheduled = false;
+  bool _followTail = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _scheduleFollow(initial: true);
+  }
+
+  @override
+  void didUpdateWidget(_CollapsedReasoningPreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.text != oldWidget.text) _scheduleFollow();
+  }
+
+  void _scheduleFollow({bool initial = false}) {
+    if (_followScheduled || !_followTail) return;
+    _followScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _followScheduled = false;
+      if (!mounted || !_scroll.hasClients || !_followTail) return;
+      final end = _scroll.position.maxScrollExtent;
+      if (initial || MediaQuery.disableAnimationsOf(context)) {
+        _scroll.jumpTo(end);
+      } else {
+        _scroll.animateTo(
+          end,
+          duration: const Duration(milliseconds: 280),
+          curve: Curves.easeOutCubic,
+        );
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    var start = widget.text.length > 1000 ? widget.text.length - 1000 : 0;
+    if (start > 0 &&
+        widget.text.codeUnitAt(start) >= 0xDC00 &&
+        widget.text.codeUnitAt(start) <= 0xDFFF) {
+      start--;
+    }
+    final scheme = Theme.of(context).colorScheme;
+    final scale = MediaQuery.textScalerOf(context).scale(13) / 13;
+    return Padding(
+      key: const ValueKey('thinking-collapsed-preview'),
+      padding: const EdgeInsets.only(top: 4, bottom: 4, left: 12),
+      child: SizedBox(
+        height: 13 * 1.65 * scale * 2,
+        child: ShaderMask(
+          blendMode: BlendMode.dstIn,
+          shaderCallback: (bounds) => const LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Colors.transparent, Colors.black, Colors.black],
+            stops: [0, 0.18, 1],
+          ).createShader(bounds),
+          child: NotificationListener<ScrollNotification>(
+            onNotification: (notification) {
+              if (notification is UserScrollNotification) {
+                _followTail = notification.metrics.extentAfter <= 4;
+              }
+              return false;
+            },
+            child: SingleChildScrollView(
+              key: const ValueKey('thinking-collapsed-scroll'),
+              controller: _scroll,
+              child: Text(
+                widget.text.substring(start),
+                style: TextStyle(
+                  fontSize: 13,
+                  height: 1.65,
+                  color: scheme.onSurfaceVariant.withValues(alpha: 0.85),
+                ),
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }

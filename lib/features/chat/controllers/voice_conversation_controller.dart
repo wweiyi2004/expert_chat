@@ -242,7 +242,7 @@ class VoiceConversationController extends ChangeNotifier {
       return;
     }
     if (++_silentTurns >= maxSilentTurns) {
-      _pause('没有听到声音');
+      _pause('没有听到声音，点击继续对话。');
       return;
     }
     unawaited(_listen());
@@ -274,7 +274,7 @@ class VoiceConversationController extends ChangeNotifier {
     if (_disposed || session != _session) return;
     if (!accepted) {
       _closeSpeech();
-      _pause('没有发送出去，已放回输入框');
+      _pause('这句话没有发送出去，已放回输入框。点击继续对话。');
       return;
     }
     final reply = readReply();
@@ -282,7 +282,7 @@ class VoiceConversationController extends ChangeNotifier {
       _closeSpeech();
       await textToSpeech.stop();
       if (session != _session) return;
-      _pause('回复失败');
+      _pause('回复失败，点击继续对话。');
       return;
     }
     final speech = _speechFor(reply.messageId);

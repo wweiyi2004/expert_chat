@@ -18,7 +18,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # of the product and file versions while build-number is used as the build suffix.
 # build-number must stay > any prior split-per-abi code (abi*1000 + old build).
 # v3.0.0 arm64 was 2015, x86_64 was 4015 — use 4100+ for clean upgrades.
-version: 3.6.0+4108
+version: 3.6.1+4109
 
 environment:
   sdk: ^3.12.0
@@ -45,6 +45,7 @@ dependencies:
   flutter_secure_storage: ^10.3.1
   shared_preferences: ^2.5.5
   path_provider: ^2.1.5
+  path: ^1.9.1
   uuid: ^4.5.3
   gpt_markdown: ^1.1.7
 

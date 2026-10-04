@@ -79,21 +79,31 @@ class _SettingsCategoryBar extends StatelessWidget {
   Widget build(BuildContext context) {
     return Semantics(
       label: '设置分类',
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-        child: SegmentedButton<_SettingsCategory>(
-          showSelectedIcon: false,
-          segments: [
-            for (final category in _SettingsCategory.values)
-              ButtonSegment<_SettingsCategory>(
-                value: category,
-                icon: Icon(category.icon, size: 19),
-                label: Text(category.label),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+        child: LayoutBuilder(
+          builder: (context, constraints) => SegmentedButton<_SettingsCategory>(
+            key: const ValueKey('settings-category-bar'),
+            expandedInsets: EdgeInsets.zero,
+            showSelectedIcon: false,
+            style: const ButtonStyle(
+              padding: WidgetStatePropertyAll(
+                EdgeInsets.symmetric(horizontal: 8),
               ),
-          ],
-          selected: {selected},
-          onSelectionChanged: (selection) => onSelected(selection.first),
+            ),
+            segments: [
+              for (final category in _SettingsCategory.values)
+                ButtonSegment<_SettingsCategory>(
+                  value: category,
+                  icon: constraints.maxWidth >= 480
+                      ? Icon(category.icon, size: 19)
+                      : null,
+                  label: Text(category.label, maxLines: 1, softWrap: false),
+                ),
+            ],
+            selected: {selected},
+            onSelectionChanged: (selection) => onSelected(selection.first),
+          ),
         ),
       ),
     );
@@ -101,14 +111,10 @@ class _SettingsCategoryBar extends StatelessWidget {
 }
 
 class SettingsPage extends ConsumerStatefulWidget {
-  const SettingsPage({super.key, this.asRootTab = false, this.onBack});
+  const SettingsPage({super.key, this.asRootTab = false});
 
-  /// When true (a shell tab, not a pushed route), hide the implied back
-  /// button; [onBack] then decides whether a back button is shown.
+  /// When true (bottom-nav「设置」), hide the back affordance.
   final bool asRootTab;
-
-  /// Phone shell: back to the chat (there is no bottom bar).
-  final VoidCallback? onBack;
 
   @override
   ConsumerState<SettingsPage> createState() => _SettingsPageState();
@@ -384,9 +390,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       appBar: AppBar(
         title: const Text('设置'),
         automaticallyImplyLeading: !widget.asRootTab,
-        leading: widget.onBack == null
-            ? null
-            : BackButton(onPressed: widget.onBack),
       ),
       body: asyncSettings.when(
         loading: () => const Center(child: CircularProgressIndicator()),

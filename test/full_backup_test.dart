@@ -133,6 +133,56 @@ void main() {
   }
 
   test(
+    'export and preview agree at the record limit and reject above it',
+    () async {
+      await db
+          .into(db.conversations)
+          .insert(
+            ConversationsCompanion.insert(
+              id: 'large-history',
+              updatedAt: DateTime(2026),
+            ),
+          );
+      await db.customStatement(
+        '''
+      WITH RECURSIVE seq(n) AS (
+        SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n < ?
+      )
+      INSERT INTO messages(id,convo_id,parent_id,role,content,created_at,seq)
+      SELECT 'message-' || n, 'large-history',
+             CASE WHEN n=1 THEN NULL ELSE 'message-' || (n-1) END,
+             'user', 'message content', 0, n FROM seq
+    ''',
+        [FullBackupService.maxRecords - 1],
+      );
+
+      final bytes = await service.exportBackup();
+      final preview = await service.preview(bytes);
+      expect(preview.count('messages'), FullBackupService.maxRecords - 1);
+      expect(preview.count('conversations'), 1);
+
+      await db
+          .into(db.conversations)
+          .insert(
+            ConversationsCompanion.insert(
+              id: 'one-too-many',
+              updatedAt: DateTime(2026),
+            ),
+          );
+      await expectLater(service.exportBackup(), throwsFormatException);
+      final payload = BackupCodec.decode(bytes);
+      (payload['tables']['conversations'] as List).add({
+        ...(payload['tables']['conversations'] as List).single as Map,
+        'id': 'one-too-many',
+      });
+      await expectLater(
+        service.preview(BackupCodec.encode(payload)),
+        throwsFormatException,
+      );
+    },
+  );
+
+  test(
     'known v15 archive upgrades into copies and preserves original records',
     () async {
       final bytes = await legacyBackup();
@@ -168,7 +218,7 @@ void main() {
     () async {
       final bytes = await legacyBackup();
       for (final change in <void Function(Map<String, dynamic>)>[
-        (p) => p['schemaVersion'] = 17,
+        (p) => p['schemaVersion'] = 18,
         (p) => p['schemaVersion'] = 14,
         (p) => p['schemaVersion'] = '15',
         (p) => p['tables']['projects'] = [],
@@ -189,6 +239,71 @@ void main() {
     },
   );
 
+  test(
+    'v16 archive preserves generations without guessing their protocol',
+    () async {
+      await seed();
+      await db
+          .into(db.generationRecords)
+          .insert(
+            GenerationRecordsCompanion.insert(
+              id: 'legacy-generation',
+              conversationId: const Value('c'),
+              messageId: const Value('a'),
+              originalPrompt: '原始描述',
+              optimizedPrompt: '发送描述',
+              revisedPrompt: const Value('返回描述'),
+              model: 'gemini-2.5-flash-image',
+              providerHost: 'https://media.example',
+              apiFormat: const Value('geminiNative'),
+              imageSize: '1024x1024',
+              createdAt: DateTime(2026),
+            ),
+          );
+      final payload = BackupCodec.decode(await service.exportBackup());
+      payload['schemaVersion'] = 16;
+      final row =
+          (payload['tables']['generation_records'] as List).single as Map;
+      row.remove('api_format');
+      final bytes = BackupCodec.encode(payload);
+      final preview = await service.preview(bytes);
+      expect(preview.sourceSchemaVersion, 16);
+      expect(preview.targetSchemaVersion, 17);
+      expect(preview.requiresUpgrade, isTrue);
+      await service.restoreCopies(preview);
+      final copied = (await db.select(db.generationRecords).get()).singleWhere(
+        (record) => record.id != 'legacy-generation',
+      );
+      expect(copied.apiFormat, isNull);
+      expect(copied.model, 'gemini-2.5-flash-image');
+      expect(copied.optimizedPrompt, '发送描述');
+      expect(copied.revisedPrompt, '返回描述');
+      expect(copied.providerHost, 'https://media.example');
+      expect(copied.imageSize, '1024x1024');
+      expect(copied.conversationId, isNot('c'));
+      expect(
+        BackupCodec.decode(
+          bytes,
+        )['tables']['generation_records'][0].containsKey('api_format'),
+        isFalse,
+      );
+
+      for (final mutate in <void Function(Map)>[
+        (r) => r['api_format'] = 'geminiNative',
+        (r) => r['future_field'] = 'must retain',
+        (r) => r.remove('model'),
+      ]) {
+        final invalid = BackupCodec.decode(bytes);
+        mutate(invalid['tables']['generation_records'][0] as Map);
+        await expectLater(
+          service.preview(BackupCodec.encode(invalid)),
+          throwsFormatException,
+        );
+      }
+      expect(await db.select(db.generationRecords).get(), hasLength(2));
+    },
+  );
+
   testWidgets('upgraded backup preview explains unclassified conversations', (
     tester,
   ) async {
@@ -202,7 +317,7 @@ void main() {
     );
     expect(find.text('旧版备份已准备好转换'), findsOneWidget);
     expect(find.textContaining('未归类'), findsOneWidget);
-    expect(find.text('数据版本 15 → 16'), findsOneWidget);
+    expect(find.text('数据版本 15 → 17'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -428,6 +543,7 @@ void main() {
                 optimizedPrompt: 'u',
                 model: 'model',
                 providerHost: 'https://media.example',
+                apiFormat: const Value('geminiNative'),
                 imageSize: '1024x1024',
                 referencesJson: Value(
                   jsonEncode([
@@ -466,6 +582,10 @@ void main() {
       );
       expect(gens.first.originalPrompt, 'course');
       expect(gens.first.optimizedPrompt, 'u');
+      expect(
+        gens.every((record) => record.apiFormat == 'geminiNative'),
+        isTrue,
+      );
       expect(
         jsonDecode(gens.first.referencesJson)[0]['libraryItemId'],
         gens.first.libraryItemId,

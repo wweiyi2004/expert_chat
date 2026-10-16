@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/providers.dart';
 import '../data/chat_skill.dart';
+import '../data/prompt_presets.dart';
 import '../data/jev_config.dart';
 import '../data/composer_modes.dart';
 import '../data/context_prefs.dart';
@@ -196,25 +197,19 @@ class SettingsController extends AsyncNotifier<SettingsState> {
   Future<void> setSearchMode(SearchMode mode) async {
     if (_current.searchMode == mode) return;
     state = AsyncData(_current.copyWith(searchMode: mode));
-    try {
-      await ref
-          .read(sharedPrefsProvider)
-          .setString(kSettingsComposerSearchMode, mode.wire);
-    } catch (_) {
-      // Widget tests override settings without SharedPreferences.
-    }
+    final saved = await ref
+        .read(sharedPrefsProvider)
+        .setString(kSettingsComposerSearchMode, mode.wire);
+    if (!saved) throw StateError('搜索设置保存失败');
   }
 
   Future<void> setImageGenMode(ImageGenMode mode) async {
     if (_current.imageGenMode == mode) return;
     state = AsyncData(_current.copyWith(imageGenMode: mode));
-    try {
-      await ref
-          .read(sharedPrefsProvider)
-          .setString(kSettingsComposerImageGenMode, mode.wire);
-    } catch (_) {
-      // Widget tests override settings without SharedPreferences.
-    }
+    final saved = await ref
+        .read(sharedPrefsProvider)
+        .setString(kSettingsComposerImageGenMode, mode.wire);
+    if (!saved) throw StateError('配图设置保存失败');
   }
 
   Future<void> setReasoningEffort(ReasoningEffort effort) async {
@@ -517,6 +512,25 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     await prefs.setString(kSettingsChatSkills, next.encode());
     await prefs.setString(kSettingsSystemPrompt, next.fallback.prompt);
   }
+
+  Future<void> _presetWriteTail = Future<void>.value();
+  Future<void> setPromptPresets(PromptPresets presets) {
+    final normalized = PromptPresets.decode(jsonEncode(presets.toJson()));
+    final prefs = ref.read(sharedPrefsProvider);
+    state = AsyncData(_current.copyWith(promptPresets: normalized));
+    return _presetWriteTail = _presetWriteTail.catchError((Object _) {}).then((
+      _,
+    ) async {
+      await prefs.setString(
+        PromptPresets.storageKey,
+        jsonEncode(normalized.toJson()),
+      );
+    });
+  }
+
+  Future<void> selectPromptPreset(String? id) => setPromptPresets(
+    PromptPresets(items: _current.promptPresets.items, activeId: id),
+  );
 
   /// Set the global preset/system prompt (persisted in shared preferences).
   Future<void> setSystemPrompt(String prompt) async {
@@ -856,6 +870,7 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       'taskBudget': current.taskBudget.toJson(),
       'reasoningEffort': current.reasoningEffort.wire,
       'systemPrompt': current.systemPrompt,
+      'promptPresets': current.promptPresets.toJson(),
       'jev': {...current.jevConfig.toJson(), 'apiKey': current.jevApiKey},
       'chatSkills': [
         for (final skill in current.chatSkills.skills) skill.toJson(),
@@ -1029,6 +1044,11 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     }
 
     final skillsRaw = json['chatSkills'];
+    if (json['promptPresets'] is Map) {
+      await setPromptPresets(
+        PromptPresets.decode(jsonEncode(json['promptPresets'])),
+      );
+    }
     if (skillsRaw is List || skillsRaw is String) {
       final encoded = skillsRaw is String ? skillsRaw : jsonEncode(skillsRaw);
       final catalog = ChatSkillCatalog.decode(
@@ -1199,4 +1219,8 @@ class SettingsController extends AsyncNotifier<SettingsState> {
 final settingsControllerProvider =
     AsyncNotifierProvider<SettingsController, SettingsState>(
       SettingsController.new,
+      // Re-reading unchanged malformed JSON cannot repair it.
+      retry: (count, error) => error is FormatException
+          ? null
+          : ProviderContainer.defaultRetry(count, error),
     );

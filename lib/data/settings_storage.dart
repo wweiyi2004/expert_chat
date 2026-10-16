@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'chat_skill.dart';
+import 'prompt_presets.dart';
 import 'jev_config.dart';
 import 'composer_modes.dart';
 import 'context_prefs.dart';
@@ -33,6 +34,14 @@ class SettingsStorage {
   final Future<String> Function() freshGatewayToken;
 
   Future<SettingsState> load() async {
+    // Decode stored configuration before any startup migration writes.
+    var gateway = readGateway(prefs);
+    final storedSystemPrompt = prefs.getString(kSettingsSystemPrompt) ?? '';
+    final storedSkills = prefs.getString(kSettingsChatSkills);
+    final catalog = ChatSkillCatalog.decode(
+      storedSkills,
+      legacySystemPrompt: storedSystemPrompt,
+    );
     // Read before first-run profile migration writes defaults.
     final existingInstall =
         prefs.containsKey(kSettingsProfiles) ||
@@ -174,7 +183,6 @@ class SettingsStorage {
       await secure.write(key: activeTtsProfileSecureKey, value: ttsApiKey);
     }
     final asrApiKey = await secure.read(key: kSettingsAsrApiKeySecure) ?? '';
-    var gateway = readGateway(prefs);
     if (gateway == null) {
       gateway = migrateLegacyGateway(prefs);
       await prefs.setString(kSettingsGateway, jsonEncode(gateway.toJson()));
@@ -238,12 +246,6 @@ class SettingsStorage {
       await prefs.remove(kSettingsSelectedModel);
     }
 
-    final storedSystemPrompt = prefs.getString(kSettingsSystemPrompt) ?? '';
-    final storedSkills = prefs.getString(kSettingsChatSkills);
-    final catalog = ChatSkillCatalog.decode(
-      storedSkills,
-      legacySystemPrompt: storedSystemPrompt,
-    );
     final encodedSkills = catalog.encode();
     if (storedSkills != encodedSkills) {
       await prefs.setString(kSettingsChatSkills, encodedSkills);
@@ -279,6 +281,10 @@ class SettingsStorage {
       hasReasoningEffortOverride: prefs.containsKey(kSettingsReasoningEffort),
       systemPrompt: storedSystemPrompt,
       chatSkills: catalog,
+      promptPresets: PromptPresets.decode(
+        prefs.getString(PromptPresets.storageKey),
+        legacyPrompt: storedSystemPrompt,
+      ),
       jevConfig: JevConfig.decode(prefs.getString(kSettingsJevConfig)),
       jevApiKey: await secure.read(key: kSettingsJevApiKeySecure) ?? '',
       ui: readUiPrefs(prefs),
@@ -345,17 +351,14 @@ class SettingsStorage {
 
   static GatewayConfig? readGateway(SharedPreferences prefs) {
     final raw = prefs.getString(kSettingsGateway);
-    if (raw == null || raw.isEmpty) return null;
+    if (raw == null) return null;
     try {
-      final decoded = jsonDecode(raw);
-      if (decoded is Map<String, dynamic>) {
-        return GatewayConfig.fromJson(decoded);
-      }
-      if (decoded is Map) {
-        return GatewayConfig.fromJson(Map<String, dynamic>.from(decoded));
-      }
-    } catch (_) {}
-    return null;
+      return GatewayConfig.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+    } on FormatException {
+      throw const FormatException('Gateway 配置无法解析，原始配置未被覆盖。');
+    } on TypeError {
+      throw const FormatException('Gateway 配置字段类型错误，原始配置未被覆盖。');
+    }
   }
 
   static GatewayConfig migrateLegacyGateway(SharedPreferences prefs) {

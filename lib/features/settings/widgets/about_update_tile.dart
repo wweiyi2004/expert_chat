@@ -5,6 +5,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import '../../../domain/update/shorebird_patch.dart';
 import '../../../domain/update/shorebird_ui.dart';
 import '../../../domain/update/update_ui.dart';
+import '../update_sources_page.dart';
 
 class AboutUpdateTile extends StatefulWidget {
   const AboutUpdateTile({super.key});
@@ -20,10 +21,15 @@ class _AboutUpdateTileState extends State<AboutUpdateTile> {
   @override
   void initState() {
     super.initState();
-    PackageInfo.fromPlatform().then((info) {
-      if (!mounted) return;
-      setState(() => _version = 'v${info.version} (${info.buildNumber})');
-    });
+    PackageInfo.fromPlatform().then(
+      (info) {
+        if (!mounted) return;
+        setState(() => _version = 'v${info.version} (${info.buildNumber})');
+      },
+      onError: (Object _) {
+        if (mounted) setState(() => _version = '版本信息不可用');
+      },
+    );
     final patchService = ShorebirdPatchService();
     if (!patchService.isAvailable) {
       _patchLabel = '代码补丁：当前安装包未启用 Shorebird';
@@ -65,6 +71,18 @@ class _AboutUpdateTileState extends State<AboutUpdateTile> {
             title: const Text('检查整包更新'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => checkForUpdatesInteractive(context),
+          ),
+          const Divider(height: 1),
+          ListTile(
+            leading: const Icon(Icons.cloud_download_outlined),
+            title: const Text('更新下载源'),
+            subtitle: const Text('断点续传 · Gitee / 自定义镜像'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const UpdateSourcesPage(),
+              ),
+            ),
           ),
         ],
       ),

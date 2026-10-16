@@ -18,7 +18,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # of the product and file versions while build-number is used as the build suffix.
 # build-number must stay > any prior split-per-abi code (abi*1000 + old build).
 # v3.0.0 arm64 was 2015, x86_64 was 4015 — use 4100+ for clean upgrades.
-version: 3.6.1+4109
+version: 3.7.0+4110
 
 environment:
   sdk: ^3.12.0
@@ -148,6 +148,7 @@ flutter:
       fonts:
         - asset: assets/fonts/NotoSansSC.ttf
   assets:
+    - assets/branding/
     - shorebird.yaml
     # Short Edge-TTS samples used as optional clone seeds for anime-style
     # voice packs (archetypes, not copyrighted character rips).

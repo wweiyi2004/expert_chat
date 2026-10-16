@@ -2,6 +2,37 @@ import 'package:expert_chat/data/chat_skill.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test(
+    'sanitize preserves custom general and is idempotent without fallback',
+    () {
+      final source = ChatSkillCatalog.factory().update(
+        (skill) => skill.copyWith(
+          fallback: false,
+          prompt: skill.id == 'general' ? 'custom prompt' : skill.prompt,
+        ),
+      );
+      final result = source.sanitize();
+      expect(
+        result.skills.map((s) => s.id).toSet().length,
+        result.skills.length,
+      );
+      expect(result.skills.length, source.skills.length);
+      expect(result.fallback.prompt, 'custom prompt');
+      expect(result.skills.where((s) => s.fallback && s.enabled), hasLength(1));
+      expect(result.sanitize().encode(), result.encode());
+    },
+  );
+
+  test('decode reports malformed skills instead of returning defaults', () {
+    for (final raw in [
+      '',
+      '{}',
+      '[null]',
+      '[{"id":"good"},{"id":"bad","enabled":"yes"}]',
+    ]) {
+      expect(() => ChatSkillCatalog.decode(raw), throwsFormatException);
+    }
+  });
   test('factory catalog has six enabled skills and one fallback', () {
     final catalog = ChatSkillCatalog.factory();
     expect(catalog.skills.map((s) => s.id).toList(), [

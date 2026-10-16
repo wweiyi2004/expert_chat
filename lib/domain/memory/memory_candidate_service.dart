@@ -7,6 +7,7 @@ import 'package:uuid/uuid.dart';
 import '../../data/models.dart';
 import '../llm/llm_provider.dart';
 import 'memory_entry.dart';
+import 'memory_content_key.dart';
 import 'memory_safety.dart';
 
 const _uuid = Uuid();
@@ -248,7 +249,7 @@ relation 为 update 或 conflict 时，relatedMemoryIds 必须引用真正相关
     }
 
     final existingKeys = {
-      for (final entry in existingMemories) _dedupeKey(entry.content),
+      for (final entry in existingMemories) memoryContentKey(entry.content),
     };
     final relationIds =
         validRelatedMemoryIds ??
@@ -327,7 +328,7 @@ relation 为 update 或 conflict 时，relatedMemoryIds 必须引用真正相关
         continue;
       }
 
-      final key = _dedupeKey(content);
+      final key = memoryContentKey(content);
       if (existingKeys.contains(key) || !acceptedKeys.add(key)) continue;
 
       final reason = _normalizeReason(item['reason']);
@@ -443,25 +444,5 @@ relation 为 update 或 conflict 时，relatedMemoryIds 必须引用真正相关
   static String _clip(String value, int maxChars) {
     if (value.characters.length <= maxChars) return value;
     return '${value.characters.take(maxChars).toString()}…';
-  }
-
-  static String _dedupeKey(String value) {
-    // 与 memory_repository 保持一致:连续空白压成一个空格而非删除,
-    // 避免 "api key" 与 "apikey" 被误判为重复;与汉字相邻的空格视为排版差异。
-    final collapsed = value
-        .toLowerCase()
-        .replaceAll(RegExp(r'\s+'), ' ')
-        .trim();
-    final cjk = RegExp(r'[㐀-鿿]');
-    final result = StringBuffer();
-    for (var i = 0; i < collapsed.length; i++) {
-      final char = collapsed[i];
-      final spaceTouchesCjk =
-          char == ' ' &&
-          ((i > 0 && cjk.hasMatch(collapsed[i - 1])) ||
-              (i + 1 < collapsed.length && cjk.hasMatch(collapsed[i + 1])));
-      if (!spaceTouchesCjk) result.write(char);
-    }
-    return result.toString();
   }
 }

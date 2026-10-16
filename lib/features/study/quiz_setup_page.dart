@@ -431,11 +431,3 @@ class _QuizSlider extends StatelessWidget {
     );
   }
 }
-
-extension _FirstOrNull<E> on Iterable<E> {
-  E? get firstOrNull {
-    final iterator = this.iterator;
-    if (!iterator.moveNext()) return null;
-    return iterator.current;
-  }
-}

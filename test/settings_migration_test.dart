@@ -17,8 +17,97 @@ import 'package:flutter_secure_storage/test/test_flutter_secure_storage_platform
 import 'package:flutter_secure_storage_platform_interface/flutter_secure_storage_platform_interface.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+// ignore: depend_on_referenced_packages - test-only transitive platform dep
+import 'package:shared_preferences_platform_interface/shared_preferences_platform_interface.dart';
+
+class _FailingWriteStore extends SharedPreferencesStorePlatform {
+  _FailingWriteStore({this.returnFalse = false});
+  final bool returnFalse;
+
+  @override
+  Future<bool> setValue(String valueType, String key, Object value) async {
+    if (returnFalse) return false;
+    throw StateError('synthetic write failure');
+  }
+
+  @override
+  Future<bool> remove(String key) async => true;
+  @override
+  Future<bool> clear() async => true;
+  @override
+  Future<Map<String, Object>> getAll() async => {};
+}
 
 void main() {
+  test('composer preference persistence failures reach the caller', () async {
+    SharedPreferences.setMockInitialValues({});
+    FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
+      {},
+    );
+    final prefs = await SharedPreferences.getInstance();
+    final container = ProviderContainer(
+      overrides: [
+        sharedPrefsProvider.overrideWithValue(prefs),
+        secureStorageProvider.overrideWithValue(const FlutterSecureStorage()),
+      ],
+    );
+    addTearDown(container.dispose);
+    final settings = await container.read(settingsControllerProvider.future);
+    final store = SharedPreferencesStorePlatform.instance;
+    addTearDown(() => SharedPreferencesStorePlatform.instance = store);
+    SharedPreferencesStorePlatform.instance = _FailingWriteStore();
+    final controller = container.read(settingsControllerProvider.notifier);
+    await expectLater(
+      controller.setSearchMode(settings.searchMode.next),
+      throwsStateError,
+    );
+    await expectLater(
+      controller.setImageGenMode(settings.imageGenMode.next),
+      throwsStateError,
+    );
+    SharedPreferencesStorePlatform.instance = _FailingWriteStore(
+      returnFalse: true,
+    );
+    await expectLater(
+      controller.setSearchMode(settings.searchMode),
+      throwsStateError,
+    );
+    await expectLater(
+      controller.setImageGenMode(settings.imageGenMode),
+      throwsStateError,
+    );
+  });
+  for (final entry in {
+    'chatSkills': jsonEncode([
+      {'id': 'custom', 'prompt': 'preserve me'},
+      {'id': 'broken', 'enabled': 'not-a-bool'},
+    ]),
+    'expertChatGateway': jsonEncode({
+      'baseUrl': 'https://example.invalid',
+      'enabled': 'not-a-bool',
+    }),
+  }.entries) {
+    test('load keeps malformed ${entry.key} and surfaces the error', () async {
+      SharedPreferences.setMockInitialValues({entry.key: entry.value});
+      FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
+        {},
+      );
+      final prefs = await SharedPreferences.getInstance();
+      final container = ProviderContainer(
+        overrides: [
+          sharedPrefsProvider.overrideWithValue(prefs),
+          secureStorageProvider.overrideWithValue(const FlutterSecureStorage()),
+        ],
+      );
+      addTearDown(container.dispose);
+      await expectLater(
+        container.read(settingsControllerProvider.future),
+        throwsFormatException,
+      );
+      expect(prefs.getString(entry.key), entry.value);
+      expect(prefs.getKeys(), {entry.key});
+    });
+  }
   test(
     'selecting the default effort explicitly persists the override',
     () async {

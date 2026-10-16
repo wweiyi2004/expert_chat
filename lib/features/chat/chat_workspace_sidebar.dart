@@ -6,10 +6,10 @@ import '../../data/conversation_repository.dart';
 import '../../data/models.dart';
 import '../../data/story_models.dart';
 import '../../state/chat_controller.dart';
+import '../../state/settings_controller.dart';
+import '../settings/prompt_presets_page.dart';
 import '../shell/shell_tab.dart';
 import '../library/resources_page.dart';
-import '../story/director_story_setup_page.dart';
-import '../story/ensemble_setup_page.dart';
 import 'controllers/conversation_sidebar_controller.dart';
 import 'jump_to_message.dart';
 import 'widgets/conversation_history_list.dart';
@@ -189,12 +189,13 @@ class _ChatWorkspaceSidebarState extends ConsumerState<ChatWorkspaceSidebar> {
       }),
     );
     final state = ref.read(chatControllerProvider).value;
-    final selectedTab = ref.watch(shellTabProvider).navigationTab;
-    final workspaceTabs = ShellTab.navigation
-        .where((tab) => tab != ShellTab.settings)
-        .toList();
-    final showWorkspaceLinks = MediaQuery.sizeOf(context).height >= 600;
-    final showSettingsFooter = MediaQuery.sizeOf(context).height >= 480;
+    final selectedTab = ref.watch(shellTabProvider);
+    final settings = ref.watch(settingsControllerProvider).value;
+    final workspaceTabs = ShellTab.visible(
+      researchModeEnabled: settings?.researchModeEnabled ?? false,
+      studyModeEnabled: settings?.studyModeEnabled ?? true,
+      creationModeEnabled: settings?.creationModeEnabled ?? true,
+    ).where((tab) => tab != ShellTab.settings).toList();
     final all = state?.conversations ?? const <Conversation>[];
     final visible = [
       for (final c in all)
@@ -222,18 +223,10 @@ class _ChatWorkspaceSidebarState extends ConsumerState<ChatWorkspaceSidebar> {
             padding: const EdgeInsets.fromLTRB(14, 14, 8, 10),
             child: Row(
               children: [
-                Container(
+                Image.asset(
+                  'assets/branding/assistant.png',
                   width: 34,
                   height: 34,
-                  decoration: BoxDecoration(
-                    color: scheme.primary,
-                    borderRadius: BorderRadius.circular(11),
-                  ),
-                  child: Icon(
-                    Icons.auto_awesome_rounded,
-                    size: 19,
-                    color: scheme.onPrimary,
-                  ),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
@@ -257,74 +250,6 @@ class _ChatWorkspaceSidebarState extends ConsumerState<ChatWorkspaceSidebar> {
             ),
           ),
           Padding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-            child: Row(
-              children: [
-                Expanded(
-                  child: FilledButton.icon(
-                    key: const ValueKey('sidebar-new-chat'),
-                    onPressed: newConversation,
-                    icon: const Icon(Icons.add_rounded, size: 20),
-                    label: const Text('新对话'),
-                    style: FilledButton.styleFrom(
-                      minimumSize: const Size.fromHeight(42),
-                      alignment: Alignment.centerLeft,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 6),
-                TextButton(
-                  key: const ValueKey('sidebar-resources'),
-                  onPressed: () => Navigator.of(context).push(
-                    MaterialPageRoute<void>(
-                      builder: (_) => const ResourcesPage(),
-                    ),
-                  ),
-                  child: const Text('资料'),
-                ),
-                PopupMenuButton<String>(
-                  tooltip: '更多新建方式',
-                  icon: const Icon(Icons.expand_more_rounded),
-                  onSelected: (value) {
-                    if (value == 'story') {
-                      Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => const DirectorStorySetupPage(),
-                        ),
-                      );
-                    } else if (value == 'ensemble') {
-                      Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => const EnsembleSetupPage(),
-                        ),
-                      );
-                    }
-                  },
-                  itemBuilder: (_) => const [
-                    PopupMenuItem(
-                      value: 'story',
-                      child: ListTile(
-                        dense: true,
-                        contentPadding: EdgeInsets.zero,
-                        leading: Icon(Icons.auto_stories_outlined),
-                        title: Text('导演故事'),
-                      ),
-                    ),
-                    PopupMenuItem(
-                      value: 'ensemble',
-                      child: ListTile(
-                        dense: true,
-                        contentPadding: EdgeInsets.zero,
-                        leading: Icon(Icons.groups_outlined),
-                        title: Text('角色大乱斗'),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-          Padding(
             padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
             child: TextField(
               key: const ValueKey('conversation-search-field'),
@@ -338,8 +263,32 @@ class _ChatWorkspaceSidebarState extends ConsumerState<ChatWorkspaceSidebar> {
               onChanged: _history.setQuery,
             ),
           ),
-          if (showWorkspaceLinks) ...[
-            const _SidebarSectionLabel('工作区'),
+          ...[
+            ListTile(
+              key: const ValueKey('sidebar-resources'),
+              leading: const Icon(Icons.folder_outlined),
+              title: const Text('资料库'),
+              onTap: () {
+                _closeDrawerIfAny();
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const ResourcesPage(),
+                  ),
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.bookmarks_outlined),
+              title: const Text('提示词预设'),
+              onTap: () {
+                _closeDrawerIfAny();
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const PromptPresetsPage(),
+                  ),
+                );
+              },
+            ),
             Padding(
               padding: const EdgeInsets.fromLTRB(8, 2, 8, 10),
               child: Column(
@@ -375,47 +324,67 @@ class _ChatWorkspaceSidebarState extends ConsumerState<ChatWorkspaceSidebar> {
       child: SafeArea(
         child: Column(
           children: [
-            header,
             Expanded(
-              child: _history.searching
-                  ? const Center(child: Text('正在搜索…'))
-                  : _history.error != null
-                  ? Center(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(_history.error!),
-                          TextButton(
-                            onPressed: _history.retry,
-                            child: const Text('重试搜索'),
-                          ),
-                        ],
+              child: NestedScrollView(
+                headerSliverBuilder: (context, scrolled) => [
+                  SliverToBoxAdapter(child: header),
+                ],
+                body: _history.searching
+                    ? const Center(child: Text('正在搜索…'))
+                    : _history.error != null
+                    ? Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(_history.error!),
+                            TextButton(
+                              onPressed: _history.retry,
+                              child: const Text('重试搜索'),
+                            ),
+                          ],
+                        ),
+                      )
+                    : ConversationHistoryList(
+                        visible: visible,
+                        currentId: state?.currentId,
+                        query: _history.query,
+                        searchHits: _history.hits,
+                        renamingId: _renamingId,
+                        renameController: _renameCtrl,
+                        onCommitRename: _commitRename,
+                        onRename: _startRename,
+                        onDelete: _confirmDelete,
+                        onOpen: _openConversation,
                       ),
-                    )
-                  : ConversationHistoryList(
-                      visible: visible,
-                      currentId: state?.currentId,
-                      query: _history.query,
-                      searchHits: _history.hits,
-                      renamingId: _renamingId,
-                      renameController: _renameCtrl,
-                      onCommitRename: _commitRename,
-                      onRename: _startRename,
-                      onDelete: _confirmDelete,
-                      onOpen: _openConversation,
-                    ),
+              ),
             ),
-            if (showSettingsFooter) ...[
+            ...[
               Divider(
                 height: 1,
                 color: scheme.outlineVariant.withValues(alpha: 0.72),
               ),
               Padding(
-                padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
-                child: _WorkspaceDestination(
-                  tab: ShellTab.settings,
-                  selected: selectedTab == ShellTab.settings,
-                  onTap: () => openWorkspace(ShellTab.settings),
+                padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: FilledButton.icon(
+                        key: const ValueKey('sidebar-new-chat'),
+                        onPressed: newConversation,
+                        icon: const Icon(Icons.edit_square),
+                        label: const Text('新对话'),
+                        style: FilledButton.styleFrom(
+                          minimumSize: const Size(0, 48),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    IconButton.filledTonal(
+                      tooltip: '设置',
+                      onPressed: () => openWorkspace(ShellTab.settings),
+                      icon: const Icon(Icons.person_outline_rounded),
+                    ),
+                  ],
                 ),
               ),
             ],

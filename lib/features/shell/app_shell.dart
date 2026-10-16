@@ -23,7 +23,7 @@ import 'tools_page.dart';
 
 /// Root chrome: 会话 / 工具 / 设置.
 ///
-/// Phone: bottom [NavigationBar]. Wide: a unified collapsible workspace and
+/// Phone: navigation drawer. Wide: a unified collapsible workspace and
 /// conversation sidebar.
 /// [IndexedStack] preserves scroll position and draft input across switches.
 /// Optional pages live under 工具 and mount only while their saved flag is on.
@@ -37,12 +37,23 @@ class AppShell extends ConsumerStatefulWidget {
 class _AppShellState extends ConsumerState<AppShell>
     with WidgetsBindingObserver {
   final _shellKey = GlobalKey();
+  final _scaffoldKey = GlobalKey<ScaffoldState>();
   bool _desktopSidebarExpanded = true;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    ref.listenManual(shellTabProvider, (previous, next) {
+      // Provider changes can originate in a popup dismissal or a layout pass.
+      scheduleMicrotask(() {
+        if (mounted) {
+          ref
+              .read(chatControllerProvider.notifier)
+              .reportChatVisible(next == ShellTab.chat);
+        }
+      });
+    });
     // Best-effort OTA + notifications after the first frame (Activity ready).
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted) return;
@@ -110,7 +121,11 @@ class _AppShellState extends ConsumerState<AppShell>
     required bool desktopShell,
   }) => switch (tab) {
     ShellTab.chat => ChatPage(desktopShell: desktopShell),
-    ShellTab.tools => const ToolsPage(),
+    ShellTab.tools => ToolsPage(
+      onOpenNavigation: desktopShell
+          ? null
+          : () => _scaffoldKey.currentState?.openDrawer(),
+    ),
     // Only mount heavy tabs when their mode is on; other stack slots stay put.
     ShellTab.terminal =>
       researchOn
@@ -120,7 +135,12 @@ class _AppShellState extends ConsumerState<AppShell>
       studyOn ? StudyHubPage(onBack: _backToTools) : const SizedBox.shrink(),
     ShellTab.studio =>
       creationOn ? StudioPage(onBack: _backToTools) : const SizedBox.shrink(),
-    ShellTab.settings => const SettingsPage(asRootTab: true),
+    ShellTab.settings => SettingsPage(
+      asRootTab: true,
+      onOpenNavigation: desktopShell
+          ? null
+          : () => _scaffoldKey.currentState?.openDrawer(),
+    ),
   };
 
   void _backToTools() =>
@@ -132,7 +152,11 @@ class _AppShellState extends ConsumerState<AppShell>
     final researchOn = settings?.researchModeEnabled ?? false;
     final studyOn = settings?.studyModeEnabled ?? true;
     final creationOn = settings?.creationModeEnabled ?? true;
-    const visible = ShellTab.navigation;
+    final visible = ShellTab.visible(
+      researchModeEnabled: researchOn,
+      studyModeEnabled: studyOn,
+      creationModeEnabled: creationOn,
+    );
     final selected = ref.watch(shellTabProvider);
     final scheme = Theme.of(context).colorScheme;
 
@@ -158,7 +182,6 @@ class _AppShellState extends ConsumerState<AppShell>
       }
     }
 
-    final navIndex = visible.indexOf(selected.navigationTab);
     final stackIndex = _stackOrder
         .indexOf(selected)
         .clamp(0, _stackOrder.length - 1);
@@ -166,7 +189,7 @@ class _AppShellState extends ConsumerState<AppShell>
     return PopScope(
       canPop: selected.navigationTab == selected,
       onPopInvokedWithResult: (didPop, result) {
-        if (!didPop) _backToTools();
+        if (!didPop && selected.navigationTab != selected) _backToTools();
       },
       child: LayoutBuilder(
         builder: (context, constraints) {
@@ -208,7 +231,7 @@ class _AppShellState extends ConsumerState<AppShell>
                               )
                             : _CompactWorkspaceRail(
                                 visible: visible,
-                                selected: selected.navigationTab,
+                                selected: selected,
                                 onExpand: () => setState(
                                   () => _desktopSidebarExpanded = true,
                                 ),
@@ -239,31 +262,8 @@ class _AppShellState extends ConsumerState<AppShell>
               : Scaffold(
                   resizeToAvoidBottomInset: selected != ShellTab.terminal,
                   body: stack,
-                  bottomNavigationBar:
-                      MediaQuery.viewInsetsOf(context).bottom > 0
-                      ? null
-                      : NavigationBar(
-                          selectedIndex: navIndex,
-                          onDestinationSelected: (i) => ref
-                              .read(shellTabProvider.notifier)
-                              .set(visible[i]),
-                          backgroundColor: scheme.surfaceContainer.withValues(
-                            alpha: 0.96,
-                          ),
-                          indicatorColor: scheme.primaryContainer.withValues(
-                            alpha: 0.85,
-                          ),
-                          labelBehavior:
-                              NavigationDestinationLabelBehavior.alwaysShow,
-                          destinations: [
-                            for (final tab in visible)
-                              NavigationDestination(
-                                icon: Icon(tab.icon),
-                                selectedIcon: Icon(tab.selectedIcon),
-                                label: tab.label,
-                              ),
-                          ],
-                        ),
+                  key: _scaffoldKey,
+                  drawer: const Drawer(child: ChatWorkspaceSidebar()),
                 );
 
           return KeyedSubtree(

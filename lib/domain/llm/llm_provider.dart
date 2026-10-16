@@ -5,14 +5,13 @@ import 'model_catalog.dart';
 
 export 'model_catalog.dart';
 
-/// Configuration for a single LLM endpoint. Kept provider-agnostic so any
-/// OpenAI-compatible service (DeepSeek, Kimi, OpenAI, 智谱…) can be plugged in
-/// by only changing [baseUrl] / [model].
+/// Configuration for an OpenAI-compatible or Gemini native LLM endpoint.
 class LlmConfig {
   const LlmConfig({
     required this.baseUrl,
     required this.apiKey,
     required this.model,
+    this.apiFormat = LlmApiFormat.auto,
     ModelCapabilities? capabilities,
     this.serverWebSearch = false,
     this.forceServerWebSearch = false,
@@ -23,10 +22,11 @@ class LlmConfig {
   }) : _capabilities = capabilities;
 
   /// Base URL WITHOUT the trailing `/chat/completions`, e.g.
-  /// `https://api.deepseek.com`.
+  /// `https://api.deepseek.com` or `https://generativelanguage.googleapis.com/v1beta`.
   final String baseUrl;
   final String apiKey;
   final String model;
+  final LlmApiFormat apiFormat;
 
   /// Explicit capability override. When null (the default), capabilities are
   /// derived from [model] by [ModelCapabilities.resolve] — the single source of
@@ -46,6 +46,22 @@ class LlmConfig {
   ModelCapabilities get capabilities =>
       _capabilities ?? ModelCapabilities.resolve(model);
 
+  /// Concrete wire format ([LlmApiFormat.openAiCompatible] or
+  /// [LlmApiFormat.geminiNative]) after resolving [LlmApiFormat.auto].
+  LlmApiFormat get effectiveApiFormat =>
+      GeminiEndpoint.resolveFormat(format: apiFormat, baseUrl: baseUrl);
+
+  bool get isGeminiNative => effectiveApiFormat == LlmApiFormat.geminiNative;
+
+  /// Base URL normalized for OpenAI-compatible requests (converts bare Google
+  /// Gemini URLs to `/v1beta/openai` when OpenAI-compatible mode is active).
+  String get openAiCompatibleBaseUrl =>
+      GeminiEndpoint.normalizeOpenAiBaseUrl(baseUrl);
+
+  /// Base URL normalized to the Gemini version root (e.g. `.../v1beta`).
+  String get geminiVersionBaseUrl =>
+      GeminiEndpoint.normalizeGeminiVersionBaseUrl(baseUrl);
+
   bool get isReady => apiKey.trim().isNotEmpty && baseUrl.trim().isNotEmpty;
 
   /// Official DeepSeek API (Files API + V4 thinking fields live here).
@@ -57,12 +73,15 @@ class LlmConfig {
 
   /// True when this request should hit Responses with server-side search.
   bool get useServerWebSearch =>
-      serverWebSearch && capabilities.supportsServerWebSearch;
+      !isGeminiNative &&
+      serverWebSearch &&
+      capabilities.supportsServerWebSearch;
 
   LlmConfig copyWith({
     String? baseUrl,
     String? apiKey,
     String? model,
+    LlmApiFormat? apiFormat,
     ModelCapabilities? capabilities,
     bool? serverWebSearch,
     bool? forceServerWebSearch,
@@ -71,6 +90,7 @@ class LlmConfig {
     baseUrl: baseUrl ?? this.baseUrl,
     apiKey: apiKey ?? this.apiKey,
     model: model ?? this.model,
+    apiFormat: apiFormat ?? this.apiFormat,
     // Keep an explicit override only if one was set; otherwise stay null so a
     // changed [model] re-derives its own capabilities.
     capabilities: capabilities ?? _capabilities,
@@ -177,6 +197,8 @@ class LlmUsage {
   });
 
   final int inputTokens;
+
+  /// Generated tokens, including [reasoningTokens] when reported separately.
   final int outputTokens;
   final int cachedInputTokens;
   final int reasoningTokens;
@@ -229,6 +251,23 @@ class LlmUsage {
     return usage.hasValues || raw.containsKey('total_tokens') ? usage : null;
   }
 
+  static LlmUsage? fromGemini(dynamic raw) {
+    if (raw is! Map) return null;
+    final input =
+        _readInt(raw['promptTokenCount']) +
+        _readInt(raw['toolUsePromptTokenCount']);
+    final cached = _readInt(raw['cachedContentTokenCount']);
+    final reasoning = _readInt(raw['thoughtsTokenCount']);
+    final output = _readInt(raw['candidatesTokenCount']) + reasoning;
+    final usage = LlmUsage(
+      inputTokens: input,
+      outputTokens: output,
+      cachedInputTokens: cached,
+      reasoningTokens: reasoning,
+    );
+    return usage.hasValues || raw.containsKey('totalTokenCount') ? usage : null;
+  }
+
   static int _readInt(dynamic value) {
     if (value is num) return value.toInt().clamp(0, 1 << 31).toInt();
     return int.tryParse(value?.toString() ?? '')?.clamp(0, 1 << 31).toInt() ??
@@ -263,16 +302,16 @@ class ChatChunk {
   /// Citations extracted from Responses annotations / search actions.
   final List<Citation>? citations;
 
-  /// Full Responses `output` items for the current turn. When non-null after
-  /// `finish_reason: tool_calls`, the controller must re-send these items
-  /// (plus `function_call_output`) on the next Responses request.
+  /// Native model payload for this request: Responses `output` items or
+  /// Gemini `parts` (including thought signatures). The controller re-sends
+  /// them unchanged on tool follow-ups to the same provider.
   final List<Map<String, dynamic>>? responseOutputItems;
 
   /// Provider-reported usage, normally present only on the terminal event.
   final LlmUsage? usage;
 }
 
-/// One request message sent to an OpenAI-compatible chat endpoint. This is
+/// One request message sent to a chat endpoint. This is
 /// separate from the persisted [ChatMessage] so tool-call protocol messages
 /// can stay transient and never clutter the visible conversation history.
 class LlmRequestMessage {
@@ -286,6 +325,7 @@ class LlmRequestMessage {
     this.imageFileIds = const [],
     this.responseOutputItems = const [],
     this.isToolImageObservation = false,
+    this.toolImageCallId,
   });
 
   factory LlmRequestMessage.fromChatMessage(ChatMessage message) =>
@@ -295,6 +335,10 @@ class LlmRequestMessage {
 
   /// Transient screenshot observation; never serialized as a provider field.
   final bool isToolImageObservation;
+
+  /// Local association between an observation and its producing tool call.
+  /// Unlike [toolCallId], never serialized as an OpenAI message field.
+  final String? toolImageCallId;
   final String content;
   final String? reasoningContent;
   final String? toolCallId;
@@ -311,10 +355,11 @@ class LlmRequestMessage {
 
   bool get hasImageParts => imageDataUrls.isNotEmpty || imageFileIds.isNotEmpty;
 
-  /// Raw Responses API output items from a prior assistant turn that used
-  /// server-side tools (`web_search_call`, `function_call`, `reasoning`…).
-  /// When non-empty, the Responses provider re-sends them instead of
-  /// synthesizing from [content] / [toolCalls].
+  /// Raw provider payload from a prior assistant step: Responses `output`
+  /// items or Gemini content `parts`. Kept transient within a request's tool
+  /// loop, so changing the conversation's provider never replays another
+  /// protocol's items. The native provider uses these instead of rebuilding
+  /// [content] / [toolCalls], preserving signatures and part boundaries.
   final List<Map<String, dynamic>> responseOutputItems;
 
   /// [includeReasoningContent] gates the `reasoning_content` round-trip:

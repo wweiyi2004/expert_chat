@@ -8,7 +8,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 import 'package:xterm/xterm.dart';
 
-import '../../core/workspace_layout.dart';
 import '../../data/research/research_prefs.dart';
 import '../../data/research/ssh_profile.dart';
 import '../../domain/research/command_risk.dart';
@@ -16,6 +15,8 @@ import '../../domain/research/research_copilot_service.dart';
 import '../../domain/research/research_ssh_client.dart';
 import '../../state/research_terminal_controller.dart';
 import '../shell/shell_tab.dart';
+import '../../state/research_files_controller.dart';
+import 'research_files_panel.dart';
 
 /// M7 research terminal: SSH + tmux + AI command approval.
 ///
@@ -32,6 +33,8 @@ class ResearchTerminalPage extends ConsumerStatefulWidget {
 class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
     with WidgetsBindingObserver {
   final _termFocus = FocusNode();
+  bool _filesOpen = true;
+  bool _focusMode = false;
 
   @override
   void initState() {
@@ -154,6 +157,16 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
     );
     return result == true;
   }
+
+  Future<void> _showFiles() => showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    useSafeArea: true,
+    builder: (ctx) => SizedBox(
+      height: MediaQuery.sizeOf(ctx).height * 0.85,
+      child: const ResearchFilesPanel(),
+    ),
+  );
 
   Future<void> _showConnectionManager() async {
     await showModalBottomSheet<void>(
@@ -434,6 +447,7 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
           state: state,
           ctrl: ctrl,
           bottomGap: bottomGap,
+          workspaceWidth: constraints.maxWidth,
         );
       },
     );
@@ -444,11 +458,12 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
     required ResearchTerminalState state,
     required ResearchTerminalController ctrl,
     required double bottomGap,
+    required double workspaceWidth,
   }) {
     final scheme = Theme.of(context).colorScheme;
     final profile = state.activeProfile;
-    final wide =
-        MediaQuery.sizeOf(context).width >= WorkspaceBreakpoints.shellRail;
+    final wide = workspaceWidth >= 1000;
+    ref.watch(researchFilesProvider.select((s) => s.transfers.length));
 
     // The slice of keyboard that actually covers this page — the rest of it is
     // behind the shell's NavigationBar, which the IME hides anyway.
@@ -466,7 +481,9 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
             // Floating above the IME already clears the system gesture bar.
             bottomSafeArea: !keyboardOpen,
             // The wide layout docks the assistant on the right instead.
-            onOpenAi: wide ? null : () => unawaited(_openAiSheet()),
+            onOpenAi: wide && !_filesOpen && !_focusMode
+                ? null
+                : () => unawaited(_openAiSheet()),
           )
         : null;
 
@@ -592,7 +609,32 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
           ],
         ),
         actions: [
-          if (profile != null)
+          IconButton(
+            tooltip: '远程文件与传输',
+            icon: const Icon(Icons.folder_open_outlined),
+            onPressed: wide
+                ? () => setState(() {
+                    _filesOpen = true;
+                    _focusMode = false;
+                  })
+                : _showFiles,
+          ),
+          if (wide) ...[
+            IconButton(
+              tooltip: '科研助手',
+              icon: const Icon(Icons.auto_awesome_outlined),
+              onPressed: () => setState(() {
+                _filesOpen = false;
+                _focusMode = false;
+              }),
+            ),
+            IconButton(
+              tooltip: _focusMode ? '退出专注模式' : '专注终端',
+              icon: Icon(_focusMode ? Icons.fullscreen_exit : Icons.fullscreen),
+              onPressed: () => setState(() => _focusMode = !_focusMode),
+            ),
+          ],
+          if (profile != null && workspaceWidth >= 600)
             Padding(
               padding: const EdgeInsets.only(right: 4),
               child: Center(
@@ -642,7 +684,7 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
       // No FAB: an extended one floated over the right half of the shortcut
       // strip and swallowed the arrow keys. The assistant now lives at the
       // right end of that strip, where it also survives the IME being up.
-      body: wide
+      body: wide && !_focusMode
           ? Row(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
@@ -652,11 +694,14 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
                   color: scheme.outlineVariant.withValues(alpha: 0.7),
                 ),
                 SizedBox(
-                  width: 380,
-                  child: _AiAssistPanel(
-                    embedded: true,
-                    onRequestAnalyze: () => unawaited(ctrl.analyzeWithAi()),
-                  ),
+                  width: 340,
+                  child: _filesOpen
+                      ? const ResearchFilesPanel()
+                      : _AiAssistPanel(
+                          embedded: true,
+                          onRequestAnalyze: () =>
+                              unawaited(ctrl.analyzeWithAi()),
+                        ),
                 ),
               ],
             )

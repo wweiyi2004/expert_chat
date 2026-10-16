@@ -514,8 +514,20 @@ mixin ChatGeneration on ChatStreaming {
     } else {
       if (recoverySource == null &&
           cur.mode == ConversationMode.chat &&
-          settings.chatSkills.enabled.isNotEmpty) {
-        if (!settings.config.isReady) {
+          (settings.chatSkills.enabled.isNotEmpty ||
+              settings.promptPresets.active != null)) {
+        final preset = settings.promptPresets.active;
+        if (preset != null) {
+          skillRoute = ChatSkillRoute(
+            skill: ChatSkill(
+              id: preset.id,
+              name: preset.name,
+              when: '',
+              prompt: preset.prompt,
+            ),
+            source: ChatSkillSource.fallback,
+          );
+        } else if (!settings.config.isReady) {
           skillRoute = ChatSkillRoute(
             skill: settings.chatSkills.fallback,
             source: ChatSkillSource.fallback,
@@ -588,7 +600,8 @@ mixin ChatGeneration on ChatStreaming {
           nativeVision: nativeVision,
           imageToolAvailable: useVisionTool,
           chatRoute: skillRoute,
-          fallbackPrompt: settings.systemPrompt,
+          fallbackPrompt:
+              settings.promptPresets.active?.prompt ?? settings.systemPrompt,
           studySystemPrompt: studySystem,
           story: storyContext,
           notes: RequestContextNotes(

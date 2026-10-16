@@ -19,6 +19,7 @@ mixin ChatTools on ChatMutations {
   }) async {
     var priorActivities = <String>{};
     Attachment? latestToolImage;
+    String? latestToolImageCallId;
     try {
       final replies = await ToolCallRunner(_execution).run(
         calls: toolCalls,
@@ -126,7 +127,10 @@ mixin ChatTools on ChatMutations {
               convoId: convoId,
               assistantId: assistantId,
               cancelToken: cancelToken,
-              onImage: (image) => latestToolImage = image,
+              onImage: (image) {
+                latestToolImage = image;
+                latestToolImageCallId = call.id;
+              },
             );
             if (latestToolImage != null && !canSeeToolImages) {
               return '$result\n当前聊天模型不支持读取截图。请使用支持视觉的模型，或使用控件树等文本观察。';
@@ -151,7 +155,12 @@ mixin ChatTools on ChatMutations {
           canSeeToolImages &&
           !cancelToken.isCancelled &&
           !_execution.isCancelled) {
-        replies.add(ToolImageContext.observation(latestToolImage!));
+        replies.add(
+          ToolImageContext.observation(
+            latestToolImage!,
+            callId: latestToolImageCallId,
+          ),
+        );
       }
       return replies;
     } finally {

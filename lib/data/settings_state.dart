@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import 'chat_skill.dart';
+import 'prompt_presets.dart';
 import 'jev_config.dart';
 import 'composer_modes.dart';
 import 'context_prefs.dart';
@@ -45,6 +46,7 @@ class SettingsState {
     this.reasoningEffort = ReasoningEffort.high,
     this.hasReasoningEffortOverride = false,
     this.systemPrompt = '',
+    this.promptPresets = const PromptPresets(),
     this.chatSkills = const ChatSkillCatalog([]),
     this.jevConfig = const JevConfig(),
     this.jevApiKey = '',
@@ -110,6 +112,7 @@ class SettingsState {
   /// chat catalog fallback has factory text. Synced with
   /// [chatSkills].fallback.prompt when the user edits general.
   final String systemPrompt;
+  final PromptPresets promptPresets;
 
   /// Per-turn skill catalog. Empty lists are sanitized on read/save.
   final ChatSkillCatalog chatSkills;
@@ -278,13 +281,20 @@ class SettingsState {
   /// Models offered in the picker for the active profile.
   List<String> get availableModels => active?.models ?? KnownModels.all;
 
-  LlmConfig get config =>
-      LlmConfig(baseUrl: baseUrl, apiKey: apiKey, model: model);
+  LlmApiFormat get apiFormat => active?.apiFormat ?? LlmApiFormat.auto;
+
+  LlmConfig get config => LlmConfig(
+    baseUrl: baseUrl,
+    apiKey: apiKey,
+    model: model,
+    apiFormat: apiFormat,
+  );
 
   LlmConfig get visionConfig => LlmConfig(
     baseUrl: visionApi.baseUrl,
     apiKey: visionApiKey,
     model: visionApi.model,
+    apiFormat: visionApi.apiFormat,
     capabilities: const ModelCapabilities(
       isReasoner: false,
       supportsTools: false,
@@ -309,6 +319,7 @@ class SettingsState {
     ReasoningEffort? reasoningEffort,
     bool? hasReasoningEffortOverride,
     String? systemPrompt,
+    PromptPresets? promptPresets,
     ChatSkillCatalog? chatSkills,
     JevConfig? jevConfig,
     String? jevApiKey,
@@ -354,6 +365,7 @@ class SettingsState {
     hasReasoningEffortOverride:
         hasReasoningEffortOverride ?? this.hasReasoningEffortOverride,
     systemPrompt: systemPrompt ?? this.systemPrompt,
+    promptPresets: promptPresets ?? this.promptPresets,
     chatSkills: chatSkills ?? this.chatSkills,
     jevConfig: jevConfig ?? this.jevConfig,
     jevApiKey: jevApiKey ?? this.jevApiKey,

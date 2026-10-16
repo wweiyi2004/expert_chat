@@ -393,11 +393,3 @@ List<({StudyNode node, int depth})> _orderedNodes(List<StudyNode> nodes) {
   }
   return result;
 }
-
-extension _FirstOrNull<E> on Iterable<E> {
-  E? get firstOrNull {
-    final iterator = this.iterator;
-    if (!iterator.moveNext()) return null;
-    return iterator.current;
-  }
-}

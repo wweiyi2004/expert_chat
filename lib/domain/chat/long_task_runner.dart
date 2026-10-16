@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:dio/dio.dart' show CancelToken;
+import 'package:uuid/uuid.dart';
 
 import '../../data/chat_skill.dart';
 import '../../data/gateway_config.dart';
@@ -61,6 +62,7 @@ class LongTaskRunner {
   final void Function(String error, {String? convoId}) _reportError;
 
   final Set<String> _runs = {};
+  final Set<String> _retrying = {};
   final Map<String, CancelToken> _cancelTokens = {};
 
   /// Cancels every in-flight run. Stops local upload/polling only; once a
@@ -173,7 +175,7 @@ class LongTaskRunner {
           messages: messages,
           fileIds: remoteFileIds,
           cancelToken: cancelToken,
-          clientRequestId: assistantId,
+          clientRequestId: task.clientRequestId ?? assistantId,
           instructions: instructions,
         );
         taskId = created.id;
@@ -440,20 +442,33 @@ class LongTaskRunner {
     final task = _findTask(convoId, assistantId);
     if (task == null || !task.canRetry) return;
     final runKey = '$convoId/$assistantId';
-    if (_runs.contains(runKey)) {
-      // A cancelled poll normally unwinds immediately; retry on the next UI
-      // frame so the old runner cannot race the replacement state.
-      await Future<void>.delayed(const Duration(milliseconds: 50));
-      if (_runs.contains(runKey)) return;
+    if (!_retrying.add(runKey)) return;
+    try {
+      if (_runs.contains(runKey)) {
+        // A cancelled poll normally unwinds immediately; retry on the next UI
+        // frame so the old runner cannot race the replacement state.
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        if (_runs.contains(runKey)) return;
+      }
+      final reset = task.copyWith(
+        status: LongTaskStatus.preparing,
+        clientRequestId: const Uuid().v4(),
+        taskId: null,
+        remoteFileIds: const [],
+        progress: 0,
+        lastEventId: 0,
+        detail: '正在重新准备',
+        error: null,
+      );
+      try {
+        await _writeTask(convoId, assistantId, reset, content: '');
+      } catch (error) {
+        _reportError('本地保存失败：${describeError(error)}', convoId: convoId);
+        return;
+      }
+      unawaited(run(convoId, assistantId));
+    } finally {
+      _retrying.remove(runKey);
     }
-    final reset = task.copyWith(
-      status: LongTaskStatus.preparing,
-      taskId: null,
-      remoteFileIds: const [],
-      detail: '正在重新准备',
-      error: null,
-    );
-    await _writeTask(convoId, assistantId, reset, content: '');
-    unawaited(run(convoId, assistantId));
   }
 }

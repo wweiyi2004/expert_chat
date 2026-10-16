@@ -6,71 +6,14 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/foundation.dart';
 
 import '../../data/research/ssh_profile.dart';
+import 'research_ssh_contract.dart';
+import 'shell_quoting.dart';
+import 'research_files.dart';
+import 'research_files_io.dart';
 
-class ResearchSshException implements Exception {
-  ResearchSshException(this.message);
-  final String message;
-  @override
-  String toString() => message;
-}
-
-class ResearchSshExecException extends ResearchSshException {
-  ResearchSshExecException({
-    required this.exitCode,
-    required this.stdoutText,
-    required this.stderrText,
-  }) : super('远程命令执行失败（退出码 ${exitCode ?? '未知'}）');
-
-  final int? exitCode;
-  final String stdoutText;
-  final String stderrText;
-}
-
-class ResearchHostKeyInfo {
-  const ResearchHostKeyInfo({
-    required this.fingerprintSha256,
-    required this.keyType,
-  });
-  final String fingerprintSha256;
-  final String keyType;
-}
-
-typedef HostKeyTrustHandler = Future<bool> Function(ResearchHostKeyInfo info);
-
-typedef HostKeyMismatchHandler =
-    Future<bool> Function(ResearchHostKeyInfo info, String previousFingerprint);
-
-abstract class ResearchSshClient {
-  Stream<List<int>> get stdout;
-  Stream<List<int>> get stderr;
-  Future<void> get done;
-  bool get isConnected;
-  String? get lastHostKeyFingerprint;
-
-  Future<void> connect({
-    required SshProfile profile,
-    required String? password,
-    required String? privateKeyPem,
-    required String? passphrase,
-    required HostKeyTrustHandler onHostKeyTrust,
-    required HostKeyMismatchHandler onHostKeyMismatch,
-    int cols = 80,
-    int rows = 24,
-    Duration connectTimeout = const Duration(seconds: 15),
-  });
-
-  /// Writes to the interactive shell. Returns false when the channel is gone
-  /// and nothing was sent, so callers can surface a dropped command instead
-  /// of silently losing it.
-  bool write(List<int> data);
-  void resize({required int cols, required int rows});
-  Future<String> runExec(String command, {Duration timeout});
-  Future<void> disconnect();
-}
+export 'research_ssh_contract.dart';
 
 ResearchSshClient createResearchSshClient() => ResearchSshClientIo();
-
-typedef ResearchSshClientFactory = ResearchSshClient Function();
 
 /// Test seam mirroring [SSHClient]'s constructor: lets tests drive host-key,
 /// auth and channel timing without a real SSH server.
@@ -83,7 +26,14 @@ typedef DebugSshClientFactory =
       SSHHostkeyVerifyHandler? onVerifyHostKey,
     });
 
-class ResearchSshClientIo implements ResearchSshClient {
+class ResearchSshClientIo implements ResearchSshClient, ResearchFilesHost {
+  @override
+  ResearchFiles get files {
+    final client = _client;
+    if (client == null || !_connected) throw ResearchSshException('请先连接 SSH');
+    return SshResearchFiles(client);
+  }
+
   SSHClient? _client;
   SSHSession? _shell;
   final List<List<int>> _earlyStdout = [];
@@ -96,6 +46,11 @@ class ResearchSshClientIo implements ResearchSshClient {
   var _connected = false;
   Completer<void>? _done;
   String? _lastFp;
+  String? _interactiveTty;
+
+  static const _ttyMarker = '\x1eexpert-chat-tty:';
+  static final _interactiveShellCommand =
+      '/bin/sh -c ${shellSingleQuote(r'''tty_value=$(tty) || exit; printf '\036expert-chat-tty:%s\037' "$tty_value"; exec "${SHELL:-/bin/sh}" -l''')}';
 
   static const _maxEarlyStreamBytes = 256 * 1024;
 
@@ -113,6 +68,8 @@ class ResearchSshClientIo implements ResearchSshClient {
   bool get isConnected => _connected;
   @override
   String? get lastHostKeyFingerprint => _lastFp;
+  @override
+  String? get interactiveTty => _interactiveTty;
 
   @override
   Future<void> connect({
@@ -220,7 +177,8 @@ class ResearchSshClientIo implements ResearchSshClient {
     late final SSHSession shell;
     try {
       shell = await client
-          .shell(
+          .execute(
+            _interactiveShellCommand,
             pty: SSHPtyConfig(
               type: 'xterm-256color',
               width: cols,
@@ -238,18 +196,50 @@ class ResearchSshClientIo implements ResearchSshClient {
 
     _client = client;
     _shell = shell;
-    _connected = true;
+    final ttyReady = Completer<void>();
+    var startupOutput = '';
+
+    void failStartup() {
+      if (!ttyReady.isCompleted) {
+        ttyReady.completeError(ResearchSshException('远程终端在 TTY 初始化完成前关闭'));
+      }
+    }
 
     _subs.add(
       shell.stdout.listen(
         (data) {
-          _emitStdout(data);
+          if (ttyReady.isCompleted) {
+            _emitStdout(data);
+            return;
+          }
+          // Latin-1 is a reversible byte mapping here, not a terminal text
+          // decoder. UTF-8 characters may span packets around the marker.
+          startupOutput += latin1.decode(data);
+          final start = startupOutput.indexOf(_ttyMarker);
+          if (start < 0) return;
+          final end = startupOutput.indexOf('\x1f', start + _ttyMarker.length);
+          if (end < 0) return;
+          final tty = startupOutput.substring(start + _ttyMarker.length, end);
+          if (!tty.startsWith('/dev/')) {
+            ttyReady.completeError(ResearchSshException('远程终端未返回有效 TTY'));
+            return;
+          }
+          _interactiveTty = tty;
+          _emitStdout(
+            latin1.encode(
+              startupOutput.substring(0, start) +
+                  startupOutput.substring(end + 1),
+            ),
+          );
+          startupOutput = '';
+          ttyReady.complete();
         },
         onError: (Object e) {
           // A channel error means the session is gone even if TCP is not.
           // Forward it through the same done-path the controller listens on —
           // swallowing it would leave the UI staring at a dead shell.
           debugPrint('research ssh stdout channel error: $e');
+          failStartup();
           _markChannelClosed();
         },
       ),
@@ -261,21 +251,40 @@ class ResearchSshClientIo implements ResearchSshClient {
         },
         onError: (Object e) {
           debugPrint('research ssh stderr channel error: $e');
+          failStartup();
           _markChannelClosed();
         },
       ),
     );
     unawaited(
       shell.done
-          .then((_) => _markChannelClosed())
-          .catchError((_) => _markChannelClosed()),
+          .then((_) {
+            failStartup();
+            _markChannelClosed();
+          })
+          .catchError((_) {
+            failStartup();
+            _markChannelClosed();
+          }),
     );
+    try {
+      await ttyReady.future.timeout(connectTimeout);
+      if (_done!.isCompleted) throw ResearchSshException('远程终端已关闭');
+      _connected = true;
+    } on TimeoutException {
+      await _teardown(closeStreams: false);
+      throw ResearchSshException('获取远程终端 TTY 超时');
+    } catch (_) {
+      await _teardown(closeStreams: false);
+      rethrow;
+    }
   }
 
   /// The interactive channel is gone: tear down the connected state and
   /// complete [done] so upstream disconnects instead of hanging on a corpse.
   void _markChannelClosed() {
     _connected = false;
+    _interactiveTty = null;
     if (!(_done?.isCompleted ?? true)) _done?.complete();
   }
 
@@ -323,7 +332,7 @@ class ResearchSshClientIo implements ResearchSshClient {
       }
       final stdoutText = utf8.decode(out.takeBytes(), allowMalformed: true);
       final stderrText = utf8.decode(err.takeBytes(), allowMalformed: true);
-      if (session.exitCode != null && session.exitCode != 0) {
+      if (session.exitCode != 0) {
         throw ResearchSshExecException(
           exitCode: session.exitCode,
           stdoutText: stdoutText,
@@ -368,6 +377,7 @@ class ResearchSshClientIo implements ResearchSshClient {
 
   Future<void> _teardown({required bool closeStreams}) async {
     _connected = false;
+    _interactiveTty = null;
     for (final s in _subs) {
       await s.cancel();
     }

@@ -137,8 +137,9 @@ abstract class _ChatControllerBase extends AsyncNotifier<ChatState> {
   bool _streamHasLiveContent = false;
 
   bool _appInBackground = false;
+  bool _chatVisible = true;
 
-  StreamUiFocus get _streamUiFocus => _appInBackground
+  StreamUiFocus get _streamUiFocus => _appInBackground || !_chatVisible
       ? StreamUiFocus.away
       : streamUiFocusFor(
           followingTail: _streamFollowingTail,
@@ -158,6 +159,16 @@ abstract class _ChatControllerBase extends AsyncNotifier<ChatState> {
     if (background && convoId != null) {
       _persistence.checkpointSoon(convoId);
     }
+  }
+
+  /// Navigation changes presentation only; the controller still owns the SSE.
+  void reportChatVisible(bool visible) {
+    if (_chatVisible == visible) return;
+    _chatVisible = visible;
+    _flushActiveStream?.call();
+    final id = _s.streamingConvoId;
+    if (!visible && id != null) _persistence.checkpointSoon(id);
+    if (visible) _nudgeStreamUi?.call();
   }
 
   /// Chat page reports scroll/thinking-panel attention during a live stream.
@@ -194,7 +205,8 @@ abstract class _ChatControllerBase extends AsyncNotifier<ChatState> {
       return LongTaskConfiguration(
         gateway: settings.gateway,
         gatewayToken: settings.gatewayToken,
-        systemPrompt: settings.systemPrompt,
+        systemPrompt:
+            settings.promptPresets.active?.prompt ?? settings.systemPrompt,
         gatewayTokenProvider: settings.gatewayTokenProvider,
       );
     },
@@ -575,10 +587,3 @@ class ChatController extends _ChatControllerBase
 final chatControllerProvider = AsyncNotifierProvider<ChatController, ChatState>(
   ChatController.new,
 );
-
-extension _ChatIterableFirstOrNull<E> on Iterable<E> {
-  E? get firstOrNull {
-    final iterator = this.iterator;
-    return iterator.moveNext() ? iterator.current : null;
-  }
-}

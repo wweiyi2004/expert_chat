@@ -5,12 +5,14 @@ import '../../data/research/ssh_profile.dart';
 import 'research_ssh_client.dart';
 import 'shell_quoting.dart';
 
-/// Orchestrates remote tmux via non-interactive SSH exec / shell write.
+/// Controls attached tmux clients via SSH exec, scoped to the interactive TTY.
 class TmuxService {
   const TmuxService();
 
   static const listCommand =
       "tmux list-sessions -F '#{session_name}\t#{session_attached}\t#{session_windows}'";
+  static const listClientsCommand =
+      "tmux list-clients -F '#{client_tty}\t#{session_name}'";
 
   /// Parse `tmux list-sessions -F` output. Empty → no sessions.
   /// Throws [TmuxNotInstalledException] when stderr/output indicates missing tmux
@@ -83,54 +85,71 @@ class TmuxService {
   void attachInShell(ResearchSshClient client, String name) {
     final safe = name.trim();
     if (safe.isEmpty) return;
-    client.write(utf8.encode(attachSessionCommand(safe)));
+    if (!client.write(utf8.encode(attachSessionCommand(safe)))) {
+      throw ResearchSshException('终端已断开，未发送 tmux 连接命令');
+    }
   }
 
-  /// Server-side detach of every client attached to [name].
-  ///
-  /// Prefer this over writing `prefix d` into the PTY: the key sequence is only
-  /// meaningful when the shell really is inside tmux, and when it is not, the
-  /// bytes land in the user's command line (Ctrl-B moves the cursor, `d`
-  /// inserts a character). Going through exec is inert if the session is gone.
-  String detachClientCommand(String name) =>
-      'tmux detach-client -s ${shellSingleQuote(name)}';
+  String _tty(ResearchSshClient client) {
+    final tty = client.interactiveTty;
+    if (tty == null) throw ResearchSshException('当前终端 TTY 未就绪');
+    return tty;
+  }
+
+  /// Identify this client's attachment, even if other terminals share it.
+  Future<String?> currentSession(ResearchSshClient client) async {
+    final tty = _tty(client);
+    final String output;
+    try {
+      output = await client.runExec(listClientsCommand);
+    } on ResearchSshExecException catch (e) {
+      final stderr = e.stderrText.toLowerCase();
+      if (e.exitCode == 1 &&
+          (stderr.contains('no server running') ||
+              stderr.contains('no sessions') ||
+              stderr.contains('failed to connect to server'))) {
+        return null;
+      }
+      rethrow;
+    }
+    for (final line in output.split(RegExp(r'\r?\n'))) {
+      final tab = line.indexOf('\t');
+      if (tab >= 0 && line.substring(0, tab) == tty) {
+        return line.substring(tab + 1);
+      }
+    }
+    return null;
+  }
+
+  String detachClientCommand(String tty) =>
+      'tmux detach-client -t ${shellSingleQuote(tty)}';
 
   /// Detach the interactive client. Does **not** kill the session or jobs.
-  Future<void> detachSession(ResearchSshClient client, String name) async {
-    final safe = name.trim();
-    if (safe.isEmpty) return;
-    await client.runExec(detachClientCommand(safe));
+  Future<void> detachSession(ResearchSshClient client) async {
+    await client.runExec(detachClientCommand(_tty(client)));
   }
 
-  /// Switch to another session while already attached (no full detach UX).
-  ///
-  /// Goes through the shell like attach: typing `tmux switch-client` needs no
-  /// prefix key, so there is no settle window in which user keystrokes could
-  /// fall into a tmux command prompt while the prefix is processed. Session
-  /// names are restricted to the same safe charset as create.
-  Future<void> switchClientInShell(
-    ResearchSshClient client,
-    String name,
-  ) async {
+  /// Switch this TTY without sending command text into its foreground program.
+  Future<void> switchClient(ResearchSshClient client, String name) async {
     final safe = name.trim();
     if (safe.isEmpty || !RegExp(r'^[A-Za-z0-9_.:-]+$').hasMatch(safe)) {
       throw ArgumentError('非法的 tmux 会话名');
     }
-    client.write(
-      utf8.encode('tmux switch-client -t ${shellSingleQuote(safe)}\n'),
+    await client.runExec(
+      'tmux switch-client -c ${shellSingleQuote(_tty(client))} '
+      '-t ${shellSingleQuote(safe)}',
     );
   }
 
   /// Attach if outside tmux; switch-client if already inside a session.
   Future<void> switchOrAttachInShell(
     ResearchSshClient client,
-    String name, {
-    required bool currentlyInTmux,
-  }) async {
+    String name,
+  ) async {
     final safe = name.trim();
     if (safe.isEmpty) return;
-    if (currentlyInTmux) {
-      await switchClientInShell(client, safe);
+    if (await currentSession(client) != null) {
+      await switchClient(client, safe);
     } else {
       attachInShell(client, safe);
     }

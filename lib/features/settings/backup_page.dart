@@ -10,6 +10,7 @@ import '../../state/character_controller.dart';
 import '../../state/memory_controller.dart';
 import '../../state/settings_controller.dart';
 import '../../state/study_controller.dart';
+import '../../state/learning_plan_controller.dart';
 import '../../state/world_info_controller.dart';
 import 'widgets/backup_compatibility_notice.dart';
 
@@ -99,6 +100,7 @@ class _BackupPageState extends ConsumerState<BackupPage> {
           .restoreCopies(preview, restorePreferences: _preferences);
       ref.invalidate(chatControllerProvider);
       ref.invalidate(studyControllerProvider);
+      if (_preferences) ref.invalidate(learningPlanControllerProvider);
       ref.invalidate(characterCardsProvider);
       ref.invalidate(worldInfoProvider);
       if (_preferences) ref.invalidate(settingsControllerProvider);
@@ -136,7 +138,7 @@ class _BackupPageState extends ConsumerState<BackupPage> {
                   SizedBox(height: 8),
                   Text('恢复时创建副本，不覆盖现有聊天和资料，也不会自动继续未完成的远程任务。'),
                   SizedBox(height: 8),
-                  Text('支持数据结构 15、16 的完整备份；已知旧结构会先转换。更新版本需先升级应用。'),
+                  Text('支持数据结构 15、16、17 的完整备份；已知旧结构会先转换。更新版本需先升级应用。'),
                 ],
               ),
               const SizedBox(height: 20),

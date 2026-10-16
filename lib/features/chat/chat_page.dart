@@ -33,6 +33,7 @@ import '../../state/memory_controller.dart';
 import '../../state/settings_controller.dart';
 import '../shell/shell_tab.dart';
 import '../settings/model_setup_page.dart';
+import '../settings/prompt_presets_page.dart';
 import '../shared/recovery_notice.dart';
 import '../../domain/errors/app_failure.dart';
 import '../memory/memory_candidate_review_sheet.dart';
@@ -1910,13 +1911,22 @@ class _ChatPageState extends ConsumerState<ChatPage>
                 !slice.isStudy;
             return Scaffold(
               appBar: AppBar(
-                centerTitle: false,
+                centerTitle: showWorkMode,
                 toolbarHeight: constraints.maxWidth < 600 && showWorkMode
                     ? 72
                     : null,
                 titleSpacing: dualPane ? 20 : 8,
                 title: LayoutBuilder(
                   builder: (context, constraints) {
+                    if (showWorkMode &&
+                        MediaQuery.sizeOf(context).width < 600) {
+                      return Center(
+                        child: ChatWorkModeSwitch(
+                          workMode: slice.workMode,
+                          onChanged: controller.setWorkMode,
+                        ),
+                      );
+                    }
                     final compactTitle =
                         showWorkMode && constraints.maxWidth < 240;
                     final modeIcon = Container(
@@ -2047,7 +2057,8 @@ class _ChatPageState extends ConsumerState<ChatPage>
                   ),
                 ),
                 actions: [
-                  if (contextEnabled)
+                  if (!storyLike && !slice.isStudy) const PromptPresetPicker(),
+                  if (contextEnabled && constraints.maxWidth >= 600)
                     Padding(
                       padding: const EdgeInsets.only(right: 4),
                       child: Center(
@@ -2090,7 +2101,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
                         if (_toolsOpen) _outlineOpen = false;
                       }),
                     ),
-                  if (!widget.desktopShell)
+                  if (!widget.desktopShell && constraints.maxWidth >= 600)
                     PopupMenuButton<String>(
                       tooltip: '新建',
                       icon: const Icon(Icons.add_comment_outlined),
@@ -3154,46 +3165,13 @@ class _EmptyState extends StatelessWidget {
                   padding: compact
                       ? const EdgeInsets.fromLTRB(20, 18, 20, 18)
                       : const EdgeInsets.fromLTRB(28, 28, 28, 24),
-                  decoration: BoxDecoration(
-                    color: scheme.surfaceContainer.withValues(alpha: 0.88),
-                    borderRadius: BorderRadius.circular(compact ? 20 : 24),
-                    border: Border.all(
-                      color: scheme.outlineVariant.withValues(alpha: 0.9),
-                    ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: scheme.shadow.withValues(alpha: 0.05),
-                        blurRadius: 24,
-                        offset: const Offset(0, 10),
-                      ),
-                    ],
-                  ),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Container(
-                        width: compact ? 44 : 56,
-                        height: compact ? 44 : 56,
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            colors: [
-                              scheme.primary,
-                              Color.lerp(
-                                scheme.primary,
-                                scheme.secondary,
-                                0.35,
-                              )!,
-                            ],
-                          ),
-                          borderRadius: BorderRadius.circular(
-                            compact ? 15 : 18,
-                          ),
-                        ),
-                        child: Icon(
-                          Icons.auto_awesome,
-                          color: scheme.onPrimary,
-                          size: compact ? 23 : 28,
-                        ),
+                      Image.asset(
+                        'assets/branding/assistant.png',
+                        width: compact ? 48 : 64,
+                        height: compact ? 48 : 64,
                       ),
                       SizedBox(height: compact ? 12 : 18),
                       Text(

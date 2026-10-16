@@ -17,7 +17,11 @@ class BackupCompatibilityNotice extends StatelessWidget {
           ),
           if (preview.requiresUpgrade) ...[
             const SizedBox(height: 8),
-            const Text('导入时升级结构并创建副本。旧版会话将放入“未归类”，不补造项目或生图版本记录。'),
+            Text(
+              preview.sourceSchemaVersion == 15
+                  ? '导入时升级结构并创建副本。旧版会话将放入“未归类”，不补造项目或生图版本记录。'
+                  : '导入时升级结构并创建副本，保留项目和生图记录。旧记录没有接口格式，再生成时使用当前配置。',
+            ),
           ],
           const SizedBox(height: 8),
           Text(

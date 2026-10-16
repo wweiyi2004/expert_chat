@@ -1,3 +1,5 @@
+export 'gemini_endpoint.dart';
+
 /// What a given model can do, used to shape the request (which optional
 /// fields/params are safe to send) and the UI (the reasoning panel). Resolved
 /// from the model id in [resolve] — the ONE place that encodes provider-specific
@@ -128,6 +130,15 @@ abstract final class ModelCatalog {
   static bool isDeepSeek({required String baseUrl, required String model}) =>
       isOfficialDeepSeekEndpoint(baseUrl) ||
       model.toLowerCase().contains('deepseek');
+
+  /// True for Gemini 2.5+ / 3+ / thinking models that accept `thinkingConfig`
+  /// in native Gemini `generationConfig`.
+  static bool supportsGeminiThinkingConfig(String model) {
+    final m = normalizeId(model);
+    return m.startsWith('gemini-2.5') ||
+        m.startsWith('gemini-3') ||
+        (m.startsWith('gemini') && m.contains('thinking'));
+  }
 
   static ModelCapabilities resolve(String model) =>
       entries[normalizeId(model)] ?? _inferCapabilities(model);

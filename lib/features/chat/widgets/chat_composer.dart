@@ -172,7 +172,7 @@ class _ComposerState extends State<ChatComposer> {
         ? '发导演指令，或使用“写下一场 / 续写当前场”…'
         : widget.storyLike
         ? '续写反应，或输入旁白…'
-        : '写下你的想法…';
+        : '发消息或按麦克风说话';
     final canAttachDocs =
         !widget.isStreaming && !widget.picking && !widget.imageMode;
     final canAttachImages =
@@ -241,6 +241,15 @@ class _ComposerState extends State<ChatComposer> {
             label: '深度思考',
             onSelected: widget.onToggleDeepThink,
           ),
+          if (!widget.storyLike && !widget.isStudy) ...[
+            const SizedBox(width: 8),
+            _ComposerToggleChip(
+              selected: widget.searchMode != SearchMode.off,
+              icon: Icons.language_rounded,
+              label: widget.searchMode == SearchMode.always ? '强制搜索' : '智能搜索',
+              onSelected: widget.onToggleSearch,
+            ),
+          ],
           if (widget.deepThink && widget.supportsReasoningEffort) ...[
             const SizedBox(width: 8),
             _ReasoningEffortSlider(
@@ -271,14 +280,18 @@ class _ComposerState extends State<ChatComposer> {
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 900),
             child: Padding(
-              padding: EdgeInsets.fromLTRB(12, 8, 12, compactHeight ? 8 : 13),
+              padding: EdgeInsets.fromLTRB(
+                12,
+                compactHeight ? 4 : 8,
+                12,
+                compactHeight ? 4 : 13,
+              ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   // 深度思考 stays on the strip. 对话|任务 lives in the top bar.
                   // Tool toggles live in the “+” tray.
-                  thinkingControls,
                   AnimatedSize(
                     duration: const Duration(milliseconds: 180),
                     curve: Curves.easeOutCubic,
@@ -300,6 +313,13 @@ class _ComposerState extends State<ChatComposer> {
                                   !widget.isStreaming,
                               longTaskAvailable: widget.longTaskAvailable,
                               longTaskMode: widget.longTaskMode,
+                              onVoiceConversation:
+                                  widget.onVoiceConversation == null ||
+                                      widget.isStreaming
+                                  ? null
+                                  : () => _runAndClose(
+                                      widget.onVoiceConversation!,
+                                    ),
                               onPickDocuments: canAttachDocs
                                   ? () => _runAndClose(widget.onPickDocuments)
                                   : null,
@@ -421,26 +441,24 @@ class _ComposerState extends State<ChatComposer> {
                               ],
                             ),
                           ),
-                        if (phone)
-                          Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 8),
-                            child: editor,
-                          ),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          child: editor,
+                        ),
                         Row(
-                          crossAxisAlignment: CrossAxisAlignment.end,
+                          crossAxisAlignment: CrossAxisAlignment.center,
                           children: [
+                            Expanded(child: thinkingControls),
+                            const SizedBox(width: 4),
                             _ComposerPlusButton(
                               open: _plusOpen,
                               enabled: !widget.isStreaming,
                               picking: widget.picking,
                               onPressed: _togglePlus,
                             ),
-                            if (phone)
-                              const Spacer()
-                            else
-                              Expanded(child: editor),
                             const SizedBox(width: 4),
-                            if (widget.onVoiceConversation != null) ...[
+                            if (widget.onVoiceConversation != null &&
+                                !phone) ...[
                               IconButton.filledTonal(
                                 key: const ValueKey(
                                   'composer-voice-conversation-button',
@@ -725,7 +743,7 @@ class _ComposerToggleChip extends StatelessWidget {
           onTap: onSelected,
           borderRadius: BorderRadius.circular(999),
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [

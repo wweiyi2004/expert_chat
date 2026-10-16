@@ -122,9 +122,7 @@ mixin ChatMutations on _ChatControllerBase {
   /// model cannot do function calling (the caller then falls back to a plain
   /// single-shot search).
   LlmConfig? _searchBrainConfig(SettingsState settings) {
-    final config = LlmConfig(
-      baseUrl: settings.baseUrl,
-      apiKey: settings.apiKey,
+    final config = settings.config.copyWith(
       model: settings.effectiveSearchBrainModel,
     );
     if (!config.isReady || !config.capabilities.supportsTools) return null;

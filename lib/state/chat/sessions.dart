@@ -706,7 +706,14 @@ mixin ChatSessions on ChatTurns {
     final next = _s.searchMode.next;
     _set(_s.copyWith(searchMode: next));
     unawaited(
-      ref.read(settingsControllerProvider.notifier).setSearchMode(next),
+      ref
+          .read(settingsControllerProvider.notifier)
+          .setSearchMode(next)
+          .catchError((Object error) {
+            if (ref.mounted) {
+              _set(_s.copyWith(error: '搜索设置保存失败：${describeError(error)}'));
+            }
+          }),
     );
   }
 
@@ -740,7 +747,14 @@ mixin ChatSessions on ChatTurns {
     _editedComposerPrefs.add('image');
     _set(_s.copyWith(imageGenMode: mode));
     unawaited(
-      ref.read(settingsControllerProvider.notifier).setImageGenMode(mode),
+      ref
+          .read(settingsControllerProvider.notifier)
+          .setImageGenMode(mode)
+          .catchError((Object error) {
+            if (ref.mounted) {
+              _set(_s.copyWith(error: '配图设置保存失败：${describeError(error)}'));
+            }
+          }),
     );
   }
 

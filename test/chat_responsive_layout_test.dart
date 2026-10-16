@@ -16,6 +16,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class _MemoryConversationRepository
     with ConversationRepositoryViaLoadAll
@@ -116,18 +117,12 @@ void main() {
             );
           }
           expect(find.text('任务').hitTestable(), findsOneWidget);
-          final title = find.descendant(
-            of: find.byType(AppBar),
-            matching: find.text('长对话'),
+          // Mobile chrome reserves the center for the chat/work switch.
+          expect(
+            find.byKey(const ValueKey('chat-context-usage')),
+            findsNothing,
           );
-          expect(title, findsOneWidget);
-          final titleRect = tester.getRect(title);
-          final modeRect = tester.getRect(switchFinder);
-          expect(titleRect.overlaps(modeRect), isFalse);
-          final titleParagraph = tester.renderObject<RenderParagraph>(
-            find.descendant(of: title, matching: find.byType(RichText)),
-          );
-          expect(titleParagraph.didExceedMaxLines, isFalse);
+          expect(find.byTooltip('切换提示词预设'), findsOneWidget);
           final input = tester.getRect(
             find.byKey(const ValueKey('composer-text-field')),
           );
@@ -187,10 +182,10 @@ void main() {
 
     expect(find.text('Expert Chat'), findsOneWidget);
     expect(find.byKey(const ValueKey('sidebar-new-chat')), findsOneWidget);
-    expect(find.text('工作区'), findsOneWidget);
+    expect(find.text('资料库'), findsOneWidget);
     expect(find.text('工具'), findsOneWidget);
-    expect(find.text('学习'), findsNothing);
-    expect(find.text('创作'), findsNothing);
+    expect(find.text('学习'), findsOneWidget);
+    expect(find.text('创作'), findsOneWidget);
     expect(
       find.byKey(const ValueKey('conversation-mode-filter')),
       findsOneWidget,
@@ -209,6 +204,8 @@ void main() {
   testWidgets(
     'short window keeps the empty state scroll-safe and composer low',
     (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
       tester.view.physicalSize = const Size(1000, 320);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.resetPhysicalSize);
@@ -217,6 +214,7 @@ void main() {
       await tester.pumpWidget(
         ProviderScope(
           overrides: [
+            sharedPrefsProvider.overrideWithValue(prefs),
             conversationRepositoryProvider.overrideWithValue(
               _MemoryConversationRepository(),
             ),

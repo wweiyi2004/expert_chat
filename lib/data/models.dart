@@ -35,6 +35,7 @@ class LongTaskState {
     this.uploadBaseUrl = '',
     required this.model,
     this.taskId,
+    this.clientRequestId,
     this.remoteFileIds = const [],
     this.progress = 0,
     this.lastEventId = 0,
@@ -59,6 +60,10 @@ class LongTaskState {
   final String uploadBaseUrl;
   final String model;
   final String? taskId;
+
+  /// Stable for one attempt, including app restarts and network resubmission.
+  /// Older tasks use their assistant message ID until an explicit retry.
+  final String? clientRequestId;
   final List<String> remoteFileIds;
   final double progress;
   final int lastEventId;
@@ -80,6 +85,7 @@ class LongTaskState {
 
   LongTaskState copyWith({
     LongTaskStatus? status,
+    String? clientRequestId,
     Object? taskId = _longTaskSentinel,
     List<String>? remoteFileIds,
     double? progress,
@@ -94,6 +100,7 @@ class LongTaskState {
     baseUrl: baseUrl,
     uploadBaseUrl: uploadBaseUrl,
     model: model,
+    clientRequestId: clientRequestId ?? this.clientRequestId,
     taskId: identical(taskId, _longTaskSentinel)
         ? this.taskId
         : taskId as String?,
@@ -116,6 +123,7 @@ class LongTaskState {
     if (uploadBaseUrl.isNotEmpty) 'uploadBaseUrl': uploadBaseUrl,
     'model': model,
     if (taskId != null) 'taskId': taskId,
+    if (clientRequestId != null) 'clientRequestId': clientRequestId,
     if (remoteFileIds.isNotEmpty) 'remoteFileIds': remoteFileIds,
     'progress': progress,
     'lastEventId': lastEventId,
@@ -137,6 +145,7 @@ class LongTaskState {
     model: json['model'] as String? ?? '',
     // `responseId` was used by the pre-Gateway OpenAI background prototype.
     taskId: json['taskId'] as String? ?? json['responseId'] as String?,
+    clientRequestId: json['clientRequestId'] as String?,
     remoteFileIds: (json['remoteFileIds'] as List<dynamic>? ?? const [])
         .map((value) => value.toString())
         .where((value) => value.isNotEmpty)

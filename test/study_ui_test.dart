@@ -1,3 +1,5 @@
+import 'package:expert_chat/core/providers.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:expert_chat/data/models.dart';
 import 'package:expert_chat/data/story_models.dart';
 import 'package:expert_chat/data/study_models.dart';
@@ -53,8 +55,11 @@ class _StudyUiChatController extends ChatController {
   );
 }
 
+late SharedPreferences _prefs;
+
 Widget _subject() => ProviderScope(
   overrides: [
+    sharedPrefsProvider.overrideWithValue(_prefs),
     studyControllerProvider.overrideWith(_StudyUiController.new),
     chatControllerProvider.overrideWith(_StudyUiChatController.new),
   ],
@@ -68,6 +73,10 @@ Widget _quizSubject() => ProviderScope(
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  setUp(() async {
+    SharedPreferences.setMockInitialValues({});
+    _prefs = await SharedPreferences.getInstance();
+  });
 
   testWidgets('learning workspace stays overflow-free on a narrow screen', (
     tester,

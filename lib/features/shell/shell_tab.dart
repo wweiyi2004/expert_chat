@@ -97,8 +97,3 @@ void openShellTab(WidgetRef ref, ShellTab tab) {
     controller.set(tab);
   });
 }
-
-/// Legacy name kept so older call sites compile during migration — prefer
-/// [shellTabProvider].
-@Deprecated('Use shellTabProvider')
-final shellTabIndexProvider = shellTabProvider;

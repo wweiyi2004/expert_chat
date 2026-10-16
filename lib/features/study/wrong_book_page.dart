@@ -242,11 +242,3 @@ class _WrongTile extends ConsumerWidget {
     );
   }
 }
-
-extension _FirstOrNull<E> on Iterable<E> {
-  E? get firstOrNull {
-    final iterator = this.iterator;
-    if (!iterator.moveNext()) return null;
-    return iterator.current;
-  }
-}

@@ -9,7 +9,8 @@ import '../shared/recovery_notice.dart';
 import 'shell_tab.dart';
 
 class ToolsPage extends ConsumerStatefulWidget {
-  const ToolsPage({super.key});
+  const ToolsPage({super.key, this.onOpenNavigation});
+  final VoidCallback? onOpenNavigation;
   @override
   ConsumerState<ToolsPage> createState() => _ToolsPageState();
 }
@@ -111,7 +112,17 @@ class _ToolsPageState extends ConsumerState<ToolsPage> {
   Widget build(BuildContext context) {
     final settings = ref.watch(settingsControllerProvider);
     return Scaffold(
-      appBar: AppBar(title: const Text('工具'), automaticallyImplyLeading: false),
+      appBar: AppBar(
+        title: const Text('工具'),
+        automaticallyImplyLeading: false,
+        leading: widget.onOpenNavigation == null
+            ? null
+            : IconButton(
+                tooltip: '打开侧边栏',
+                onPressed: widget.onOpenNavigation,
+                icon: const Icon(Icons.menu_rounded),
+              ),
+      ),
       body: settings.when(
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (error, _) => Padding(

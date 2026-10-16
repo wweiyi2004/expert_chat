@@ -7,8 +7,10 @@ import 'package:expert_chat/domain/update/update_ui.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  setUp(() => SharedPreferences.setMockInitialValues({}));
   group('resumePendingApkInstall', () {
     TestWidgetsFlutterBinding.ensureInitialized();
     const channel = MethodChannel('expert_chat/install');
@@ -135,12 +137,12 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300)); // dialog 动画
     expect(find.text('正在下载更新'), findsOneWidget);
 
-    await tester.tap(find.text('取消'));
+    await tester.tap(find.text('暂停下载'));
     await tester.pump();
     await tester.pumpAndSettle();
 
     // 取消提示可见。
-    expect(find.text('已取消下载'), findsOneWidget);
+    expect(find.text('已暂停，下载进度已保存'), findsOneWidget);
     // 进度对话框已关闭。
     expect(find.text('正在下载更新'), findsNothing);
     // 下层页面未被误关。
@@ -230,6 +232,8 @@ class _CancelOnDemandDownloader implements UpdateDownloader {
     required String url,
     String? fileName,
     String? expectedSha256,
+    List<String> fallbackUrls = const [],
+    void Function(String url)? onSourceChanged,
     void Function(int received, int total)? onProgress,
     CancelToken? cancelToken,
   }) {
@@ -253,6 +257,8 @@ class _FailingDownloader implements UpdateDownloader {
     required String url,
     String? fileName,
     String? expectedSha256,
+    List<String> fallbackUrls = const [],
+    void Function(String url)? onSourceChanged,
     void Function(int received, int total)? onProgress,
     CancelToken? cancelToken,
   }) async {

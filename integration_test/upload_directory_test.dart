@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:expert_chat/domain/tools/upload_directory.dart';
 import 'package:flutter/material.dart';
@@ -22,7 +21,9 @@ void main() {
       );
       await tester.runAsync(() async {
         const browser = UploadDirectoryBrowser();
-      print('UPLOAD_DIRECTORY_READY');
+        // This marker is consumed by the native acceptance harness.
+        // ignore: avoid_print
+        print('UPLOAD_DIRECTORY_READY');
         final picked = await browser.choose().timeout(
           const Duration(minutes: 3),
         );
@@ -84,7 +85,8 @@ void main() {
           }),
           throwsA(isA<PlatformException>()),
         );
-      print(
+        // ignore: avoid_print
+        print(
           'UPLOAD_DIRECTORY_RESULT ${jsonEncode({'passed': true, 'files': files.length, 'childDirectories': picked.entries.where((entry) => entry.isDirectory).length, 'restored': true, 'outsideRejected': true, 'oversizeRejected': true})}',
         );
       });

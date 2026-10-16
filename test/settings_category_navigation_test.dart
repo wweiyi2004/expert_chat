@@ -171,7 +171,7 @@ Future<ProviderContainer> pumpSettingsPage(
 
 /// Expands the 云端语音合成 (TTS) card so its fields are available.
 Future<void> openTtsCard(WidgetTester tester) async {
-  await tester.tap(find.text('能力'));
+  await openCategory(tester, '能力');
   await tester.pumpAndSettle();
   await tester.scrollUntilVisible(
     find.text('云端语音合成'),
@@ -202,6 +202,20 @@ Future<void> tapVisible(WidgetTester tester, Finder finder) async {
   await tester.pumpAndSettle();
 }
 
+Future<void> openCategory(WidgetTester tester, String label) async {
+  if (find.byTooltip('返回设置').evaluate().isNotEmpty) {
+    await tester.tap(find.byTooltip('返回设置'));
+    await tester.pumpAndSettle();
+  }
+  await tester.scrollUntilVisible(
+    find.text(label),
+    120,
+    scrollable: find.byType(Scrollable).last,
+  );
+  await tester.tap(find.text(label));
+  await tester.pumpAndSettle();
+}
+
 Finder fieldWithLabel(String label) => find.byWidgetPredicate(
   (widget) => widget is TextField && widget.decoration?.labelText == label,
 );
@@ -213,20 +227,14 @@ void main() {
   });
 
   testWidgets(
-    'four settings categories fit a narrow phone at large text without scrolling',
+    'grouped settings remain navigable on a narrow phone at large text',
     (tester) async {
       await pumpSettingsPage(tester, size: const Size(320, 720), scale: 1.24);
-      final bar = find.byKey(const ValueKey('settings-category-bar'));
-      expect(
-        find.descendant(of: bar, matching: find.byType(Scrollable)),
-        findsNothing,
-      );
+      expect(find.byKey(const ValueKey('settings-overview')), findsOneWidget);
       for (final label in ['模型', '能力', '外观', '数据']) {
-        final item = find.descendant(of: bar, matching: find.text(label));
-        expect(item.hitTestable(), findsOneWidget);
-        final bounds = tester.getRect(item);
-        expect(bounds.left, greaterThanOrEqualTo(12));
-        expect(bounds.right, lessThanOrEqualTo(308));
+        await openCategory(tester, label);
+        expect(tester.takeException(), isNull);
+        expect(find.byTooltip('返回设置'), findsOneWidget);
       }
       expect(tester.takeException(), isNull);
     },
@@ -257,10 +265,11 @@ void main() {
     );
 
     expect(find.text('设置'), findsOneWidget);
+    await openCategory(tester, '模型');
     expect(find.text('模型服务'), findsOneWidget);
     expect(find.text('多媒体能力（可选）'), findsNothing);
 
-    await tester.tap(find.text('能力'));
+    await openCategory(tester, '能力');
     await tester.pumpAndSettle();
     expect(
       tester.takeException(),
@@ -277,7 +286,7 @@ void main() {
     );
     expect(find.text('联网搜索'), findsOneWidget);
 
-    await tester.tap(find.text('外观'));
+    await openCategory(tester, '外观');
     await tester.pumpAndSettle();
     expect(
       tester.takeException(),
@@ -288,7 +297,7 @@ void main() {
     expect(find.text('多媒体能力（可选）'), findsNothing);
     expect(find.text('明暗模式'), findsOneWidget);
 
-    await tester.tap(find.text('数据'));
+    await openCategory(tester, '数据');
     await tester.pumpAndSettle();
     expect(find.text('导出 API 配置'), findsOneWidget);
     expect(find.textContaining('文件含密钥，请勿分享或公开'), findsOneWidget);
@@ -335,6 +344,7 @@ void main() {
       isNull,
       reason: 'long model ids must ellipsize instead of overflowing',
     );
+    await openCategory(tester, '模型');
     expect(find.textContaining('deepseek-v4-flash-vision-exp'), findsWidgets);
   });
 
@@ -342,7 +352,7 @@ void main() {
     tester,
   ) async {
     await pumpSettingsPage(tester, tall: true);
-    await tester.tap(find.text('外观'));
+    await openCategory(tester, '外观');
     await tester.pumpAndSettle();
     expect(find.text('圆角风格'), findsNothing);
     await tester.scrollUntilVisible(
@@ -368,7 +378,7 @@ void main() {
 
   testWidgets('capabilities tab can add a custom MCP server', (tester) async {
     final container = await pumpSettingsPage(tester, tall: true);
-    await tester.tap(find.text('能力'));
+    await openCategory(tester, '能力');
     tester.view.physicalSize = const Size(480, 4000);
     await tester.pumpAndSettle();
 
@@ -406,7 +416,7 @@ void main() {
     'local MCP editor saves program arguments and background-only default',
     (tester) async {
       final container = await pumpSettingsPage(tester, tall: true);
-      await tester.tap(find.text('能力'));
+      await openCategory(tester, '能力');
       tester.view.physicalSize = const Size(480, 4000);
       await tester.pumpAndSettle();
       await tester.scrollUntilVisible(
@@ -459,7 +469,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      await tester.tap(find.text('能力'));
+      await openCategory(tester, '能力');
       await tester.pumpAndSettle();
       await tester.tap(find.text('视觉理解'));
       await tester.pumpAndSettle();
@@ -523,7 +533,7 @@ void main() {
     tester,
   ) async {
     final container = await pumpSettingsPage(tester, tall: true);
-    await tester.tap(find.text('能力'));
+    await openCategory(tester, '能力');
     tester.view.physicalSize = const Size(480, 4000);
     await tester.pumpAndSettle();
 
@@ -682,7 +692,7 @@ void main() {
 
     // "模型" also appears as a field label inside the card, so use a
     // category name that only exists on the segmented control.
-    await tester.tap(find.text('外观'));
+    await openCategory(tester, '外观');
     // Flush is scheduled on a microtask after dispose.
     await tester.pump();
     await tester.pumpAndSettle();
@@ -920,6 +930,7 @@ void main() {
     tester,
   ) async {
     await pumpSettingsPage(tester, tall: true);
+    await openCategory(tester, '模型');
     await tester.scrollUntilVisible(
       find.text('预设提示词'),
       200,
@@ -946,6 +957,7 @@ void main() {
 
     await pumpSettingsPage(tester, tall: true);
 
+    await openCategory(tester, '模型');
     expect(find.text('模型用量'), findsOneWidget);
     expect(find.text('1.2K'), findsOneWidget);
     expect(find.text('300'), findsOneWidget);

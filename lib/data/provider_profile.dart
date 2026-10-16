@@ -15,6 +15,7 @@ class ProviderProfile {
     required this.chatModel,
     required this.reasonerModel,
     List<String>? models,
+    this.apiFormat = LlmApiFormat.auto,
   }) : id = id ?? _uuid.v4(),
        models = models ?? const [];
 
@@ -36,12 +37,19 @@ class ProviderProfile {
   /// All selectable model ids for this provider (for the model dropdown).
   final List<String> models;
 
+  /// Wire protocol preference (`auto`, `openAiCompatible`, `geminiNative`).
+  final LlmApiFormat apiFormat;
+
+  LlmApiFormat get effectiveApiFormat =>
+      GeminiEndpoint.resolveFormat(format: apiFormat, baseUrl: baseUrl);
+
   ProviderProfile copyWith({
     String? name,
     String? baseUrl,
     String? chatModel,
     String? reasonerModel,
     List<String>? models,
+    LlmApiFormat? apiFormat,
   }) => ProviderProfile(
     id: id,
     name: name ?? this.name,
@@ -49,6 +57,7 @@ class ProviderProfile {
     chatModel: chatModel ?? this.chatModel,
     reasonerModel: reasonerModel ?? this.reasonerModel,
     models: models ?? this.models,
+    apiFormat: apiFormat ?? this.apiFormat,
   );
 
   Map<String, dynamic> toJson() => {
@@ -58,6 +67,7 @@ class ProviderProfile {
     'chatModel': chatModel,
     'reasonerModel': reasonerModel,
     'models': models,
+    if (apiFormat != LlmApiFormat.auto) 'apiFormat': apiFormat.wire,
   };
 
   factory ProviderProfile.fromJson(Map<String, dynamic> json) =>
@@ -73,6 +83,7 @@ class ProviderProfile {
         models: (json['models'] as List<dynamic>? ?? [])
             .map((e) => e.toString())
             .toList(),
+        apiFormat: LlmApiFormat.fromWire(json['apiFormat'] as String?),
       );
 }
 
@@ -97,6 +108,7 @@ class ProviderPreset {
     required this.models,
     this.group = ProviderPresetGroup.global,
     this.hint = '',
+    this.apiFormat = LlmApiFormat.auto,
   });
 
   final String name;
@@ -109,12 +121,15 @@ class ProviderPreset {
   /// Short note shown in the picker (path quirks, /v1 suffix, etc.).
   final String hint;
 
+  final LlmApiFormat apiFormat;
+
   ProviderProfile toProfile() => ProviderProfile(
     name: name,
     baseUrl: baseUrl,
     chatModel: chatModel,
     reasonerModel: reasonerModel,
     models: models,
+    apiFormat: apiFormat,
   );
 
   bool matchesQuery(String query) {
@@ -341,13 +356,24 @@ class ProviderPreset {
       hint: '一个 Key 转接多家模型，模型名带厂商前缀',
     ),
     ProviderPreset(
+      name: 'Google Gemini (原生 API)',
+      group: ProviderPresetGroup.global,
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+      chatModel: 'gemini-2.5-flash',
+      reasonerModel: 'gemini-2.5-pro',
+      models: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash'],
+      hint: '官方 Gemini 原生端点 (/v1beta/models)',
+      apiFormat: LlmApiFormat.geminiNative,
+    ),
+    ProviderPreset(
       name: 'Google Gemini',
       group: ProviderPresetGroup.global,
       baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
       chatModel: 'gemini-2.5-flash',
       reasonerModel: 'gemini-2.5-pro',
       models: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash'],
-      hint: '官方 OpenAI 兼容端点',
+      hint: '官方 OpenAI 兼容端点 (/v1beta/openai)',
+      apiFormat: LlmApiFormat.openAiCompatible,
     ),
     ProviderPreset(
       name: 'Groq',

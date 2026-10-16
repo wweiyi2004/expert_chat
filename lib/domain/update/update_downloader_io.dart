@@ -1,136 +1,222 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
-import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
-/// Downloads a full-package update asset (APK / zip) with progress callbacks.
+/// Partial packages and HTTP validators survive pauses and application restarts.
 class UpdateDownloader {
-  UpdateDownloader({Dio? dio}) : _dio = dio ?? Dio();
-
+  UpdateDownloader({Dio? dio, this._directory}) : _dio = dio ?? Dio();
   final Dio _dio;
+  final Directory? _directory;
+  static final _active = <String>{};
 
-  /// Download [url] into a local file named from the URL (or [fileName]).
-  ///
-  /// When [expectedSha256] is set (bare hex from GitHub `digest`), the file is
-  /// hashed after download and deleted on mismatch.
-  ///
-  /// Returns the absolute path. On Android the file lives under the app cache
-  /// so FileProvider can serve it for install. On desktop it prefers Downloads.
   Future<String> download({
     required String url,
     String? fileName,
     String? expectedSha256,
+    List<String> fallbackUrls = const [],
+    void Function(String url)? onSourceChanged,
     void Function(int received, int total)? onProgress,
     CancelToken? cancelToken,
   }) async {
-    if (kIsWeb) {
-      throw UnsupportedError('Web cannot download full-package updates in-app');
-    }
-
-    final name = (fileName ?? _nameFromUrl(url)).trim();
-    final safeName = name.isEmpty
+    final name = (fileName ?? Uri.parse(url).pathSegments.last).replaceAll(
+      RegExp(r'[\\/:*?"<>|]'),
+      '_',
+    );
+    final dir = _directory ?? await _downloadDir();
+    await dir.create(recursive: true);
+    final safeName = name.isEmpty || name == '.' || name == '..'
         ? 'expert-chat-update.bin'
-        : name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
-
-    final dir = await _downloadDir();
-    final file = File('${dir.path}${Platform.pathSeparator}$safeName');
-    if (await file.exists()) {
-      try {
-        await file.delete();
-      } catch (_) {
-        // Overwrite via dio anyway.
-      }
+        : name;
+    final target = File('${dir.path}${Platform.pathSeparator}$safeName');
+    if (!_active.add(target.absolute.path)) {
+      throw StateError('该安装包正在下载');
     }
-
     try {
-      await _dio.download(
-        url,
-        file.path,
-        cancelToken: cancelToken,
-        options: Options(
-          headers: {
-            'Accept': '*/*',
-            'User-Agent': 'expert_chat-update-download',
-          },
-          receiveTimeout: const Duration(minutes: 10),
-          followRedirects: true,
-          validateStatus: (s) => s != null && s >= 200 && s < 400,
-        ),
-        onReceiveProgress: (received, total) {
-          if (onProgress != null) onProgress(received, total);
-        },
-      );
-
-      if (!await file.exists() || await file.length() == 0) {
-        throw Exception('下载完成但文件无效');
+      final part = File('${target.path}.part');
+      final meta = File('${target.path}.part.json');
+      final digest = expectedSha256?.trim().toLowerCase();
+      if (digest != null &&
+          digest.isNotEmpty &&
+          !RegExp(r'^[a-f0-9]{64}$').hasMatch(digest)) {
+        throw ArgumentError('无效的 SHA-256');
       }
-    } catch (_) {
-      // A cancel or failure mid-transfer leaves a partial file behind;
-      // remove it so the stale half-download does not linger (the next
-      // attempt would overwrite it anyway, but a visible residual can
-      // confuse users browsing the download directory).
+      final hash = digest == null || digest.isEmpty ? null : digest;
+      final identity = hash ?? url;
+      Map<String, dynamic> saved = {};
       try {
-        if (await file.exists()) await file.delete();
+        saved = Map<String, dynamic>.from(
+          jsonDecode(await meta.readAsString()) as Map,
+        );
       } catch (_) {
-        // Best-effort cleanup; ignore errors (e.g. locked file).
+        /* Interrupted metadata requires a clean restart. */
       }
-      rethrow;
-    }
-
-    final expect = expectedSha256?.trim().toLowerCase();
-    if (expect != null && expect.isNotEmpty) {
-      final digest = await sha256.bind(file.openRead()).first;
-      final actual = digest.toString();
-      if (actual != expect) {
-        try {
-          await file.delete();
-        } catch (_) {}
-        throw Exception('安装包校验失败（SHA-256 不匹配）。请从 GitHub 重新下载，或检查网络是否被篡改。');
+      if (saved['identity'] != identity) {
+        if (await part.exists()) await part.delete();
+        saved = {};
       }
-    }
-
-    // Cheap magic-byte check for our common artifacts.
-    final lower = safeName.toLowerCase();
-    if (lower.endsWith('.apk') || lower.endsWith('.zip')) {
-      final raf = await file.open();
-      try {
-        final header = await raf.read(4);
-        final isZip =
-            header.length >= 2 && header[0] == 0x50 && header[1] == 0x4b;
-        if (!isZip) {
-          throw Exception('下载文件不是有效的 APK/ZIP 包装格式');
+      Object? lastError;
+      for (final source in {url, ...fallbackUrls}) {
+        onSourceChanged?.call(source);
+        for (var attempt = 0; attempt < 3; attempt++) {
+          if (cancelToken?.isCancelled ?? false) {
+            throw cancelToken!.cancelError!;
+          }
+          try {
+            var offset = await part.exists() ? await part.length() : 0;
+            if (offset > 0 &&
+                hash == null &&
+                (saved['url'] != source || saved['validator'] == null)) {
+              await part.delete();
+              offset = 0;
+            }
+            final response = await _dio.get<ResponseBody>(
+              source,
+              cancelToken: cancelToken,
+              options: Options(
+                responseType: ResponseType.stream,
+                headers: {
+                  'Accept': '*/*',
+                  'Accept-Encoding': 'identity',
+                  'User-Agent': 'expert_chat-update-download',
+                  if (offset > 0) 'Range': 'bytes=$offset-',
+                  if (offset > 0 &&
+                      saved['url'] == source &&
+                      saved['validator'] != null)
+                    'If-Range': saved['validator'],
+                },
+                sendTimeout: const Duration(seconds: 30),
+                connectTimeout: const Duration(seconds: 15),
+                receiveTimeout: const Duration(seconds: 45),
+                followRedirects: true,
+                validateStatus: (s) => s == 200 || s == 206 || s == 416,
+              ),
+            );
+            final body = response.data!;
+            if (response.statusCode == 416) {
+              await body.stream.drain<void>();
+              if (offset > 0 && hash != null && await _matches(part, hash)) {
+                await _validatePackage(part, name);
+                return await _promote(part, target, meta);
+              }
+              if (await part.exists()) await part.delete();
+              saved = {};
+              throw const FormatException('服务器要求重新下载');
+            }
+            var total =
+                int.tryParse(response.headers.value('content-length') ?? '') ??
+                -1;
+            if (response.statusCode == 206) {
+              final range = RegExp(
+                r'^bytes (\d+)-(\d+)/(\d+)$',
+              ).firstMatch(response.headers.value('content-range') ?? '');
+              if (range == null ||
+                  int.parse(range[1]!) != offset ||
+                  int.parse(range[2]!) < offset ||
+                  int.parse(range[2]!) >= int.parse(range[3]!)) {
+                await body.stream.drain<void>();
+                throw const FormatException('下载源返回了不匹配的续传范围');
+              }
+              total = int.parse(range[3]!);
+            } else {
+              offset = 0; // Range ignored or If-Range representation changed.
+            }
+            final etag = response.headers.value('etag');
+            saved = {
+              'identity': identity,
+              'url': source,
+              'validator': etag != null && !etag.startsWith('W/')
+                  ? etag
+                  : response.headers.value('last-modified'),
+            };
+            // Truncate before storing a new validator.
+            final file = await part.open(
+              mode: offset == 0 ? FileMode.write : FileMode.append,
+            );
+            var received = offset;
+            try {
+              await meta.writeAsString(jsonEncode(saved), flush: true);
+              onProgress?.call(received, total);
+              await for (final chunk in body.stream) {
+                if (cancelToken?.isCancelled ?? false) {
+                  throw cancelToken!.cancelError!;
+                }
+                await file.writeFrom(chunk);
+                received += chunk.length;
+                onProgress?.call(received, total);
+              }
+              await file.flush();
+            } finally {
+              await file.close();
+            }
+            if (cancelToken?.isCancelled ?? false) {
+              throw cancelToken!.cancelError!;
+            }
+            if (received == 0 || (total >= 0 && received != total)) {
+              throw const FormatException('下载尚未完整，下次将继续');
+            }
+            if (hash != null && !await _matches(part, hash)) {
+              await part.delete();
+              throw const FormatException('安装包 SHA-256 校验失败，重新下载');
+            }
+            try {
+              await _validatePackage(part, name);
+            } catch (_) {
+              await part.delete();
+              rethrow;
+            }
+            return await _promote(part, target, meta);
+          } catch (error) {
+            if (error is DioException && CancelToken.isCancel(error)) rethrow;
+            lastError = error;
+          }
         }
-      } finally {
-        await raf.close();
       }
+      throw lastError ?? StateError('没有可用的下载源');
+    } finally {
+      _active.remove(target.absolute.path);
     }
+  }
 
-    return file.path;
+  static Future<bool> _matches(File file, String hash) async =>
+      (await sha256.bind(file.openRead()).first).toString() == hash;
+
+  static Future<void> _validatePackage(File file, String name) async {
+    if (!name.toLowerCase().endsWith('.apk') &&
+        !name.toLowerCase().endsWith('.zip')) {
+      return;
+    }
+    final handle = await file.open();
+    try {
+      final bytes = await handle.read(4);
+      if (bytes.length < 4 || bytes[0] != 0x50 || bytes[1] != 0x4b) {
+        throw const FormatException('下载文件不是有效的 APK/ZIP');
+      }
+    } finally {
+      await handle.close();
+    }
+  }
+
+  static Future<String> _promote(File part, File target, File meta) async {
+    if (await target.exists()) await target.delete();
+    await part.rename(target.path);
+    if (await meta.exists()) await meta.delete();
+    return target.path;
   }
 
   Future<Directory> _downloadDir() async {
-    if (!kIsWeb && Platform.isAndroid) {
+    if (Platform.isAndroid) {
       final cache = await getTemporaryDirectory();
-      final sub = Directory('${cache.path}${Platform.pathSeparator}ota');
-      if (!await sub.exists()) await sub.create(recursive: true);
-      return sub;
+      return Directory('${cache.path}${Platform.pathSeparator}ota');
     }
     try {
       final downloads = await getDownloadsDirectory();
       if (downloads != null) return downloads;
     } catch (_) {
-      // Fall through.
+      /* Fall back to cache. */
     }
     return getTemporaryDirectory();
-  }
-
-  static String _nameFromUrl(String url) {
-    final uri = Uri.tryParse(url);
-    if (uri == null || uri.pathSegments.isEmpty) {
-      return 'expert-chat-update.bin';
-    }
-    return uri.pathSegments.last;
   }
 }

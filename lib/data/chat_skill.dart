@@ -193,18 +193,21 @@ class ChatSkillCatalog {
     String? raw, {
     String legacySystemPrompt = '',
   }) {
-    if (raw == null || raw.trim().isEmpty) {
+    if (raw == null) {
       return ChatSkillCatalog.factory(generalPrompt: legacySystemPrompt);
     }
     try {
       final decoded = jsonDecode(raw);
       if (decoded is! List) {
-        return ChatSkillCatalog.factory(generalPrompt: legacySystemPrompt);
+        throw const FormatException('技能配置必须是列表');
       }
       final decodedSkills = [
         for (final item in decoded)
-          if (item is Map<String, dynamic>) ChatSkill.fromJson(item),
-      ].where((s) => s.id.isNotEmpty).toList();
+          ChatSkill.fromJson(item as Map<String, dynamic>),
+      ];
+      if (decodedSkills.any((skill) => skill.id.isEmpty)) {
+        throw const FormatException('技能配置缺少 ID');
+      }
       final defaults = ChatSkillCatalog.factory();
       final skills = [
         for (final skill in decodedSkills)
@@ -213,8 +216,10 @@ class ChatSkillCatalog {
       return ChatSkillCatalog(
         skills,
       ).sanitize(legacySystemPrompt: legacySystemPrompt);
-    } catch (_) {
-      return ChatSkillCatalog.factory(generalPrompt: legacySystemPrompt);
+    } on FormatException {
+      throw const FormatException('技能配置无法解析，原始配置未被覆盖。');
+    } on TypeError {
+      throw const FormatException('技能配置字段类型错误，原始配置未被覆盖。');
     }
   }
 
@@ -283,24 +288,24 @@ class ChatSkillCatalog {
     for (final skill in factory.skills) {
       byId.putIfAbsent(skill.id, () => skill);
     }
+    final builtInIds = factory.skills.map((skill) => skill.id).toSet();
     var list = [
-      for (final skill in factory.skills) byId.remove(skill.id)!,
-      ...byId.values,
+      for (final skill in factory.skills) byId[skill.id]!,
+      for (final skill in byId.values)
+        if (!builtInIds.contains(skill.id)) skill,
     ];
     final enabledFallbacks = [
       for (final s in list)
         if (s.fallback && s.enabled) s,
     ];
     if (enabledFallbacks.isEmpty) {
-      final general = byId['general'] ?? factory.fallback;
+      final general = byId['general']!;
       list = [
         for (final s in list)
           if (s.id == general.id)
             general.copyWith(enabled: true, fallback: true)
           else
             s.copyWith(fallback: false),
-        if (!byId.containsKey(general.id))
-          general.copyWith(enabled: true, fallback: true),
       ];
     } else if (enabledFallbacks.length > 1) {
       final keep =

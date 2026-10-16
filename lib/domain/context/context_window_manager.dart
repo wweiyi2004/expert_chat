@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:characters/characters.dart';
 
 import '../../data/context_prefs.dart';
@@ -90,19 +92,27 @@ class ContextWindowManager {
 
   int estimateMessageTokens(LlmRequestMessage message) =>
       _messageOverheadTokens +
-      estimateTextTokens(message.content) +
-      // Reasoning chains of thought are sent back verbatim on assistant turns;
-      // omitting them systematically under-counts tool-loop requests.
-      estimateTextTokens(message.reasoningContent ?? '') +
-      (message.imageDataUrls.length + message.imageFileIds.length) *
-          _imageEstimateTokens +
-      message.toolCalls.fold<int>(
-        0,
-        (sum, call) =>
-            sum +
-            estimateTextTokens(call.name ?? '') +
-            estimateTextTokens(call.argumentsJson),
-      );
+      (message.responseOutputItems.isNotEmpty
+          // Responses sends these items instead of the mirrored text/calls.
+          ? estimateTextTokens(jsonEncode(message.responseOutputItems))
+          : estimateTextTokens(message.content) + _fixedMessageTokens(message));
+
+  int _fixedMessageTokens(LlmRequestMessage message) {
+    if (message.responseOutputItems.isNotEmpty) {
+      return estimateTextTokens(jsonEncode(message.responseOutputItems));
+    }
+    // Reasoning chains and protocol fields are sent back without clipping.
+    return estimateTextTokens(message.reasoningContent ?? '') +
+        (message.imageDataUrls.length + message.imageFileIds.length) *
+            _imageEstimateTokens +
+        message.toolCalls.fold<int>(
+          0,
+          (sum, call) =>
+              sum +
+              estimateTextTokens(call.name ?? '') +
+              estimateTextTokens(call.argumentsJson),
+        );
+  }
 
   int estimateMessagesTokens(Iterable<LlmRequestMessage> messages) =>
       messages.fold<int>(0, (sum, m) => sum + estimateMessageTokens(m));
@@ -153,7 +163,11 @@ class ContextWindowManager {
     // --- Phase 1: history-count bound (newest first) ---
     final selectedByCount = <int>[]; // indices into [units], newest first
     var boundedMessageCount = 0;
-    var hasUserMessage = false;
+    final currentUserIndex = units.lastIndexWhere(
+      (unit) => unit.any(
+        (m) => m.role == MessageRole.user && !m.isToolImageObservation,
+      ),
+    );
     var index = units.length - 1;
     for (; index >= 0; index--) {
       final unit = units[index];
@@ -163,18 +177,10 @@ class ContextWindowManager {
       }
       selectedByCount.add(index);
       boundedMessageCount += unit.length;
-      hasUserMessage =
-          hasUserMessage || unit.any((m) => m.role == MessageRole.user);
     }
     // Tool follow-up: ensure a user question stays even if cap filled with tools.
-    if (!hasUserMessage) {
-      for (var j = index; j >= 0; j--) {
-        if (units[j].any((m) => m.role == MessageRole.user)) {
-          selectedByCount.add(j);
-          boundedMessageCount += units[j].length;
-          break;
-        }
-      }
+    if (currentUserIndex >= 0 && !selectedByCount.contains(currentUserIndex)) {
+      selectedByCount.add(currentUserIndex);
     }
 
     // --- Phase 2: system packing ---
@@ -196,6 +202,13 @@ class ContextWindowManager {
 
     // --- Phase 3: token-pack selected units (newest first) ---
     var remaining = budget - estimateMessagesTokens(managedSystem);
+    final packedUnits = <int, List<LlmRequestMessage>>{};
+    // A tool follow-up still answers this exact task. Reserve it before tool
+    // results; screenshots use role=user but are not new user instructions.
+    if (currentUserIndex >= 0 && currentUserIndex != units.length - 1) {
+      packedUnits[currentUserIndex] = units[currentUserIndex];
+      remaining -= estimateMessagesTokens(units[currentUserIndex]);
+    }
     // Reserve a slice for optional summary so we don't fill 100% then fail inject.
     final summaryReserve = (remaining * 0.12).floor().clamp(
       0,
@@ -203,94 +216,54 @@ class ContextWindowManager {
     );
     var packRemaining = remaining - summaryReserve;
 
-    final keptNewestFirst = <int>[];
+    var packedNewest = false;
     for (final unitIndex in selectedByCount) {
+      if (packedUnits.containsKey(unitIndex)) continue;
       final unit = units[unitIndex];
       final cost = estimateMessagesTokens(unit);
       if (cost <= packRemaining) {
-        keptNewestFirst.add(unitIndex);
+        packedUnits[unitIndex] = unit;
+        packedNewest = true;
         packRemaining -= cost;
         continue;
       }
-      // Newest unit must stay even if huge; clip it.
-      if (keptNewestFirst.isEmpty &&
-          packRemaining > _messageOverheadTokens + 32) {
-        keptNewestFirst.add(unitIndex);
+      // Keep the newest protocol unit even when its non-text fields alone
+      // exceed the budget. The report then lets the caller reject the request.
+      if (!packedNewest) {
+        packedUnits[unitIndex] = _clipUnit(
+          unit,
+          packRemaining.clamp(0, budget),
+        );
         truncated = true;
-        packRemaining = 0;
-        break;
       }
       break;
     }
 
-    final keptSet = keptNewestFirst.toSet();
     final droppedUnits = <List<LlmRequestMessage>>[
       for (var i = 0; i < units.length; i++)
-        if (!keptSet.contains(i)) units[i],
+        if (!packedUnits.containsKey(i)) units[i],
     ];
-    var dropped = droppedUnits.fold<int>(0, (n, u) => n + u.length);
+    final dropped = droppedUnits.fold<int>(0, (n, u) => n + u.length);
+    final keptOldestFirst = packedUnits.keys.toList()..sort();
+    final packedConversation = [
+      for (final unitIndex in keptOldestFirst) ...packedUnits[unitIndex]!,
+    ];
 
     // --- Phase 4: extractive rolling summary of dropped history ---
-    var summaryInjected = false;
     LlmRequestMessage? summaryMessage;
-    if (droppedUnits.isNotEmpty) {
-      final summaryBudget = (summaryReserve + packRemaining).clamp(
-        48,
-        maxSummaryTokens,
-      );
+    final summaryBudget =
+        (budget -
+                estimateMessagesTokens(managedSystem) -
+                estimateMessagesTokens(packedConversation) -
+                _messageOverheadTokens)
+            .clamp(0, maxSummaryTokens);
+    if (droppedUnits.isNotEmpty && summaryBudget >= 40) {
       final summaryText = _buildDroppedSummary(droppedUnits, summaryBudget);
       if (summaryText.isNotEmpty) {
         summaryMessage = LlmRequestMessage(
           role: MessageRole.system,
           content: summaryText,
         );
-        final summaryCost = estimateMessageTokens(summaryMessage);
-        // If summary still doesn't fit, clip further.
-        if (summaryCost > summaryReserve + packRemaining) {
-          final clipped = _clipStart(
-            summaryText,
-            (summaryReserve + packRemaining - _messageOverheadTokens).clamp(
-              32,
-              maxSummaryTokens,
-            ),
-          );
-          summaryMessage = LlmRequestMessage(
-            role: MessageRole.system,
-            content: clipped,
-          );
-        }
-        summaryInjected = true;
-      }
-    }
-
-    // Rebuild kept units oldest→newest; clip newest if needed.
-    final keptOldestFirst = keptNewestFirst.reversed.toList();
-    final packedConversation = <LlmRequestMessage>[];
-    var usedAfterSystem = summaryInjected
-        ? estimateMessageTokens(summaryMessage!)
-        : 0;
-    var room = budget - estimateMessagesTokens(managedSystem) - usedAfterSystem;
-
-    for (var k = 0; k < keptOldestFirst.length; k++) {
-      final unitIndex = keptOldestFirst[k];
-      final unit = units[unitIndex];
-      final isNewest = k == keptOldestFirst.length - 1;
-      final cost = estimateMessagesTokens(unit);
-      if (cost <= room) {
-        packedConversation.addAll(unit);
-        room -= cost;
-        continue;
-      }
-      if (isNewest && room > _messageOverheadTokens + 32) {
-        packedConversation.addAll(_clipUnit(unit, room));
-        truncated = true;
-        room = 0;
-      }
-      // Older units that no longer fit should not happen often (we packed
-      // newest-first); if they do, count as dropped.
-      if (!isNewest) {
-        dropped += unit.length;
-        // Remove from summary? Already summarized if was outside kept set.
       }
     }
 
@@ -308,7 +281,7 @@ class ContextWindowManager {
         inputBudgetTokens: budget,
         droppedMessages: dropped,
         truncated: truncated,
-        summaryInjected: summaryInjected,
+        summaryInjected: summaryMessage != null,
       ),
     );
   }
@@ -376,6 +349,16 @@ class ContextWindowManager {
           unit.add(messages[i]);
           i++;
         }
+        final callIds = message.toolCalls.map((call) => call.id).toSet();
+        // A screenshot is part of its tool result, not an independent user
+        // turn. Keep its originating call/result when trimming history.
+        while (i < messages.length &&
+            messages[i].isToolImageObservation &&
+            messages[i].toolImageCallId != null &&
+            callIds.contains(messages[i].toolImageCallId)) {
+          unit.add(messages[i]);
+          i++;
+        }
         units.add(unit);
       } else {
         units.add([message]);
@@ -389,33 +372,35 @@ class ContextWindowManager {
     List<LlmRequestMessage> unit,
     int tokenBudget,
   ) {
-    if (unit.length == 1) {
-      final message = unit.single;
-      return [
-        _clipMessage(
-          message,
-          tokenBudget - _messageOverheadTokens,
-          keepEnd: message.role == MessageRole.user,
-        ),
-      ];
-    }
-
-    // Assistant tool call + its tool responses form one protocol unit and must
-    // never be split. Share the available text budget while retaining all call
-    // ids and tool-call metadata.
-    final overhead = unit.length * _messageOverheadTokens;
-    final perMessage = ((tokenBudget - overhead) ~/ unit.length).clamp(
-      1,
-      tokenBudget,
+    // Protocol fields are indivisible. Allocate only the remaining budget to
+    // text, giving unused shares (e.g. an empty assistant) to tool results.
+    final fixed = unit.fold<int>(
+      0,
+      (sum, message) =>
+          sum + _messageOverheadTokens + _fixedMessageTokens(message),
     );
-    return [
-      for (final message in unit)
-        _clipMessage(
-          message,
-          perMessage,
-          keepEnd: message.role == MessageRole.tool,
-        ),
-    ];
+    var textRemaining = (tokenBudget - fixed).clamp(0, tokenBudget);
+    var textMessages = unit
+        .where((m) => m.responseOutputItems.isEmpty && m.content.isNotEmpty)
+        .length;
+    final clippedUnit = <LlmRequestMessage>[];
+    for (final message in unit) {
+      if (message.responseOutputItems.isNotEmpty || message.content.isEmpty) {
+        clippedUnit.add(message);
+        continue;
+      }
+      final share = textRemaining ~/ textMessages--;
+      final clipped = _clipMessage(
+        message,
+        share,
+        keepEnd:
+            message.role == MessageRole.tool ||
+            message.role == MessageRole.user,
+      );
+      textRemaining -= estimateTextTokens(clipped.content);
+      clippedUnit.add(clipped);
+    }
+    return clippedUnit;
   }
 
   LlmRequestMessage _clipMessage(
@@ -423,23 +408,9 @@ class ContextWindowManager {
     int tokenBudget, {
     required bool keepEnd,
   }) {
-    final fixedTokens =
-        // Reasoning is preserved unclipped by [LlmRequestMessage], so its
-        // estimated cost must come out of the clippable text budget.
-        estimateTextTokens(message.reasoningContent ?? '') +
-        (message.imageDataUrls.length + message.imageFileIds.length) *
-            _imageEstimateTokens +
-        message.toolCalls.fold<int>(
-          0,
-          (sum, call) =>
-              sum +
-              estimateTextTokens(call.name ?? '') +
-              estimateTextTokens(call.argumentsJson),
-        );
-    final textBudget = (tokenBudget - fixedTokens).clamp(1, tokenBudget);
     final clipped = keepEnd
-        ? _clipEnd(message.content, textBudget)
-        : _clipStart(message.content, textBudget);
+        ? _clipEnd(message.content, tokenBudget)
+        : _clipStart(message.content, tokenBudget);
     return LlmRequestMessage(
       role: message.role,
       content: clipped,
@@ -448,13 +419,18 @@ class ContextWindowManager {
       toolCalls: message.toolCalls,
       imageDataUrls: message.imageDataUrls,
       imageFileIds: message.imageFileIds,
+      responseOutputItems: message.responseOutputItems,
       isToolImageObservation: message.isToolImageObservation,
+      toolImageCallId: message.toolImageCallId,
     );
   }
 
   String _clipStart(String text, int tokenBudget) {
     if (estimateTextTokens(text) <= tokenBudget) return text;
     const marker = '\n\n[后续内容已因上下文限制裁剪]';
+    if (tokenBudget <= estimateTextTokens(marker)) {
+      return _takeWithin(text, tokenBudget, fromEnd: false);
+    }
     final available = (tokenBudget - estimateTextTokens(marker)).clamp(
       1,
       tokenBudget,
@@ -465,6 +441,9 @@ class ContextWindowManager {
   String _clipEnd(String text, int tokenBudget) {
     if (estimateTextTokens(text) <= tokenBudget) return text;
     const marker = '[较早内容已因上下文限制裁剪]\n\n';
+    if (tokenBudget <= estimateTextTokens(marker)) {
+      return _takeWithin(text, tokenBudget, fromEnd: true);
+    }
     final available = (tokenBudget - estimateTextTokens(marker)).clamp(
       1,
       tokenBudget,

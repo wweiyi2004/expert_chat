@@ -14,7 +14,6 @@ void main() {
         ),
       );
       await tester.pumpWidget(panel(true));
-      await tester.tap(find.byKey(const ValueKey('thinking-panel-toggle')));
       await tester.pump(const Duration(milliseconds: 200));
       final viewport = find.byKey(const ValueKey('thinking-collapsed-scroll'));
       expect(viewport, findsOneWidget);
@@ -154,6 +153,8 @@ void main() {
           ),
         ),
       );
+      await tester.tap(find.byKey(const ValueKey('thinking-panel-toggle')));
+      await tester.pump(const Duration(milliseconds: 200));
       final preview = tester.widget<SelectableText>(
         find.byType(SelectableText),
       );

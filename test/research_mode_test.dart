@@ -59,8 +59,11 @@ class _FakeSshClient implements ResearchSshClient {
   var cols = 80;
   var rows = 24;
   String execResult = '';
+  String clientListResult = '';
   Object? execError;
   Completer<String>? execCompleter;
+  Completer<String>? switchCompleter;
+  Object? switchError;
   Completer<void>? connectCompleter;
   var disconnectCount = 0;
 
@@ -79,6 +82,8 @@ class _FakeSshClient implements ResearchSshClient {
   bool get isConnected => connected;
   @override
   String? get lastHostKeyFingerprint => 'SHA256:fake';
+  @override
+  String? get interactiveTty => connected ? '/dev/pts/7' : null;
 
   @override
   Future<void> connect({
@@ -135,6 +140,11 @@ class _FakeSshClient implements ResearchSshClient {
     if (error != null) throw error;
     final pending = execCompleter;
     if (pending != null) return pending.future;
+    if (command == TmuxService.listClientsCommand) return clientListResult;
+    if (command.startsWith('tmux switch-client ')) {
+      if (switchError != null) throw switchError!;
+      if (switchCompleter != null) return switchCompleter!.future;
+    }
     return execResult;
   }
 
@@ -163,16 +173,23 @@ class _FakeDartSshClient implements SSHClient {
   Future<SSHSession>? shellFuture;
   bool closed = false;
   SSHHostkeyVerifyHandler? verifyHostKey;
+  String? lastCommand;
+  SSHPtyConfig? lastPty;
 
   @override
   Future<void> get authenticated => authCompleter.future;
 
   @override
-  Future<SSHSession> shell({
+  Future<SSHSession> execute(
+    String command, {
     SSHPtyConfig? pty,
     SSHX11Config? x11,
     Map<String, String>? environment,
-  }) => shellFuture!;
+  }) {
+    lastCommand = command;
+    lastPty = pty;
+    return shellFuture!;
+  }
 
   @override
   void close() {
@@ -185,7 +202,20 @@ class _FakeDartSshClient implements SSHClient {
 }
 
 class _FakeDartSshSession implements SSHSession {
-  final _out = StreamController<Uint8List>.broadcast();
+  _FakeDartSshSession({List<List<int>>? startupPackets}) {
+    _out = StreamController<Uint8List>.broadcast(
+      onListen: () {
+        scheduleMicrotask(() {
+          for (final packet
+              in startupPackets ??
+                  [utf8.encode('\x1eexpert-chat-tty:/dev/pts/7\x1f')]) {
+            _out.add(Uint8List.fromList(packet));
+          }
+        });
+      },
+    );
+  }
+  late final StreamController<Uint8List> _out;
   final _err = StreamController<Uint8List>.broadcast();
   final doneCompleter = Completer<void>();
 
@@ -215,6 +245,22 @@ class _FakeDartSshSession implements SSHSession {
     _out.addError(e);
   }
 
+  @override
+  dynamic noSuchMethod(Invocation invocation) =>
+      throw UnimplementedError('${invocation.memberName} not faked');
+}
+
+class _FakeExecSession implements SSHSession {
+  _FakeExecSession(this.exitCode);
+  @override
+  final int? exitCode;
+  @override
+  Stream<Uint8List> get stdout =>
+      Stream.value(Uint8List.fromList(utf8.encode('ok')));
+  @override
+  Stream<Uint8List> get stderr => const Stream.empty();
+  @override
+  Future<void> get done => Future.value();
   @override
   dynamic noSuchMethod(Invocation invocation) =>
       throw UnimplementedError('${invocation.memberName} not faked');
@@ -580,16 +626,16 @@ void main() {
 
     test('detach goes through exec, not blind prefix keys', () async {
       final fake = _FakeSshClient()..connected = true;
-      await tmux.detachSession(fake, 'train');
+      await tmux.detachSession(fake);
       // Writing `C-b d` into the PTY is only meaningful inside tmux; outside it
       // the bytes land in the user's command line.
       expect(fake.writes, isEmpty);
-      expect(fake.execCommands.single, "tmux detach-client -s 'train'");
+      expect(fake.execCommands.single, "tmux detach-client -t '/dev/pts/7'");
       // The session itself must survive — jobs keep running.
       expect(fake.execCommands.single, isNot(contains('kill')));
     });
 
-    test('detach quotes hostile session names', () {
+    test('detach quotes the target TTY', () {
       expect(tmux.detachClientCommand("a'b"), contains("'\"'\"'"));
     });
 
@@ -603,21 +649,33 @@ void main() {
     });
 
     test('switch-client when already in tmux; attach when not', () async {
-      final fake = _FakeSshClient()..connected = true;
-      final sw = Stopwatch()..start();
-      await tmux.switchOrAttachInShell(fake, 'other', currentlyInTmux: true);
-      sw.stop();
-      // Prefix-free `tmux switch-client`: no C-b byte, no settle window for
-      // user keystrokes to fall into a tmux command prompt mid-switch.
-      expect(fake.writes.single, "tmux switch-client -t 'other'\n");
-      expect(fake.writes.any((w) => w.contains('\x02')), isFalse);
-      expect(sw.elapsedMilliseconds, lessThan(100));
+      final fake = _FakeSshClient()
+        ..connected = true
+        ..clientListResult = '/dev/pts/7\ttrain\n/dev/pts/8\ttrain\n';
+      await tmux.switchOrAttachInShell(fake, 'other');
+      expect(fake.writes, isEmpty);
+      expect(
+        fake.execCommands.last,
+        "tmux switch-client -c '/dev/pts/7' -t 'other'",
+      );
 
-      fake.writes.clear();
-      await tmux.switchOrAttachInShell(fake, 'fresh', currentlyInTmux: false);
+      fake.clientListResult = '/dev/pts/8\ttrain\n';
+      await tmux.switchOrAttachInShell(fake, 'fresh');
       expect(fake.writes.single, contains('attach-session'));
       expect(fake.writes.single, contains('fresh'));
     });
+
+    test(
+      'current session is identified by TTY rather than other attachments',
+      () async {
+        final fake = _FakeSshClient()
+          ..connected = true
+          ..clientListResult = '/dev/pts/8\ttrain\n/dev/pts/7\tother\n';
+        expect(await tmux.currentSession(fake), 'other');
+        fake.clientListResult = '/dev/pts/8\ttrain\n';
+        expect(await tmux.currentSession(fake), isNull);
+      },
+    );
 
     test('distinguishes missing tmux from an empty server', () async {
       final fake = _FakeSshClient()..connected = true;
@@ -1519,21 +1577,23 @@ void main() {
       await ctrl.connect(profile);
       // Let connect's own tmux refresh land before staging our own.
       await Future<void>.delayed(Duration.zero);
-      ctrl.attachTmuxSession('train');
+      await ctrl.attachTmuxSession('train');
       expect(container.read(researchTerminalProvider).currentTmuxName, 'train');
 
       fake.execResult = 'train\t1\t1\n';
+      fake.clientListResult = '/dev/pts/7\ttrain\n/dev/pts/8\ttrain\n';
       await ctrl.refreshTmux();
       expect(container.read(researchTerminalProvider).currentTmuxName, 'train');
 
       // User left tmux behind our back (`exit`, or C-b d on a real keyboard).
-      fake.execResult = 'train\t0\t1\n';
+      fake.clientListResult = '/dev/pts/8\ttrain\n';
       await ctrl.refreshTmux();
       expect(container.read(researchTerminalProvider).currentTmuxName, isNull);
 
       // Session killed outright.
-      ctrl.attachTmuxSession('train');
+      await ctrl.attachTmuxSession('train');
       fake.execResult = 'other\t1\t1\n';
+      fake.clientListResult = '/dev/pts/8\tother\n';
       await ctrl.refreshTmux();
       expect(container.read(researchTerminalProvider).currentTmuxName, isNull);
     });
@@ -1554,13 +1614,61 @@ void main() {
       expect(fake.writes, isEmpty);
       expect(fake.execCommands, isEmpty);
 
-      ctrl.attachTmuxSession('train');
+      await ctrl.attachTmuxSession('train');
       fake.writes.clear();
       fake.execCommands.clear();
       await ctrl.detachTmuxSession();
-      expect(fake.execCommands.single, contains('detach-client -s'));
+      expect(fake.execCommands.single, "tmux detach-client -t '/dev/pts/7'");
       expect(container.read(researchTerminalProvider).currentTmuxName, isNull);
     });
+
+    test(
+      'tmux switch waits for exec success and leaves pane input untouched',
+      () async {
+        final ctrl = container.read(researchTerminalProvider.notifier);
+        ctrl.setHostKeyHandlers(
+          onTrust: (_) async => true,
+          onMismatch: (_, _) async => false,
+        );
+        await ctrl.connect(profile);
+        await Future<void>.delayed(Duration.zero);
+        await ctrl.attachTmuxSession('train');
+        fake.clientListResult = '/dev/pts/7\ttrain\n/dev/pts/8\ttrain\n';
+        fake.writes.clear();
+        fake.execCommands.clear();
+        fake.switchCompleter = Completer<String>();
+        final switching = ctrl.switchTmuxSession('other');
+        await Future<void>.delayed(Duration.zero);
+        expect(
+          container.read(researchTerminalProvider).currentTmuxName,
+          'train',
+        );
+        expect(fake.writes, isEmpty);
+        expect(
+          fake.execCommands.last,
+          "tmux switch-client -c '/dev/pts/7' -t 'other'",
+        );
+        fake.switchCompleter!.complete('');
+        await switching;
+        expect(
+          container.read(researchTerminalProvider).currentTmuxName,
+          'other',
+        );
+
+        fake.switchError = ResearchSshExecException(
+          exitCode: 1,
+          stdoutText: '',
+          stderrText: 'no such session',
+        );
+        await ctrl.switchTmuxSession('missing');
+        expect(
+          container.read(researchTerminalProvider).currentTmuxName,
+          'other',
+        );
+        expect(container.read(researchTerminalProvider).tmuxError, isNotNull);
+        expect(fake.writes, isEmpty);
+      },
+    );
 
     test('an illegal tmux name surfaces as tmuxError, not a crash', () async {
       final ctrl = container.read(researchTerminalProvider.notifier);
@@ -1941,6 +2049,123 @@ void main() {
         await harness.client.disconnect();
       },
     );
+
+    test(
+      'PTY startup consumes a fragmented TTY marker and retains early UTF-8 output',
+      () async {
+        final server = await dummyListener();
+        addTearDown(server.close);
+        final harness = newIoWithFake();
+        final bytes = utf8.encode(
+          '欢迎\r\n\x1eexpert-chat-tty:/dev/pts/42\x1f\u001b[32mready> ',
+        );
+        harness.fake.shellFuture = Future.value(
+          _FakeDartSshSession(
+            startupPackets: [
+              for (final byte in bytes) [byte],
+            ],
+          ),
+        );
+        final connecting = harness.client.connect(
+          profile: profile(server),
+          password: 'pw',
+          privateKeyPem: null,
+          passphrase: null,
+          onHostKeyTrust: (_) async => true,
+          onHostKeyMismatch: (_, _) async => false,
+          cols: 100,
+          rows: 35,
+        );
+        await harness.created;
+        harness.fake.authCompleter.complete();
+        await connecting;
+        expect(harness.client.interactiveTty, '/dev/pts/42');
+        expect(harness.fake.lastCommand, contains('tty_value=\$(tty)'));
+        expect(harness.fake.lastCommand, contains('exec'));
+        expect(harness.fake.lastPty?.width, 100);
+        expect(harness.fake.lastPty?.height, 35);
+        final received = <int>[];
+        final sub = harness.client.stdout.listen(received.addAll);
+        await Future<void>.delayed(Duration.zero);
+        expect(utf8.decode(received), '欢迎\r\n\u001b[32mready> ');
+        await sub.cancel();
+        await harness.client.disconnect();
+        expect(harness.client.interactiveTty, isNull);
+      },
+    );
+
+    test(
+      'missing TTY handshake fails connection instead of using another client',
+      () async {
+        final server = await dummyListener();
+        addTearDown(server.close);
+        final harness = newIoWithFake();
+        harness.fake.shellFuture = Future.value(
+          _FakeDartSshSession(
+            startupPackets: [utf8.encode('welcome without handshake')],
+          ),
+        );
+        final connecting = harness.client.connect(
+          profile: profile(server),
+          password: 'pw',
+          privateKeyPem: null,
+          passphrase: null,
+          onHostKeyTrust: (_) async => true,
+          onHostKeyMismatch: (_, _) async => false,
+          connectTimeout: const Duration(milliseconds: 200),
+        );
+        await harness.created;
+        harness.fake.authCompleter.complete();
+        await expectLater(
+          connecting,
+          throwsA(
+            isA<ResearchSshException>().having(
+              (e) => e.message,
+              'message',
+              '获取远程终端 TTY 超时',
+            ),
+          ),
+        );
+        expect(harness.client.isConnected, isFalse);
+        expect(harness.client.interactiveTty, isNull);
+        expect(harness.fake.closed, isTrue);
+        await harness.client.disconnect();
+      },
+    );
+
+    test('SSH exec requires an acknowledged zero exit status', () async {
+      final server = await dummyListener();
+      addTearDown(server.close);
+      final harness = newIoWithFake();
+      harness.fake.shellFuture = Future.value(_FakeDartSshSession());
+      final connecting = harness.client.connect(
+        profile: profile(server),
+        password: 'pw',
+        privateKeyPem: null,
+        passphrase: null,
+        onHostKeyTrust: (_) async => true,
+        onHostKeyMismatch: (_, _) async => false,
+      );
+      await harness.created;
+      harness.fake.authCompleter.complete();
+      await connecting;
+      harness.fake.shellFuture = Future.value(_FakeExecSession(0));
+      expect(await harness.client.runExec('synthetic command'), 'ok');
+      for (final status in <int?>[1, null]) {
+        harness.fake.shellFuture = Future.value(_FakeExecSession(status));
+        await expectLater(
+          harness.client.runExec('synthetic command'),
+          throwsA(
+            isA<ResearchSshExecException>().having(
+              (e) => e.exitCode,
+              'exitCode',
+              status,
+            ),
+          ),
+        );
+      }
+      await harness.client.disconnect();
+    });
   });
 
   group('web stub client', () {
@@ -2258,6 +2483,8 @@ void main() {
       );
       await tester.pump();
 
+      await tester.tap(find.byTooltip('科研助手'));
+      await tester.pump();
       await tester.ensureVisible(find.text('命令建议'));
       await tester.pump();
       await tester.tap(find.text('编辑'));

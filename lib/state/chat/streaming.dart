@@ -261,6 +261,23 @@ mixin ChatStreaming on ChatTools {
           presenter.flush(publishAll: true);
         }
 
+        final outputLimited = _isOutputLimitFinish(finishReason);
+        if (outputLimited ||
+            finishReason == 'incomplete' ||
+            finishReason == 'content_filter') {
+          if (outputLimited &&
+              output.content.trim().isEmpty &&
+              turnReasoning.isNotEmpty) {
+            output.replaceContent(_reasoningLimitFallback);
+            presenter.flush(publishAll: true);
+          }
+          throw StateError(
+            outputLimited
+                ? '模型输出达到长度上限，答复尚未完成；已保留收到的内容，请重试或继续提问。'
+                : '模型未完成答复（$finishReason）；已保留收到的内容，请重试。',
+          );
+        }
+
         final toolCalls = ToolCallDraft.finalize(toolDrafts);
         final needsTools =
             request.tools != null &&
@@ -281,8 +298,7 @@ mixin ChatStreaming on ChatTools {
               // On the tool-withheld final round, reasoning that accompanies a
               // rejected tool call is not a final answer.
               output.replaceContent(_emptyReplyFallback);
-            } else if (reasoningOnly.isNotEmpty &&
-                !_isOutputLimitFinish(finishReason)) {
+            } else if (reasoningOnly.isNotEmpty) {
               final recovered = _splitReasoningOnlyReply(reasoningOnly);
               final allReasoning = output.reasoning;
               final priorLength = allReasoning.length - turnReasoning.length;
@@ -291,8 +307,6 @@ mixin ChatStreaming on ChatTools {
                   : allReasoning.substring(0, priorLength);
               output.replaceReasoning(priorReasoning + recovered.reasoning);
               output.replaceContent(recovered.content);
-            } else if (reasoningOnly.isNotEmpty) {
-              output.replaceContent(_reasoningLimitFallback);
             } else {
               // The final round withholds the tool list, but a stubborn model
               // may still emit tool calls (or nothing) without any text.

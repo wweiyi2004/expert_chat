@@ -7,13 +7,17 @@ import 'package:expert_chat/data/study_models.dart';
 import 'package:expert_chat/data/study_repository.dart';
 import 'package:expert_chat/domain/llm/llm_provider.dart';
 import 'package:expert_chat/domain/study/structured_output.dart';
+import 'package:expert_chat/features/study/quiz_player_page.dart';
 import 'package:expert_chat/state/settings_controller.dart';
 import 'package:expert_chat/state/study_controller.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class _ReadySettings extends SettingsController {
+  _ReadySettings({this.apiKey = 'sk-test'});
+  final String apiKey;
   @override
   Future<SettingsState> build() async {
     final profile = ProviderProfile(
@@ -26,7 +30,7 @@ class _ReadySettings extends SettingsController {
     return SettingsState(
       profiles: [profile],
       activeProfileId: profile.id,
-      apiKey: 'sk-test',
+      apiKey: apiKey,
     );
   }
 }
@@ -34,7 +38,7 @@ class _ReadySettings extends SettingsController {
 class _ScriptedLlm implements LlmProvider {
   _ScriptedLlm(this.responses);
 
-  final List<String> responses;
+  final List<Object> responses;
   final List<List<LlmRequestMessage>> calls = [];
 
   @override
@@ -49,7 +53,9 @@ class _ScriptedLlm implements LlmProvider {
   }) async* {
     calls.add(List.of(messages));
     final index = (calls.length - 1).clamp(0, responses.length - 1);
-    yield ChatChunk(contentDelta: responses[index]);
+    final response = responses[index];
+    if (response is! String) throw response;
+    yield ChatChunk(contentDelta: response);
   }
 }
 
@@ -60,7 +66,7 @@ void main() {
   late StudyRepository repository;
   late ProviderContainer container;
 
-  Future<void> prepare({LlmProvider? llm}) async {
+  Future<void> prepare({LlmProvider? llm, String apiKey = 'sk-test'}) async {
     SharedPreferences.setMockInitialValues({});
     final prefs = await SharedPreferences.getInstance();
     db = AppDatabase(NativeDatabase.memory());
@@ -68,7 +74,9 @@ void main() {
     container = ProviderContainer(
       overrides: [
         studyRepositoryProvider.overrideWithValue(repository),
-        settingsControllerProvider.overrideWith(_ReadySettings.new),
+        settingsControllerProvider.overrideWith(
+          () => _ReadySettings(apiKey: apiKey),
+        ),
         if (llm != null) llmProvider.overrideWithValue(llm),
       ],
     );
@@ -129,7 +137,7 @@ void main() {
   });
 
   test(
-    'short-answer grading retries then exposes readable raw advice',
+    'short-answer grading propagates unusable output without assigning a grade',
     () async {
       final llm = _ScriptedLlm(['not-json', '原始批改意见']);
       await prepare(llm: llm);
@@ -139,13 +147,123 @@ void main() {
         answerText: '物体保持运动状态的性质',
       );
 
-      final grade = await container
-          .read(studyControllerProvider.notifier)
-          .gradeItem(item, '不完整回答');
+      await expectLater(
+        container
+            .read(studyControllerProvider.notifier)
+            .gradeItem(item, '不完整回答'),
+        throwsA(
+          isA<StudyStructuredOutputException>().having(
+            (error) => error.rawOutput,
+            'rawOutput',
+            '原始批改意见',
+          ),
+        ),
+      );
 
       expect(llm.calls, hasLength(2));
-      expect(grade.correct, isFalse);
-      expect(grade.explanation, contains('原始批改意见'));
+      expect((await repository.load()).wrongItems, isEmpty);
+    },
+  );
+
+  test('missing API key does not create a placeholder course', () async {
+    final llm = _ScriptedLlm(['unused']);
+    await prepare(llm: llm, apiKey: '');
+    await expectLater(
+      container
+          .read(studyControllerProvider.notifier)
+          .createCourseFromTopic('数学'),
+      throwsStateError,
+    );
+    expect(llm.calls, isEmpty);
+    expect((await repository.load()).courses, isEmpty);
+    expect((await repository.load()).nodes, isEmpty);
+  });
+
+  test('request failure does not create a placeholder course', () async {
+    final failure = StateError('request failed');
+    await prepare(llm: _ScriptedLlm([failure]));
+    await expectLater(
+      container
+          .read(studyControllerProvider.notifier)
+          .createCourseFromTopic('数学'),
+      throwsA(same(failure)),
+    );
+    expect((await repository.load()).courses, isEmpty);
+    expect((await repository.load()).nodes, isEmpty);
+  });
+
+  for (final output in ['not-json', '[]', '{}']) {
+    test(
+      'unusable outline does not create a placeholder course: $output',
+      () async {
+        final llm = _ScriptedLlm([output]);
+        await prepare(llm: llm);
+        await expectLater(
+          container
+              .read(studyControllerProvider.notifier)
+              .createCourseFromTopic('数学'),
+          throwsA(isA<StudyStructuredOutputException>()),
+        );
+        expect(llm.calls, hasLength(2));
+        expect((await repository.load()).courses, isEmpty);
+        expect((await repository.load()).nodes, isEmpty);
+      },
+    );
+  }
+
+  testWidgets(
+    'failed grading keeps the answer for retry and does not save a wrong item',
+    (tester) async {
+      final llm = _ScriptedLlm([
+        'not-json',
+        '{}',
+        '{"correct":true,"partial":false,"score":1,"explanation":"正确"}',
+      ]);
+      await tester.runAsync(() => prepare(llm: llm));
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: MaterialApp(
+            home: QuizPlayerPage(
+              topic: '数学',
+              items: [
+                StudyQuizItem(id: 'q1', stem: '问题一', type: StudyQuizType.short),
+                StudyQuizItem(id: 'q2', stem: '问题二', type: StudyQuizType.short),
+              ],
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'answer one');
+      await tester.tap(find.text('提交'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('批改失败'), findsOneWidget);
+      expect(find.text('✗ 错误'), findsNothing);
+      expect(find.text('提交'), findsOneWidget);
+      expect(
+        tester.widget<EditableText>(find.byType(EditableText)).controller.text,
+        'answer one',
+      );
+      expect(
+        container.read(studyControllerProvider).requireValue.wrongItems,
+        isEmpty,
+      );
+      final saved = await tester.runAsync(repository.load);
+      expect(saved!.wrongItems, isEmpty);
+
+      await tester.tap(find.text('提交'));
+      await tester.pumpAndSettle();
+      expect(find.text('✓ 正确'), findsOneWidget);
+      await tester.tap(find.text('下一题'));
+      await tester.pumpAndSettle();
+      expect(find.text('问题二'), findsOneWidget);
+      expect(
+        tester.widget<EditableText>(find.byType(EditableText)).controller.text,
+        isEmpty,
+      );
+      expect(llm.calls, hasLength(3));
+      expect(tester.takeException(), isNull);
     },
   );
 

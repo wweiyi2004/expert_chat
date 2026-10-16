@@ -10,6 +10,7 @@ import 'package:path_provider/path_provider.dart';
 import '../../../data/custom_tts_voices.dart';
 import '../../../data/provider_profile.dart';
 import '../../../data/media_api_config.dart';
+import '../../../domain/llm/gemini_endpoint.dart';
 
 import 'model_settings_widgets.dart';
 
@@ -27,6 +28,7 @@ class MediaApiSettingsCard extends StatefulWidget {
     this.showImageSize = false,
     this.showVoice = false,
     this.showSpeechProtocol = false,
+    this.showApiFormat = false,
     this.mimoPreset,
     this.aliyunTtsPreset,
     this.onSpeechProviderSelected,
@@ -46,6 +48,7 @@ class MediaApiSettingsCard extends StatefulWidget {
   final bool showImageSize;
   final bool showVoice;
   final bool showSpeechProtocol;
+  final bool showApiFormat;
   final MediaApiConfig? mimoPreset;
   final MediaApiConfig? aliyunTtsPreset;
   final Future<void> Function(
@@ -218,6 +221,7 @@ class _OptionalApiCardState extends State<MediaApiSettingsCard> {
     String? voiceDesignPrompt,
     String? voiceClonePath,
     SpeechApiProtocol? speechProtocol,
+    LlmApiFormat? apiFormat,
   }) {
     // Merge against the latest provider state rather than the last build
     // snapshot: two field edits landing in the same frame would otherwise
@@ -309,6 +313,7 @@ class _OptionalApiCardState extends State<MediaApiSettingsCard> {
         voiceDesignPrompt: voiceDesignPrompt,
         voiceClonePath: voiceClonePath,
         speechProtocol: nextProtocol,
+        apiFormat: apiFormat,
       ),
     );
   }
@@ -500,6 +505,62 @@ class _OptionalApiCardState extends State<MediaApiSettingsCard> {
             ),
             onChanged: (value) => _patch(model: value),
           ),
+          if (widget.showApiFormat) ...[
+            const SizedBox(height: 12),
+            Builder(
+              builder: (context) {
+                final autoResolved = GeminiEndpoint.resolveFormat(
+                  format: LlmApiFormat.auto,
+                  baseUrl: widget.config.baseUrl,
+                );
+                final effective = widget.config.effectiveApiFormat;
+                final helper = effective == LlmApiFormat.geminiNative
+                    ? (widget.showImageSize
+                          ? '使用 Gemini 原生生图协议 (:generateContent / :predict)'
+                          : '使用 Gemini 原生多模态协议 (/v1beta/models)')
+                    : GeminiEndpoint.isGoogleGeminiHost(widget.config.baseUrl)
+                    ? '已自动映射到 Gemini OpenAI 兼容路径 (/v1beta/openai)'
+                    : null;
+                return DropdownButtonFormField<LlmApiFormat>(
+                  key: ValueKey(
+                    'media-api-format-${widget.config.apiFormat.name}-${autoResolved.name}',
+                  ),
+                  initialValue: widget.config.apiFormat,
+                  isExpanded: true,
+                  decoration: InputDecoration(
+                    labelText: '接口格式',
+                    helperText: helper,
+                  ),
+                  items: [
+                    DropdownMenuItem(
+                      value: LlmApiFormat.auto,
+                      child: Text(
+                        '自动识别（当前：${autoResolved.shortLabel}）',
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    DropdownMenuItem(
+                      value: LlmApiFormat.openAiCompatible,
+                      child: Text(
+                        LlmApiFormat.openAiCompatible.label,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    DropdownMenuItem(
+                      value: LlmApiFormat.geminiNative,
+                      child: Text(
+                        LlmApiFormat.geminiNative.label,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                  onChanged: (value) {
+                    if (value != null) _patch(apiFormat: value);
+                  },
+                );
+              },
+            ),
+          ],
           if (widget.showSpeechProtocol) ...[
             const SizedBox(height: 12),
             // Keyed by protocol so auto-inference / MiMo preset remounts the

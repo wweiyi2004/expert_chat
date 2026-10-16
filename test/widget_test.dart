@@ -1078,6 +1078,36 @@ void main() {
     expect(assistant.reasoning, '还在分析中……');
   });
 
+  for (final reason in [
+    'length',
+    'max_output_tokens',
+    'content_filter',
+    'incomplete',
+  ]) {
+    test(
+      'unfinished streamed answer keeps partial text and reports $reason',
+      () async {
+        final repo = InMemoryRepo();
+        final c = _container(
+          FakeLlmProvider([
+            ChatChunk(contentDelta: '已收到的部分正文', finishReason: reason),
+          ]),
+          repo,
+        );
+        addTearDown(c.dispose);
+        await c.read(chatControllerProvider.future);
+        await c.read(chatControllerProvider.notifier).sendMessage('请回答');
+
+        final state = c.read(chatControllerProvider).requireValue;
+        expect(state.current!.activePath.last.content, '已收到的部分正文');
+        expect(state.isStreaming, isFalse);
+        expect(state.error, contains('未完成'));
+        expect(state.retryOperation, isNotNull);
+        expect(repo.store.single.activePath.last.content, '已收到的部分正文');
+      },
+    );
+  }
+
   test(
     'deleting a conversation during send preflight does not resurrect it',
     () async {

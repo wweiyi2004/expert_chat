@@ -27,6 +27,7 @@ class FullBackupService {
   bool _busy = false;
   static const _uuid = Uuid();
   static const _codec = MemoryMarkdownCodec();
+  static const maxRecords = 100000;
   static const tableNames = [
     'projects',
     'character_cards',
@@ -54,6 +55,8 @@ class FullBackupService {
     'reasoningEffort',
     'systemPrompt',
     'chatSkills',
+    'promptPresetsV1',
+    'learningPlansV1',
     'memoryEnabled',
     'studyModeEnabled',
     'creationModeEnabled',
@@ -64,8 +67,11 @@ class FullBackupService {
     final tables = <String, dynamic>{};
     await db.transaction(() async {
       var approximateBytes = 0;
+      var rowCount = 0;
       for (final name in tableNames) {
         final rows = await db.customSelect('SELECT * FROM "$name"').get();
+        rowCount += rows.length;
+        _checkRecordCount(rowCount);
         tables[name] = [for (final row in rows) row.data];
         approximateBytes += utf8.encode(jsonEncode(tables[name])).length;
         if (approximateBytes > BackupCodec.maxBytes) {
@@ -151,7 +157,7 @@ class FullBackupService {
       final rows = tables[name];
       if (rows is! List) throw const FormatException('备份数据表格式错误。');
       rowCount += rows.length;
-      if (rowCount > 100000) throw const FormatException('备份记录数超过 100000 条。');
+      _checkRecordCount(rowCount);
       final keys = <String>{};
       for (final row in rows) {
         if (row is! Map<String, dynamic> ||
@@ -466,6 +472,12 @@ class FullBackupService {
       return await action();
     } finally {
       _busy = false;
+    }
+  }
+
+  static void _checkRecordCount(int count) {
+    if (count > maxRecords) {
+      throw const FormatException('备份记录数超过 $maxRecords 条。');
     }
   }
 }

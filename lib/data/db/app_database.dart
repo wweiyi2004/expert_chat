@@ -199,6 +199,8 @@ class GenerationRecords extends Table {
   TextColumn get revisedPrompt => text().nullable()();
   TextColumn get model => text()();
   TextColumn get providerHost => text()();
+  // Actual wire protocol used for generation (v17); legacy rows are unknown.
+  TextColumn get apiFormat => text().nullable()();
   TextColumn get imageSize => text()();
   TextColumn get referencesJson => text().withDefault(const Constant('[]'))();
   DateTimeColumn get createdAt => dateTime()();
@@ -234,7 +236,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase([QueryExecutor? executor]) : super(executor ?? _open());
 
   @override
-  int get schemaVersion => 16;
+  int get schemaVersion => 17;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -312,6 +314,10 @@ class AppDatabase extends _$AppDatabase {
         await m.createTable(projectFiles);
         await m.createTable(generationRecords);
         await m.createTable(backupImports);
+      }
+      // Earlier versions create generationRecords with its current columns.
+      if (from == 16) {
+        await m.addColumn(generationRecords, generationRecords.apiFormat);
       }
     },
     beforeOpen: (details) async {

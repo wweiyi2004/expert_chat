@@ -1,41 +1,52 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg"
-     width="1024"
-     height="1024"
-     viewBox="0 0 1024 1024"
-     role="img"
-     aria-labelledby="title description">
-  <title id="title">Expert Chat app mark</title>
-  <desc id="description">
-    An open book inside a speech bubble, with a small gold sparkle.
-  </desc>
-
-  <!-- Warm paper canvas and ink-teal tile match the product UI. -->
-  <rect width="1024" height="1024" fill="#F6F0E7"/>
-  <rect x="64" y="64" width="896" height="896" rx="224" fill="#1F5C6B"/>
-
-  <!-- Conversation bubble. Its tail also reads as a page or bookmark. -->
-  <path
-    d="M330 188H694C752 188 800 236 800 294V560C800 618 752 666 694 666H484L326 796L360 666H330C272 666 224 618 224 560V294C224 236 272 188 330 188Z"
-    fill="#F6F0E7"/>
-
-  <!-- Open book / knowledge cue. -->
-  <path
-    d="M342 350C406 332 468 348 512 388C556 348 618 332 682 350V534C620 522 558 542 512 584C466 542 404 522 342 534V350Z"
-    fill="none"
-    stroke="#1F5C6B"
-    stroke-width="34"
-    stroke-linecap="round"
-    stroke-linejoin="round"/>
-  <path
-    d="M512 388V584"
-    fill="none"
-    stroke="#1F5C6B"
-    stroke-width="34"
-    stroke-linecap="round"/>
-
-  <!-- A restrained expert/insight sparkle. -->
-  <path
-    d="M728 218C728 263 753 288 798 288C753 288 728 313 728 358C728 313 703 288 658 288C703 288 728 263 728 218Z"
-    fill="#E7B252"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+<title id="title">Expert Chat · 猫耳助手</title>
+<desc id="desc">An original cat-eared anime assistant with ivory hair, teal eyes, a headset and a golden star. The ink-teal and warm-paper palette preserves Expert Chat's identity.</desc>
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#307C85"/><stop offset="1" stop-color="#163E51"/></linearGradient>
+  <linearGradient id="hair" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#FFFDF6"/><stop offset="1" stop-color="#C2DDD6"/></linearGradient>
+  <linearGradient id="eye" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#143947"/><stop offset=".58" stop-color="#288790"/><stop offset="1" stop-color="#7EDBC5"/></linearGradient>
+</defs>
+<rect width="1024" height="1024" rx="220" fill="#F6F0E7"/>
+<rect x="32" y="32" width="960" height="960" rx="205" fill="url(#bg)"/>
+<circle cx="512" cy="474" r="346" fill="#BDE7D4" opacity=".08"/>
+<path d="M110 674Q89 491 194 342M850 352Q945 492 909 646" fill="none" stroke="#9FD8CB" stroke-width="8" stroke-linecap="round" opacity=".25"/>
+<!-- Shoulders, jacket and ribbon. -->
+<path d="M260 939Q272 777 431 763H593Q752 777 764 939" fill="#F6F0E7" stroke="#153F4D" stroke-width="16" stroke-linejoin="round"/>
+<path d="M360 806L445 885L512 833L579 885L664 806" fill="#438D94" stroke="#153F4D" stroke-width="14" stroke-linejoin="round"/>
+<path d="M507 844Q449 807 413 838L431 907L507 865M517 844Q575 807 611 838L593 907L517 865" fill="#E7B252" stroke="#153F4D" stroke-width="12" stroke-linejoin="round"/>
+<circle cx="512" cy="854" r="24" fill="#FFF3C7" stroke="#153F4D" stroke-width="10"/>
+<!-- Hair silhouette and cat ears. -->
+<path d="M222 431Q190 343 216 169Q224 145 246 161L368 260Q512 200 656 260L778 161Q800 145 808 169Q834 343 802 431L824 720Q820 802 739 835L706 759H318L285 835Q204 802 200 720Z" fill="url(#hair)" stroke="#153F4D" stroke-width="18" stroke-linejoin="round"/>
+<path d="M253 208L332 278L253 329Z M771 208L692 278L771 329Z" fill="#EBAFA7"/>
+<path d="M274 245L306 278L268 300Z M750 245L718 278L756 300Z" fill="#F7D6C7"/>
+<!-- Face. -->
+<path d="M285 477Q283 316 512 316Q741 316 739 477L723 615Q716 750 512 797Q308 750 301 615Z" fill="#FFF2DE" stroke="#153F4D" stroke-width="15"/>
+<!-- Side locks. -->
+<path d="M266 404Q231 571 285 738L341 665L309 461M758 404Q793 571 739 738L683 665L715 461" fill="url(#hair)" stroke="#153F4D" stroke-width="14" stroke-linejoin="round"/>
+<!-- Swept bangs with an unmistakable anime silhouette. -->
+<path d="M261 452Q268 274 492 267Q708 241 764 448Q685 434 631 369L650 476Q559 447 523 365Q504 453 414 481L435 399Q377 470 313 484Z" fill="url(#hair)" stroke="#153F4D" stroke-width="16" stroke-linejoin="round"/>
+<path d="M465 268Q449 202 507 173Q550 159 554 195Q552 221 520 224" fill="none" stroke="#D2E5DB" stroke-width="22" stroke-linecap="round"/>
+<path d="M314 391Q343 318 412 308" fill="none" stroke="#FFFFFF" stroke-width="18" stroke-linecap="round" opacity=".85"/>
+<!-- Eyes, bold upper lashes, iris glints. -->
+<path d="M342 525Q391 493 445 527L440 602Q400 657 354 605Z M579 527Q633 493 682 525L670 605Q624 657 584 602Z" fill="#FFFFFF"/>
+<ellipse cx="398" cy="564" rx="40" ry="59" fill="url(#eye)"/>
+<ellipse cx="626" cy="564" rx="40" ry="59" fill="url(#eye)"/>
+<path d="M332 521Q386 490 446 522M578 522Q638 490 692 521" fill="none" stroke="#153F4D" stroke-width="18" stroke-linecap="round"/>
+<path d="M337 521L323 505M687 521L701 505" fill="none" stroke="#153F4D" stroke-width="12" stroke-linecap="round"/>
+<ellipse cx="387" cy="541" rx="13" ry="19" fill="#FFFFFF"/>
+<ellipse cx="615" cy="541" rx="13" ry="19" fill="#FFFFFF"/>
+<circle cx="412" cy="590" r="8" fill="#D5FFEE"/>
+<circle cx="640" cy="590" r="8" fill="#D5FFEE"/>
+<ellipse cx="353" cy="651" rx="35" ry="16" fill="#EDB3A8" opacity=".75"/>
+<ellipse cx="671" cy="651" rx="35" ry="16" fill="#EDB3A8" opacity=".75"/>
+<path d="M489 678Q512 699 535 678" fill="none" stroke="#965E54" stroke-width="11" stroke-linecap="round"/>
+<!-- Compact headset microphone. -->
+<rect x="240" y="490" width="47" height="119" rx="23" fill="#438D94" stroke="#153F4D" stroke-width="12"/>
+<rect x="737" y="490" width="47" height="119" rx="23" fill="#438D94" stroke="#153F4D" stroke-width="12"/>
+<path d="M763 591Q767 694 652 703" fill="none" stroke="#153F4D" stroke-width="14" stroke-linecap="round"/>
+<rect x="609" y="687" width="62" height="30" rx="15" fill="#E7B252" stroke="#153F4D" stroke-width="9"/>
+<!-- Signature insight star. -->
+<path d="M724 320L741 350L777 354L752 381L757 418L724 401L691 418L696 381L671 354L707 350Z" fill="#E7B252" stroke="#153F4D" stroke-width="10" stroke-linejoin="round"/>
+<path d="M864 244L872 266L894 274L872 282L864 304L856 282L834 274L856 266Z" fill="#F4D68E"/>
+<circle cx="154" cy="765" r="10" fill="#F4D68E"/>
 </svg>

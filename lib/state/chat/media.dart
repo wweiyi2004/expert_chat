@@ -55,6 +55,9 @@ mixin ChatMedia on ChatGeneration {
           imageGenerationApi: settings.imageGenerationApi.copyWith(
             model: version.model,
             imageSize: version.imageSize,
+            apiFormat: version.apiFormat == null
+                ? null
+                : LlmApiFormat.values.byName(version.apiFormat!),
           ),
         );
         refs = await ref.read(generationRepositoryProvider).references(version);

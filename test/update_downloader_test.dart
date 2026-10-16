@@ -1,141 +1,244 @@
+import 'dart:async';
 import 'dart:io';
-
+import 'dart:typed_data';
+import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 import 'package:expert_chat/domain/update/update_downloader.dart';
-import 'package:flutter/services.dart';
+import 'package:expert_chat/domain/update/update_sources.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-void main() {
-  TestWidgetsFlutterBinding.ensureInitialized();
-  const pathProvider = MethodChannel('plugins.flutter.io/path_provider');
-
-  late Directory root;
-
-  setUp(() {
-    root = Directory.systemTemp.createTempSync('update_downloader_test');
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(pathProvider, (call) async {
-          if (call.method == 'getDownloadsDirectory') return null;
-          if (call.method == 'getTemporaryDirectory') {
-            return '${root.path}${Platform.pathSeparator}tmp';
-          }
-          return null;
-        });
-  });
-
-  tearDown(() {
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(pathProvider, null);
-    try {
-      root.deleteSync(recursive: true);
-    } catch (_) {}
-  });
-
-  File partialFile() => File(
-    '${root.path}${Platform.pathSeparator}tmp'
-    '${Platform.pathSeparator}expert-chat-v2.1.0.apk',
-  );
-
-  test('cancel removes the partially downloaded file', () async {
-    final downloader = UpdateDownloader(
-      dio: _WritePartialThenThrowDio(
-        DioException(
-          requestOptions: RequestOptions(path: 'https://example/update.apk'),
-          type: DioExceptionType.cancel,
-          error: '用户取消',
-        ),
-      ),
-    );
-
-    await expectLater(
-      downloader.download(
-        url: 'https://example/update.apk',
-        fileName: 'expert-chat-v2.1.0.apk',
-      ),
-      throwsA(isA<DioException>()),
-    );
-
-    // 取消后残留的半成品文件必须被清理,而不是留在下载目录。
-    await _expectFileGone(partialFile());
-  });
-
-  test('a failed download does not leave a partial file behind', () async {
-    final downloader = UpdateDownloader(
-      dio: _WritePartialThenThrowDio(
-        DioException(
-          requestOptions: RequestOptions(path: 'https://example/update.apk'),
-          type: DioExceptionType.connectionTimeout,
-        ),
-      ),
-    );
-
-    await expectLater(
-      downloader.download(
-        url: 'https://example/update.apk',
-        fileName: 'expert-chat-v2.1.0.apk',
-      ),
-      throwsA(isA<DioException>()),
-    );
-
-    await _expectFileGone(partialFile());
-  });
-}
-
-/// Polls for the file to disappear. On Windows a freshly written file can be
-/// transiently locked (antivirus scan), so a single immediate check is flaky
-/// when the machine is under load; a broken cleanup still fails the poll.
-Future<void> _expectFileGone(File file) async {
-  for (var i = 0; i < 100; i++) {
-    if (!file.existsSync()) return;
-    await Future<void>.delayed(const Duration(milliseconds: 10));
-  }
-  fail('partial file was not removed: ${file.path}');
-}
-
-/// Simulates an interrupted download: writes a partial file to [savePath] and
-/// then throws without cleaning it up (the behavior of older dio releases).
-class _WritePartialThenThrowDio with DioMixin implements Dio {
-  _WritePartialThenThrowDio(this.error) {
-    options = BaseOptions();
-    httpClientAdapter = _UnusedAdapter();
-  }
-
-  final DioException error;
-
-  @override
-  Future<Response> download(
-    String urlPath,
-    dynamic savePath, {
-    ProgressCallback? onReceiveProgress,
-    Map<String, dynamic>? queryParameters,
-    CancelToken? cancelToken,
-    bool deleteOnError = true,
-    FileAccessMode fileAccessMode = FileAccessMode.write,
-    String lengthHeader = Headers.contentLengthHeader,
-    Object? data,
-    Options? options,
-  }) async {
-    final file = File(savePath as String);
-    await file.create(recursive: true);
-    final raf = await file.open(mode: FileMode.write);
-    await raf.writeFrom([1, 2, 3]);
-    await raf.close();
-    throw error;
-  }
-}
-
-/// Never reached: [_WritePartialThenThrowDio.download] throws before the
-/// request pipeline runs, so this adapter only needs to satisfy the field.
-class _UnusedAdapter implements HttpClientAdapter {
+class _Adapter implements HttpClientAdapter {
+  _Adapter(this.respond);
+  final Future<ResponseBody> Function(RequestOptions) respond;
   @override
   void close({bool force = false}) {}
-
   @override
   Future<ResponseBody> fetch(
     RequestOptions options,
     Stream<Uint8List>? requestStream,
     Future<void>? cancelFuture,
-  ) {
-    throw UnimplementedError();
+  ) => respond(options);
+}
+
+void main() {
+  late Directory root;
+  final bytes = Uint8List.fromList([
+    0x50,
+    0x4b,
+    3,
+    4,
+    ...List.generate(100, (i) => i),
+  ]);
+  final digest = sha256.convert(bytes).toString();
+  setUp(() {
+    root = Directory.systemTemp.createTempSync('expert-update-');
+  });
+  tearDown(() => root.deleteSync(recursive: true));
+  Dio client(Future<ResponseBody> Function(RequestOptions) response) =>
+      Dio()..httpClientAdapter = _Adapter(response);
+  ResponseBody full([List<int>? data]) => ResponseBody.fromBytes(
+    data ?? bytes,
+    200,
+    headers: {
+      'content-length': ['${(data ?? bytes).length}'],
+      'etag': ['"v1"'],
+    },
+  );
+  Future<void> partial({String? hash}) async {
+    final cancel = CancelToken();
+    final dio = client(
+      (_) async => ResponseBody(
+        Stream.fromIterable([
+          Uint8List.fromList(bytes.take(20).toList()),
+          Uint8List.fromList(bytes.skip(20).toList()),
+        ]),
+        200,
+        headers: {
+          'content-length': ['${bytes.length}'],
+          'etag': ['"v1"'],
+        },
+      ),
+    );
+    await expectLater(
+      UpdateDownloader(dio: dio, directory: root).download(
+        url: 'https://origin.test/app.apk',
+        fileName: 'app.apk',
+        expectedSha256: hash,
+        cancelToken: cancel,
+        onProgress: (count, _) {
+          if (count >= 20) cancel.cancel('pause');
+        },
+      ),
+      throwsA(isA<DioException>()),
+    );
+    expect(File('${root.path}/app.apk').existsSync(), false);
+    expect(File('${root.path}/app.apk.part').lengthSync(), 20);
   }
+
+  test('pause and a new downloader resume using Range and If-Range', () async {
+    await partial(hash: digest);
+    final requests = <RequestOptions>[];
+    final progress = <int>[];
+    final dio = client((r) async {
+      requests.add(r);
+      return ResponseBody.fromBytes(
+        bytes.sublist(20),
+        206,
+        headers: {
+          'content-range': ['bytes 20-${bytes.length - 1}/${bytes.length}'],
+          'content-length': ['${bytes.length - 20}'],
+          'etag': ['"v1"'],
+        },
+      );
+    });
+    final path = await UpdateDownloader(dio: dio, directory: root).download(
+      url: 'https://origin.test/app.apk',
+      fileName: 'app.apk',
+      expectedSha256: digest,
+      onProgress: (n, _) => progress.add(n),
+    );
+    expect(requests.single.headers['Range'], 'bytes=20-');
+    expect(requests.single.headers['If-Range'], '"v1"');
+    expect(progress.first, 20);
+    expect(File(path).readAsBytesSync(), bytes);
+    expect(File('$path.part').existsSync(), false);
+  });
+  test(
+    'a server ignoring Range replaces partial bytes instead of appending',
+    () async {
+      await partial();
+      final path = await UpdateDownloader(
+        dio: client((_) async => full()),
+        directory: root,
+      ).download(url: 'https://origin.test/app.apk', fileName: 'app.apk');
+      expect(File(path).readAsBytesSync(), bytes);
+    },
+  );
+  test(
+    'a failing origin falls back; unverified bytes never cross sources',
+    () async {
+      await partial();
+      final mirrors = <RequestOptions>[];
+      final dio = client((r) async {
+        if (r.uri.host == 'origin.test') {
+          return ResponseBody.fromString('unavailable', 503);
+        }
+        mirrors.add(r);
+        return full();
+      });
+      final path = await UpdateDownloader(dio: dio, directory: root).download(
+        url: 'https://origin.test/app.apk',
+        fileName: 'app.apk',
+        fallbackUrls: ['https://gitee.test/app.apk'],
+      );
+      expect(mirrors.single.headers.containsKey('Range'), false);
+      expect(File(path).readAsBytesSync(), bytes);
+    },
+  );
+  test('trusted hash permits resuming identical package on a mirror', () async {
+    await partial(hash: digest);
+    final dio = client((r) async {
+      if (r.uri.host == 'origin.test') {
+        return ResponseBody.fromString('unavailable', 503);
+      }
+      expect(r.headers['Range'], 'bytes=20-');
+      expect(r.headers.containsKey('If-Range'), false);
+      return ResponseBody.fromBytes(
+        bytes.sublist(20),
+        206,
+        headers: {
+          'content-range': ['bytes 20-${bytes.length - 1}/${bytes.length}'],
+          'content-length': ['${bytes.length - 20}'],
+        },
+      );
+    });
+    final path = await UpdateDownloader(dio: dio, directory: root).download(
+      url: 'https://origin.test/app.apk',
+      fileName: 'app.apk',
+      expectedSha256: digest,
+      fallbackUrls: ['https://gitee.test/app.apk'],
+    );
+    expect(File(path).readAsBytesSync(), bytes);
+  });
+  test('bad checksum and HTML packages are never promoted', () async {
+    for (final hash in [null, digest]) {
+      final dio = client((_) async => full([60, 104, 116, 109, 108, 62]));
+      await expectLater(
+        UpdateDownloader(dio: dio, directory: root).download(
+          url: 'https://origin.test/app.apk',
+          fileName: 'app.apk',
+          expectedSha256: hash,
+        ),
+        throwsA(isA<FormatException>()),
+      );
+      expect(File('${root.path}/app.apk').existsSync(), false);
+      expect(File('${root.path}/app.apk.part').existsSync(), false);
+    }
+  });
+  test('mismatched content range is rejected without appending', () async {
+    await partial(hash: digest);
+    final dio = client(
+      (_) async => ResponseBody.fromBytes(
+        bytes,
+        206,
+        headers: {
+          'content-range': ['bytes 0-${bytes.length - 1}/${bytes.length}'],
+          'content-length': ['${bytes.length}'],
+        },
+      ),
+    );
+    await expectLater(
+      UpdateDownloader(dio: dio, directory: root).download(
+        url: 'https://origin.test/app.apk',
+        fileName: 'app.apk',
+        expectedSha256: digest,
+      ),
+      throwsA(isA<FormatException>()),
+    );
+    expect(File('${root.path}/app.apk.part').lengthSync(), 20);
+  });
+  test(
+    '416 only promotes a complete partial when its trusted hash matches',
+    () async {
+      await partial(hash: digest);
+      File('${root.path}/app.apk.part').writeAsBytesSync(bytes);
+      final path =
+          await UpdateDownloader(
+            directory: root,
+            dio: client(
+              (_) async => ResponseBody.fromString(
+                '',
+                416,
+                headers: {
+                  'content-range': ['bytes */${bytes.length}'],
+                },
+              ),
+            ),
+          ).download(
+            url: 'https://origin.test/app.apk',
+            fileName: 'app.apk',
+            expectedSha256: digest,
+          );
+      expect(File(path).readAsBytesSync(), bytes);
+    },
+  );
+  test(
+    'source templates require HTTPS and version-specific asset identity',
+    () {
+      expect(
+        UpdateSource.validate('http://example.test/{tag}/{file}'),
+        isNotNull,
+      );
+      expect(UpdateSource.validate('https://example.test/{file}'), isNotNull);
+      const source = UpdateSource(
+        name: 'Gitee',
+        template: 'https://gitee.com/owner/repo/releases/download/{tag}/{file}',
+      );
+      expect(UpdateSource.validate(source.template), isNull);
+      expect(
+        source.resolve(tag: 'v1.0', fileName: 'app arm64.apk', originalUrl: ''),
+        contains('app%20arm64.apk'),
+      );
+    },
+  );
 }

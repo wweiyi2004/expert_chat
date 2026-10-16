@@ -24,6 +24,7 @@ class ComposerToolTray extends StatelessWidget {
     required this.onPickMcpServers,
     required this.onDocumentEdit,
     required this.onToggleLongTask,
+    this.onVoiceConversation,
   });
 
   final bool imageGenerationConfigured;
@@ -45,11 +46,19 @@ class ComposerToolTray extends StatelessWidget {
   final VoidCallback? onPickMcpServers;
   final VoidCallback? onDocumentEdit;
   final VoidCallback? onToggleLongTask;
+  final VoidCallback? onVoiceConversation;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final actions = <Widget>[
+      if (onVoiceConversation != null)
+        _ComposerPlusAction(
+          icon: Icons.headset_mic_outlined,
+          label: '语音对话',
+          enabled: true,
+          onTap: onVoiceConversation,
+        ),
       _ComposerPlusAction(
         icon: Icons.folder_open_outlined,
         label: '上传文件',

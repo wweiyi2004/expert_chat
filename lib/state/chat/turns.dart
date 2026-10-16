@@ -284,10 +284,20 @@ mixin ChatTurns on ChatMedia {
         else
           message,
     ];
-    _set(
-      _s.copyWith(conversations: _replace(convo.copyWith(messages: messages))),
-    );
-    await _persistence.persistSafely(convoId);
+    final updated = convo.copyWith(messages: messages);
+    if (task.status == LongTaskStatus.preparing &&
+        task.clientRequestId != null) {
+      // A new attempt must be durable before any upload/create request starts.
+      await _persistence.enqueueWrite(
+        () =>
+            ref.read(conversationRepositoryProvider).saveConversation(updated),
+      );
+      if (!ref.mounted) return;
+      _set(_s.copyWith(conversations: _replace(updated)));
+    } else {
+      _set(_s.copyWith(conversations: _replace(updated)));
+      await _persistence.persistSafely(convoId);
+    }
   }
 
   Future<void> cancelLongTask(String convoId, String assistantId) =>

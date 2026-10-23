@@ -8,6 +8,7 @@ import '../../../core/providers.dart';
 import '../../../data/provider_profile.dart';
 import '../../../domain/llm/deepseek_balance_client.dart';
 import '../../../domain/llm/llm_provider.dart';
+import '../../../domain/llm/llm_endpoint.dart';
 
 import 'media_api_settings_card.dart';
 
@@ -612,6 +613,7 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
   late final TextEditingController _models;
   late final TextEditingController _chatModel;
   late final TextEditingController _reasonerModel;
+  late LlmApiFormat _apiFormat;
 
   @override
   void initState() {
@@ -622,6 +624,7 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
     _models = TextEditingController(text: e?.models.join(', ') ?? '');
     _chatModel = TextEditingController(text: e?.chatModel ?? '');
     _reasonerModel = TextEditingController(text: e?.reasonerModel ?? '');
+    _apiFormat = e?.apiFormat ?? LlmApiFormat.auto;
   }
 
   @override
@@ -634,8 +637,15 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
     super.dispose();
   }
 
+  String _apiFormatHelperText() =>
+      LlmEndpoint.helperText(_apiFormat, _baseUrl.text);
+
   @override
   Widget build(BuildContext context) {
+    final autoResolved = GeminiEndpoint.resolveFormat(
+      format: LlmApiFormat.auto,
+      baseUrl: _baseUrl.text,
+    );
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.existing == null ? '新增服务商' : '编辑服务商'),
@@ -661,6 +671,7 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
                   _models.text = preset.models.join(', ');
                   _chatModel.text = preset.chatModel;
                   _reasonerModel.text = preset.reasonerModel;
+                  _apiFormat = preset.apiFormat;
                 });
               },
               icon: const Icon(Icons.auto_awesome_outlined, size: 18),
@@ -672,10 +683,61 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
             keyboardType: TextInputType.url,
             autocorrect: false,
             enableSuggestions: false,
+            onChanged: (_) => setState(() {}),
             decoration: const InputDecoration(
               labelText: 'Base URL',
-              hintText: 'https://api.example.com/v1',
+              hintText:
+                  'https://api.example.com/v1 或 https://generativelanguage.googleapis.com/v1beta',
             ),
+          ),
+          const SizedBox(height: 16),
+          DropdownButtonFormField<LlmApiFormat>(
+            key: ValueKey(
+              'profile-api-format-${_apiFormat.name}-${autoResolved.name}',
+            ),
+            initialValue: _apiFormat,
+            isExpanded: true,
+            decoration: InputDecoration(
+              labelText: '接口格式',
+              helperText: _apiFormatHelperText(),
+              helperMaxLines: 3,
+            ),
+            items: [
+              DropdownMenuItem(
+                value: LlmApiFormat.auto,
+                child: Text(
+                  '自动尝试（优先：${autoResolved.shortLabel}）',
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              DropdownMenuItem(
+                value: LlmApiFormat.openAiCompatible,
+                child: Text(
+                  LlmApiFormat.openAiCompatible.label,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              for (final format in [
+                LlmApiFormat.openAiResponses,
+                LlmApiFormat.anthropicMessages,
+              ])
+                DropdownMenuItem(
+                  value: format,
+                  child: Text(format.label, overflow: TextOverflow.ellipsis),
+                ),
+              DropdownMenuItem(
+                value: LlmApiFormat.geminiNative,
+                child: Text(
+                  LlmApiFormat.geminiNative.label,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+            onChanged: (value) {
+              if (value != null) {
+                setState(() => _apiFormat = value);
+              }
+            },
           ),
           const SizedBox(height: 16),
           TextField(
@@ -715,6 +777,7 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
     final reasoner = _reasonerModel.text.trim().isNotEmpty
         ? _reasonerModel.text.trim()
         : chat;
+    final cleanedUrl = GeminiEndpoint.cleanUserInputBaseUrl(_baseUrl.text);
     final base = widget.existing;
     final profile =
         (base ??
@@ -726,10 +789,11 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
                 ))
             .copyWith(
               name: _name.text.trim().isEmpty ? '未命名' : _name.text.trim(),
-              baseUrl: _baseUrl.text.trim(),
+              baseUrl: cleanedUrl,
               models: models.isEmpty ? [chat] : models,
               chatModel: chat,
               reasonerModel: reasoner,
+              apiFormat: _apiFormat,
             );
     Navigator.of(context).pop(profile);
   }

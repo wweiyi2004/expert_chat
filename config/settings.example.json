@@ -5,17 +5,17 @@
     {
       "name": "DeepSeek",
       "baseUrl": "https://api.deepseek.com",
-      "chatModel": "deepseek-v4-flash",
+      "chatModel": "deepseek-flash",
       "reasonerModel": "deepseek-v4-pro",
       "models": [
-        "deepseek-v4-flash",
+        "deepseek-flash",
         "deepseek-v4-pro"
       ],
       "apiKey": ""
     }
   ],
   "search": {
-    "backend": "duckduckgo",
+    "backend": "deepseek",
     "apiKey": "",
     "mode": "auto"
   },

@@ -1,0 +1,21 @@
+[package]
+name = "expert-desktop"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+description = "Expert Chat desktop workspaces and permission-scoped coding tools"
+
+[dependencies]
+anyhow.workspace = true
+base64 = "0.22"
+cap-std.workspace = true
+cap-tempfile.workspace = true
+clap.workspace = true
+fs2.workspace = true
+rmcp.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+tokio.workspace = true

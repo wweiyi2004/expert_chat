@@ -5424,6 +5424,17 @@ class $GenerationRecordsTable extends GenerationRecords
     type: DriftSqlType.string,
     requiredDuringInsert: true,
   );
+  static const VerificationMeta _apiFormatMeta = const VerificationMeta(
+    'apiFormat',
+  );
+  @override
+  late final GeneratedColumn<String> apiFormat = GeneratedColumn<String>(
+    'api_format',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
   static const VerificationMeta _imageSizeMeta = const VerificationMeta(
     'imageSize',
   );
@@ -5470,6 +5481,7 @@ class $GenerationRecordsTable extends GenerationRecords
     revisedPrompt,
     model,
     providerHost,
+    apiFormat,
     imageSize,
     referencesJson,
     createdAt,
@@ -5574,6 +5586,12 @@ class $GenerationRecordsTable extends GenerationRecords
     } else if (isInserting) {
       context.missing(_providerHostMeta);
     }
+    if (data.containsKey('api_format')) {
+      context.handle(
+        _apiFormatMeta,
+        apiFormat.isAcceptableOrUnknown(data['api_format']!, _apiFormatMeta),
+      );
+    }
     if (data.containsKey('image_size')) {
       context.handle(
         _imageSizeMeta,
@@ -5648,6 +5666,10 @@ class $GenerationRecordsTable extends GenerationRecords
         DriftSqlType.string,
         data['${effectivePrefix}provider_host'],
       )!,
+      apiFormat: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}api_format'],
+      ),
       imageSize: attachedDatabase.typeMapping.read(
         DriftSqlType.string,
         data['${effectivePrefix}image_size'],
@@ -5681,6 +5703,7 @@ class GenerationRecord extends DataClass
   final String? revisedPrompt;
   final String model;
   final String providerHost;
+  final String? apiFormat;
   final String imageSize;
   final String referencesJson;
   final DateTime createdAt;
@@ -5695,6 +5718,7 @@ class GenerationRecord extends DataClass
     this.revisedPrompt,
     required this.model,
     required this.providerHost,
+    this.apiFormat,
     required this.imageSize,
     required this.referencesJson,
     required this.createdAt,
@@ -5722,6 +5746,9 @@ class GenerationRecord extends DataClass
     }
     map['model'] = Variable<String>(model);
     map['provider_host'] = Variable<String>(providerHost);
+    if (!nullToAbsent || apiFormat != null) {
+      map['api_format'] = Variable<String>(apiFormat);
+    }
     map['image_size'] = Variable<String>(imageSize);
     map['references_json'] = Variable<String>(referencesJson);
     map['created_at'] = Variable<DateTime>(createdAt);
@@ -5750,6 +5777,9 @@ class GenerationRecord extends DataClass
           : Value(revisedPrompt),
       model: Value(model),
       providerHost: Value(providerHost),
+      apiFormat: apiFormat == null && nullToAbsent
+          ? const Value.absent()
+          : Value(apiFormat),
       imageSize: Value(imageSize),
       referencesJson: Value(referencesJson),
       createdAt: Value(createdAt),
@@ -5774,6 +5804,7 @@ class GenerationRecord extends DataClass
       revisedPrompt: serializer.fromJson<String?>(json['revisedPrompt']),
       model: serializer.fromJson<String>(json['model']),
       providerHost: serializer.fromJson<String>(json['providerHost']),
+      apiFormat: serializer.fromJson<String?>(json['apiFormat']),
       imageSize: serializer.fromJson<String>(json['imageSize']),
       referencesJson: serializer.fromJson<String>(json['referencesJson']),
       createdAt: serializer.fromJson<DateTime>(json['createdAt']),
@@ -5793,6 +5824,7 @@ class GenerationRecord extends DataClass
       'revisedPrompt': serializer.toJson<String?>(revisedPrompt),
       'model': serializer.toJson<String>(model),
       'providerHost': serializer.toJson<String>(providerHost),
+      'apiFormat': serializer.toJson<String?>(apiFormat),
       'imageSize': serializer.toJson<String>(imageSize),
       'referencesJson': serializer.toJson<String>(referencesJson),
       'createdAt': serializer.toJson<DateTime>(createdAt),
@@ -5810,6 +5842,7 @@ class GenerationRecord extends DataClass
     Value<String?> revisedPrompt = const Value.absent(),
     String? model,
     String? providerHost,
+    Value<String?> apiFormat = const Value.absent(),
     String? imageSize,
     String? referencesJson,
     DateTime? createdAt,
@@ -5832,6 +5865,7 @@ class GenerationRecord extends DataClass
         : this.revisedPrompt,
     model: model ?? this.model,
     providerHost: providerHost ?? this.providerHost,
+    apiFormat: apiFormat.present ? apiFormat.value : this.apiFormat,
     imageSize: imageSize ?? this.imageSize,
     referencesJson: referencesJson ?? this.referencesJson,
     createdAt: createdAt ?? this.createdAt,
@@ -5862,6 +5896,7 @@ class GenerationRecord extends DataClass
       providerHost: data.providerHost.present
           ? data.providerHost.value
           : this.providerHost,
+      apiFormat: data.apiFormat.present ? data.apiFormat.value : this.apiFormat,
       imageSize: data.imageSize.present ? data.imageSize.value : this.imageSize,
       referencesJson: data.referencesJson.present
           ? data.referencesJson.value
@@ -5883,6 +5918,7 @@ class GenerationRecord extends DataClass
           ..write('revisedPrompt: $revisedPrompt, ')
           ..write('model: $model, ')
           ..write('providerHost: $providerHost, ')
+          ..write('apiFormat: $apiFormat, ')
           ..write('imageSize: $imageSize, ')
           ..write('referencesJson: $referencesJson, ')
           ..write('createdAt: $createdAt')
@@ -5902,6 +5938,7 @@ class GenerationRecord extends DataClass
     revisedPrompt,
     model,
     providerHost,
+    apiFormat,
     imageSize,
     referencesJson,
     createdAt,
@@ -5920,6 +5957,7 @@ class GenerationRecord extends DataClass
           other.revisedPrompt == this.revisedPrompt &&
           other.model == this.model &&
           other.providerHost == this.providerHost &&
+          other.apiFormat == this.apiFormat &&
           other.imageSize == this.imageSize &&
           other.referencesJson == this.referencesJson &&
           other.createdAt == this.createdAt);
@@ -5936,6 +5974,7 @@ class GenerationRecordsCompanion extends UpdateCompanion<GenerationRecord> {
   final Value<String?> revisedPrompt;
   final Value<String> model;
   final Value<String> providerHost;
+  final Value<String?> apiFormat;
   final Value<String> imageSize;
   final Value<String> referencesJson;
   final Value<DateTime> createdAt;
@@ -5951,6 +5990,7 @@ class GenerationRecordsCompanion extends UpdateCompanion<GenerationRecord> {
     this.revisedPrompt = const Value.absent(),
     this.model = const Value.absent(),
     this.providerHost = const Value.absent(),
+    this.apiFormat = const Value.absent(),
     this.imageSize = const Value.absent(),
     this.referencesJson = const Value.absent(),
     this.createdAt = const Value.absent(),
@@ -5967,6 +6007,7 @@ class GenerationRecordsCompanion extends UpdateCompanion<GenerationRecord> {
     this.revisedPrompt = const Value.absent(),
     required String model,
     required String providerHost,
+    this.apiFormat = const Value.absent(),
     required String imageSize,
     this.referencesJson = const Value.absent(),
     required DateTime createdAt,
@@ -5989,6 +6030,7 @@ class GenerationRecordsCompanion extends UpdateCompanion<GenerationRecord> {
     Expression<String>? revisedPrompt,
     Expression<String>? model,
     Expression<String>? providerHost,
+    Expression<String>? apiFormat,
     Expression<String>? imageSize,
     Expression<String>? referencesJson,
     Expression<DateTime>? createdAt,
@@ -6006,6 +6048,7 @@ class GenerationRecordsCompanion extends UpdateCompanion<GenerationRecord> {
       if (revisedPrompt != null) 'revised_prompt': revisedPrompt,
       if (model != null) 'model': model,
       if (providerHost != null) 'provider_host': providerHost,
+      if (apiFormat != null) 'api_format': apiFormat,
       if (imageSize != null) 'image_size': imageSize,
       if (referencesJson != null) 'references_json': referencesJson,
       if (createdAt != null) 'created_at': createdAt,
@@ -6024,6 +6067,7 @@ class GenerationRecordsCompanion extends UpdateCompanion<GenerationRecord> {
     Value<String?>? revisedPrompt,
     Value<String>? model,
     Value<String>? providerHost,
+    Value<String?>? apiFormat,
     Value<String>? imageSize,
     Value<String>? referencesJson,
     Value<DateTime>? createdAt,
@@ -6040,6 +6084,7 @@ class GenerationRecordsCompanion extends UpdateCompanion<GenerationRecord> {
       revisedPrompt: revisedPrompt ?? this.revisedPrompt,
       model: model ?? this.model,
       providerHost: providerHost ?? this.providerHost,
+      apiFormat: apiFormat ?? this.apiFormat,
       imageSize: imageSize ?? this.imageSize,
       referencesJson: referencesJson ?? this.referencesJson,
       createdAt: createdAt ?? this.createdAt,
@@ -6080,6 +6125,9 @@ class GenerationRecordsCompanion extends UpdateCompanion<GenerationRecord> {
     if (providerHost.present) {
       map['provider_host'] = Variable<String>(providerHost.value);
     }
+    if (apiFormat.present) {
+      map['api_format'] = Variable<String>(apiFormat.value);
+    }
     if (imageSize.present) {
       map['image_size'] = Variable<String>(imageSize.value);
     }
@@ -6108,6 +6156,7 @@ class GenerationRecordsCompanion extends UpdateCompanion<GenerationRecord> {
           ..write('revisedPrompt: $revisedPrompt, ')
           ..write('model: $model, ')
           ..write('providerHost: $providerHost, ')
+          ..write('apiFormat: $apiFormat, ')
           ..write('imageSize: $imageSize, ')
           ..write('referencesJson: $referencesJson, ')
           ..write('createdAt: $createdAt, ')
@@ -10226,6 +10275,7 @@ typedef $$GenerationRecordsTableCreateCompanionBuilder =
       Value<String?> revisedPrompt,
       required String model,
       required String providerHost,
+      Value<String?> apiFormat,
       required String imageSize,
       Value<String> referencesJson,
       required DateTime createdAt,
@@ -10243,6 +10293,7 @@ typedef $$GenerationRecordsTableUpdateCompanionBuilder =
       Value<String?> revisedPrompt,
       Value<String> model,
       Value<String> providerHost,
+      Value<String?> apiFormat,
       Value<String> imageSize,
       Value<String> referencesJson,
       Value<DateTime> createdAt,
@@ -10339,6 +10390,11 @@ class $$GenerationRecordsTableFilterComposer
     builder: (column) => ColumnFilters(column),
   );
 
+  ColumnFilters<String> get apiFormat => $composableBuilder(
+    column: $table.apiFormat,
+    builder: (column) => ColumnFilters(column),
+  );
+
   ColumnFilters<String> get imageSize => $composableBuilder(
     column: $table.imageSize,
     builder: (column) => ColumnFilters(column),
@@ -10432,6 +10488,11 @@ class $$GenerationRecordsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get apiFormat => $composableBuilder(
+    column: $table.apiFormat,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<String> get imageSize => $composableBuilder(
     column: $table.imageSize,
     builder: (column) => ColumnOrderings(column),
@@ -10519,6 +10580,9 @@ class $$GenerationRecordsTableAnnotationComposer
     builder: (column) => column,
   );
 
+  GeneratedColumn<String> get apiFormat =>
+      $composableBuilder(column: $table.apiFormat, builder: (column) => column);
+
   GeneratedColumn<String> get imageSize =>
       $composableBuilder(column: $table.imageSize, builder: (column) => column);
 
@@ -10597,6 +10661,7 @@ class $$GenerationRecordsTableTableManager
                 Value<String?> revisedPrompt = const Value.absent(),
                 Value<String> model = const Value.absent(),
                 Value<String> providerHost = const Value.absent(),
+                Value<String?> apiFormat = const Value.absent(),
                 Value<String> imageSize = const Value.absent(),
                 Value<String> referencesJson = const Value.absent(),
                 Value<DateTime> createdAt = const Value.absent(),
@@ -10612,6 +10677,7 @@ class $$GenerationRecordsTableTableManager
                 revisedPrompt: revisedPrompt,
                 model: model,
                 providerHost: providerHost,
+                apiFormat: apiFormat,
                 imageSize: imageSize,
                 referencesJson: referencesJson,
                 createdAt: createdAt,
@@ -10629,6 +10695,7 @@ class $$GenerationRecordsTableTableManager
                 Value<String?> revisedPrompt = const Value.absent(),
                 required String model,
                 required String providerHost,
+                Value<String?> apiFormat = const Value.absent(),
                 required String imageSize,
                 Value<String> referencesJson = const Value.absent(),
                 required DateTime createdAt,
@@ -10644,6 +10711,7 @@ class $$GenerationRecordsTableTableManager
                 revisedPrompt: revisedPrompt,
                 model: model,
                 providerHost: providerHost,
+                apiFormat: apiFormat,
                 imageSize: imageSize,
                 referencesJson: referencesJson,
                 createdAt: createdAt,

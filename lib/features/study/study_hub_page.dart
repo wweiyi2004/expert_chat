@@ -7,6 +7,8 @@ import '../../data/study_models.dart';
 import '../../domain/study/srs_scheduler.dart';
 import '../../state/chat_controller.dart';
 import '../../state/study_controller.dart';
+import '../../state/learning_plan_controller.dart';
+import 'learning_plan_page.dart';
 import '../shell/shell_tab.dart';
 import 'card_library_page.dart';
 import 'course_detail_page.dart';
@@ -25,6 +27,10 @@ class StudyHubPage extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final plans = ref.watch(learningPlanControllerProvider);
+    final planError = ref
+        .read(learningPlanControllerProvider.notifier)
+        .loadError;
     final library =
         ref.watch(studyControllerProvider).value ?? StudyLibrary.empty;
     final due = const SrsScheduler().dueQueue(library.cards).length;
@@ -78,6 +84,43 @@ class StudyHubPage extends ConsumerWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
+                  if (planError != null)
+                    Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Text(planError),
+                      ),
+                    ),
+                  Card(
+                    child: ListTile(
+                      leading: const Icon(Icons.event_note_outlined),
+                      title: const Text('备考与每日学习'),
+                      subtitle: const Text('知识清单 → 计划 → 课程 → 作答反馈'),
+                      trailing: const Icon(Icons.add),
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => const LearningPlanPage(),
+                        ),
+                      ),
+                    ),
+                  ),
+                  for (final plan in plans)
+                    Card(
+                      child: ListTile(
+                        leading: const Icon(Icons.auto_stories_outlined),
+                        title: Text(plan.topic),
+                        subtitle: Text(
+                          '每天 ${plan.dailyMinutes} 分钟 · ${plan.lessons.length} 份学习记录',
+                        ),
+                        trailing: const Icon(Icons.chevron_right),
+                        onTap: () => Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) => LearningPlanPage(planId: plan.id),
+                          ),
+                        ),
+                      ),
+                    ),
+                  const SizedBox(height: 12),
                   _LearningHero(
                     due: due,
                     activeCourses: activeCourses,

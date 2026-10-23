@@ -15,7 +15,7 @@ void main() {
       (p) => p.name == 'DeepSeek',
     );
     expect(preset.models, same(KnownModels.all));
-    expect(preset.chatModel, KnownModels.chat);
+    expect(preset.chatModel, KnownModels.flash);
     expect(preset.reasonerModel, KnownModels.reasoner);
     for (final model in KnownModels.all) {
       expect(ModelCatalog.entries.containsKey(model), isTrue);

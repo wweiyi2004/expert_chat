@@ -50,6 +50,34 @@ const _messages = [LlmRequestMessage(role: MessageRole.user, content: '请回答
 
 void main() {
   test(
+    'work requests bypass reasoning caps and retries without changing thinking',
+    () async {
+      final provider = _Provider((_, _) async* {
+        yield ChatChunk(reasoningDelta: List.filled(20000, '想').join());
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        yield const ChatChunk(contentDelta: '开始执行', finishReason: 'stop');
+      });
+      final config = _config
+          .copyWith(reasoningGuardEnabled: false)
+          .copyWith(model: 'deepseek-v4.1-flash');
+      final chunks =
+          await DeepSeekReasoningGuard(
+                delegate: provider,
+                maxReasoningChars: 1,
+                reasoningTimeout: const Duration(milliseconds: 1),
+                maxRecoveryChars: 1,
+                recoveryTimeout: const Duration(milliseconds: 1),
+              )
+              .streamChat(config: config, messages: _messages, thinking: true)
+              .toList();
+      expect(provider.requests, hasLength(1));
+      expect(provider.requests.single.thinking, true);
+      expect(provider.requests.single.messages, same(_messages));
+      expect(chunks.last.contentDelta, '开始执行');
+      expect(config.reasoningGuardEnabled, false);
+    },
+  );
+  test(
     'prose constraints preserve custom instructions and complete long answers',
     () async {
       final prose = List.filled(200, '正文内容。').join();

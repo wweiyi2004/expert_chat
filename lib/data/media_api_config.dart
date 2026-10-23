@@ -1,3 +1,5 @@
+import '../domain/llm/gemini_endpoint.dart';
+
 /// Configuration shared by the optional vision, image-generation and speech
 /// endpoints.
 ///
@@ -12,6 +14,7 @@ class MediaApiConfig {
     this.voiceClonePath = '',
     this.imageSize = '1024x1024',
     this.speechProtocol = SpeechApiProtocol.openAiAudio,
+    this.apiFormat = LlmApiFormat.auto,
   });
 
   /// MiMo's documented API base and default speech model identifiers.
@@ -227,28 +230,51 @@ class MediaApiConfig {
   /// SharedPreferences — only this path is persisted.
   final String voiceClonePath;
 
-  /// Used only by the image-generation endpoint.
+  /// OpenAI pixel dimensions, or Gemini aspect ratio / resolution (1K/2K/4K).
+  /// `auto` leaves the provider's default unchanged.
   final String imageSize;
 
   /// The wire protocol used by a text-to-speech endpoint.
   final SpeechApiProtocol speechProtocol;
 
-  /// GPT Image models (`gpt-image-1`, `gpt-image-2`, …) accept multiple
-  /// reference images on `/images/edits` via repeated `image[]` parts.
+  /// The wire protocol preference for vision / image-generation endpoints.
+  final LlmApiFormat apiFormat;
+
+  /// Concrete wire format ([LlmApiFormat.openAiCompatible] or
+  /// [LlmApiFormat.geminiNative]) after resolving [LlmApiFormat.auto].
+  LlmApiFormat get effectiveApiFormat =>
+      GeminiEndpoint.resolveFormat(format: apiFormat, baseUrl: baseUrl);
+
+  bool get isGeminiNative => effectiveApiFormat == LlmApiFormat.geminiNative;
+
+  String get openAiCompatibleBaseUrl =>
+      GeminiEndpoint.normalizeOpenAiBaseUrl(baseUrl);
+
+  /// GPT Image models (`gpt-image-1`, `gpt-image-2`, …) and Gemini multimodal
+  /// image models accept multiple reference images.
   /// Older single-image edits gateways stay at one reference.
   bool get supportsMultiReferenceImages =>
-      supportsMultiReferenceImageModel(model);
+      supportsMultiReferenceImageModel(model) ||
+      (isGeminiNative &&
+          !GeminiEndpoint.normalizeModelId(
+            model,
+          ).toLowerCase().startsWith('imagen'));
 
   /// Max reference images for img2img this config may send.
   int get maxImageEditReferences =>
-      supportsMultiReferenceImages ? maxGptImageEditReferences : 1;
+      isGeminiNative && supportsMultiReferenceImages
+      ? 14
+      : supportsMultiReferenceImages
+      ? maxGptImageEditReferences
+      : 1;
 
   /// Upper bound for multi-ref GPT Image edits (`gpt-image-*` allows 16).
   static const maxGptImageEditReferences = 16;
 
   static bool supportsMultiReferenceImageModel(String model) {
     final m = model.toLowerCase().split('/').last;
-    return m.contains('gpt-image');
+    return m.contains('gpt-image') ||
+        (m.startsWith('gemini-') && m.contains('image'));
   }
 
   /// Whether this endpoint can serve requests: a valid http(s) URL, a model
@@ -406,6 +432,7 @@ class MediaApiConfig {
     String? voiceClonePath,
     String? imageSize,
     SpeechApiProtocol? speechProtocol,
+    LlmApiFormat? apiFormat,
   }) => MediaApiConfig(
     baseUrl: baseUrl ?? this.baseUrl,
     model: model ?? this.model,
@@ -414,6 +441,7 @@ class MediaApiConfig {
     voiceClonePath: voiceClonePath ?? this.voiceClonePath,
     imageSize: imageSize ?? this.imageSize,
     speechProtocol: speechProtocol ?? this.speechProtocol,
+    apiFormat: apiFormat ?? this.apiFormat,
   );
 
   Map<String, dynamic> toJson() => {
@@ -424,6 +452,7 @@ class MediaApiConfig {
     'voiceClonePath': voiceClonePath,
     'imageSize': imageSize,
     'speechProtocol': speechProtocol.name,
+    if (apiFormat != LlmApiFormat.auto) 'apiFormat': apiFormat.wire,
   };
 
   factory MediaApiConfig.fromJson(Map<String, dynamic> json) => MediaApiConfig(
@@ -436,6 +465,7 @@ class MediaApiConfig {
     speechProtocol: SpeechApiProtocol.fromWire(
       json['speechProtocol'] as String?,
     ),
+    apiFormat: LlmApiFormat.fromWire(json['apiFormat'] as String?),
   );
 }
 

@@ -38,6 +38,9 @@ class MessageBubble extends StatefulWidget {
     super.key,
     required this.message,
     required this.isStreaming,
+    this.conversationId,
+    this.workMode = false,
+    this.workMessageStyle = MessageStylePref.document,
     this.speakerName,
     this.userLabel,
     this.onRegenerate,
@@ -64,9 +67,16 @@ class MessageBubble extends StatefulWidget {
     this.onAnswerFromResults,
     this.onRetryStep,
     this.onStopTask,
+    this.deliveryFiles,
+    this.interaction,
   });
 
   final ChatMessage message;
+  final String? conversationId;
+  final Widget? deliveryFiles;
+  final Widget? interaction;
+  final bool workMode;
+  final MessageStylePref workMessageStyle;
   final VoidCallback? onAnswerFromResults;
   final ValueChanged<SearchActivity>? onRetryStep;
   final VoidCallback? onStopTask;
@@ -372,7 +382,14 @@ class _MessageBubbleState extends State<MessageBubble> {
             )
           else if (m.content.isNotEmpty)
             Container(
-              margin: EdgeInsets.symmetric(vertical: doc ? 8 : 6),
+              margin: EdgeInsets.symmetric(
+                vertical:
+                    (Theme.of(
+                          context,
+                        ).extension<AppMetrics>()?.messageSpacing ??
+                        24) /
+                    2,
+              ),
               padding: EdgeInsets.symmetric(
                 horizontal: doc ? 4 : 16,
                 vertical: doc ? 8 : 12,
@@ -434,7 +451,11 @@ class _MessageBubbleState extends State<MessageBubble> {
                     m.content,
                     style: TextStyle(
                       color: doc ? scheme.onSurface : scheme.onPrimary,
-                      height: 1.55,
+                      height:
+                          Theme.of(
+                            context,
+                          ).extension<AppMetrics>()?.lineHeight ??
+                          1.85,
                       fontSize: 15,
                     ),
                   ),
@@ -501,6 +522,9 @@ class _MessageBubbleState extends State<MessageBubble> {
     ChatMessage m,
     bool doc,
   ) {
+    final plain = widget.workMode
+        ? widget.workMessageStyle == MessageStylePref.document
+        : doc;
     // Assistant message: optional thinking panel + markdown body + actions.
     final hasReasoning = m.reasoning.trim().isNotEmpty;
     final stillThinking = widget.isStreaming && m.content.isEmpty;
@@ -514,8 +538,12 @@ class _MessageBubbleState extends State<MessageBubble> {
     return Align(
       alignment: Alignment.centerLeft,
       child: Container(
-        margin: EdgeInsets.symmetric(vertical: doc ? 12 : 10),
-        constraints: BoxConstraints(maxWidth: doc ? 900 : 760),
+        margin: EdgeInsets.symmetric(
+          vertical:
+              (Theme.of(context).extension<AppMetrics>()?.messageSpacing ??
+                  24) /
+              2,
+        ),
         width: double.infinity,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -556,13 +584,17 @@ class _MessageBubbleState extends State<MessageBubble> {
               _AppliedWorldInfoBar(hits: m.appliedWorldInfo),
             if (hasReasoning || m.searchActivities.isNotEmpty)
               ThinkingPanel(
+                conversationId: widget.conversationId,
+                messageId: m.id,
+                workMode: widget.workMode,
                 reasoning: m.reasoning,
-                isStreaming:
-                    stillThinking ||
-                    (widget.isStreaming &&
-                        m.searchActivities.any(
-                          (a) => a.status == SearchActivityStatus.running,
-                        )),
+                isStreaming: widget.workMode
+                    ? widget.isStreaming
+                    : stillThinking ||
+                          (widget.isStreaming &&
+                              m.searchActivities.any(
+                                (a) => a.status == SearchActivityStatus.running,
+                              )),
                 thinkingMillis: m.thinkingMillis,
                 activities: m.searchActivities,
                 onAnswerFromResults: widget.onAnswerFromResults,
@@ -655,12 +687,18 @@ class _MessageBubbleState extends State<MessageBubble> {
                 ),
               if (m.content.isNotEmpty)
                 Container(
+                  key: const ValueKey('assistant-response-body'),
+                  width: widget.workMode ? double.infinity : null,
                   margin: EdgeInsets.only(top: hasReasoning ? 10 : 0),
                   padding: EdgeInsets.symmetric(
-                    horizontal: doc ? 2 : 16,
-                    vertical: doc ? 4 : 14,
+                    horizontal: widget.workMode && plain
+                        ? 0
+                        : plain
+                        ? 2
+                        : 16,
+                    vertical: plain ? 4 : 14,
                   ),
-                  decoration: doc
+                  decoration: plain
                       ? null
                       : BoxDecoration(
                           color: scheme.surfaceContainer,
@@ -771,6 +809,9 @@ class _MessageBubbleState extends State<MessageBubble> {
                   ],
                 ),
               ),
+            if (widget.interaction != null) widget.interaction!,
+            if (!widget.isStreaming && widget.deliveryFiles != null)
+              widget.deliveryFiles!,
           ],
         ),
       ),

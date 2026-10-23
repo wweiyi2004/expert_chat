@@ -30,10 +30,53 @@ mixin ChatGeneration on ChatStreaming {
     // the deleted row both in memory and, via persistById, in the database.
     if (_deletedWhileStartingIds.contains(working.id)) return;
     if (!_requireLoadedConversation(working)) return;
-    final searchMode = _s.searchMode;
+    settings = await resolveDeepSeekSearchSettings(ref, settings);
+    if (!working.isStoryLike && !working.isStudy) {
+      config = await resolveConversationModel(
+        ref,
+        working.id,
+        config,
+        work: working.workMode,
+        images: _userAttachmentsForTurn(
+          working,
+          assistantId,
+        ).any((a) => a.isImage),
+        thinking: thinking,
+        choiceOverride: _run?.configuration?.modelChoice,
+        useChoiceOverride: _zoneRun != null,
+        settingsOverride: _run?.configuration?.settings,
+        servicePrioritiesOverride: _run?.configuration?.servicePriorities,
+      );
+      if (!ref.mounted || _deletedWhileStartingIds.contains(working.id)) return;
+    }
+    final effectiveContext = effectiveContextPrefs(settings, config);
+    settings = settings.copyWith(context: effectiveContext);
+    config = applyContextConfig(config, effectiveContext).copyWith(
+      reasoningGuardEnabled: !working.workMode,
+      serverWebSearch: false,
+      forceServerWebSearch: false,
+    );
+    _run?.taskId = assistantId;
+    if (_run case final agentRun?) agentRun.agentTaskId ??= assistantId;
+    _run?.acceptedTaskIds.add(assistantId);
+    if (_run case final run?)
+      _checkpointSession(run, SessionExecutionStatus.running, '模型与工作区已确定');
+    final sessionPolicy = _policyFor(working.id);
+    final enableWorkspace =
+        working.workMode &&
+        !working.isStoryLike &&
+        !working.isStudy &&
+        recoverySource == null &&
+        (sessionPolicy.sshProfileId.isNotEmpty ||
+            ref.read(desktopWorkspaceHostProvider).supported);
+    final selectedWorkspaceId = enableWorkspace
+        ? _run?.configuration?.workspaceId
+        : null;
+    final searchMode = sessionPolicy.network ? SearchMode.auto : SearchMode.off;
     final searchAllowed =
         recoverySource == null &&
         searchMode != SearchMode.off &&
+        settings.searchConfigured &&
         searchQuery.trim().isNotEmpty &&
         !working.isStoryLike &&
         !working.isStudy;
@@ -44,7 +87,7 @@ mixin ChatGeneration on ChatStreaming {
         searchAllowed &&
         settings.taskBudget.maxSearches > 0 &&
         settings.taskBudget.maxToolCalls > 0 &&
-        settings.searchBackend.isProviderHosted &&
+        settings.effectiveSearchBackend.isProviderHosted &&
         config.capabilities.supportsServerWebSearch;
     final useWebSearchTool =
         searchAllowed &&
@@ -58,10 +101,13 @@ mixin ChatGeneration on ChatStreaming {
         : <String>[];
     // Browser clients cannot safely pin DNS and arbitrary pages are normally
     // CORS-blocked. Until a trusted fetch proxy exists, keep direct fetch off.
-    final directPageFetchAllowed = !kIsWeb;
+    final directPageFetchAllowed =
+        !kIsWeb || settings.effectiveSearchBackend == SearchBackend.deepseek;
     final useFetchUrlTool =
+        sessionPolicy.network &&
         directPageFetchAllowed &&
-        pastedUrls.isNotEmpty &&
+        settings.searchConfigured &&
+        (pastedUrls.isNotEmpty || searchAllowed) &&
         config.capabilities.supportsTools;
     // Dialogue 配图 (not pure 生图 mode): auto exposes the tool; always also
     // pre-generates one image so force works on tool-less reasoners.
@@ -92,11 +138,7 @@ mixin ChatGeneration on ChatStreaming {
         for (final tool in settings.modelMcpToolsFor(
           working.customMcpServerIds,
         ))
-          if (working.workMode ||
-              !settings
-                  .connectionForRouted(settings.routedMcpTool(tool.name)!)
-                  .computerUse)
-            McpHostTools.toSpec(tool),
+          McpHostTools.toSpec(tool),
     ];
     final turnImages = [
       for (final a in turnUserAttachments)
@@ -120,6 +162,10 @@ mixin ChatGeneration on ChatStreaming {
     final needPreVision =
         visionToolWanted && !useVisionTool && turnImages.isNotEmpty;
     final toolSpecs = <ToolSpec>[
+      if (working.workMode &&
+          recoverySource == null &&
+          config.capabilities.supportsTools)
+        workQuestionTool,
       if (useWebSearchTool && !forceDocTool) ToolEngine.webSearchTool,
       if (useFetchUrlTool && !forceDocTool) ToolEngine.fetchUrlTool,
       if (useVisionTool) VisionTools.analyzeImageTool,
@@ -130,7 +176,7 @@ mixin ChatGeneration on ChatStreaming {
       ...mcpPassthroughTools,
     ];
     if (searchAllowed &&
-        settings.searchBackend.isProviderHosted &&
+        settings.effectiveSearchBackend.isProviderHosted &&
         !config.capabilities.supportsServerWebSearch) {
       // Soft notice once per turn: official search only works on flash today.
       _setScopedError(
@@ -267,6 +313,7 @@ mixin ChatGeneration on ChatStreaming {
         _execution.endBudget();
         unawaited(
           GenerationNotify.onGenerationEnd(
+            sessionId: _run?.conversationId,
             success: false,
             conversationTitle: working.title,
           ),
@@ -326,17 +373,19 @@ mixin ChatGeneration on ChatStreaming {
     // Tool-capable models can decide when the pasted link is relevant. Models
     // without function calling keep the deterministic pre-fetch fallback.
     final needPreFetch =
-        directPageFetchAllowed && pastedUrls.isNotEmpty && !useFetchUrlTool;
+        settings.searchConfigured &&
+        directPageFetchAllowed &&
+        pastedUrls.isNotEmpty &&
+        !useFetchUrlTool;
     // Provider-hosted search is done inside the Responses stream. Tool-capable
     // models call web_search themselves; 联网·强制 becomes tool_choice.
     final needPreSearch =
         searchAllowed && !useProviderSearch && !useWebSearchTool;
-    // When official search is unavailable, fall back to a free client backend
-    // so the turn still has a search path without requiring a search key.
+    // Client search and retries use DeepSeek Search / Fetch by default.
     final clientSearchBackend =
-        settings.searchBackend.isProviderHosted && !useProviderSearch
-        ? SearchBackend.duckduckgo
-        : settings.searchBackend;
+        settings.effectiveSearchBackend.isProviderHosted && !useProviderSearch
+        ? SearchBackend.deepseek
+        : settings.effectiveSearchBackend;
     if (needPreFetch || needPreSearch) {
       _set(
         _s.copyWith(
@@ -351,7 +400,7 @@ mixin ChatGeneration on ChatStreaming {
       try {
         final engine = ref.read(toolEngineFactoryProvider)(
           backend: clientSearchBackend,
-          apiKey: settings.searchApiKey,
+          apiKey: settings.effectiveSearchApiKey,
         );
         final citations = <Citation>[];
         final blocks = <String>[];
@@ -427,6 +476,7 @@ mixin ChatGeneration on ChatStreaming {
       // still clear wakelock if streaming dropped for another reason.
       unawaited(
         GenerationNotify.onGenerationEnd(
+          sessionId: _run?.conversationId,
           success: false,
           conversationTitle: working.title,
           cancelled: _execution.isCancelled,
@@ -536,6 +586,7 @@ mixin ChatGeneration on ChatStreaming {
             llm: ref.read(llmProvider),
             config: settings.config.copyWith(
               model: settings.active?.chatModel ?? settings.model,
+              reasoningGuardEnabled: !working.workMode,
             ),
             cancelToken: cancelToken,
           );
@@ -625,6 +676,7 @@ mixin ChatGeneration on ChatStreaming {
       _execution.releaseRequest(cancelToken);
       unawaited(
         GenerationNotify.onGenerationEnd(
+          sessionId: _run?.conversationId,
           success: false,
           conversationTitle: working.title,
         ),
@@ -680,10 +732,13 @@ mixin ChatGeneration on ChatStreaming {
         forceClientSearch: useWebSearchTool && searchMode == SearchMode.always,
       ),
       workMode: working.workMode,
+      enableWorkspace: enableWorkspace,
+      selectedWorkspaceId: selectedWorkspaceId,
     );
 
     unawaited(
       GenerationNotify.onGenerationEnd(
+        sessionId: _run?.conversationId,
         success: succeeded,
         conversationTitle: working.title,
         preview: ref.mounted ? _previewFor(working.id, assistantId) : null,

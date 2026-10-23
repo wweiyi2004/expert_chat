@@ -15,7 +15,8 @@ class GenerationKeepAlive {
     return _pending = _pending.then((_) async {
       if (kIsWeb) return;
       try {
-        if (defaultTargetPlatform == TargetPlatform.android) {
+        if (defaultTargetPlatform == TargetPlatform.android ||
+            defaultTargetPlatform == TargetPlatform.windows) {
           // A screen wakelock alone does not keep background networking alive.
           await _channel.invokeMethod<void>(active ? 'start' : 'stop');
         } else {

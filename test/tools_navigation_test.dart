@@ -105,7 +105,7 @@ void main() {
         '保留这份草稿',
       );
       final nav = find.byType(NavigationBar);
-      expect(tester.widget<NavigationBar>(nav).destinations.length, 3);
+      expect(nav, findsNothing);
       tester.view.viewInsets = FakeViewPadding(bottom: 300);
       addTearDown(tester.view.resetViewInsets);
       await tester.pumpAndSettle();
@@ -114,15 +114,17 @@ void main() {
         find.byKey(const ValueKey('composer-text-field')),
       );
       final sendRect = tester.getRect(find.byTooltip('发送'));
-      expect(editorRect.width, greaterThan(300));
-      expect(sendRect.top, greaterThanOrEqualTo(editorRect.bottom));
+      expect(editorRect.width, greaterThan(240));
+      expect(sendRect.right, greaterThanOrEqualTo(editorRect.right));
       expect(sendRect.bottom, lessThanOrEqualTo(480));
       expect(tester.takeException(), isNull);
       tester.view.resetViewInsets();
       await tester.pumpAndSettle();
-      expect(nav, findsOneWidget);
+      expect(nav, findsNothing);
 
-      await tester.tap(find.descendant(of: nav, matching: find.text('工具')));
+      await tester.tap(find.byTooltip('Open navigation menu'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('工具'));
       await settle();
       expect(
         tester
@@ -148,7 +150,7 @@ void main() {
       await tester.tap(find.text('进入学习中心'));
       await settle();
       expect(find.text('学习空间'), findsOneWidget);
-      expect(tester.widget<NavigationBar>(nav).selectedIndex, 1);
+      expect(container.read(shellTabProvider), ShellTab.study);
       await tester.tap(find.byTooltip('返回工具'));
       await settle();
       await tester.ensureVisible(find.widgetWithText(Card, '创作模式'));
@@ -166,7 +168,9 @@ void main() {
       await tester.binding.handlePopRoute();
       await settle();
       expect(container.read(shellTabProvider), ShellTab.tools);
-      await tester.tap(find.descendant(of: nav, matching: find.text('会话')));
+      await tester.tap(find.byTooltip('打开侧边栏'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('会话'));
       await settle();
       expect(
         tester

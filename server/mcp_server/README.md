@@ -75,7 +75,7 @@ docker run -d --name expert-chat-mcp --restart unless-stopped \
 
 ## 维护与恢复
 
-开发/打包要求 Python 3.12、uv 0.11.2；依赖统一来自 `server/uv.lock` 和带哈希的 `requirements.lock`。不要分别手动升级不同入口的依赖副本。详见 [维护制度](../../docs/MAINTENANCE.md)。
+开发/打包要求 Python 3.12、uv 0.11.2；依赖统一来自 `server/uv.lock` 和带哈希的 `requirements.lock`。不要分别手动升级不同入口的依赖副本。详见 [维护制度](../../archive/2026-10-22-planning-reset/docs/MAINTENANCE.md)。
 
 `GET /health` 仅返回可用性，不包含文档、路径或令牌。容器使用 UID 10001，挂载目录需允许该 UID 读写。
 

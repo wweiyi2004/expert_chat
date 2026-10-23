@@ -169,4 +169,43 @@ void main() {
     expect(loaded.cards.single.id, 'healthy');
     expect(loaded.courses, isEmpty);
   });
+
+  for (final payload in ['{not-json', '[]', '{"id":17}']) {
+    test('updates preserve unreadable rows: $payload', () async {
+      final card = StudyCard(id: 'healthy', front: 'Q', back: 'A');
+      await repo.save(StudyLibrary(cards: [card]));
+      await db
+          .into(db.studyEntities)
+          .insert(
+            StudyEntitiesCompanion.insert(
+              kind: 'course',
+              id: 'broken',
+              payloadJson: payload,
+              updatedAt: DateTime(2026),
+            ),
+          );
+      final loaded = await repo.load();
+      expect(loaded.cards.single.id, 'healthy');
+      expect(loaded.courses, isEmpty);
+
+      var mutated = false;
+      await expectLater(
+        repo.update((library) {
+          mutated = true;
+          return library.copyWith(cards: [card.copyWith(front: 'Changed')]);
+        }),
+        throwsFormatException,
+      );
+      expect(mutated, isFalse);
+      await expectLater(repo.save(loaded), throwsFormatException);
+
+      final rows = await db.select(db.studyEntities).get();
+      expect(rows, hasLength(2));
+      expect(
+        rows.singleWhere((row) => row.id == 'broken').payloadJson,
+        payload,
+      );
+      expect((await repo.load()).cards.single.front, 'Q');
+    });
+  }
 }

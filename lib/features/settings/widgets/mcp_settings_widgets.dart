@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 
 import '../../../data/gateway_config.dart';
+import '../../../domain/mcp/playwright_mcp_preset.dart';
 
 class CustomMcpEditorDialog extends StatefulWidget {
   const CustomMcpEditorDialog({
@@ -43,6 +44,8 @@ class _CustomMcpEditorDialogState extends State<CustomMcpEditorDialog> {
   late bool _local = widget.localProcess != null;
   late bool _computer = widget.computerUse;
   late bool _foreground = widget.allowForeground;
+  late bool _sessionScoped = widget.localProcess?.requiresSession ?? false;
+  late String _preset = widget.localProcess?.preset ?? '';
   late final _command = TextEditingController(
     text: widget.localProcess?.command ?? '',
   );
@@ -91,6 +94,25 @@ class _CustomMcpEditorDialogState extends State<CustomMcpEditorDialog> {
                   value: _local,
                   onChanged: (v) => setState(() => _local = v),
                 ),
+                TextButton.icon(
+                  icon: const Icon(Icons.travel_explore),
+                  label: const Text('填入 Playwright 浏览器配置'),
+                  onPressed: () => setState(() {
+                    final preset = PlaywrightMcpPreset.config(
+                      windows: Platform.isWindows,
+                    );
+                    _local = true;
+                    _computer = false;
+                    _foreground = false;
+                    _sessionScoped = true;
+                    _preset = preset.preset;
+                    _name.text = 'Playwright 浏览器';
+                    _command.text = preset.command;
+                    _arguments.text = preset.arguments.join('\n');
+                    _directory.clear();
+                    _validationError = null;
+                  }),
+                ),
                 if (Platform.isWindows)
                   TextButton.icon(
                     icon: const Icon(Icons.desktop_windows_outlined),
@@ -98,6 +120,8 @@ class _CustomMcpEditorDialogState extends State<CustomMcpEditorDialog> {
                     onPressed: () => setState(() {
                       _local = true;
                       _computer = true;
+                      _preset = '';
+                      _sessionScoped = false;
                       _name.text = 'Windows 电脑操作';
                       _command.text =
                           '${Platform.environment['LOCALAPPDATA']}\\ExpertChat\\drivers\\cua-0.28.0\\cua-driver.exe';
@@ -106,6 +130,13 @@ class _CustomMcpEditorDialogState extends State<CustomMcpEditorDialog> {
                   ),
               ],
               if (_local) ...[
+                if (_preset == 'playwright')
+                  const Padding(
+                    padding: EdgeInsets.only(bottom: 12),
+                    child: Text(
+                      '读取网页、点击输入、截图并检查控制台与网络。需要 Node.js 18+；Windows 使用 Edge，其他桌面使用 Chrome。首次发现会通过 npm 下载固定版本的官方服务。每个会话和子代理使用独立浏览器窗口，不共享已有登录，也不接管工作台预览。',
+                    ),
+                  ),
                 TextField(
                   controller: _command,
                   decoration: InputDecoration(
@@ -139,9 +170,23 @@ class _CustomMcpEditorDialogState extends State<CustomMcpEditorDialog> {
                 ),
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
+                  title: const Text('按会话隔离连接'),
+                  subtitle: const Text('每个会话和子代理分别启动，停止任务时关闭所属连接'),
+                  value: _sessionScoped,
+                  onChanged: _preset == 'playwright' || _computer
+                      ? null
+                      : (v) => setState(() => _sessionScoped = v),
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
                   title: const Text('电脑操作（Cua Driver）'),
                   value: _computer,
-                  onChanged: (v) => setState(() => _computer = v),
+                  onChanged: _preset == 'playwright'
+                      ? null
+                      : (v) => setState(() {
+                          _computer = v;
+                          if (v) _sessionScoped = false;
+                        }),
                 ),
                 if (_computer)
                   SwitchListTile(
@@ -206,21 +251,31 @@ class _CustomMcpEditorDialogState extends State<CustomMcpEditorDialog> {
               setState(() => _validationError = '请填写名称和连接地址或程序路径');
               return;
             }
+            final process = _local
+                ? McpProcessConfig(
+                    command: _command.text.trim(),
+                    arguments: _arguments.text
+                        .split('\n')
+                        .map((v) => v.trim())
+                        .where((v) => v.isNotEmpty)
+                        .toList(),
+                    workingDirectory: _directory.text.trim(),
+                    sessionScoped: _sessionScoped,
+                    preset: _preset,
+                  )
+                : null;
+            final presetError = process == null
+                ? null
+                : PlaywrightMcpPreset.validate(process);
+            if (presetError != null) {
+              setState(() => _validationError = presetError);
+              return;
+            }
             Navigator.of(context).pop((
               name: nextName,
               url: nextUrl,
               token: _local ? '' : _token.text.trim(),
-              localProcess: _local
-                  ? McpProcessConfig(
-                      command: _command.text.trim(),
-                      arguments: _arguments.text
-                          .split('\n')
-                          .map((v) => v.trim())
-                          .where((v) => v.isNotEmpty)
-                          .toList(),
-                      workingDirectory: _directory.text.trim(),
-                    )
-                  : null,
+              localProcess: process,
               computerUse: _local && _computer,
               allowForeground: _local && _computer && _foreground,
             ));
@@ -305,6 +360,8 @@ class CustomMcpServerCard extends StatelessWidget {
                     '已保存 Token',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
+                if (server.localProcess?.requiresSession == true)
+                  Text('会话隔离', style: Theme.of(context).textTheme.bodySmall),
                 if (server.serverVersion != null)
                   Text(
                     'v${server.serverVersion}',

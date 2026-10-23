@@ -48,10 +48,14 @@ class DocumentToolExecutor {
   }) async {
     final exposedName = call.name ?? '';
 
-    final activity = _beginCapabilityTrace(
+    final activity = SearchActivity(
       kind: SearchActivityKind.mcp,
       query: exposedName,
+      toolName: exposedName,
+      toolArguments: call.argumentsJson,
+      startedAt: DateTime.now(),
     );
+    onActivity(activity);
     Map<String, dynamic> arguments = const {};
     try {
       final trimmed = call.argumentsJson.trim();
@@ -87,19 +91,22 @@ class DocumentToolExecutor {
       if (file != null) {
         onAttachment(_attachment(file, '（MCP Server 已返回文件，可下载）'));
       }
+      final text = result.text.trim();
+      final output = text.isNotEmpty
+          ? text
+          : file != null
+          ? 'MCP 工具 $name 已返回文件「${file.filename}」，已附在本轮回复中。'
+          : 'MCP 工具 $name 已执行，无文本结果。';
       onActivity(
         activity.copyWith(
           status: SearchActivityStatus.done,
           resultCount: 1,
+          resultText: output,
+          finishedAt: DateTime.now(),
           items: [if (file != null) SearchActivityItem(title: file.filename)],
         ),
       );
-      final text = result.text.trim();
-      if (text.isNotEmpty) return text;
-      if (file != null) {
-        return 'MCP 工具 $name 已返回文件「${file.filename}」，已附在本轮回复中。';
-      }
-      return 'MCP 工具 $name 已执行，无文本结果。';
+      return output;
     } on DocumentServiceException catch (error) {
       onActivity(
         activity.copyWith(

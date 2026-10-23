@@ -5,28 +5,34 @@ import 'model_catalog.dart';
 
 export 'model_catalog.dart';
 
-/// Configuration for a single LLM endpoint. Kept provider-agnostic so any
-/// OpenAI-compatible service (DeepSeek, Kimi, OpenAI, 智谱…) can be plugged in
-/// by only changing [baseUrl] / [model].
+/// Provider-neutral configuration; the router selects the actual wire format.
 class LlmConfig {
   const LlmConfig({
     required this.baseUrl,
     required this.apiKey,
     required this.model,
+    this.apiFormat = LlmApiFormat.auto,
     ModelCapabilities? capabilities,
     this.serverWebSearch = false,
     this.forceServerWebSearch = false,
     this.allowReasoningRetry = true,
+    this.reasoningGuardEnabled = true,
+    this.responseHeaderTimeout,
+    this.maxOutputTokens,
+    this.profileId,
+    this.routingSessionId,
+    this.authMode = 'apiKey',
     // A public param feeding a private backing field (the getter falls back to
     // resolve()); an initializing formal can't keep the public name here.
     // ignore: prefer_initializing_formals
   }) : _capabilities = capabilities;
 
   /// Base URL WITHOUT the trailing `/chat/completions`, e.g.
-  /// `https://api.deepseek.com`.
+  /// `https://api.deepseek.com` or `https://generativelanguage.googleapis.com/v1beta`.
   final String baseUrl;
   final String apiKey;
   final String model;
+  final LlmApiFormat apiFormat;
 
   /// Explicit capability override. When null (the default), capabilities are
   /// derived from [model] by [ModelCapabilities.resolve] — the single source of
@@ -43,10 +49,45 @@ class LlmConfig {
   /// Client-only: the task runner's final attempt must not recursively retry.
   final bool allowReasoningRetry;
 
+  /// Local reasoning watchdog; work agents currently bypass it entirely.
+  final bool reasoningGuardEnabled;
+
+  /// Client-only. Null keeps the provider default (ordinary chat: 30 seconds).
+  final Duration? responseHeaderTimeout;
+  final int? maxOutputTokens;
+  final String? profileId, routingSessionId;
+  final String authMode;
+
   ModelCapabilities get capabilities =>
       _capabilities ?? ModelCapabilities.resolve(model);
 
-  bool get isReady => apiKey.trim().isNotEmpty && baseUrl.trim().isNotEmpty;
+  /// Explicit format or the initial URL hint for auto mode. The router can
+  /// learn a different working format; this getter does not perform I/O.
+  LlmApiFormat get effectiveApiFormat =>
+      GeminiEndpoint.resolveFormat(format: apiFormat, baseUrl: baseUrl);
+
+  Map<String, String> get transportHeaders =>
+      Uri.tryParse(baseUrl)?.host == 'opencode.ai'
+      ? {
+          'x-opencode-session':
+              'ses_${routingSessionId ?? profileId ?? 'expert-chat'}',
+        }
+      : const {};
+
+  bool get isGeminiNative => effectiveApiFormat == LlmApiFormat.geminiNative;
+
+  /// Base URL normalized for OpenAI-compatible requests (converts bare Google
+  /// Gemini URLs to `/v1beta/openai` when OpenAI-compatible mode is active).
+  String get openAiCompatibleBaseUrl =>
+      GeminiEndpoint.normalizeOpenAiBaseUrl(baseUrl);
+
+  /// Base URL normalized to the Gemini version root (e.g. `.../v1beta`).
+  String get geminiVersionBaseUrl =>
+      GeminiEndpoint.normalizeGeminiVersionBaseUrl(baseUrl);
+
+  bool get isReady =>
+      (apiKey.trim().isNotEmpty || authMode != 'apiKey') &&
+      baseUrl.trim().isNotEmpty;
 
   /// Official DeepSeek API (Files API + V4 thinking fields live here).
   bool get isOfficialDeepSeek =>
@@ -57,26 +98,49 @@ class LlmConfig {
 
   /// True when this request should hit Responses with server-side search.
   bool get useServerWebSearch =>
-      serverWebSearch && capabilities.supportsServerWebSearch;
+      !isGeminiNative &&
+      effectiveApiFormat != LlmApiFormat.anthropicMessages &&
+      serverWebSearch &&
+      capabilities.supportsServerWebSearch;
 
   LlmConfig copyWith({
     String? baseUrl,
     String? apiKey,
     String? model,
+    LlmApiFormat? apiFormat,
     ModelCapabilities? capabilities,
     bool? serverWebSearch,
     bool? forceServerWebSearch,
     bool? allowReasoningRetry,
+    bool? reasoningGuardEnabled,
+    Duration? responseHeaderTimeout,
+    bool clearResponseHeaderTimeout = false,
+    int? maxOutputTokens,
+    bool clearMaxOutputTokens = false,
+    String? profileId,
+    String? routingSessionId,
+    String? authMode,
   }) => LlmConfig(
     baseUrl: baseUrl ?? this.baseUrl,
     apiKey: apiKey ?? this.apiKey,
     model: model ?? this.model,
+    apiFormat: apiFormat ?? this.apiFormat,
     // Keep an explicit override only if one was set; otherwise stay null so a
     // changed [model] re-derives its own capabilities.
     capabilities: capabilities ?? _capabilities,
     serverWebSearch: serverWebSearch ?? this.serverWebSearch,
     forceServerWebSearch: forceServerWebSearch ?? this.forceServerWebSearch,
     allowReasoningRetry: allowReasoningRetry ?? this.allowReasoningRetry,
+    reasoningGuardEnabled: reasoningGuardEnabled ?? this.reasoningGuardEnabled,
+    responseHeaderTimeout: clearResponseHeaderTimeout
+        ? null
+        : responseHeaderTimeout ?? this.responseHeaderTimeout,
+    maxOutputTokens: clearMaxOutputTokens
+        ? null
+        : maxOutputTokens ?? this.maxOutputTokens,
+    profileId: profileId ?? this.profileId,
+    routingSessionId: routingSessionId ?? this.routingSessionId,
+    authMode: authMode ?? this.authMode,
   );
 }
 
@@ -174,12 +238,22 @@ class LlmUsage {
     required this.outputTokens,
     this.cachedInputTokens = 0,
     this.reasoningTokens = 0,
+    this.cacheReported = false,
+    this.cost,
+    this.currency,
   });
 
   final int inputTokens;
+
+  /// Generated tokens, including [reasoningTokens] when reported separately.
   final int outputTokens;
   final int cachedInputTokens;
   final int reasoningTokens;
+  final bool cacheReported;
+
+  /// Only explicit provider-reported charges with a currency are displayed.
+  final double? cost;
+  final String? currency;
 
   bool get hasValues =>
       inputTokens > 0 ||
@@ -193,9 +267,10 @@ class LlmUsage {
     final output = _readInt(raw['completion_tokens']);
     final promptDetails = raw['prompt_tokens_details'];
     final completionDetails = raw['completion_tokens_details'];
-    final cached = promptDetails is Map
+    final cached =
+        promptDetails is Map && promptDetails.containsKey('cached_tokens')
         ? _readInt(promptDetails['cached_tokens'])
-        : 0;
+        : _readInt(raw['prompt_cache_hit_tokens']);
     final reasoning = completionDetails is Map
         ? _readInt(completionDetails['reasoning_tokens'])
         : 0;
@@ -203,6 +278,12 @@ class LlmUsage {
       inputTokens: input,
       outputTokens: output,
       cachedInputTokens: cached,
+      cacheReported:
+          (promptDetails is Map &&
+              promptDetails.containsKey('cached_tokens')) ||
+          raw.containsKey('prompt_cache_hit_tokens'),
+      cost: raw['cost'] is num ? (raw['cost'] as num).toDouble() : null,
+      currency: raw['currency'] is String ? raw['currency'] as String : null,
       reasoningTokens: reasoning,
     );
     return usage.hasValues || raw.containsKey('total_tokens') ? usage : null;
@@ -224,9 +305,31 @@ class LlmUsage {
       inputTokens: input,
       outputTokens: output,
       cachedInputTokens: cached,
+      cacheReported:
+          inputDetails is Map && inputDetails.containsKey('cached_tokens'),
+      cost: raw['cost'] is num ? (raw['cost'] as num).toDouble() : null,
+      currency: raw['currency'] is String ? raw['currency'] as String : null,
       reasoningTokens: reasoning,
     );
     return usage.hasValues || raw.containsKey('total_tokens') ? usage : null;
+  }
+
+  static LlmUsage? fromGemini(dynamic raw) {
+    if (raw is! Map) return null;
+    final input =
+        _readInt(raw['promptTokenCount']) +
+        _readInt(raw['toolUsePromptTokenCount']);
+    final cached = _readInt(raw['cachedContentTokenCount']);
+    final reasoning = _readInt(raw['thoughtsTokenCount']);
+    final output = _readInt(raw['candidatesTokenCount']) + reasoning;
+    final usage = LlmUsage(
+      inputTokens: input,
+      outputTokens: output,
+      cachedInputTokens: cached,
+      cacheReported: raw.containsKey('cachedContentTokenCount'),
+      reasoningTokens: reasoning,
+    );
+    return usage.hasValues || raw.containsKey('totalTokenCount') ? usage : null;
   }
 
   static int _readInt(dynamic value) {
@@ -250,6 +353,7 @@ class ChatChunk {
     this.citations,
     this.responseOutputItems,
     this.usage,
+    this.actualConfig,
   });
 
   final String? contentDelta;
@@ -263,16 +367,17 @@ class ChatChunk {
   /// Citations extracted from Responses annotations / search actions.
   final List<Citation>? citations;
 
-  /// Full Responses `output` items for the current turn. When non-null after
-  /// `finish_reason: tool_calls`, the controller must re-send these items
-  /// (plus `function_call_output`) on the next Responses request.
+  /// Native model payload for this request: Responses `output` items or
+  /// Gemini `parts` (including thought signatures). The controller re-sends
+  /// them unchanged on tool follow-ups to the same provider.
   final List<Map<String, dynamic>>? responseOutputItems;
 
   /// Provider-reported usage, normally present only on the terminal event.
   final LlmUsage? usage;
+  final LlmConfig? actualConfig;
 }
 
-/// One request message sent to an OpenAI-compatible chat endpoint. This is
+/// One request message sent to a chat endpoint. This is
 /// separate from the persisted [ChatMessage] so tool-call protocol messages
 /// can stay transient and never clutter the visible conversation history.
 class LlmRequestMessage {
@@ -286,6 +391,7 @@ class LlmRequestMessage {
     this.imageFileIds = const [],
     this.responseOutputItems = const [],
     this.isToolImageObservation = false,
+    this.toolImageCallId,
   });
 
   factory LlmRequestMessage.fromChatMessage(ChatMessage message) =>
@@ -295,6 +401,10 @@ class LlmRequestMessage {
 
   /// Transient screenshot observation; never serialized as a provider field.
   final bool isToolImageObservation;
+
+  /// Local association between an observation and its producing tool call.
+  /// Unlike [toolCallId], never serialized as an OpenAI message field.
+  final String? toolImageCallId;
   final String content;
   final String? reasoningContent;
   final String? toolCallId;
@@ -311,10 +421,11 @@ class LlmRequestMessage {
 
   bool get hasImageParts => imageDataUrls.isNotEmpty || imageFileIds.isNotEmpty;
 
-  /// Raw Responses API output items from a prior assistant turn that used
-  /// server-side tools (`web_search_call`, `function_call`, `reasoning`…).
-  /// When non-empty, the Responses provider re-sends them instead of
-  /// synthesizing from [content] / [toolCalls].
+  /// Raw provider payload from a prior assistant step: Responses `output`
+  /// items or Gemini content `parts`. Kept transient within a request's tool
+  /// loop, so changing the conversation's provider never replays another
+  /// protocol's items. The native provider uses these instead of rebuilding
+  /// [content] / [toolCalls], preserving signatures and part boundaries.
   final List<Map<String, dynamic>> responseOutputItems;
 
   /// [includeReasoningContent] gates the `reasoning_content` round-trip:

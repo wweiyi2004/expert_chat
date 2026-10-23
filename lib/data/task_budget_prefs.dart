@@ -9,12 +9,26 @@ class TaskBudgetPrefs {
     this.workSeconds = 900,
     this.maxSearches = 192,
     this.maxToolCalls = 192,
+    this.workResponseTimeoutSeconds = 120,
   });
 
   final TaskBudgetPreset preset;
   final int workSeconds;
   final int maxSearches;
   final int maxToolCalls;
+
+  /// Client-side first-response/header wait, independent of stream idle time.
+  final int workResponseTimeoutSeconds;
+
+  TaskBudgetPrefs copyWith({int? workResponseTimeoutSeconds}) =>
+      TaskBudgetPrefs(
+        preset: preset,
+        workSeconds: workSeconds,
+        maxSearches: maxSearches,
+        maxToolCalls: maxToolCalls,
+        workResponseTimeoutSeconds:
+            workResponseTimeoutSeconds ?? this.workResponseTimeoutSeconds,
+      );
 
   static TaskBudgetPrefs forPreset(TaskBudgetPreset preset) => switch (preset) {
     TaskBudgetPreset.quick => const TaskBudgetPrefs(
@@ -50,6 +64,7 @@ class TaskBudgetPrefs {
     'workSeconds': workSeconds,
     'maxSearches': maxSearches,
     'maxToolCalls': maxToolCalls,
+    'workResponseTimeoutSeconds': workResponseTimeoutSeconds,
   };
 
   static TaskBudgetPrefs decode(String? raw) {
@@ -77,6 +92,12 @@ class TaskBudgetPrefs {
       workSeconds: number('workSeconds', 900, 30, 3600),
       maxSearches: number('maxSearches', 192, 0, 192),
       maxToolCalls: number('maxToolCalls', 192, 0, 192),
+      workResponseTimeoutSeconds: number(
+        'workResponseTimeoutSeconds',
+        120,
+        30,
+        600,
+      ),
     );
   }
 }

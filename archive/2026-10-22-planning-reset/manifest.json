@@ -1,0 +1,417 @@
+{
+  "archived_at": "2026-10-22T15:22:46.4268491+08:00",
+  "reason": "User requested archive of existing docs and fresh planning from requirements and source",
+  "content_read_for_planning": false,
+  "files": [
+    {
+      "original": "docs/API-PROTOCOLS.md",
+      "bytes": 4367,
+      "sha256": "aaac6e9b4e691ac7108fe3917985a7b567cbd665883065d42a1f0e978fa0a868"
+    },
+    {
+      "original": "docs/ATTACHMENT-PICKER.md",
+      "bytes": 4000,
+      "sha256": "da4eb6d41cd4fefad699f1680505b7afa36022f66bfa77f16a916785e3c20389"
+    },
+    {
+      "original": "docs/BACKGROUND-GENERATION.md",
+      "bytes": 3772,
+      "sha256": "48af271206f8519ce1d2397e2c635852348762635edf5865a91b7335b7ae5bd2"
+    },
+    {
+      "original": "docs/BACKUP-COMPATIBILITY-AND-SUPPORT.md",
+      "bytes": 3522,
+      "sha256": "eb4cc0e1dc35c5d4378f2c3810d4ffefd3f91bfa360ce7e17a42cdeb27dde6db"
+    },
+    {
+      "original": "docs/CHAT-COMPOSER-AND-ATTACHMENTS.md",
+      "bytes": 3472,
+      "sha256": "e3e602b5b158c8d3892063b510fe9d1d2bb001fbea52341fa78d243b5e3685a9"
+    },
+    {
+      "original": "docs/CHAT-SPEECH-LIFECYCLE.md",
+      "bytes": 5777,
+      "sha256": "4f6a66967e49886fb5c36960a9eed05d0835eadf587397e65549647fc9971f3d"
+    },
+    {
+      "original": "docs/COMPUTER-USE.md",
+      "bytes": 5405,
+      "sha256": "6b883c5d16f459c06db676a8dbb96ff65bf1ce0a57f4b5b6a02f6cc5e5d9d14a"
+    },
+    {
+      "original": "docs/CONVERSATION-SIDEBAR.md",
+      "bytes": 2452,
+      "sha256": "b58d24ae7c9b859cd2ff3f0ee2fdb727ba5435101deaf97ad9efec0a2e689135"
+    },
+    {
+      "original": "docs/DEEPSEEK-AND-PROMPTS.md",
+      "bytes": 4621,
+      "sha256": "24c5641f73d263abd3220fe2151c03b3cbe397505fdbb9bc4ac3e1de2fc77d63"
+    },
+    {
+      "original": "docs/DEPENDENCY-DECISIONS.md",
+      "bytes": 2761,
+      "sha256": "6e55840076add913b20dde621d193f20587dac8d7217859f6b635cb81db41051"
+    },
+    {
+      "original": "docs/DIALOGUE-IMAGE-EXECUTION.md",
+      "bytes": 2691,
+      "sha256": "852e37aaf2e377d5a029cce505de7f2d6da19573289a11c76d73e992e343c186"
+    },
+    {
+      "original": "docs/document-edit-contract.md",
+      "bytes": 6763,
+      "sha256": "38aa781fa559e4c8a91850b0091ce88dc6a6fe8f84d5a5161c942d183cc3b421"
+    },
+    {
+      "original": "docs/DOCUMENT-TOOL-EXECUTION.md",
+      "bytes": 3186,
+      "sha256": "23bd9a3f5baee7f36b6d530a469e792ce66ba857e8723c79eeafd36eb4944421"
+    },
+    {
+      "original": "docs/gateway-architecture.md",
+      "bytes": 6159,
+      "sha256": "7396156e75dc7d0b778ba161f6ef186ef7b96a40202fdd5d52ce6de8ae0bc7de"
+    },
+    {
+      "original": "docs/GEMINI.md",
+      "bytes": 5109,
+      "sha256": "c7b8ad0224bc24dee55069f7e2c94e2fd538ca65fbbe8cbc89cde67932f149e5"
+    },
+    {
+      "original": "docs/GENERATION-STREAM-LIFECYCLE.md",
+      "bytes": 2554,
+      "sha256": "8dba8da05b45e90e0b42f650ff495ee5634765770f51309f19c8633c662250c0"
+    },
+    {
+      "original": "docs/GITEE-RELEASE-SYNC.md",
+      "bytes": 3511,
+      "sha256": "36b21c098be0badbe989b09b93db612daba5247d7959b26ad87631a7e0f31fe6"
+    },
+    {
+      "original": "docs/IMAGE-GENERATION-PIPELINE.md",
+      "bytes": 2824,
+      "sha256": "bc262de3fdd9fcd330a155a437db8ae41e6e3382977eea7896d0aeddfd2deeba"
+    },
+    {
+      "original": "docs/JEV-ROUTING.md",
+      "bytes": 2810,
+      "sha256": "bd60cef2e7c1438e5e89b59097f6f3cb312d5ae534cfbb35648706f85b83e3fd"
+    },
+    {
+      "original": "docs/LLM-REQUEST-POLICY.md",
+      "bytes": 3920,
+      "sha256": "2b556ca0086c3ab40f29ad32ecd800ef93aef2bab4de913e469141624da8f06a"
+    },
+    {
+      "original": "docs/LOCAL-CODE-PREVIEW.md",
+      "bytes": 4537,
+      "sha256": "222b13fe9bb2d61ae4845230ad5c96e90233f3036783f3b33336afa328393e22"
+    },
+    {
+      "original": "docs/MAINTENANCE.md",
+      "bytes": 5925,
+      "sha256": "0d9be0c4e3b6e3985b80dc1691f2d0ae4dae7591f617f0bcf2f2b237ba289f40"
+    },
+    {
+      "original": "docs/MOBILE-LAYOUT.md",
+      "bytes": 1182,
+      "sha256": "471d115c1745b573035b58b0bd451eba61de21dfffe5ebee96512d47bf4bcfe9"
+    },
+    {
+      "original": "docs/ONBOARDING-AND-RECOVERY.md",
+      "bytes": 2885,
+      "sha256": "d88928eab0626f73d2f83e32eea82988a2f2c9c639e44319106c753ec49280c1"
+    },
+    {
+      "original": "docs/project-map.html",
+      "bytes": 94833,
+      "sha256": "c9cef002de12857b20166624e962934f413be9127740f56df74d8ebcf813b622"
+    },
+    {
+      "original": "docs/README.md",
+      "bytes": 3697,
+      "sha256": "b8a970ca5c9394af5ea21db0353cf8e4f343df752b52b9bb90a7bdcbddf5b9eb"
+    },
+    {
+      "original": "docs/RELEASE-ACCEPTANCE.md",
+      "bytes": 4998,
+      "sha256": "06978131990264b87233917d371907bd509b1cb0e249c5ccaeda59e65fcb2ed8"
+    },
+    {
+      "original": "docs/RELIABILITY.md",
+      "bytes": 4928,
+      "sha256": "e9c2dd91272169fec34487edad243a9760b92e6041c28c5b845b1921208c0017"
+    },
+    {
+      "original": "docs/REQUEST-CONTEXT-PREPARATION.md",
+      "bytes": 2768,
+      "sha256": "c00cac7daed19bf46da80b6abfc61f976ed8550671c4109126ba859e0c739999"
+    },
+    {
+      "original": "docs/ROADMAP-agreed-features.md",
+      "bytes": 1461,
+      "sha256": "85f4d87eb14b219d8395382ecc36f659c7aed85756d3c6ca95c39483377a630a"
+    },
+    {
+      "original": "docs/SEARCH-TOOL-EXECUTION.md",
+      "bytes": 2607,
+      "sha256": "ea1f6344695ebf466ffdfd1c4efaa33e41f10dbdb85443c383fcf3c2c6d675b1"
+    },
+    {
+      "original": "docs/SHARE-INTAKE.md",
+      "bytes": 3007,
+      "sha256": "b8b67307cbf0351b17002691d5d5a3f641f7c561898a40af7c2155ff3619ce6d"
+    },
+    {
+      "original": "docs/SHOREBIRD.md",
+      "bytes": 4951,
+      "sha256": "86378bb55626c7039fd5ec138ea642fa1d58c7d7a378c17897ff5be08259a9cd"
+    },
+    {
+      "original": "docs/STREAM-ANSWER-PRESENTATION.md",
+      "bytes": 2443,
+      "sha256": "8296d9f6ffca311cf9cf9007d59a5eeba43e5cdbe97306d4ae37767d0fe37f09"
+    },
+    {
+      "original": "docs/system-architecture-and-logic.md",
+      "bytes": 24964,
+      "sha256": "4f821fabcf56c2af7c3397f966d9a265c3530ffec84a30cad30724207f82e62a"
+    },
+    {
+      "original": "docs/VISION-TOOL-EXECUTION.md",
+      "bytes": 2330,
+      "sha256": "677ad48ebc75f4928ed10dcf1482fbc9d0f46d735f3286d0e3a508b829b4aada"
+    },
+    {
+      "original": "docs/WINDOWS-ACCESSIBILITY.md",
+      "bytes": 1473,
+      "sha256": "6565ef541b70a7a8c0caf42adfe58eb1d921c678c8e5fdbe75f55daa02b9b254"
+    },
+    {
+      "original": "docs/WORKSPACE-BROWSING.md",
+      "bytes": 3032,
+      "sha256": "e10859719cdce985e4a53806465097de534e344fc73a3cc798d90ed80e90b0b0"
+    },
+    {
+      "original": "docs/WORKSPACE-UPGRADE-2026-10-16.md",
+      "bytes": 6164,
+      "sha256": "c5e0ea744f1002d835a71326f2a7e716c4f8e8089fc87e6923bc3cea05d26837"
+    },
+    {
+      "original": "docs/architecture/DEPENDENCY-RULES.md",
+      "bytes": 9274,
+      "sha256": "fb9409c23b9f8eb8fab05e305fc38423407c6c1285ea1241b3aee698ec2089e5"
+    },
+    {
+      "original": "docs/architecture/INCREMENTAL-BASELINE.md",
+      "bytes": 6854,
+      "sha256": "91aa371e622b0fc7f590d2ac7d0e3c01a95e42966c896aade6c0302093b72b24"
+    },
+    {
+      "original": "docs/architecture/module-catalog.json",
+      "bytes": 18672,
+      "sha256": "f2bfd4cc146318018fb9453082febcebdc4cc297b7f4d325c79f10b07bc806af"
+    },
+    {
+      "original": "docs/architecture/MODULE-MAP.md",
+      "bytes": 9172,
+      "sha256": "2ef0c5c15d61e6d200448e0a78a108ce9bbd515266566953fbb20053b4e4dcaa"
+    },
+    {
+      "original": "docs/architecture/README.md",
+      "bytes": 3104,
+      "sha256": "1498af8bf185c0654b6cc223cc6cb585b19376141ceb662a76bf3ef3b40049e2"
+    },
+    {
+      "original": "docs/architecture/TARGET-STRUCTURE.md",
+      "bytes": 9196,
+      "sha256": "fd2707c51a48bf22a9513a8ce34785627865ee73ab0a3cb7dbd981c6044bcc76"
+    },
+    {
+      "original": "docs/architecture/TASK-AND-DEVICE-CONTRACTS.md",
+      "bytes": 8738,
+      "sha256": "ccfd341c0a64f17d5e119c72eeb7e787748244f9fb2655f5f7d6d92a094e973b"
+    },
+    {
+      "original": "docs/architecture/V2-ARCHITECTURE.md",
+      "bytes": 11721,
+      "sha256": "52f0f5d9aaa6693ab15426479c72ad5039c98b8dfaec6c5b8df1eb4d0aaec6b9"
+    },
+    {
+      "original": "docs/architecture/V2-DEVELOPER-WORKSPACE.md",
+      "bytes": 10529,
+      "sha256": "ea5a39aea30e504ab52c9a303fe97f995d77314ae6ad01be7d839d0c0c05b4e0"
+    },
+    {
+      "original": "docs/plans/AGENT-EVOLUTION.md",
+      "bytes": 12994,
+      "sha256": "bb5e5eeaaa2751bb4ec711115dfe075e66a8d6ebaa7e02bace16d986bff77c7f"
+    },
+    {
+      "original": "docs/plans/AGENT-V2-REBUILD.md",
+      "bytes": 11964,
+      "sha256": "58b2e4ac77ef1df25cbc1decc0eda6e8e037c4d441fef5517f83477fb8ba05c8"
+    },
+    {
+      "original": "docs/prompts/grok-m7-research-mode.md",
+      "bytes": 7495,
+      "sha256": "4110604372367d7b8d98d4653018a0c3fe275fcec7cba8fe4bc84f2dbbe66811"
+    },
+    {
+      "original": "docs/releases/shorebird-ota-2026-10-17.md",
+      "bytes": 1903,
+      "sha256": "b7d02be32a1154e581651d4a05645ce9a0f359144e213270b472306738809e5d"
+    },
+    {
+      "original": "docs/releases/v3.0.2.md",
+      "bytes": 1930,
+      "sha256": "659a52c0c8afc16dccc2e1c1d81c1bfdd38a08ff370960cbec360d9b19679ea9"
+    },
+    {
+      "original": "docs/releases/v3.1.0.md",
+      "bytes": 2671,
+      "sha256": "5841fe42db6a2d22280779af1010b92d379971b28b75e5e210320e00086303b3"
+    },
+    {
+      "original": "docs/releases/v3.2.0.md",
+      "bytes": 2189,
+      "sha256": "2b13067538835bc5cc5db39e506af1b7814f0633749ad7e4760e52e08aeb861e"
+    },
+    {
+      "original": "docs/releases/v3.3.0.md",
+      "bytes": 1281,
+      "sha256": "3bcbb608059bf2f6201cc14b3520b6d7df234e57081d6df3a8b8306e71a777e3"
+    },
+    {
+      "original": "docs/releases/v3.3.1.md",
+      "bytes": 2171,
+      "sha256": "98cdb6c87ec94119921fd3dca3bd7cd3ff0ac1fc18fb575c11f1949de94e9f5c"
+    },
+    {
+      "original": "docs/releases/v3.4.0.md",
+      "bytes": 1610,
+      "sha256": "c0eef711fe6318177fbd72229c52d7058db5a6261c166db71a07de29405c04ef"
+    },
+    {
+      "original": "docs/releases/v3.5.0-ota-2026-09-05.md",
+      "bytes": 4228,
+      "sha256": "1becbd7d5f2f5edbc5b784862608418f1a2e2c21dcc3b08578742e1443e18e4b"
+    },
+    {
+      "original": "docs/releases/v3.5.0-ota-2026-09-08.md",
+      "bytes": 3868,
+      "sha256": "9b7bbd17012bc21002f6d335cce620d3b66422655fca175f97e4827ce2cecc98"
+    },
+    {
+      "original": "docs/releases/v3.5.0.md",
+      "bytes": 1509,
+      "sha256": "8c4cc748a4799f12c89a28efeabd167abe7f36bc02ae46defdeebe4dddbdd677"
+    },
+    {
+      "original": "docs/releases/v3.6.0-android-patch-1.md",
+      "bytes": 1044,
+      "sha256": "048da17642d4bc1f1fdd3dbd66fbac46b5705a0e4619c6950699c05b5ef8f2cf"
+    },
+    {
+      "original": "docs/releases/v3.6.0.md",
+      "bytes": 1440,
+      "sha256": "4abefd9f8537039595cc914e3c8136072601845c4f8760b28ed89f4d51b9b3af"
+    },
+    {
+      "original": "docs/releases/v3.6.1.md",
+      "bytes": 1315,
+      "sha256": "69c80a08e1949aab62a892e4114e0bf144362a6cfe287a450dc88830dfd73ae2"
+    },
+    {
+      "original": "docs/releases/v3.7.1.md",
+      "bytes": 1450,
+      "sha256": "7ed806e1de8d117462ff580077ab9bf9523d6050597498e38eab8a2ec4bbe133"
+    },
+    {
+      "original": "docs/reviews/2026-07-28-m7-v2.0-pre-release.md",
+      "bytes": 13218,
+      "sha256": "c5074afe41c37431216d640d6e65f249b27c511388c5f6ecb89f9223d87c4f2a"
+    },
+    {
+      "original": "docs/reviews/2026-07-28-v1.6-wrapup-round1.md",
+      "bytes": 6647,
+      "sha256": "1fb83ac0d8052e483a582d5993f2259d7d5977cb53366e88d1ec70c47ef385e4"
+    },
+    {
+      "original": "docs/reviews/2026-08-03-v3.0-pre-release.md",
+      "bytes": 2731,
+      "sha256": "7dc6bc9272bfac2d3d8dfadff297bbb81d23f31523d2d54f1d4a75189dab4af3"
+    },
+    {
+      "original": "docs/reviews/2026-09-08-ota-review.md",
+      "bytes": 3196,
+      "sha256": "81b55eebc4604df001e6b3c1382a271f4d635feef48b0321500cc0279bb86bd0"
+    },
+    {
+      "original": "docs/reviews/2026-09-21-computer-use.md",
+      "bytes": 3296,
+      "sha256": "18883ed127ef2370e0d4cfc8a4da915a804bd752a097c33f36ce9d3250eee3ef"
+    },
+    {
+      "original": "docs/reviews/2026-09-21-jev-routing-eval.md",
+      "bytes": 1576,
+      "sha256": "ebb30a066f8c37ca394b4e48a769ffec7110fd7181533704e8fe7953492eedbb"
+    },
+    {
+      "original": "docs/reviews/2026-09-22-live-computer-use.md",
+      "bytes": 2801,
+      "sha256": "bd4c1918ecd0ea491b00a118f85192bf6691d8e63a61544cb508d441240bcc18"
+    },
+    {
+      "original": "docs/reviews/2026-09-22-maintenance-audit.md",
+      "bytes": 23265,
+      "sha256": "3c15d8707fc97ed2d50237b83dcbcb5ceae5af060dba45e7b29666ccb4662575"
+    },
+    {
+      "original": "docs/reviews/2026-09-22-maintenance-remediation.md",
+      "bytes": 7989,
+      "sha256": "863707151834fe5f492788b872835bc2d0ff820e37b9015cc3885bd1e3415aca"
+    },
+    {
+      "original": "docs/reviews/2026-10-07-defensive-redundancy-audit.md",
+      "bytes": 19098,
+      "sha256": "12c856a9ab6451c4c7aef4e005a814f2c0ff5f871d76a0b2585be5648377b02e"
+    },
+    {
+      "original": "docs/reviews/2026-10-13-project-review.md",
+      "bytes": 15068,
+      "sha256": "dc8bf7e0ddf59e9cc7e0d6787a4707af39a9f84cb915442662f2c84670ec3fcf"
+    },
+    {
+      "original": "docs/reviews/2026-10-15-remediation.md",
+      "bytes": 5244,
+      "sha256": "7dba2de5d6b17655a0e5ac670474bf1f3042d632e08a5afb2a6b4b9c8d9a8a2e"
+    },
+    {
+      "original": "docs/superpowers/plans/2026-08-10-study-mode.md",
+      "bytes": 4866,
+      "sha256": "1b0cd6a64075d8d7abcf0394775a698445ddda6296edbc930be2f36f02040cce"
+    },
+    {
+      "original": "docs/superpowers/plans/2026-08-16-turn-skill-router.md",
+      "bytes": 33767,
+      "sha256": "951f8bec5606ec9403b2976d361b718c28e7d88c876323f45aef123e5e67444a"
+    },
+    {
+      "original": "docs/superpowers/specs/2026-08-10-study-mode-design.md",
+      "bytes": 15098,
+      "sha256": "8a4942368a6b01df6f442d6cefd0fd74e8e6377befeeae0d33165f6fe293a166"
+    },
+    {
+      "original": "docs/superpowers/specs/2026-08-16-turn-skill-router-design.md",
+      "bytes": 6308,
+      "sha256": "6e51b6ee7b16e4eb34c8935e1d215a3e590ad321a66bfa960a40f7113bbbd72e"
+    },
+    {
+      "original": "PROJECT_PLAN.md",
+      "bytes": 32592,
+      "sha256": "8953b7f24d292c7c2f09871dcff46e61458aa21bbbc08edd071557b7a44de687"
+    }
+  ]
+}

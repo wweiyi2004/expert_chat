@@ -11,22 +11,139 @@ import 'package:expert_chat/domain/llm/openai_compatible_provider.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  test('DeepSeek V4 models advertise server web search', () {
-    expect(
-      ModelCapabilities.resolve('deepseek-v4-flash').supportsServerWebSearch,
-      isTrue,
-    );
-    expect(
-      ModelCapabilities.resolve('deepseek-v4-pro').supportsServerWebSearch,
-      isTrue,
-    );
-    expect(
-      ModelCapabilities.resolve(
+  for (final separator in ['', '\n\n']) {
+    final ending = separator.isEmpty ? 'EOF' : 'blank separator';
+    test('Responses failure propagates at $ending', () async {
+      final adapter = _RecordingAdapter(
+        sse:
+            'event: response.failed\n'
+            'data: {"type":"response.failed","response":{"error":{"message":"upstream failure"}}}$separator',
+      );
+      final provider = ResponsesApiProvider(
+        dio: Dio()..httpClientAdapter = adapter,
+      );
+      await expectLater(
+        provider
+            .streamChat(
+              config: const LlmConfig(
+                baseUrl: 'https://example.com',
+                apiKey: 'test',
+                model: 'test',
+              ),
+              messages: const [],
+            )
+            .toList(),
+        throwsA(predicate((e) => e.toString().contains('upstream failure'))),
+      );
+    });
+
+    test('Responses incomplete reason is retained at $ending', () async {
+      final adapter = _RecordingAdapter(
+        sse:
+            'event: response.output_text.delta\n'
+            'data: {"type":"response.output_text.delta","delta":"partial answer"}\n\n'
+            'event: response.incomplete\n'
+            'data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"},"output":[]}}$separator',
+      );
+      final chunks =
+          await ResponsesApiProvider(dio: Dio()..httpClientAdapter = adapter)
+              .streamChat(
+                config: const LlmConfig(
+                  baseUrl: 'https://example.com',
+                  apiKey: 'test',
+                  model: 'test',
+                ),
+                messages: const [],
+              )
+              .toList();
+      expect(chunks.first.contentDelta, 'partial answer');
+      expect(chunks.last.finishReason, 'max_output_tokens');
+    });
+  }
+
+  test(
+    'Responses EOF without a terminal event is an interrupted stream',
+    () async {
+      final adapter = _RecordingAdapter(
+        sse:
+            'event: response.output_text.delta\n'
+            'data: {"type":"response.output_text.delta","delta":"partial answer"}\n\n',
+      );
+      final stream =
+          ResponsesApiProvider(
+            dio: Dio()..httpClientAdapter = adapter,
+          ).streamChat(
+            config: const LlmConfig(
+              baseUrl: 'https://example.com',
+              apiKey: 'test',
+              model: 'test',
+            ),
+            messages: const [],
+          );
+      await expectLater(
+        stream,
+        emitsInOrder([
+          isA<ChatChunk>().having(
+            (c) => c.contentDelta,
+            'partial text',
+            'partial answer',
+          ),
+          emitsError(predicate((e) => e.toString().contains('完成前中断'))),
+          emitsDone,
+        ]),
+      );
+    },
+  );
+
+  test(
+    'incomplete Responses function calls are never released for execution',
+    () async {
+      final adapter = _RecordingAdapter(
+        sse: '''
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc1","call_id":"c1","name":"write_file","arguments":"{}"}}
+
+event: response.incomplete
+data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"},"output":[]}}
+
+''',
+      );
+      final chunks =
+          await ResponsesApiProvider(dio: Dio()..httpClientAdapter = adapter)
+              .streamChat(
+                config: const LlmConfig(
+                  baseUrl: 'https://example.com',
+                  apiKey: 'test',
+                  model: 'test',
+                ),
+                messages: const [],
+              )
+              .toList();
+      expect(chunks.last.finishReason, 'max_output_tokens');
+      expect(chunks.expand((c) => c.toolCalls ?? <ToolCall>[]), isEmpty);
+    },
+  );
+
+  test(
+    'only Pro advertises Responses hosted search; Flash uses Search API',
+    () {
+      for (final model in [
+        'deepseek-flash',
+        'deepseek-v4-flash',
         'deepseek-v4-flash-vision-exp',
-      ).supportsServerWebSearch,
-      isTrue,
-    );
-  });
+      ]) {
+        expect(
+          ModelCapabilities.resolve(model).supportsServerWebSearch,
+          isFalse,
+        );
+        expect(ModelCapabilities.resolve(model).supportsVision, isTrue);
+      }
+      expect(
+        ModelCapabilities.resolve('deepseek-v4-pro').supportsServerWebSearch,
+        isTrue,
+      );
+    },
+  );
 
   test('Responses request uses /responses + hosted web_search', () async {
     final adapter = _RecordingAdapter(
@@ -47,7 +164,7 @@ data: {"type":"response.completed","response":{"id":"r1","status":"completed","o
           config: const LlmConfig(
             baseUrl: 'https://api.deepseek.com',
             apiKey: 'k',
-            model: 'deepseek-v4-flash',
+            model: 'deepseek-v4-pro',
             serverWebSearch: true,
           ),
           messages: const [
@@ -81,7 +198,7 @@ data: {"type":"response.completed","response":{"id":"r1","status":"completed","u
           config: const LlmConfig(
             baseUrl: 'https://api.deepseek.com',
             apiKey: 'k',
-            model: 'deepseek-v4-flash',
+            model: 'deepseek-v4-pro',
             serverWebSearch: true,
           ),
           messages: const [
@@ -116,7 +233,7 @@ data: {"type":"response.completed","response":{"id":"r1","status":"completed","o
           config: const LlmConfig(
             baseUrl: 'https://api.deepseek.com',
             apiKey: 'k',
-            model: 'deepseek-v4-flash',
+            model: 'deepseek-v4-pro',
             serverWebSearch: true,
             forceServerWebSearch: true,
           ),
@@ -147,7 +264,7 @@ data: {"type":"response.completed","response":{"id":"r1","status":"completed","o
             config: const LlmConfig(
               baseUrl: 'https://api.deepseek.com',
               apiKey: 'k',
-              model: 'deepseek-v4-flash',
+              model: 'deepseek-v4-pro',
               serverWebSearch: true,
               forceServerWebSearch: true,
             ),
@@ -203,7 +320,7 @@ data: {"type":"response.completed","response":{"id":"r1","status":"completed","o
           config: const LlmConfig(
             baseUrl: 'https://api.deepseek.com',
             apiKey: 'k',
-            model: 'deepseek-v4-flash',
+            model: 'deepseek-v4-pro',
             serverWebSearch: true,
           ),
           messages: const [
@@ -253,7 +370,7 @@ data: {"type":"response.completed","response":{"id":"r1","status":"completed","o
           config: const LlmConfig(
             baseUrl: 'https://api.deepseek.com',
             apiKey: 'k',
-            model: 'deepseek-v4-flash',
+            model: 'deepseek-v4-pro',
             serverWebSearch: true,
           ),
           messages: const [
@@ -310,7 +427,7 @@ data: {"type":"response.completed","response":{"id":"r1","status":"completed","o
             config: const LlmConfig(
               baseUrl: 'https://api.deepseek.com',
               apiKey: 'k',
-              model: 'deepseek-v4-flash',
+              model: 'deepseek-v4-pro',
             ),
             messages: const [
               LlmRequestMessage(role: MessageRole.user, content: 'a'),
@@ -327,7 +444,7 @@ data: {"type":"response.completed","response":{"id":"r1","status":"completed","o
             config: const LlmConfig(
               baseUrl: 'https://api.deepseek.com',
               apiKey: 'k',
-              model: 'deepseek-v4-flash',
+              model: 'deepseek-v4-pro',
               serverWebSearch: true,
             ),
             messages: const [
@@ -358,7 +475,7 @@ data: {"type":"response.completed","response":{"id":"r1","status":"completed","o
           config: const LlmConfig(
             baseUrl: 'https://api.deepseek.com',
             apiKey: 'k',
-            model: 'deepseek-v4-flash',
+            model: 'deepseek-v4-pro',
             serverWebSearch: true,
           ),
           messages: const [
@@ -388,7 +505,7 @@ data: {"type":"response.completed","response":{"id":"r1","status":"completed","o
           config: const LlmConfig(
             baseUrl: 'https://api.deepseek.com',
             apiKey: 'k',
-            model: 'deepseek-v4-flash',
+            model: 'deepseek-v4-pro',
             serverWebSearch: true,
           ),
           messages: const [

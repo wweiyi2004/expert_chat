@@ -42,6 +42,12 @@ class _Parser extends FileParser {
   );
 }
 
+class _TextOnlySettings extends FakeSettings {
+  @override
+  Future<SettingsState> build() async =>
+      (await super.build()).copyWith(selectedModel: 'deepseek-v4-pro');
+}
+
 void main() {
   group('SharedPayload.fromMap', () {
     test('keeps valid files, trims text and reads skip counts', () {
@@ -220,7 +226,7 @@ void main() {
     });
 
     testWidgets('skips images when the model cannot see them', (tester) async {
-      final c = await setup(tester, settings: FakeSettings.new);
+      final c = await setup(tester, settings: _TextOnlySettings.new);
       share(
         c,
         const SharedPayload(

@@ -2,6 +2,51 @@ import 'package:expert_chat/data/ui_prefs.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test(
+    'reading settings survive serialization with separate chat/work layouts',
+    () {
+      final chosen = const UiPrefs().copyWith(
+        lineHeight: 2.1,
+        paragraphSpacing: 14,
+        messageSpacing: 30,
+        messagePadding: 44,
+        adaptiveMessagePadding: false,
+        workContentWidth: ContentWidthPref.wide,
+        workMessageStyle: MessageStylePref.bubble,
+        popoverMaxHeight: 500,
+        popoverTopMargin: 48,
+      );
+      final restored = UiPrefs.fromJson(chosen.toJson());
+      expect(restored.toJson(), chosen.toJson());
+      expect(restored.contentWidth, ContentWidthPref.regular);
+      expect(restored.horizontalMessagePadding(1200), 44);
+      expect(restored.horizontalMessagePadding(360), 24);
+      final legacy = UiPrefs.fromJson({'colorTheme': 'forest'});
+      expect(legacy.lineHeight, 1.85);
+      expect(legacy.workMessageStyle, MessageStylePref.document);
+      expect(legacy.workContentWidth, ContentWidthPref.full);
+      expect(legacy.colorTheme, ColorThemePref.forest);
+    },
+  );
+  test(
+    'invalid reading values cannot break sliders or erase other preferences',
+    () {
+      final restored = UiPrefs.fromJson({
+        'lineHeight': double.nan,
+        'paragraphSpacing': -100,
+        'messageSpacing': 999,
+        'messagePadding': 'bad',
+        'popoverMaxHeight': 9999,
+        'density': 'compact',
+      });
+      expect(restored.lineHeight, 1.85);
+      expect(restored.paragraphSpacing, 0);
+      expect(restored.messageSpacing, 48);
+      expect(restored.messagePadding, 32);
+      expect(restored.popoverMaxHeight, 600);
+      expect(restored.density, DensityPref.compact);
+    },
+  );
   test('TTS speed round-trips without changing older defaults', () {
     final saved = const UiPrefs(ttsSpeed: TtsSpeedPref.fast).toJson();
 

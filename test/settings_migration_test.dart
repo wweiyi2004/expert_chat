@@ -6,6 +6,8 @@ import 'package:expert_chat/data/composer_modes.dart';
 import 'package:expert_chat/data/gateway_config.dart';
 import 'package:expert_chat/data/media_api_config.dart';
 import 'package:expert_chat/data/provider_profile.dart';
+import 'package:expert_chat/data/settings_storage_keys.dart';
+import 'package:expert_chat/domain/tools/search_provider.dart';
 import 'package:expert_chat/data/ui_prefs.dart';
 import 'package:expert_chat/data/task_budget_prefs.dart';
 import 'package:expert_chat/domain/llm/llm_provider.dart';
@@ -17,8 +19,146 @@ import 'package:flutter_secure_storage/test/test_flutter_secure_storage_platform
 import 'package:flutter_secure_storage_platform_interface/flutter_secure_storage_platform_interface.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+// ignore: depend_on_referenced_packages - test-only transitive platform dep
+import 'package:shared_preferences_platform_interface/shared_preferences_platform_interface.dart';
+
+class _FailingWriteStore extends SharedPreferencesStorePlatform {
+  _FailingWriteStore({this.returnFalse = false});
+  final bool returnFalse;
+
+  @override
+  Future<bool> setValue(String valueType, String key, Object value) async {
+    if (returnFalse) return false;
+    throw StateError('synthetic write failure');
+  }
+
+  @override
+  Future<bool> remove(String key) async => true;
+  @override
+  Future<bool> clear() async => true;
+  @override
+  Future<Map<String, Object>> getAll() async => {};
+}
 
 void main() {
+  for (final backend in <String?>[
+    null,
+    'duckduckgo',
+    'provider',
+    'deepseek',
+    'tavily',
+  ]) {
+    test(
+      'DeepSeek becomes the persisted default from $backend exactly once',
+      () async {
+        SharedPreferences.setMockInitialValues({
+          kSettingsSearchBackend: ?backend,
+        });
+        final priorSecure = FlutterSecureStoragePlatform.instance;
+        FlutterSecureStoragePlatform.instance =
+            TestFlutterSecureStoragePlatform({});
+        addTearDown(() => FlutterSecureStoragePlatform.instance = priorSecure);
+        final prefs = await SharedPreferences.getInstance();
+        final container = ProviderContainer(
+          overrides: [
+            sharedPrefsProvider.overrideWithValue(prefs),
+            secureStorageProvider.overrideWithValue(
+              const FlutterSecureStorage(),
+            ),
+          ],
+        );
+        addTearDown(container.dispose);
+        final expected = backend == 'tavily'
+            ? SearchBackend.tavily
+            : SearchBackend.deepseek;
+        final loaded = await container.read(settingsControllerProvider.future);
+        expect(loaded.searchBackend, expected);
+        expect(prefs.getString(kSettingsSearchBackend), expected.wire);
+        expect(prefs.getBool(kSettingsDeepSeekSearchDefaultMigrated), isTrue);
+        // A later explicit choice is not overwritten on every launch.
+        await container
+            .read(settingsControllerProvider.notifier)
+            .setSearchBackend(SearchBackend.duckduckgo);
+        container.invalidate(settingsControllerProvider);
+        expect(
+          (await container.read(
+            settingsControllerProvider.future,
+          )).searchBackend,
+          SearchBackend.duckduckgo,
+        );
+      },
+    );
+  }
+
+  test('composer preference persistence failures reach the caller', () async {
+    SharedPreferences.setMockInitialValues({});
+    FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
+      {},
+    );
+    final prefs = await SharedPreferences.getInstance();
+    final container = ProviderContainer(
+      overrides: [
+        sharedPrefsProvider.overrideWithValue(prefs),
+        secureStorageProvider.overrideWithValue(const FlutterSecureStorage()),
+      ],
+    );
+    addTearDown(container.dispose);
+    final settings = await container.read(settingsControllerProvider.future);
+    final store = SharedPreferencesStorePlatform.instance;
+    addTearDown(() => SharedPreferencesStorePlatform.instance = store);
+    SharedPreferencesStorePlatform.instance = _FailingWriteStore();
+    final controller = container.read(settingsControllerProvider.notifier);
+    await expectLater(
+      controller.setSearchMode(settings.searchMode.next),
+      throwsStateError,
+    );
+    await expectLater(
+      controller.setImageGenMode(settings.imageGenMode.next),
+      throwsStateError,
+    );
+    SharedPreferencesStorePlatform.instance = _FailingWriteStore(
+      returnFalse: true,
+    );
+    await expectLater(
+      controller.setSearchMode(settings.searchMode),
+      throwsStateError,
+    );
+    await expectLater(
+      controller.setImageGenMode(settings.imageGenMode),
+      throwsStateError,
+    );
+  });
+  for (final entry in {
+    'chatSkills': jsonEncode([
+      {'id': 'custom', 'prompt': 'preserve me'},
+      {'id': 'broken', 'enabled': 'not-a-bool'},
+    ]),
+    'expertChatGateway': jsonEncode({
+      'baseUrl': 'https://example.invalid',
+      'enabled': 'not-a-bool',
+    }),
+  }.entries) {
+    test('load keeps malformed ${entry.key} and surfaces the error', () async {
+      SharedPreferences.setMockInitialValues({entry.key: entry.value});
+      FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
+        {},
+      );
+      final prefs = await SharedPreferences.getInstance();
+      final container = ProviderContainer(
+        overrides: [
+          sharedPrefsProvider.overrideWithValue(prefs),
+          secureStorageProvider.overrideWithValue(const FlutterSecureStorage()),
+        ],
+      );
+      addTearDown(container.dispose);
+      await expectLater(
+        container.read(settingsControllerProvider.future),
+        throwsFormatException,
+      );
+      expect(prefs.getString(entry.key), entry.value);
+      expect(prefs.getKeys(), {entry.key});
+    });
+  }
   test(
     'selecting the default effort explicitly persists the override',
     () async {
@@ -354,46 +494,48 @@ void main() {
     },
   );
 
-  test('DeepSeek v4 profiles gain the official vision model', () async {
-    final profile = ProviderProfile(
-      id: 'v4-profile',
-      name: 'DeepSeek',
-      baseUrl: 'https://api.deepseek.com',
-      chatModel: 'deepseek-v4-flash',
-      reasonerModel: 'deepseek-v4-pro',
-      models: const ['deepseek-v4-flash', 'deepseek-v4-pro'],
-    );
-    SharedPreferences.setMockInitialValues({
-      'providerProfiles': jsonEncode([profile.toJson()]),
-      'activeProfileId': profile.id,
-    });
-    FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
-      {},
-    );
-    addTearDown(() {
+  test(
+    'official DeepSeek Flash aliases migrate to the current vision model',
+    () async {
+      final profile = ProviderProfile(
+        id: 'v4-profile',
+        name: 'DeepSeek',
+        baseUrl: 'https://api.deepseek.com',
+        chatModel: 'deepseek-v4-flash',
+        reasonerModel: 'deepseek-v4-pro',
+        models: const ['deepseek-v4-flash', 'deepseek-v4-pro'],
+      );
+      SharedPreferences.setMockInitialValues({
+        'providerProfiles': jsonEncode([profile.toJson()]),
+        'activeProfileId': profile.id,
+      });
       FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
         {},
       );
-    });
+      addTearDown(() {
+        FlutterSecureStoragePlatform.instance =
+            TestFlutterSecureStoragePlatform({});
+      });
 
-    final prefs = await SharedPreferences.getInstance();
-    final container = ProviderContainer(
-      overrides: [
-        sharedPrefsProvider.overrideWithValue(prefs),
-        secureStorageProvider.overrideWithValue(const FlutterSecureStorage()),
-      ],
-    );
-    addTearDown(container.dispose);
+      final prefs = await SharedPreferences.getInstance();
+      final container = ProviderContainer(
+        overrides: [
+          sharedPrefsProvider.overrideWithValue(prefs),
+          secureStorageProvider.overrideWithValue(const FlutterSecureStorage()),
+        ],
+      );
+      addTearDown(container.dispose);
 
-    final state = await container.read(settingsControllerProvider.future);
-    expect(state.profiles.single.chatModel, 'deepseek-v4-flash');
-    expect(state.profiles.single.reasonerModel, 'deepseek-v4-pro');
-    expect(state.profiles.single.models, contains('deepseek-flash'));
-    expect(
-      state.profiles.single.models,
-      contains('deepseek-v4-flash-vision-exp'),
-    );
-  });
+      final state = await container.read(settingsControllerProvider.future);
+      expect(state.profiles.single.chatModel, 'deepseek-flash');
+      expect(state.profiles.single.reasonerModel, 'deepseek-v4-pro');
+      expect(state.profiles.single.models, contains('deepseek-flash'));
+      expect(
+        state.profiles.single.models,
+        isNot(contains('deepseek-v4-flash-vision-exp')),
+      );
+    },
+  );
 
   test(
     'already-migrated profiles delete the verified legacy API key',

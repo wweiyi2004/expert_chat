@@ -1,6 +1,7 @@
 import '../../data/gateway_config.dart';
 import '../llm/llm_provider.dart';
 import 'computer_use_policy.dart';
+import 'playwright_mcp_preset.dart';
 
 /// Built-in document MCP, selectable per conversation like custom servers.
 class McpServerChoice {
@@ -56,10 +57,17 @@ abstract final class McpHostTools {
   };
 
   static const reservedNames = {
+    'work_run_command',
+    'work_deliver_files',
     'web_search',
     'fetch_url',
     'generate_image',
     'analyze_image',
+    'coding_workspace_info',
+    'coding_list_directory',
+    'coding_read_file',
+    'coding_write_file',
+    'coding_create_directory',
     ...internalNames,
     ...clientAdaptedNames,
   };
@@ -116,6 +124,14 @@ abstract final class McpHostTools {
             serverId: server.id,
             tool: server.computerUse
                 ? ComputerUsePolicy.modelTool(tool, server.allowForeground)
+                : server.localProcess?.isPlaywright == true &&
+                      tool.name == 'browser_navigate'
+                ? DiscoveredMcpTool(
+                    name: tool.name,
+                    description:
+                        '${tool.description}\n${PlaywrightMcpPreset.guidance}',
+                    inputSchema: tool.inputSchema,
+                  )
                 : tool,
           ),
         );

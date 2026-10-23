@@ -5,7 +5,9 @@ import '../../../data/composer_modes.dart';
 import '../../../data/models.dart';
 import '../../../domain/llm/llm_provider.dart';
 import 'attachment_chip.dart';
+import 'composer_popover.dart';
 import 'composer_tool_tray.dart';
+import 'reasoning_effort_control.dart';
 
 class ChatComposer extends StatefulWidget {
   const ChatComposer({
@@ -21,6 +23,8 @@ class ChatComposer extends StatefulWidget {
     required this.picking,
     required this.storyLike,
     this.isStudy = false,
+    this.workMode = false,
+    this.desktopLayout = false,
     required this.directorMode,
     required this.canAttachImages,
     required this.imageGenerationConfigured,
@@ -48,6 +52,10 @@ class ChatComposer extends StatefulWidget {
     required this.onRemoveAttachment,
     required this.onToggleSpeech,
     this.onVoiceConversation,
+    this.onConversationOptions,
+    this.modelPicker,
+    this.permissionControl,
+    this.attachedToolbar,
     required this.onSend,
     this.onDocumentEdit,
     required this.onStop,
@@ -64,6 +72,8 @@ class ChatComposer extends StatefulWidget {
   final bool picking;
   final bool storyLike;
   final bool isStudy;
+  final bool workMode;
+  final bool desktopLayout;
   final bool directorMode;
   final bool canAttachImages;
   final bool imageGenerationConfigured;
@@ -93,6 +103,9 @@ class ChatComposer extends StatefulWidget {
 
   /// Opens hands-free voice conversation mode; hidden when null.
   final VoidCallback? onVoiceConversation;
+  final VoidCallback? onConversationOptions;
+  final Widget? modelPicker;
+  final Widget? permissionControl, attachedToolbar;
   final VoidCallback onSend;
   final VoidCallback? onDocumentEdit;
   final VoidCallback onStop;
@@ -134,13 +147,33 @@ class _ComposerState extends State<ChatComposer> {
     return true;
   }
 
-  void _togglePlus() {
-    if (widget.isStreaming) return;
-    setState(() => _plusOpen = !_plusOpen);
+  BuildContext? _trayContext;
+  Future<void> _togglePlus(BuildContext anchor, Widget tray) async {
+    if (_plusOpen) {
+      _closePlus();
+      return;
+    }
+    setState(() => _plusOpen = true);
+    await showComposerPopover<void>(
+      anchor,
+      width: 420,
+      builder: (menu) {
+        _trayContext = menu;
+        return SingleChildScrollView(
+          padding: const EdgeInsets.all(8),
+          child: tray,
+        );
+      },
+    );
+    _trayContext = null;
+    if (mounted) setState(() => _plusOpen = false);
   }
 
   void _closePlus() {
-    if (_plusOpen) setState(() => _plusOpen = false);
+    final menu = _trayContext;
+    _trayContext = null;
+    if (menu != null && menu.mounted) Navigator.pop(menu);
+    if (_plusOpen && mounted) setState(() => _plusOpen = false);
   }
 
   void _runAndClose(VoidCallback action) {
@@ -159,20 +192,13 @@ class _ComposerState extends State<ChatComposer> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => LayoutBuilder(builder: _buildComposer);
+
+  Widget _buildComposer(BuildContext context, BoxConstraints constraints) {
     final scheme = Theme.of(context).colorScheme;
     final media = MediaQuery.of(context);
-    final phone = media.size.width < 600;
+    final phone = constraints.maxWidth < 600;
     final compactHeight = media.size.height - media.viewInsets.bottom < 720;
-    final hint = widget.imageMode
-        ? (widget.attachments.any((a) => a.isImage)
-              ? '描述如何修改参考图（图生图）…'
-              : '描述要生成的图片；可点 + 上传参考图…')
-        : widget.directorMode
-        ? '发导演指令，或使用“写下一场 / 续写当前场”…'
-        : widget.storyLike
-        ? '续写反应，或输入旁白…'
-        : '写下你的想法…';
     final canAttachDocs =
         !widget.isStreaming && !widget.picking && !widget.imageMode;
     final canAttachImages =
@@ -219,7 +245,6 @@ class _ComposerState extends State<ChatComposer> {
           );
         },
         decoration: InputDecoration(
-          hintText: hint,
           filled: false,
           border: InputBorder.none,
           enabledBorder: InputBorder.none,
@@ -231,39 +256,101 @@ class _ComposerState extends State<ChatComposer> {
         ),
       ),
     );
-    final thinkingControls = SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: Row(
-        children: [
-          _ComposerToggleChip(
-            selected: widget.deepThink,
-            icon: Icons.psychology_outlined,
-            label: '深度思考',
-            onSelected: widget.onToggleDeepThink,
+    final thinkingControls = Wrap(
+      spacing: 6,
+      runSpacing: 6,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        _ComposerToggleChip(
+          selected: widget.deepThink,
+          icon: Icons.psychology_outlined,
+          label: '深度思考',
+          onSelected: widget.onToggleDeepThink,
+        ),
+        Tooltip(
+          message: !widget.deepThink
+              ? '开启深度思考后可调节'
+              : !widget.supportsReasoningEffort
+              ? '当前模型不支持调节推理强度'
+              : '调节推理强度',
+          child: _ComposerToggleChip(
+            key: const ValueKey('composer-reasoning-effort-button'),
+            selected: widget.deepThink && widget.supportsReasoningEffort,
+            icon: Icons.tune_rounded,
+            label: '思考档位',
+            onSelected:
+                widget.deepThink &&
+                    widget.supportsReasoningEffort &&
+                    widget.onReasoningEffortChanged != null
+                ? _showReasoningEffort
+                : null,
           ),
-          if (widget.deepThink && widget.supportsReasoningEffort) ...[
-            const SizedBox(width: 8),
-            _ReasoningEffortSlider(
-              value: widget.reasoningEffort,
-              onChanged: widget.onReasoningEffortChanged,
-            ),
-          ],
-        ],
-      ),
+        ),
+      ],
+    );
+    final toolTray = ComposerToolTray(
+      imageGenerationConfigured: widget.imageGenerationConfigured,
+      imageMode: widget.imageMode,
+      picking: widget.picking,
+      searchMode: widget.searchMode,
+      imageGenMode: widget.imageGenMode,
+      mcpAvailable: widget.mcpAvailable,
+      mcpSelectedCount: widget.mcpSelectedCount,
+      documentEditAvailable:
+          widget.documentEditAvailable && !widget.isStreaming,
+      longTaskAvailable: widget.longTaskAvailable,
+      longTaskMode: widget.longTaskMode,
+      onConversationOptions: widget.onConversationOptions == null
+          ? null
+          : () => _runAndClose(widget.onConversationOptions!),
+      onVoiceConversation:
+          widget.onVoiceConversation == null || widget.isStreaming
+          ? null
+          : () => _runAndClose(widget.onVoiceConversation!),
+      onPickDocuments: canAttachDocs
+          ? () => _runAndClose(widget.onPickDocuments)
+          : null,
+      onPickImages: canAttachImages
+          ? () => _runAndClose(widget.onPickImages)
+          : null,
+      onPickLibrary: () => _runAndClose(widget.onPickLibrary),
+      onToggleImageMode: widget.isStreaming
+          ? null
+          : () => _runAndClose(widget.onToggleImageMode),
+      onToggleSearch: widget.storyLike || widget.isStudy
+          ? null
+          : widget.onToggleSearch,
+      onSetImageGenMode:
+          widget.imageGenerationConfigured &&
+              !widget.imageMode &&
+              !widget.isStudy
+          ? widget.onSetImageGenMode
+          : null,
+      onPickMcpServers: widget.mcpAvailable
+          ? () => _runAndClose(widget.onPickMcpServers ?? () {})
+          : null,
+      onDocumentEdit: widget.documentEditAvailable
+          ? () => _runAndClose(widget.onDocumentEdit ?? () {})
+          : null,
+      onToggleLongTask: widget.longTaskAvailable
+          ? widget.onToggleLongTask
+          : null,
     );
     return Container(
       key: const ValueKey('chat-composer'),
       decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            scheme.surface.withValues(alpha: 0),
-            scheme.surface.withValues(alpha: 0.94),
-            scheme.surface,
-          ],
-          stops: const [0, 0.32, 1],
-        ),
+        gradient: widget.desktopLayout
+            ? null
+            : LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [
+                  scheme.surface.withValues(alpha: 0),
+                  scheme.surface.withValues(alpha: 0.94),
+                  scheme.surface,
+                ],
+                stops: const [0, 0.32, 1],
+              ),
       ),
       child: SafeArea(
         top: false,
@@ -271,88 +358,47 @@ class _ComposerState extends State<ChatComposer> {
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 900),
             child: Padding(
-              padding: EdgeInsets.fromLTRB(12, 8, 12, compactHeight ? 8 : 13),
+              padding: EdgeInsets.fromLTRB(
+                12,
+                compactHeight ? 4 : 8,
+                12,
+                compactHeight ? 4 : 13,
+              ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // 深度思考 stays on the strip. 对话|任务 lives in the top bar.
+                  // Thinking controls sit above the input; chat/work stays in the header.
                   // Tool toggles live in the “+” tray.
-                  thinkingControls,
-                  AnimatedSize(
-                    duration: const Duration(milliseconds: 180),
-                    curve: Curves.easeOutCubic,
-                    alignment: Alignment.topCenter,
-                    child: _plusOpen
-                        ? Padding(
-                            padding: const EdgeInsets.only(top: 8),
-                            child: ComposerToolTray(
-                              imageGenerationConfigured:
-                                  widget.imageGenerationConfigured,
-                              imageMode: widget.imageMode,
-                              picking: widget.picking,
-                              searchMode: widget.searchMode,
-                              imageGenMode: widget.imageGenMode,
-                              mcpAvailable: widget.mcpAvailable,
-                              mcpSelectedCount: widget.mcpSelectedCount,
-                              documentEditAvailable:
-                                  widget.documentEditAvailable &&
-                                  !widget.isStreaming,
-                              longTaskAvailable: widget.longTaskAvailable,
-                              longTaskMode: widget.longTaskMode,
-                              onPickDocuments: canAttachDocs
-                                  ? () => _runAndClose(widget.onPickDocuments)
-                                  : null,
-                              onPickImages: canAttachImages
-                                  ? () => _runAndClose(widget.onPickImages)
-                                  : null,
-                              onPickLibrary: widget.isStreaming
-                                  ? null
-                                  : () => _runAndClose(widget.onPickLibrary),
-                              onToggleImageMode: widget.isStreaming
-                                  ? null
-                                  : () =>
-                                        _runAndClose(widget.onToggleImageMode),
-                              onToggleSearch: widget.storyLike || widget.isStudy
-                                  ? null
-                                  : widget.onToggleSearch,
-                              onSetImageGenMode:
-                                  widget.imageGenerationConfigured &&
-                                      !widget.imageMode &&
-                                      !widget.isStudy
-                                  ? widget.onSetImageGenMode
-                                  : null,
-                              onPickMcpServers: widget.mcpAvailable
-                                  ? () => _runAndClose(
-                                      widget.onPickMcpServers ?? () {},
-                                    )
-                                  : null,
-                              onDocumentEdit: widget.documentEditAvailable
-                                  ? () => _runAndClose(
-                                      widget.onDocumentEdit ?? () {},
-                                    )
-                                  : null,
-                              onToggleLongTask: widget.longTaskAvailable
-                                  ? widget.onToggleLongTask
-                                  : null,
-                            ),
-                          )
-                        : const SizedBox.shrink(),
-                  ),
-                  const SizedBox(height: 6),
+                  if (widget.attachedToolbar != null)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(6, 6, 6, 6),
+                      child: widget.attachedToolbar!,
+                    ),
+                  if (!widget.desktopLayout)
+                    Padding(
+                      key: const ValueKey('composer-thinking-controls'),
+                      padding: const EdgeInsets.fromLTRB(4, 8, 4, 8),
+                      child: thinkingControls,
+                    ),
                   Container(
+                    key: const ValueKey('composer-input-box'),
                     padding: const EdgeInsets.fromLTRB(6, 4, 6, 4),
                     decoration: BoxDecoration(
-                      color: scheme.surfaceContainer,
-                      borderRadius: BorderRadius.circular(22),
+                      color: widget.desktopLayout
+                          ? scheme.surface
+                          : scheme.surfaceContainer,
+                      borderRadius: BorderRadius.circular(
+                        widget.desktopLayout ? 28 : 22,
+                      ),
                       border: Border.all(
                         color: scheme.outlineVariant.withValues(alpha: 0.72),
                       ),
                       boxShadow: [
                         BoxShadow(
                           color: scheme.shadow.withValues(alpha: 0.08),
-                          blurRadius: 24,
-                          offset: const Offset(0, 10),
+                          blurRadius: widget.desktopLayout ? 16 : 24,
+                          offset: Offset(0, widget.desktopLayout ? 3 : 10),
                         ),
                       ],
                     ),
@@ -421,118 +467,151 @@ class _ComposerState extends State<ChatComposer> {
                               ],
                             ),
                           ),
-                        if (phone)
-                          Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 8),
-                            child: editor,
-                          ),
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
+                          child: editor,
+                        ),
                         Row(
-                          crossAxisAlignment: CrossAxisAlignment.end,
+                          crossAxisAlignment: CrossAxisAlignment.center,
                           children: [
-                            _ComposerPlusButton(
-                              open: _plusOpen,
-                              enabled: !widget.isStreaming,
-                              picking: widget.picking,
-                              onPressed: _togglePlus,
-                            ),
-                            if (phone)
-                              const Spacer()
-                            else
-                              Expanded(child: editor),
-                            const SizedBox(width: 4),
-                            if (widget.onVoiceConversation != null) ...[
-                              IconButton.filledTonal(
-                                key: const ValueKey(
-                                  'composer-voice-conversation-button',
-                                ),
-                                onPressed:
-                                    widget.isStreaming ||
-                                        widget.speechBusy ||
-                                        widget.speechListening
-                                    ? null
-                                    : () {
-                                        _closePlus();
-                                        widget.onVoiceConversation!();
-                                      },
-                                icon: const Icon(Icons.headset_mic_rounded),
-                                tooltip: '语音对话（说完自动发送并朗读回复）',
-                                style: IconButton.styleFrom(
-                                  fixedSize: const Size.square(40),
-                                  backgroundColor: scheme.secondaryContainer,
-                                  foregroundColor: scheme.onSecondaryContainer,
+                            Padding(
+                              padding: EdgeInsets.zero,
+                              child: Builder(
+                                builder: (anchor) => _ComposerPlusButton(
+                                  open: _plusOpen,
+                                  enabled: true,
+                                  picking: widget.picking,
+                                  onPressed: () =>
+                                      _togglePlus(anchor, toolTray),
                                 ),
                               ),
-                              const SizedBox(width: 4),
-                            ],
-                            IconButton.filledTonal(
-                              key: const ValueKey('composer-microphone-button'),
-                              onPressed:
-                                  widget.isStreaming ||
-                                      (widget.speechBusy &&
-                                          !widget.speechUsesCloudAsr)
-                                  ? null
-                                  : () {
-                                      _closePlus();
-                                      widget.onToggleSpeech();
-                                    },
-                              icon: widget.speechBusy
-                                  ? const SizedBox.square(
-                                      dimension: 18,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
+                            ),
+                            if (widget.permissionControl != null)
+                              ConstrainedBox(
+                                constraints: BoxConstraints(
+                                  maxWidth: phone ? 36 : 160,
+                                ),
+                                child: widget.permissionControl!,
+                              ),
+                            const Spacer(),
+                            if (widget.modelPicker != null)
+                              ConstrainedBox(
+                                constraints: BoxConstraints(
+                                  maxWidth: phone
+                                      ? (constraints.maxWidth - 170).clamp(
+                                          64.0,
+                                          260.0,
+                                        )
+                                      : (constraints.maxWidth - 310).clamp(
+                                          160.0,
+                                          300.0,
+                                        ),
+                                ),
+                                child: widget.modelPicker!,
+                              ),
+                            if (widget.desktopLayout)
+                              ReasoningEffortControl(
+                                compact: phone,
+                                enabled: true,
+                                thinking: widget.deepThink,
+                                effort: widget.reasoningEffort,
+                                supportsEffort: widget.supportsReasoningEffort,
+                                onToggle: widget.onToggleDeepThink,
+                                onChanged: widget.onReasoningEffortChanged,
+                              ),
+                            Padding(
+                              padding: const EdgeInsets.only(left: 4),
+                              child: ValueListenableBuilder<TextEditingValue>(
+                                valueListenable: widget.controller,
+                                builder: (context, value, _) {
+                                  final hasContent =
+                                      value.text.trim().isNotEmpty ||
+                                      widget.attachments.isNotEmpty;
+                                  final voice =
+                                      !hasContent ||
+                                      widget.speechBusy ||
+                                      (widget.speechListening &&
+                                          widget.speechUsesCloudAsr);
+                                  return IconButton.filled(
+                                    key: ValueKey(
+                                      widget.isStreaming
+                                          ? 'composer-stop-button'
+                                          : voice
+                                          ? 'composer-microphone-button'
+                                          : 'composer-send-button',
+                                    ),
+                                    tooltip: widget.isStreaming
+                                        ? '停止'
+                                        : voice
+                                        ? widget.speechBusy
+                                              ? widget.speechUsesCloudAsr
+                                                    ? '正在上传语音；点按取消'
+                                                    : '正在准备语音输入'
+                                              : widget.speechListening
+                                              ? widget.speechUsesCloudAsr
+                                                    ? '结束录音并识别'
+                                                    : '停止语音输入'
+                                              : '语音输入'
+                                        : '发送',
+                                    onPressed: widget.isStreaming
+                                        ? widget.onStop
+                                        : widget.speechBusy &&
+                                              !widget.speechUsesCloudAsr
+                                        ? null
+                                        : () {
+                                            _closePlus();
+                                            if (voice) {
+                                              widget.onToggleSpeech();
+                                            } else {
+                                              widget.onSend();
+                                            }
+                                          },
+                                    icon: AnimatedSwitcher(
+                                      duration: const Duration(
+                                        milliseconds: 180,
                                       ),
-                                    )
-                                  : Icon(
-                                      widget.speechListening
-                                          ? Icons.mic_rounded
-                                          : Icons.mic_none_rounded,
+                                      child: widget.speechBusy
+                                          ? const SizedBox.square(
+                                              dimension: 16,
+                                              child: CircularProgressIndicator(
+                                                strokeWidth: 2,
+                                              ),
+                                            )
+                                          : Icon(
+                                              widget.isStreaming
+                                                  ? Icons.stop_rounded
+                                                  : voice
+                                                  ? widget.speechListening
+                                                        ? Icons.mic_rounded
+                                                        : Icons.mic_none_rounded
+                                                  : Icons.arrow_upward_rounded,
+                                              key: ValueKey(
+                                                '${widget.isStreaming}-$voice-${widget.speechListening}',
+                                              ),
+                                              size: 19,
+                                            ),
                                     ),
-                              tooltip: widget.speechBusy
-                                  ? widget.speechUsesCloudAsr
-                                        ? '正在上传语音；点按取消'
-                                        : '正在准备语音输入'
-                                  : widget.speechListening
-                                  ? widget.speechUsesCloudAsr
-                                        ? '结束录音并识别'
-                                        : '停止语音输入'
-                                  : '语音输入',
-                              style: IconButton.styleFrom(
-                                fixedSize: const Size.square(40),
-                                backgroundColor: widget.speechListening
-                                    ? scheme.errorContainer
-                                    : scheme.secondaryContainer,
-                                foregroundColor: widget.speechListening
-                                    ? scheme.onErrorContainer
-                                    : scheme.onSecondaryContainer,
+                                    style: IconButton.styleFrom(
+                                      minimumSize: const Size.square(32),
+                                      maximumSize: const Size.square(32),
+                                      padding: EdgeInsets.zero,
+                                      tapTargetSize:
+                                          MaterialTapTargetSize.shrinkWrap,
+                                      backgroundColor:
+                                          widget.isStreaming ||
+                                              widget.speechListening
+                                          ? scheme.errorContainer
+                                          : scheme.primary,
+                                      foregroundColor:
+                                          widget.isStreaming ||
+                                              widget.speechListening
+                                          ? scheme.onErrorContainer
+                                          : scheme.onPrimary,
+                                    ),
+                                  );
+                                },
                               ),
                             ),
-                            const SizedBox(width: 4),
-                            widget.isStreaming
-                                ? IconButton.filled(
-                                    onPressed: widget.onStop,
-                                    icon: const Icon(Icons.stop_rounded),
-                                    tooltip: '停止',
-                                    style: IconButton.styleFrom(
-                                      fixedSize: const Size.square(40),
-                                      backgroundColor: scheme.errorContainer,
-                                      foregroundColor: scheme.onErrorContainer,
-                                    ),
-                                  )
-                                : IconButton.filled(
-                                    onPressed: () {
-                                      _closePlus();
-                                      widget.onSend();
-                                    },
-                                    icon: const Icon(
-                                      Icons.arrow_upward_rounded,
-                                    ),
-                                    tooltip: '发送',
-                                    style: IconButton.styleFrom(
-                                      fixedSize: const Size.square(40),
-                                      backgroundColor: scheme.primary,
-                                      foregroundColor: scheme.onPrimary,
-                                    ),
-                                  ),
                           ],
                         ),
                       ],
@@ -541,6 +620,26 @@ class _ComposerState extends State<ChatComposer> {
                 ],
               ),
             ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showReasoningEffort() async {
+    _focusNode.unfocus();
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (_) => SafeArea(
+        child: Center(
+          heightFactor: 1,
+          child: ReasoningEffortSlider(
+            thinking: widget.deepThink,
+            effort: widget.reasoningEffort,
+            supportsEffort: widget.supportsReasoningEffort,
+            onToggle: widget.onToggleDeepThink,
+            onChanged: widget.onReasoningEffortChanged,
           ),
         ),
       ),
@@ -590,8 +689,8 @@ class _ComposerPlusButton extends StatelessWidget {
               customBorder: const CircleBorder(),
               onTap: enabled ? onPressed : null,
               child: SizedBox(
-                width: 36,
-                height: 36,
+                width: 30,
+                height: 30,
                 child: Center(
                   child: picking
                       ? SizedBox(
@@ -607,7 +706,7 @@ class _ComposerPlusButton extends StatelessWidget {
                           duration: const Duration(milliseconds: 180),
                           child: Icon(
                             Icons.add_rounded,
-                            size: 22,
+                            size: 19,
                             color: enabled
                                 ? (active
                                       ? scheme.onPrimaryContainer
@@ -625,77 +724,9 @@ class _ComposerPlusButton extends StatelessWidget {
   }
 }
 
-class _ReasoningEffortSlider extends StatelessWidget {
-  const _ReasoningEffortSlider({required this.value, this.onChanged});
-
-  final ReasoningEffort value;
-  final ValueChanged<ReasoningEffort>? onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Semantics(
-      label: '思考强度 ${value.label}',
-      slider: true,
-      value: value.label,
-      child: Material(
-        color: scheme.primaryContainer.withValues(alpha: 0.75),
-        borderRadius: BorderRadius.circular(999),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(10, 2, 10, 2),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                '强度',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: scheme.primary,
-                ),
-              ),
-              SizedBox(
-                width: 108,
-                child: SliderTheme(
-                  data: SliderTheme.of(context).copyWith(
-                    trackHeight: 2,
-                    thumbShape: const RoundSliderThumbShape(
-                      enabledThumbRadius: 6,
-                    ),
-                    overlayShape: const RoundSliderOverlayShape(
-                      overlayRadius: 12,
-                    ),
-                  ),
-                  child: Slider(
-                    min: 0,
-                    max: 2,
-                    divisions: 2,
-                    value: value.index.toDouble(),
-                    label: value.label,
-                    onChanged: onChanged == null
-                        ? null
-                        : (v) => onChanged!(ReasoningEffort.values[v.round()]),
-                  ),
-                ),
-              ),
-              Text(
-                value.label,
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: scheme.primary,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class _ComposerToggleChip extends StatelessWidget {
   const _ComposerToggleChip({
+    super.key,
     required this.selected,
     required this.icon,
     required this.label,
@@ -705,15 +736,20 @@ class _ComposerToggleChip extends StatelessWidget {
   final bool selected;
   final IconData icon;
   final String label;
-  final VoidCallback onSelected;
+  final VoidCallback? onSelected;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final fg = selected ? scheme.primary : scheme.onSurfaceVariant;
+    final fg = onSelected == null
+        ? scheme.onSurface.withValues(alpha: 0.38)
+        : selected
+        ? scheme.primary
+        : scheme.onSurfaceVariant;
     return Semantics(
       button: true,
       toggled: selected,
+      enabled: onSelected != null,
       label: label,
       excludeSemantics: true,
       child: Material(
@@ -725,7 +761,7 @@ class _ComposerToggleChip extends StatelessWidget {
           onTap: onSelected,
           borderRadius: BorderRadius.circular(999),
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [

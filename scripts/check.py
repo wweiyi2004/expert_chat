@@ -24,7 +24,7 @@ def run(command, cwd=ROOT):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--scope", choices=["all", "client", "server", "web"], default="all"
+        "--scope", choices=["all", "client", "server", "web", "desktop"], default="all"
     )
     parser.add_argument(
         "--quick",
@@ -150,6 +150,14 @@ def main():
                         "--no-deps",
                     ]
                 )
+        if args.scope in ("all", "desktop"):
+            manifest = "next/Cargo.toml"
+            run(["cargo", "fmt", "--manifest-path", manifest, "--", "--check"])
+            run(["cargo", "clippy", "--manifest-path", manifest, "--locked", "--all-targets", "--", "-D", "warnings"])
+            if not args.quick:
+                run(["cargo", "test", "--manifest-path", manifest, "--locked"])
+                run(["cargo", "build", "--manifest-path", manifest, "--locked"])
+                run([sys.executable, "-X", "utf8", "next/verification/test_workspace_mcp.py"])
         if args.scope in ("all", "web"):
             for name in ["typecheck", "lint"]:
                 run(["npm", "run", name], ROOT / "remote_lab_ui")

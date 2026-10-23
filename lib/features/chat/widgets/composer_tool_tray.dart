@@ -24,6 +24,8 @@ class ComposerToolTray extends StatelessWidget {
     required this.onPickMcpServers,
     required this.onDocumentEdit,
     required this.onToggleLongTask,
+    this.onVoiceConversation,
+    this.onConversationOptions,
   });
 
   final bool imageGenerationConfigured;
@@ -45,11 +47,27 @@ class ComposerToolTray extends StatelessWidget {
   final VoidCallback? onPickMcpServers;
   final VoidCallback? onDocumentEdit;
   final VoidCallback? onToggleLongTask;
+  final VoidCallback? onVoiceConversation;
+  final VoidCallback? onConversationOptions;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final actions = <Widget>[
+      if (onConversationOptions != null)
+        _ComposerPlusAction(
+          icon: Icons.chat_bubble_outline,
+          label: '会话操作',
+          enabled: true,
+          onTap: onConversationOptions,
+        ),
+      if (onVoiceConversation != null)
+        _ComposerPlusAction(
+          icon: Icons.headset_mic_outlined,
+          label: '语音对话',
+          enabled: true,
+          onTap: onVoiceConversation,
+        ),
       _ComposerPlusAction(
         icon: Icons.folder_open_outlined,
         label: '上传文件',
@@ -71,7 +89,7 @@ class ComposerToolTray extends StatelessWidget {
       if (imageGenerationConfigured || onSetImageGenMode != null)
         _ComposerPlusAction(
           icon: imageMode ? Icons.auto_awesome : Icons.auto_awesome_outlined,
-          label: imageMode ? '图片·生图中' : '图片',
+          label: imageMode ? '图片·生图中' : '图片生成',
           selected: imageMode,
           enabled: onToggleImageMode != null || onSetImageGenMode != null,
           onTap: () => showModalBottomSheet<void>(
@@ -135,14 +153,6 @@ class ComposerToolTray extends StatelessWidget {
               ),
             ),
           ),
-        ),
-      if (onToggleSearch != null)
-        _ComposerPlusAction(
-          icon: Icons.travel_explore,
-          label: searchMode.composerLabel,
-          selected: searchMode != SearchMode.off,
-          enabled: true,
-          onTap: onToggleSearch,
         ),
       if (documentEditAvailable)
         _ComposerPlusAction(
@@ -211,16 +221,24 @@ class ComposerToolTray extends StatelessWidget {
       key: const ValueKey('composer-plus-tray'),
       padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
       decoration: BoxDecoration(
-        color: scheme.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: scheme.outlineVariant.withValues(alpha: 0.85),
+        color: Color.alphaBlend(
+          scheme.primary.withValues(alpha: 0.08),
+          scheme.surfaceContainerHigh,
         ),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: scheme.primary.withValues(alpha: 0.24)),
+        boxShadow: [
+          BoxShadow(
+            color: scheme.shadow.withValues(alpha: 0.07),
+            blurRadius: 18,
+            offset: const Offset(0, -4),
+          ),
+        ],
       ),
       child: LayoutBuilder(
         builder: (context, constraints) {
           const gap = 8.0;
-          const columns = 4;
+          final columns = constraints.maxWidth < 420 ? 3 : 4;
           final width = (constraints.maxWidth - gap * (columns - 1)) / columns;
           return Wrap(
             spacing: gap,

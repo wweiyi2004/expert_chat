@@ -12,6 +12,7 @@ import 'install_apk.dart';
 import 'update_downloader.dart';
 import 'update_platform.dart';
 import 'update_prefs.dart';
+import 'update_sources.dart';
 
 Future<void> _open(String url) async {
   final uri = Uri.tryParse(url);
@@ -22,6 +23,16 @@ Future<void> _open(String url) async {
 Future<UpdatePrefs> _prefs() async {
   final sp = await SharedPreferences.getInstance();
   return UpdatePrefs(sp);
+}
+
+Future<UpdateCheckResult> _checkConfiguredSources() async {
+  final sources = UpdateSources.read(await SharedPreferences.getInstance());
+  return AppUpdateChecker(
+    releaseApis: [
+      for (final source in sources)
+        if (source.releaseApi != null) source.releaseApi!,
+    ],
+  ).check();
 }
 
 /// Manual check from Settings — always shows a result dialog.
@@ -46,7 +57,7 @@ Future<void> checkForUpdatesInteractive(BuildContext context) async {
   );
 
   try {
-    final result = await AppUpdateChecker().check();
+    final result = await _checkConfiguredSources();
     if (!context.mounted) return;
     Navigator.of(context, rootNavigator: true).pop(); // loading
     await showUpdateResultDialog(context, result, manual: true);
@@ -60,7 +71,7 @@ Future<void> checkForUpdatesInteractive(BuildContext context) async {
 /// Silent startup check — only prompts when a newer release exists (and not skipped).
 Future<void> checkForUpdatesOnLaunch(BuildContext context) async {
   try {
-    final result = await AppUpdateChecker().check();
+    final result = await _checkConfiguredSources();
     if (!context.mounted || !result.hasUpdate) return;
     final prefs = await _prefs();
     if (!prefs.shouldPrompt(result.latestVersion)) return;
@@ -221,6 +232,7 @@ Future<void> downloadAndApplyUpdate(
   final messenger = ScaffoldMessenger.maybeOf(context);
   final cancelToken = CancelToken();
   final progress = ValueNotifier<double?>(0);
+  final sourceLabel = ValueNotifier<String>('正在连接下载源…');
 
   showDialog<void>(
     context: context,
@@ -238,6 +250,12 @@ Future<void> downloadAndApplyUpdate(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 LinearProgressIndicator(value: known ? value : null),
+                const SizedBox(height: 8),
+                ValueListenableBuilder<String>(
+                  valueListenable: sourceLabel,
+                  builder: (_, label, _) =>
+                      Text(label, style: Theme.of(ctx).textTheme.bodySmall),
+                ),
                 const SizedBox(height: 12),
                 Text(
                   known
@@ -263,7 +281,7 @@ Future<void> downloadAndApplyUpdate(
               cancelToken.cancel('用户取消');
               Navigator.of(ctx).pop();
             },
-            child: const Text('取消'),
+            child: const Text('暂停下载'),
           ),
         ],
       ),
@@ -271,12 +289,37 @@ Future<void> downloadAndApplyUpdate(
   );
 
   try {
+    final prefs = await SharedPreferences.getInstance();
+    final sources = UpdateSources.read(prefs);
+    final preferred = prefs.getString(UpdateSources.preferredKey);
+    final candidates = <String>[
+      for (final source in sources.where((s) => s.template == preferred))
+        source.resolve(
+          tag: result.tagName ?? result.latestVersion,
+          fileName: result.assetName ?? Uri.parse(url).pathSegments.last,
+          originalUrl: url,
+        ),
+      url,
+      for (final source in sources.where((s) => s.template != preferred))
+        source.resolve(
+          tag: result.tagName ?? result.latestVersion,
+          fileName: result.assetName ?? Uri.parse(url).pathSegments.last,
+          originalUrl: url,
+        ),
+    ];
     final path = await (downloader ?? UpdateDownloader()).download(
-      url: url,
+      url: candidates.first,
+      fallbackUrls: candidates.skip(1).toList(),
+      onSourceChanged: (source) {
+        if (!cancelToken.isCancelled) {
+          sourceLabel.value = '下载源：${Uri.parse(source).host}';
+        }
+      },
       fileName: result.assetName,
       expectedSha256: result.assetSha256,
       cancelToken: cancelToken,
       onProgress: (received, total) {
+        if (cancelToken.isCancelled) return;
         if (total > 0) {
           progress.value = received / total;
         } else {
@@ -321,7 +364,7 @@ Future<void> downloadAndApplyUpdate(
     // the token, so a cancel error must not pop the navigator again — that
     // would close the route underneath (e.g. the Settings page).
     if (CancelToken.isCancel(e)) {
-      messenger?.showSnackBar(const SnackBar(content: Text('已取消下载')));
+      messenger?.showSnackBar(const SnackBar(content: Text('已暂停，下载进度已保存')));
       return;
     }
     if (!context.mounted) return;
@@ -347,6 +390,7 @@ Future<void> downloadAndApplyUpdate(
     );
   } finally {
     progress.dispose();
+    sourceLabel.dispose();
   }
 }
 

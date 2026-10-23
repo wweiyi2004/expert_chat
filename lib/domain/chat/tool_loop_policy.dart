@@ -1,37 +1,20 @@
-import '../llm/llm_request_policy.dart';
-
 /// How many model rounds may call tools before the app forces a final answer.
 abstract final class ToolLoopPolicy {
   /// Chat mode: user-configurable search rounds, plus one tool-less wrap-up.
   static const chatCallsPerRound = 3;
 
-  /// Work mode: keep tools until the model stops calling them, with a cap.
+  /// Initial fallback; WorkRounds owns the extendable work-session budget.
   static const workSafetyRounds = 24;
   static const workCallsPerRound = 8;
 
   static const workModeHint =
-      '当前是任务模式：用工具把用户交代的事情做完，再给最终结果。'
-      '中间步骤尽量调用工具，不要只口头承诺。';
+      '当前是工作模式：以可核验的结果或文件交付完成任务。复杂任务先简述步骤，再逐步执行与验证。'
+      '优先使用已连接的工具完成中间步骤，遇到缺失信息或失败如实说明，不要编造执行结果。完成后说明交付物与验证情况。';
 
   static int maxRounds({required bool workMode, required int searchMaxRounds}) {
     if (workMode) return workSafetyRounds;
     return searchMaxRounds + 1;
   }
-
-  /// Tools are withheld on the last safety round so a looping model still
-  /// has to write an answer. Work mode only hits that round at the cap.
-  static bool allowToolsThisRound({
-    required bool workMode,
-    required int round,
-    required int maxRounds,
-    required bool enableTools,
-    required bool hasToolSpecs,
-  }) => LlmRequestPolicy.allowToolsThisRound(
-    round: round,
-    maxRounds: maxRounds,
-    enableTools: enableTools,
-    hasToolSpecs: hasToolSpecs,
-  );
 
   static int maxCallsPerRound({required bool workMode}) =>
       workMode ? workCallsPerRound : chatCallsPerRound;

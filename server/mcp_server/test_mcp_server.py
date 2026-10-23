@@ -96,7 +96,7 @@ def test_standalone_mcp_upload_edit_and_resource_download() -> None:
                     "edit_document",
                     {
                         "file_id": source_id,
-                        "output_filename": "edited.txt",
+                        "output_filename": "edited.pdf",
                         "patch": {
                             "schema_version": 1,
                             "format": "txt",
@@ -111,10 +111,33 @@ def test_standalone_mcp_upload_edit_and_resource_download() -> None:
                     },
                 )
                 edited_id = edited.structured_content["file_id"]
+                assert edited.structured_content["filename"] == "edited.txt"
                 resource = await client.read_resource(f"expert-chat://documents/{edited_id}/binary")
                 assert (
                     resource.contents[0].blob == base64.b64encode("统一后的文本".encode()).decode()
                 )
+                inspected = await client.call_tool("inspect_document", {"file_id": edited_id})
+                assert inspected.structured_content["text"] == "统一后的文本"
+
+                for operation in (
+                    {"op": "set_text", "text": ""},
+                    {"op": "replace_text", "find": "统一后的文本", "replace": ""},
+                ):
+                    empty = await client.call_tool(
+                        "edit_document",
+                        {
+                            "file_id": edited_id,
+                            "patch": {"schema_version": 1, "format": "txt", "ops": [operation]},
+                        },
+                    )
+                    assert empty.structured_content["size_bytes"] == 0
+                    empty_id = empty.structured_content["file_id"]
+                    resource = await client.read_resource(
+                        f"expert-chat://documents/{empty_id}/binary"
+                    )
+                    assert resource.contents[0].blob == ""
+                    inspected = await client.call_tool("inspect_document", {"file_id": empty_id})
+                    assert inspected.structured_content["text"] == ""
 
                 deleted = await client.call_tool(
                     "delete_document",

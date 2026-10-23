@@ -16,6 +16,9 @@ import 'package:expert_chat/state/chat_controller.dart';
 import 'package:expert_chat/state/settings_controller.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:expert_chat/core/desktop_providers.dart';
+import 'package:expert_chat/domain/desktop/workspace_host_stub.dart'
+    as desktop_stub;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'widget_test.dart'
@@ -504,6 +507,9 @@ void main() {
           settingsControllerProvider.overrideWith(settingsBuilder),
           llmProvider.overrideWithValue(llm),
           documentServiceClientProvider.overrideWithValue(client),
+          desktopWorkspaceHostProvider.overrideWithValue(
+            desktop_stub.createDesktopWorkspaceHost(),
+          ),
         ],
       );
       addTearDown(container.dispose);

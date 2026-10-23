@@ -96,6 +96,7 @@ class GenerationRepository {
             revisedPrompt: Value(revisedPrompt),
             model: config.model.trim(),
             providerHost: providerOrigin(config.baseUrl),
+            apiFormat: Value(config.effectiveApiFormat.wire),
             imageSize: config.imageSize.trim(),
             referencesJson: Value(jsonEncode(refs)),
             createdAt: DateTime.now(),

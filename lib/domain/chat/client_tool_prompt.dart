@@ -1,7 +1,6 @@
 import '../../data/composer_modes.dart';
 import '../../data/story_models.dart';
 import '../llm/llm_provider.dart';
-import 'tool_loop_policy.dart';
 
 /// Formats the capabilities already selected for this turn. No tool execution.
 abstract final class ClientToolPrompt {
@@ -33,7 +32,7 @@ abstract final class ClientToolPrompt {
       );
     }
     if (useFetchUrlTool) {
-      hint.write('用户在本轮消息中给出的链接可用 fetch_url 读取。');
+      hint.write('用户在本轮消息中给出的链接，以及本轮搜索结果中的链接，可用 DeepSeek 官方 fetch_url 读取。');
     }
     if (useImageGenTool) {
       if (imageCharacter != null) {
@@ -88,9 +87,6 @@ abstract final class ClientToolPrompt {
         '已连接 MCP Server，还可调用：'
         '${[for (final tool in mcpPassthroughTools) tool.name].join("、")}。',
       );
-    }
-    if (workMode) {
-      hint.write(ToolLoopPolicy.workModeHint);
     }
     return hint.toString();
   }

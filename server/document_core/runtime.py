@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import json
+import logging
 import math
 import multiprocessing
 import os
@@ -10,6 +11,7 @@ import threading
 from pathlib import Path
 
 _slots = threading.BoundedSemaphore(2)
+_logger = logging.getLogger(__name__)
 
 
 def _limit_resources(memory_bytes: int, timeout: float):
@@ -92,6 +94,12 @@ def _worker(operation, arguments, result_path, memory_bytes, timeout):
         job_handle = _limit_resources(memory_bytes, timeout)
         from .limits import DocumentLimitError
         from .operations import DocumentOperationError
+        from docx.opc.exceptions import PackageNotFoundError as DocxPackageError
+        from lxml.etree import XMLSyntaxError
+        from openpyxl.utils.exceptions import InvalidFileException
+        from pptx.exc import InvalidXmlError, PackageNotFoundError as PptxPackageError
+        from pypdf.errors import PdfReadError, ParseError
+        from zipfile import BadZipFile
 
         try:
             if operation == "extract":
@@ -109,14 +117,26 @@ def _worker(operation, arguments, result_path, memory_bytes, timeout):
             result = {"ok": False, "code": exc.code, "message": exc.message}
         except DocumentLimitError as exc:
             result = {"ok": False, "code": "resource_limit", "message": str(exc)}
-        except Exception:
+        except (
+            DocxPackageError,
+            PptxPackageError,
+            InvalidXmlError,
+            XMLSyntaxError,
+            InvalidFileException,
+            PdfReadError,
+            ParseError,
+            BadZipFile,
+        ):
             result = {
                 "ok": False,
                 "code": "invalid_document",
                 "message": "文档无法解析或处理，请检查格式与内容。",
             }
-    except BaseException:
+    except MemoryError:
         result = {"ok": False, "code": "resource_limit", "message": "无法在资源限制内处理文档。"}
+    except Exception:
+        _logger.exception("Document worker failed during %s", operation)
+        result = {"ok": False, "code": "internal_error", "message": "文档服务内部错误。"}
     Path(result_path).write_text(json.dumps(result, ensure_ascii=True), encoding="utf-8")
 
 
@@ -144,7 +164,12 @@ def run_document_job(operation, *arguments, timeout_seconds=None):
                 process.join(timeout)
                 if process.is_alive():
                     raise DocumentOperationError("resource_limit", "文档处理超时，已停止本次任务。")
-                if not result_path.is_file() or result_path.stat().st_size > 16 * 1024 * 1024:
+                if not result_path.is_file():
+                    _logger.error(
+                        "Document worker exited without a result (exitcode=%s)", process.exitcode
+                    )
+                    raise DocumentOperationError("internal_error", "文档处理进程意外中断。")
+                if result_path.stat().st_size > 16 * 1024 * 1024:
                     raise DocumentOperationError(
                         "resource_limit", "文档处理超过资源限制或执行中断。"
                     )

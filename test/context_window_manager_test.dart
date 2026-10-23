@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:expert_chat/data/context_prefs.dart';
@@ -270,4 +272,143 @@ void main() {
     expect(contents.indexOf('SEARCH CONTEXT'), contents.length - 2);
     expect(contents.last, 'current question');
   });
+
+  test('oversized tool results retain the complete current task', () {
+    final task = '${'背景说明' * 40}必须保留末尾验收条件';
+    final result = manager.manage(
+      [
+        LlmRequestMessage(role: MessageRole.user, content: task),
+        const LlmRequestMessage(
+          role: MessageRole.assistant,
+          content: '',
+          toolCalls: [
+            ToolCall(
+              index: 0,
+              id: 'c1',
+              name: 'read_file',
+              argumentsJson: '{}',
+            ),
+          ],
+        ),
+        LlmRequestMessage(
+          role: MessageRole.tool,
+          content: '工具结果' * 2000,
+          toolCallId: 'c1',
+        ),
+      ],
+      const ContextPrefs(contextWindowTokens: 4096, reservedOutputTokens: 3072),
+    );
+
+    expect(result.messages.first.content, task);
+    expect(result.messages.last.role, MessageRole.tool);
+    expect(result.messages.last.toolCallId, 'c1');
+    expect(result.report.sentTokens, lessThanOrEqualTo(1024));
+  });
+
+  test('tool observations cannot replace the user task at the history cap', () {
+    final result = manager.manage(const [
+      LlmRequestMessage(role: MessageRole.user, content: 'CURRENT TASK'),
+      LlmRequestMessage(role: MessageRole.assistant, content: 'step one'),
+      LlmRequestMessage(
+        role: MessageRole.user,
+        content: 'screenshot one',
+        isToolImageObservation: true,
+      ),
+      LlmRequestMessage(role: MessageRole.assistant, content: 'step two'),
+      LlmRequestMessage(
+        role: MessageRole.user,
+        content: 'screenshot two',
+        isToolImageObservation: true,
+      ),
+    ], const ContextPrefs(maxHistoryMessages: 2));
+
+    expect(
+      result.messages
+          .where((m) => m.role == MessageRole.user && !m.isToolImageObservation)
+          .single
+          .content,
+      'CURRENT TASK',
+    );
+    expect(result.messages.last.content, 'screenshot two');
+  });
+
+  test('Responses items survive clipping and determine the sent token count', () {
+    final items = <Map<String, dynamic>>[
+      {'type': 'reasoning', 'id': 'rs1', 'encrypted_content': 'state' * 30},
+      {
+        'type': 'function_call',
+        'id': 'fc1',
+        'call_id': 'c1',
+        'name': 'read_file',
+        'arguments': '{}',
+      },
+    ];
+    final assistant = LlmRequestMessage(
+      role: MessageRole.assistant,
+      content: 'mirrored text' * 1000,
+      reasoningContent: 'mirrored reasoning' * 1000,
+      toolCalls: const [
+        ToolCall(index: 0, id: 'c1', name: 'read_file', argumentsJson: '{}'),
+      ],
+      responseOutputItems: items,
+    );
+    // The Responses request sends the raw items instead of these mirror fields.
+    expect(
+      manager.estimateMessageTokens(assistant),
+      6 + manager.estimateTextTokens(jsonEncode(items)),
+    );
+    final result = manager.manage(
+      [
+        const LlmRequestMessage(
+          role: MessageRole.user,
+          content: 'read the file',
+        ),
+        assistant,
+        LlmRequestMessage(
+          role: MessageRole.tool,
+          content: '工具结果' * 2000,
+          toolCallId: 'c1',
+        ),
+      ],
+      const ContextPrefs(contextWindowTokens: 4096, reservedOutputTokens: 3072),
+    );
+
+    expect(result.messages.first.content, 'read the file');
+    expect(result.messages[1].responseOutputItems, items);
+    expect(result.messages.last.toolCallId, 'c1');
+    expect(result.report.sentTokens, lessThanOrEqualTo(1024));
+  });
+
+  test(
+    'oversized indivisible Responses state is reported, never discarded',
+    () {
+      final items = <Map<String, dynamic>>[
+        {'type': 'reasoning', 'encrypted_content': 'state' * 2000},
+      ];
+      final result = manager.manage(
+        [
+          const LlmRequestMessage(
+            role: MessageRole.user,
+            content: 'CURRENT TASK',
+          ),
+          LlmRequestMessage(
+            role: MessageRole.assistant,
+            content: '',
+            responseOutputItems: items,
+          ),
+        ],
+        const ContextPrefs(
+          contextWindowTokens: 4096,
+          reservedOutputTokens: 3072,
+        ),
+      );
+
+      expect(result.messages.first.content, 'CURRENT TASK');
+      expect(result.messages.last.responseOutputItems, items);
+      expect(
+        result.report.sentTokens,
+        greaterThan(result.report.inputBudgetTokens),
+      );
+    },
+  );
 }

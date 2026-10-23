@@ -1,19 +1,20 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:characters/characters.dart';
 import 'package:dio/dio.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../data/models.dart';
+import 'llm_http_errors.dart';
+import 'llm_endpoint.dart';
 import 'llm_provider.dart';
 import 'llm_request_policy.dart';
+import 'auth/chatgpt_network.dart';
 
 /// OpenAI-compatible **Responses API** client (`POST /responses`).
 ///
-/// Used for DeepSeek hosted `web_search` (and client `function` tools) when
-/// [LlmConfig.useServerWebSearch] is true. Chat Completions stays on
-/// [OpenAiCompatibleProvider].
+/// Selected explicitly, discovered by auto routing, or used for hosted search.
+/// Client function tools work independently of hosted web_search.
 class ResponsesApiProvider implements LlmProvider {
   ResponsesApiProvider({
     Dio? dio,
@@ -25,7 +26,6 @@ class ResponsesApiProvider implements LlmProvider {
   final Duration responseHeaderTimeout;
 
   static const _streamIdleTimeout = Duration(seconds: 90);
-  static const _maxErrorBodyBytes = 64 * 1024;
   static const _uuid = Uuid();
 
   @override
@@ -38,7 +38,10 @@ class ResponsesApiProvider implements LlmProvider {
     String? forceToolName,
     CancelToken? cancelToken,
   }) async* {
-    final url = '${config.baseUrl.replaceAll(RegExp(r"/+$"), "")}/responses';
+    final headerTimeout = config.responseHeaderTimeout ?? responseHeaderTimeout;
+    if (cancelToken?.isCancelled ?? false) return;
+    if (config.authMode == 'chatgpt') await configureChatGptNetwork(_dio);
+    final url = LlmEndpoint.action(config.baseUrl, 'responses');
 
     final built = _buildRequest(
       config: config,
@@ -67,6 +70,7 @@ class ResponsesApiProvider implements LlmProvider {
             options: Options(
               responseType: ResponseType.stream,
               headers: {
+                ...config.transportHeaders,
                 'Authorization': 'Bearer ${config.apiKey}',
                 'Content-Type': 'application/json',
                 'Accept': 'text/event-stream',
@@ -76,21 +80,22 @@ class ResponsesApiProvider implements LlmProvider {
             cancelToken: requestToken,
           )
           .timeout(
-            responseHeaderTimeout,
+            headerTimeout,
             onTimeout: () {
               requestToken.cancel('响应超时');
-              throw TimeoutException('响应头等待超时', responseHeaderTimeout);
+              throw TimeoutException('响应头等待超时', headerTimeout);
             },
           );
     } on DioException catch (e) {
       if (CancelToken.isCancel(e)) return;
-      throw await _humanizeError(e);
+      throw await humanizeLlmHttpError(
+        e,
+        notFoundMessage:
+            '接口未找到（404）：当前 Base URL 可能不支持 Responses API（/responses）。',
+      );
     } on TimeoutException {
       if (cancelToken?.isCancelled ?? false) return;
-      throw Exception(
-        '响应超时：服务端在 ${responseHeaderTimeout.inSeconds} 秒内没有开始返回数据，'
-        '请检查网络或稍后重试。',
-      );
+      throw llmResponseTimeout(headerTimeout);
     }
 
     final byteStream = response.data!.stream
@@ -115,7 +120,38 @@ class ResponsesApiProvider implements LlmProvider {
     // the same search panel row.
     final searchActivityIds = <String, String>{};
     var sawFunctionCall = false;
-    var terminal = false;
+    String? terminalFinishReason;
+
+    List<ChatChunk> consumeEvent(String? eventType, Map<String, dynamic> json) {
+      final type = eventType ?? json['type'] as String?;
+      final response = json['response'];
+      if (type == 'response.failed') {
+        final error = response is Map ? response['error'] : json['error'];
+        throw Exception(_errorFromDynamic(error) ?? 'Responses 请求失败');
+      }
+      if (type == 'response.completed') {
+        terminalFinishReason = 'stop';
+      } else if (type == 'response.incomplete') {
+        final details = response is Map ? response['incomplete_details'] : null;
+        terminalFinishReason = switch (details is Map
+            ? details['reason']
+            : null) {
+          'max_output_tokens' => 'max_output_tokens',
+          'content_filter' => 'content_filter',
+          _ => 'incomplete',
+        };
+      }
+      return _handleEvent(
+        eventType: eventType,
+        json: json,
+        outputItems: outputItems,
+        functionDrafts: functionDrafts,
+        citations: citations,
+        seenCitationUrls: seenCitationUrls,
+        searchActivityIds: searchActivityIds,
+        onFunctionCall: () => sawFunctionCall = true,
+      );
+    }
 
     try {
       await for (final line in byteStream) {
@@ -130,33 +166,10 @@ class ResponsesApiProvider implements LlmProvider {
           final json = _tryDecodeJson(payload);
           if (json == null) continue;
 
-          for (final chunk in _handleEvent(
-            eventType: eventType,
-            json: json,
-            outputItems: outputItems,
-            functionDrafts: functionDrafts,
-            citations: citations,
-            seenCitationUrls: seenCitationUrls,
-            searchActivityIds: searchActivityIds,
-            onFunctionCall: () => sawFunctionCall = true,
-          )) {
+          for (final chunk in consumeEvent(eventType, json)) {
             yield chunk;
           }
-
-          final type = eventType ?? json['type'] as String?;
-          if (type == 'response.completed' ||
-              type == 'response.incomplete' ||
-              type == 'response.failed') {
-            terminal = true;
-            if (type == 'response.failed') {
-              final err = json['response'] is Map
-                  ? (json['response'] as Map)['error']
-                  : json['error'];
-              final message = _errorFromDynamic(err) ?? 'Responses 请求失败';
-              throw Exception(message);
-            }
-            break;
-          }
+          if (terminalFinishReason != null) break;
           continue;
         }
 
@@ -171,36 +184,34 @@ class ResponsesApiProvider implements LlmProvider {
       }
 
       // Flush a trailing event if the server closed without a blank line.
-      if (!terminal && (pendingData.isNotEmpty || pendingEvent != null)) {
+      if (terminalFinishReason == null &&
+          (pendingData.isNotEmpty || pendingEvent != null)) {
         final payload = pendingData.join('\n');
         final json = _tryDecodeJson(payload);
         if (json != null) {
-          for (final chunk in _handleEvent(
-            eventType: pendingEvent,
-            json: json,
-            outputItems: outputItems,
-            functionDrafts: functionDrafts,
-            citations: citations,
-            seenCitationUrls: seenCitationUrls,
-            searchActivityIds: searchActivityIds,
-            onFunctionCall: () => sawFunctionCall = true,
-          )) {
+          for (final chunk in consumeEvent(pendingEvent, json)) {
             yield chunk;
           }
         }
       }
     } on DioException catch (e) {
       if (CancelToken.isCancel(e)) return;
-      throw await _humanizeError(e);
+      throw await humanizeLlmHttpError(
+        e,
+        notFoundMessage:
+            '接口未找到（404）：当前 Base URL 可能不支持 Responses API（/responses）。',
+      );
     } on TimeoutException {
       if (cancelToken?.isCancelled ?? false) return;
-      throw Exception(
-        '响应超时：服务端在 ${_streamIdleTimeout.inSeconds} 秒内没有返回数据，'
-        '请检查网络或稍后重试。',
-      );
+      throw llmResponseTimeout(_streamIdleTimeout, headers: false);
     }
 
-    if (sawFunctionCall) {
+    if (terminalFinishReason == null) {
+      throw Exception('响应流在完成前中断，请重试。');
+    }
+    // An incomplete function call must never be executed, even if its partial
+    // arguments happen to parse. Preserve the provider's terminal reason.
+    if (sawFunctionCall && terminalFinishReason == 'stop') {
       final calls =
           functionDrafts.values
               .map((d) => d.toToolCall())
@@ -217,7 +228,7 @@ class ResponsesApiProvider implements LlmProvider {
       );
     } else {
       yield ChatChunk(
-        finishReason: 'stop',
+        finishReason: terminalFinishReason,
         citations: citations.isEmpty ? null : List.unmodifiable(citations),
         responseOutputItems: outputItems.isEmpty
             ? null
@@ -308,13 +319,23 @@ class ResponsesApiProvider implements LlmProvider {
     final body = <String, dynamic>{
       'model': config.model,
       'stream': true,
+      if (config.authMode == 'chatgpt') 'store': false,
+      if (config.maxOutputTokens != null && config.authMode != 'chatgpt')
+        'max_output_tokens': config.maxOutputTokens,
       if (instructions.isNotEmpty) 'instructions': instructions.toString(),
       if (input.isNotEmpty) 'input': input,
     };
 
-    if (thinking != null) {
+    if (thinking != null &&
+        (config.capabilities.supportsReasoningEffort ||
+            config.model.toLowerCase().startsWith('gpt-5') ||
+            config.model.toLowerCase().startsWith('gpt-6') ||
+            RegExp(r'^o[1-9]').hasMatch(config.model.toLowerCase()))) {
       if (thinking) {
-        final effort = (reasoningEffort ?? ReasoningEffort.high).wire;
+        final selected = reasoningEffort ?? ReasoningEffort.high;
+        final effort = selected == ReasoningEffort.max && !config.isDeepSeek
+            ? 'high'
+            : selected.wire;
         body['reasoning'] = {'effort': effort};
         if (config.capabilities.sendThinkingField) {
           body['output_config'] = {'effort': effort};
@@ -342,12 +363,29 @@ class ResponsesApiProvider implements LlmProvider {
       }
     }
     if (toolList.isNotEmpty) {
-      body['tools'] = toolList;
+      body['tools'] = config.authMode == 'chatgpt'
+          ? [
+              ...toolList.where((tool) => tool['type'] != 'function'),
+              if (toolList.any((tool) => tool['type'] == 'function'))
+                {
+                  'type': 'namespace',
+                  'name': 'expert_chat',
+                  'description': 'Expert Chat 的会话和工作区工具',
+                  'tools': toolList
+                      .where((tool) => tool['type'] == 'function')
+                      .toList(),
+                },
+            ]
+          : toolList;
       final force = forceToolName?.trim() ?? '';
       if (force == kToolChoiceRequired) {
         body['tool_choice'] = 'required';
       } else if (force.isNotEmpty) {
-        body['tool_choice'] = {'type': 'function', 'name': force};
+        body['tool_choice'] = {
+          'type': 'function',
+          'name': force,
+          if (config.authMode == 'chatgpt') 'namespace': 'expert_chat',
+        };
       } else if (config.useServerWebSearch && config.forceServerWebSearch) {
         body['tool_choice'] = {'type': 'web_search'};
       } else {
@@ -668,103 +706,13 @@ class ResponsesApiProvider implements LlmProvider {
     if (error is Map) {
       final message = error['message'] ?? error['detail'];
       if (message is String && message.trim().isNotEmpty) {
-        return _clipErrorMessage(message);
+        return clipLlmErrorMessage(message);
       }
     }
     if (error is String && error.trim().isNotEmpty) {
-      return _clipErrorMessage(error);
+      return clipLlmErrorMessage(error);
     }
     return null;
-  }
-
-  Future<Exception> _humanizeError(DioException e) async {
-    final status = e.response?.statusCode;
-    final apiMsg = await _extractApiMessage(e.response?.data);
-    final detail = apiMsg == null ? '' : '：$apiMsg';
-    if (status == 400) return Exception('请求有误（400）$detail');
-    if (status == 401) return Exception('鉴权失败（401）：请检查 API Key 是否正确。');
-    if (status == 402) return Exception('额度不足（402）：账户余额不足。');
-    if (status == 404) {
-      return Exception(
-        '接口未找到（404）：当前 Base URL 可能不支持 Responses API（/responses）。$detail',
-      );
-    }
-    if (status == 422) return Exception('参数有误（422）$detail');
-    if (status == 429) return Exception('请求过于频繁（429）：稍后重试。');
-    if (e.type == DioExceptionType.connectionTimeout) {
-      return Exception('连接超时：请检查网络或 Base URL。');
-    }
-    if (e.type == DioExceptionType.receiveTimeout) {
-      return Exception('响应超时：服务端长时间没有返回数据，请稍后重试。');
-    }
-    if (e.type == DioExceptionType.sendTimeout) {
-      return Exception('请求发送超时：请检查网络后重试。');
-    }
-    if (e.type == DioExceptionType.connectionError) {
-      return Exception('连接失败：请检查网络或 Base URL。');
-    }
-    if (e.type == DioExceptionType.badCertificate) {
-      return Exception('TLS 证书校验失败：请检查 Base URL 是否可信。');
-    }
-    if (e.type == DioExceptionType.unknown) {
-      return Exception('网络连接中断：请检查网络后重试。');
-    }
-    if (status != null) return Exception('请求失败（$status）$detail');
-    return Exception('请求失败：${e.message ?? e.type.name}');
-  }
-
-  Future<String?> _extractApiMessage(dynamic data) async {
-    try {
-      String? raw;
-      if (data is ResponseBody) {
-        final bytes = <int>[];
-        await for (final chunk in data.stream) {
-          final remaining = _maxErrorBodyBytes - bytes.length;
-          if (remaining <= 0) break;
-          if (chunk.length <= remaining) {
-            bytes.addAll(chunk);
-          } else {
-            bytes.addAll(chunk.take(remaining));
-            break;
-          }
-        }
-        raw = utf8.decode(bytes, allowMalformed: true);
-      } else if (data is String) {
-        raw = data;
-      } else if (data is Map) {
-        return _messageFromMap(data);
-      }
-      if (raw == null || raw.trim().isEmpty) return null;
-      try {
-        final decoded = jsonDecode(raw);
-        if (decoded is Map) return _messageFromMap(decoded);
-      } catch (_) {}
-      final trimmed = raw.trim();
-      return trimmed.length > 200
-          ? '${trimmed.characters.take(200)}…'
-          : trimmed;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  String? _messageFromMap(Map<dynamic, dynamic> map) {
-    final err = map['error'];
-    if (err is Map && err['message'] is String) {
-      return _clipErrorMessage(err['message'] as String);
-    }
-    if (err is String) return _clipErrorMessage(err);
-    if (map['message'] is String) {
-      return _clipErrorMessage(map['message'] as String);
-    }
-    return null;
-  }
-
-  String _clipErrorMessage(String value) {
-    final trimmed = value.trim();
-    return trimmed.characters.length > 200
-        ? '${trimmed.characters.take(200)}…'
-        : trimmed;
   }
 }
 

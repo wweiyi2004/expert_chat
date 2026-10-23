@@ -1,0 +1,8 @@
+#include "../../../../src/include/dart_api_dl.c"
+#include "../../../../src/common/pty_error.c"
+#include "../../../../src/common/pty_event.c"
+#include "../../../../src/common/pty_refcount.c"
+#include "../../../../src/common/pty_debug_stats.c"
+#include "../../../../src/common/pty_write_queue.c"
+#include "../../../../src/unix/pty_unix_spawn.c"
+#include "../../../../src/unix/pty_unix_session.c"

@@ -46,11 +46,75 @@ class ChatRetryOperation {
   final String? ensembleSpeakerId;
 }
 
+class SessionPendingConfiguration {
+  const SessionPendingConfiguration(this.labels);
+  final List<String> labels;
+  bool get queued => labels.isNotEmpty;
+}
+
+enum SessionExecutionStatus {
+  running,
+  waiting,
+  completed,
+  failed,
+  cancelled,
+  interrupted,
+}
+
+class SessionExecutionCheckpoint {
+  const SessionExecutionCheckpoint({
+    required this.conversationId,
+    required this.status,
+    required this.updatedAt,
+    this.taskId,
+    this.phase = '',
+    this.queuedEvents = 0,
+  });
+  final String conversationId;
+  final String? taskId;
+  final SessionExecutionStatus status;
+  final DateTime updatedAt;
+  final String phase;
+  final int queuedEvents;
+  Map<String, dynamic> toJson() => {
+    'conversationId': conversationId,
+    'taskId': taskId,
+    'status': status.name,
+    'updatedAt': updatedAt.toIso8601String(),
+    'phase': phase,
+    'queuedEvents': queuedEvents,
+  };
+  factory SessionExecutionCheckpoint.fromJson(Map<String, dynamic> json) {
+    final saved = SessionExecutionStatus.values.byName(
+      json['status'] as String,
+    );
+    return SessionExecutionCheckpoint(
+      conversationId: json['conversationId'] as String,
+      taskId: json['taskId'] as String?,
+      status:
+          saved == SessionExecutionStatus.running ||
+              saved == SessionExecutionStatus.waiting
+          ? SessionExecutionStatus.interrupted
+          : saved,
+      updatedAt: DateTime.parse(json['updatedAt'] as String),
+      phase:
+          saved == SessionExecutionStatus.running ||
+              saved == SessionExecutionStatus.waiting
+          ? '应用重启，执行已中断；请检查已有结果和远端状态后继续。未重放命令。'
+          : json['phase'] as String? ?? '',
+      queuedEvents: (json['queuedEvents'] as num?)?.toInt() ?? 0,
+    );
+  }
+}
+
 class ChatState {
   const ChatState({
     this.conversations = const [],
     this.currentId,
     this.streamingConvoId,
+    this.runningConversationIds = const {},
+    this.pendingSessionConfigurations = const {},
+    this.sessionCheckpoints = const {},
     this.deepThink = false,
     this.reasoningEffort = ReasoningEffort.high,
     this.searchMode = SearchMode.auto,
@@ -72,7 +136,14 @@ class ChatState {
   /// stream can't mis-attribute the stream to the newly selected one.
   final String? streamingConvoId;
 
-  bool get isStreaming => streamingConvoId != null;
+  final Set<String> runningConversationIds;
+  final Map<String, SessionPendingConfiguration> pendingSessionConfigurations;
+  final Map<String, SessionExecutionCheckpoint> sessionCheckpoints;
+  bool isConversationRunning(String id) => runningConversationIds.contains(id);
+  bool get isStreaming =>
+      currentId != null &&
+      (runningConversationIds.contains(currentId) ||
+          streamingConvoId == currentId);
 
   /// When true the next send enables thinking (the "深度思考" toggle).
   /// DeepSeek V4 stays on the selected model and only flips `thinking`;
@@ -128,6 +199,9 @@ class ChatState {
     List<Conversation>? conversations,
     String? currentId,
     Object? streamingConvoId = _sentinel,
+    Set<String>? runningConversationIds,
+    Map<String, SessionPendingConfiguration>? pendingSessionConfigurations,
+    Map<String, SessionExecutionCheckpoint>? sessionCheckpoints,
     bool? deepThink,
     ReasoningEffort? reasoningEffort,
     SearchMode? searchMode,
@@ -175,6 +249,11 @@ class ChatState {
       streamingConvoId: identical(streamingConvoId, _sentinel)
           ? this.streamingConvoId
           : streamingConvoId as String?,
+      runningConversationIds:
+          runningConversationIds ?? this.runningConversationIds,
+      pendingSessionConfigurations:
+          pendingSessionConfigurations ?? this.pendingSessionConfigurations,
+      sessionCheckpoints: sessionCheckpoints ?? this.sessionCheckpoints,
       deepThink: deepThink ?? this.deepThink,
       reasoningEffort: reasoningEffort ?? this.reasoningEffort,
       searchMode: searchMode ?? this.searchMode,

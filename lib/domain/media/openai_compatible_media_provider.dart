@@ -5,6 +5,7 @@ import 'package:characters/characters.dart';
 import 'package:dio/dio.dart';
 
 import '../../data/media_api_config.dart';
+import '../llm/gemini_endpoint.dart';
 import 'image_edit_reference.dart';
 
 class GeneratedImage {
@@ -37,10 +38,10 @@ class SynthesizedSpeech {
   final String mimeType;
 }
 
-/// Optional OpenAI-compatible image-generation and text-to-speech endpoints.
+/// Optional Gemini-native / OpenAI-compatible images and supported speech APIs.
 ///
 /// Vision chat itself keeps using [LlmProvider], because it is the same
-/// `/chat/completions` protocol with multimodal message parts.
+/// configured LLM protocol with multimodal message parts.
 class OpenAiCompatibleMediaProvider {
   OpenAiCompatibleMediaProvider({Dio? dio})
     : _dio =
@@ -98,6 +99,18 @@ class OpenAiCompatibleMediaProvider {
     ];
     final maxRefs = config.maxImageEditReferences;
     final bounded = refs.length > maxRefs ? refs.sublist(0, maxRefs) : refs;
+    if (config.isGeminiNative) {
+      if (refs.length > maxRefs) {
+        throw FormatException('该 Gemini 生图模型最多接收 $maxRefs 张参考图，请减少后重试。');
+      }
+      return _generateGeminiImage(
+        config: config,
+        apiKey: apiKey,
+        prompt: prompt,
+        references: bounded,
+        cancelToken: cancelToken,
+      );
+    }
     if (bounded.isNotEmpty) {
       return _editImage(
         config: config,
@@ -109,7 +122,7 @@ class OpenAiCompatibleMediaProvider {
     }
 
     final response = await _postJson(
-      _endpoint(config.baseUrl, 'images/generations'),
+      _endpoint(config.openAiCompatibleBaseUrl, 'images/generations'),
       apiKey: apiKey,
       body: {
         'model': config.model.trim(),
@@ -120,6 +133,249 @@ class OpenAiCompatibleMediaProvider {
       action: '生图',
     );
     return _parseGeneratedImageResponse(response, cancelToken: cancelToken);
+  }
+
+  /// Native Gemini image generation / editing:
+  /// - `imagen-*` models use `:predict` (`instances` + `parameters`).
+  /// - `gemini-*` multimodal image models use `:generateContent` with
+  ///   `responseModalities: ['TEXT', 'IMAGE']` (supporting optional reference
+  ///   images as `inlineData` parts).
+  Future<GeneratedImage> _generateGeminiImage({
+    required MediaApiConfig config,
+    required String apiKey,
+    required String prompt,
+    required List<ImageEditReference> references,
+    CancelToken? cancelToken,
+  }) async {
+    final modelId = GeminiEndpoint.normalizeModelId(config.model);
+    final action = references.isEmpty ? '生图' : '图生图';
+    if (modelId.toLowerCase().startsWith('imagen')) {
+      if (references.isNotEmpty) {
+        throw const FormatException(
+          'Imagen 原生接口暂不支持参考图编辑，请改用 gemini-2.5-flash-image 等多模态生图模型。',
+        );
+      }
+      final imageConfig = _geminiImageConfig(config.imageSize);
+      final aspectRatio = imageConfig['aspectRatio'];
+      if (aspectRatio != null &&
+          !const {'1:1', '3:4', '4:3', '9:16', '16:9'}.contains(aspectRatio)) {
+        throw FormatException(
+          'Imagen 不支持 $aspectRatio 比例，请选择 1:1、3:4、4:3、9:16 或 16:9。',
+        );
+      }
+      final resolution = imageConfig['imageSize'];
+      if (resolution != null && !const {'1K', '2K'}.contains(resolution)) {
+        throw const FormatException('Imagen 仅支持 1K/2K 分辨率，请选择支持的尺寸或自动。');
+      }
+      final response = await _postJson(
+        GeminiEndpoint.modelEndpoint(config.baseUrl, modelId, 'predict'),
+        apiKey: apiKey,
+        headersOverride: GeminiEndpoint.headers(config.baseUrl, apiKey),
+        body: {
+          'instances': [
+            {'prompt': prompt.trim()},
+          ],
+          'parameters': {
+            'sampleCount': 1,
+            'aspectRatio': ?aspectRatio,
+            'sampleImageSize': ?resolution,
+          },
+        },
+        cancelToken: cancelToken,
+        action: action,
+      );
+      return _parseGeminiPredictImageResponse(response);
+    }
+
+    for (final ref in references) {
+      if (ref.bytes.length > 20 * 1024 * 1024) {
+        throw const FormatException('参考图超过 20 MB 限制。');
+      }
+    }
+    final parts = <Map<String, dynamic>>[
+      for (final ref in references)
+        {
+          'inlineData': {
+            'mimeType':
+                ref.mimeType.trim().isEmpty ||
+                    !ref.mimeType.startsWith('image/')
+                ? 'image/png'
+                : ref.mimeType.trim(),
+            'data': base64Encode(ref.bytes),
+          },
+        },
+      {'text': prompt.trim()},
+    ];
+    final imageConfig = _geminiImageConfig(config.imageSize);
+    final response = await _postJson(
+      GeminiEndpoint.modelEndpoint(config.baseUrl, modelId, 'generateContent'),
+      apiKey: apiKey,
+      headersOverride: GeminiEndpoint.headers(config.baseUrl, apiKey),
+      body: {
+        'contents': [
+          {'role': 'user', 'parts': parts},
+        ],
+        'generationConfig': {
+          'responseModalities': ['TEXT', 'IMAGE'],
+          if (imageConfig.isNotEmpty) 'imageConfig': imageConfig,
+        },
+      },
+      cancelToken: cancelToken,
+      action: action,
+    );
+    return _parseGeminiGenerateContentImageResponse(response);
+  }
+
+  Map<String, String> _geminiImageConfig(String rawSize) {
+    final normalized = rawSize.trim().toLowerCase();
+    if (normalized.isEmpty || normalized == 'auto') return {};
+    if (const {'512', '1k', '2k', '4k'}.contains(normalized)) {
+      return {'imageSize': normalized.toUpperCase()};
+    }
+    var ratio = normalized;
+    final dimensions = RegExp(
+      r'^([1-9]\d*)\s*[x×]\s*([1-9]\d*)$',
+    ).firstMatch(normalized);
+    if (dimensions != null) {
+      final width = int.parse(dimensions.group(1)!);
+      final height = int.parse(dimensions.group(2)!);
+      final divisor = width.gcd(height);
+      ratio = '${width ~/ divisor}:${height ~/ divisor}';
+    }
+    // https://ai.google.dev/api/generate-content#ImageConfig
+    const supported = {
+      '1:1',
+      '1:4',
+      '4:1',
+      '1:8',
+      '8:1',
+      '2:3',
+      '3:2',
+      '3:4',
+      '4:3',
+      '4:5',
+      '5:4',
+      '9:16',
+      '16:9',
+      '21:9',
+    };
+    if (!supported.contains(ratio)) {
+      throw FormatException('Gemini 不支持尺寸 "$rawSize"，请选择支持的比例、1K/2K/4K 或自动。');
+    }
+    return {'aspectRatio': ratio};
+  }
+
+  GeneratedImage _parseGeminiPredictImageResponse(
+    Map<String, dynamic> response,
+  ) {
+    _checkGeminiImageFailure(response);
+    final predictions = response['predictions'];
+    if (predictions is! List ||
+        predictions.isEmpty ||
+        predictions.first is! Map) {
+      throw const FormatException('生图接口没有返回图片数据。');
+    }
+    final item = Map<String, dynamic>.from(predictions.first as Map);
+    final filtered = item['raiFilteredReason'];
+    if (filtered is String && filtered.trim().isNotEmpty) {
+      throw FormatException('Imagen 未生成图片：${_shortDetail(filtered)}');
+    }
+    final rawBase64 =
+        item['bytesBase64Encoded'] as String? ?? item['b64_json'] as String?;
+    if (rawBase64 == null || rawBase64.isEmpty) {
+      throw const FormatException('生图接口没有返回有效图片地址或数据。');
+    }
+    final parsed = _parseBase64Image(rawBase64);
+    final mime = (item['mimeType'] as String?)?.trim();
+    return GeneratedImage(
+      base64: parsed.$2,
+      mimeType: mime != null && mime.startsWith('image/') ? mime : parsed.$1,
+      revisedPrompt: item['prompt'] as String?,
+    );
+  }
+
+  GeneratedImage _parseGeminiGenerateContentImageResponse(
+    Map<String, dynamic> response,
+  ) {
+    _checkGeminiImageFailure(response);
+    final candidates = response['candidates'];
+    if (candidates is! List || candidates.isEmpty || candidates.first is! Map) {
+      throw const FormatException('生图接口没有返回图片数据。');
+    }
+    final candidate = Map<String, dynamic>.from(candidates.first as Map);
+    final finishReason = candidate['finishReason'];
+    if (finishReason is String &&
+        finishReason.isNotEmpty &&
+        finishReason != 'STOP' &&
+        finishReason != 'FINISH_REASON_UNSPECIFIED') {
+      final message = candidate['finishMessage'];
+      throw FormatException(
+        'Gemini 生图未完成（$finishReason）'
+        '${message is String && message.trim().isNotEmpty ? '：${_shortDetail(message)}' : '。'}',
+      );
+    }
+    final content = candidate['content'];
+    if (content is! Map || content['parts'] is! List) {
+      throw const FormatException('生图接口没有返回图片数据。');
+    }
+    String? rawBase64;
+    String? mimeType;
+    final textParts = <String>[];
+    for (final rawPart in content['parts'] as List) {
+      if (rawPart is! Map || rawPart['thought'] == true) continue;
+      final text = rawPart['text'];
+      if (text is String && text.trim().isNotEmpty) {
+        textParts.add(text.trim());
+      }
+      final inline = rawPart['inlineData'] ?? rawPart['inline_data'];
+      if (inline is Map && rawBase64 == null) {
+        final rawMime = inline['mimeType'] ?? inline['mime_type'];
+        if (rawMime is! String || !rawMime.trim().startsWith('image/')) {
+          continue;
+        }
+        final data = inline['data'];
+        if (data is String && data.trim().isNotEmpty) {
+          rawBase64 = data;
+          mimeType = rawMime.trim();
+        }
+      }
+    }
+    if (rawBase64 == null || rawBase64.isEmpty) {
+      final detail = textParts.isEmpty
+          ? ''
+          : '：${_shortDetail(textParts.join('\n'))}';
+      throw FormatException('Gemini 未返回最终图片$detail');
+    }
+    final parsed = _parseBase64Image(rawBase64);
+    return GeneratedImage(
+      base64: parsed.$2,
+      mimeType: mimeType ?? parsed.$1,
+      revisedPrompt: textParts.isEmpty ? null : textParts.join('\n'),
+    );
+  }
+
+  String _shortDetail(String text) =>
+      text.trim().characters.take(200).toString();
+
+  void _checkGeminiImageFailure(Map<String, dynamic> response) {
+    if (response['error'] != null) {
+      throw FormatException(
+        'Gemini 生图失败：${_errorMessage(response) ?? '服务返回错误'}',
+      );
+    }
+    final feedback = response['promptFeedback'];
+    if (feedback is Map) {
+      final reason = feedback['blockReason'];
+      if (reason is String &&
+          reason.isNotEmpty &&
+          reason != 'BLOCK_REASON_UNSPECIFIED') {
+        final message = feedback['blockReasonMessage'];
+        throw FormatException(
+          'Gemini 未接受生图请求（$reason）'
+          '${message is String && message.trim().isNotEmpty ? '：${_shortDetail(message)}' : '。'}',
+        );
+      }
+    }
   }
 
   /// OpenAI-compatible image edit / img2img via multipart `images/edits`.
@@ -162,7 +418,7 @@ class OpenAiCompatibleMediaProvider {
 
     try {
       final response = await _dio.post<dynamic>(
-        _endpoint(config.baseUrl, 'images/edits'),
+        _endpoint(config.openAiCompatibleBaseUrl, 'images/edits'),
         data: form,
         options: Options(
           headers: {
@@ -346,6 +602,9 @@ class OpenAiCompatibleMediaProvider {
     String voiceSampleMimeType = 'audio/wav',
   }) async {
     _ensureConfigured(config, apiKey, 'TTS');
+    if (config.isGeminiNative) {
+      throw const FormatException('当前语音功能不支持 Gemini 原生协议，请配置受支持的语音 API。');
+    }
     // Use effectiveSpeechProtocol so a MiMo base URL / model still works when
     // the saved protocol was left at the OpenAI default (a common setup miss).
     return switch (config.effectiveSpeechProtocol) {
@@ -772,6 +1031,9 @@ class OpenAiCompatibleMediaProvider {
     CancelToken? cancelToken,
   }) async {
     _ensureConfigured(config, apiKey, '语音识别');
+    if (config.isGeminiNative) {
+      throw const FormatException('当前语音识别功能不支持 Gemini 原生协议，请配置受支持的语音 API。');
+    }
     if (audioBytes.isEmpty) {
       throw const FormatException('录音为空，请重新录制。');
     }
@@ -887,6 +1149,7 @@ class OpenAiCompatibleMediaProvider {
     String url, {
     required String apiKey,
     required Map<String, dynamic> body,
+    Map<String, String>? headersOverride,
     CancelToken? cancelToken,
     String action = '请求',
   }) async {
@@ -894,7 +1157,7 @@ class OpenAiCompatibleMediaProvider {
       final response = await _dio.post<dynamic>(
         url,
         data: jsonEncode(body),
-        options: Options(headers: _headers(apiKey)),
+        options: Options(headers: headersOverride ?? _headers(apiKey)),
         cancelToken: cancelToken,
       );
       final raw = response.data;
@@ -1047,10 +1310,13 @@ class OpenAiCompatibleMediaProvider {
     final detail = _errorMessage(e.response?.data);
     final suffix = detail == null ? '' : '：$detail';
     if (status == 401) return Exception('$action鉴权失败（401）：请检查 API Key。');
+    if (status == 403) {
+      return Exception('$action权限不足（403）：请检查 API Key、模型权限或项目限制。$suffix');
+    }
     if (status == 404) {
       return Exception('$action接口未找到（404）：请检查 Base URL。$suffix');
     }
-    if (status == 429) return Exception('$action请求过于频繁（429），请稍后重试。');
+    if (status == 429) return Exception('$action配额不足或请求过于频繁（429）$suffix');
     if (status != null) return Exception('$action失败（$status）$suffix');
     if (e.type == DioExceptionType.connectionTimeout) {
       return Exception('$action连接超时：请检查网络或 Base URL。');

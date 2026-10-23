@@ -27,7 +27,7 @@ mixin ChatMedia on ChatGeneration {
     String? existingUserMessageId,
     String? preparedPrompt,
     GenerationRecord? version,
-  }) async {
+  }) => _inSession(() async {
     final trimmed = prompt.trim();
     var refs = [
       for (final a in referenceImages)
@@ -43,7 +43,7 @@ mixin ChatMedia on ChatGeneration {
       if (originConvo != null && !_requireLoadedConversation(originConvo)) {
         return false;
       }
-      var settings = await ref.read(settingsControllerProvider.future);
+      var settings = await _settingsForSession();
       if (version != null) {
         if (GenerationRepository.providerOrigin(
               settings.imageGenerationApi.baseUrl,
@@ -55,6 +55,9 @@ mixin ChatMedia on ChatGeneration {
           imageGenerationApi: settings.imageGenerationApi.copyWith(
             model: version.model,
             imageSize: version.imageSize,
+            apiFormat: version.apiFormat == null
+                ? null
+                : LlmApiFormat.values.byName(version.apiFormat!),
           ),
         );
         refs = await ref.read(generationRepositoryProvider).references(version);
@@ -223,6 +226,7 @@ mixin ChatMedia on ChatGeneration {
             await _persistence.persistById(working.id);
             unawaited(
               GenerationNotify.onGenerationEnd(
+                sessionId: _run?.conversationId,
                 success: false,
                 conversationTitle: working.title,
                 cancelled: true,
@@ -262,6 +266,7 @@ mixin ChatMedia on ChatGeneration {
           await _persistence.persistById(working.id);
           unawaited(
             GenerationNotify.onGenerationEnd(
+              sessionId: _run?.conversationId,
               success: false,
               conversationTitle: working.title,
             ),
@@ -300,6 +305,7 @@ mixin ChatMedia on ChatGeneration {
           await _persistence.persistById(working.id);
           unawaited(
             GenerationNotify.onGenerationEnd(
+              sessionId: _run?.conversationId,
               success: false,
               conversationTitle: working.title,
               cancelled: true,
@@ -345,6 +351,7 @@ mixin ChatMedia on ChatGeneration {
         await _persistence.persistById(working.id);
         unawaited(
           GenerationNotify.onGenerationEnd(
+            sessionId: _run?.conversationId,
             success: true,
             conversationTitle: working.title,
             preview: '图片已生成',
@@ -370,6 +377,7 @@ mixin ChatMedia on ChatGeneration {
         await _persistence.persistById(working.id);
         unawaited(
           GenerationNotify.onGenerationEnd(
+            sessionId: _run?.conversationId,
             success: false,
             conversationTitle: working.title,
             cancelled: cancelled,
@@ -386,5 +394,5 @@ mixin ChatMedia on ChatGeneration {
     } finally {
       _finishStarting();
     }
-  }
+  });
 }

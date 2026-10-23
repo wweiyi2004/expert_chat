@@ -11,7 +11,8 @@ class GenerationNotify {
   static final _keepAlive = GenerationKeepAlive();
   static var _ready = false;
   static var _inBackground = false;
-  static var _generating = false;
+  static final _sessions = <String>{};
+  static bool get _generating => _sessions.isNotEmpty;
   static var _revision = 0;
 
   static bool get inBackground => _inBackground;
@@ -57,8 +58,8 @@ class GenerationNotify {
     _inBackground = value;
   }
 
-  static Future<void> onGenerationStart() async {
-    _generating = true;
+  static Future<void> onGenerationStart({String? sessionId}) async {
+    if (!_sessions.add(sessionId ?? 'legacy')) return;
     final revision = ++_revision;
     // Start before notification initialization/permission awaits, while the
     // user's send action still has a foreground Activity.
@@ -74,15 +75,15 @@ class GenerationNotify {
   }
 
   static Future<void> onGenerationEnd({
+    String? sessionId,
     required bool success,
     required String conversationTitle,
     String? preview,
     bool cancelled = false,
   }) async {
-    if (!_generating) return;
-    _generating = false;
+    if (!_sessions.remove(sessionId ?? 'legacy')) return;
     final revision = ++_revision;
-    await _keepAlive.stop();
+    if (!_generating) await _keepAlive.stop();
     if (kIsWeb) return;
 
     if (revision != _revision || cancelled || !_inBackground) return;

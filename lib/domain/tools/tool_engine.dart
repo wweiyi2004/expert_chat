@@ -82,7 +82,7 @@ class ToolEngine {
       'properties': {
         'query': {
           'type': 'string',
-          'description': '简洁搜索关键词，宜短不宜长（例如专有名词 + 年份 + 要点）',
+          'description': '简洁搜索关键词，最多 128 个字符（例如专有名词 + 年份 + 要点）',
         },
       },
       'required': ['query'],
@@ -94,7 +94,7 @@ class ToolEngine {
   static const fetchUrlTool = ToolSpec(
     name: 'fetch_url',
     description:
-        '打开并读取用户给出的具体网页 URL，返回页面正文摘要。'
+        '使用 DeepSeek 官方 Fetch 读取本轮用户提供或搜索结果中的网页 URL，返回页面正文摘要。'
         '当用户粘贴了链接、或需要阅读某一确定页面时使用；'
         '不要用它代替关键词搜索。',
     parameters: {
@@ -162,7 +162,14 @@ class ToolEngine {
     if (cancelToken?.isCancelled ?? false) {
       throw cancelToken!.cancelError!;
     }
-    final normalizedQuery = normalizeSearchQuery(query);
+    final normalizedQuery = normalizeSearchQuery(
+      query,
+      maxChars:
+          _search is HttpSearchProvider &&
+              _search.backend == SearchBackend.deepseek
+          ? 128
+          : 160,
+    );
     if (normalizedQuery.isEmpty) {
       return const SearchContext(contextText: '', citations: []);
     }

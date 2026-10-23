@@ -3,12 +3,17 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../../data/models.dart';
 import '../../../domain/chat/thinking_timeline.dart';
+import 'work_round_activity.dart';
+import 'command_activity_dialog.dart';
+import 'thinking_translation_host.dart';
 
 /// Collapsible DeepSeek-style thinking chain: prose with a left bar, tool
 /// steps (search / browse / MCP / image) inlined as chips.
 class ThinkingPanel extends StatefulWidget {
   const ThinkingPanel({
     super.key,
+    this.conversationId,
+    this.messageId,
     required this.reasoning,
     required this.isStreaming,
     this.thinkingMillis = 0,
@@ -17,9 +22,12 @@ class ThinkingPanel extends StatefulWidget {
     this.onAnswerFromResults,
     this.onRetryStep,
     this.onStop,
+    this.workMode = false,
   });
 
+  final String? conversationId, messageId;
   final String reasoning;
+  final bool workMode;
   final bool isStreaming;
   final int thinkingMillis;
   final List<SearchActivity> activities;
@@ -37,6 +45,9 @@ class _ThinkingPanelState extends State<ThinkingPanel>
   bool _expanded = true;
   bool _userToggled = false;
   late final AnimationController _pulse;
+  final _timelineScroll = ScrollController();
+  bool _followTimeline = true;
+  bool _followScheduled = false;
 
   bool get _toolRunning =>
       widget.isStreaming &&
@@ -45,7 +56,7 @@ class _ThinkingPanelState extends State<ThinkingPanel>
   @override
   void initState() {
     super.initState();
-    _expanded = widget.isStreaming || widget.activities.isNotEmpty;
+    _expanded = widget.activities.isNotEmpty;
     _pulse = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 900),
@@ -56,6 +67,19 @@ class _ThinkingPanelState extends State<ThinkingPanel>
   @override
   void didUpdateWidget(ThinkingPanel old) {
     super.didUpdateWidget(old);
+    if (!_userToggled && widget.activities.isNotEmpty) _expanded = true;
+    if (_followTimeline && !_followScheduled && widget.isStreaming) {
+      _followScheduled = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _followScheduled = false;
+        if (!mounted || !_timelineScroll.hasClients || !_followTimeline) return;
+        _timelineScroll.animateTo(
+          _timelineScroll.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 240),
+          curve: Curves.easeOutCubic,
+        );
+      });
+    }
     if (old.isStreaming && !widget.isStreaming) {
       _pulse.stop();
       // Keep tool traces visible; collapse only a bare reasoning dump.
@@ -70,6 +94,7 @@ class _ThinkingPanelState extends State<ThinkingPanel>
 
   @override
   void dispose() {
+    _timelineScroll.dispose();
     _pulse.dispose();
     super.dispose();
   }
@@ -107,124 +132,192 @@ class _ThinkingPanelState extends State<ThinkingPanel>
       activities: widget.activities,
     );
 
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          InkWell(
-            key: const ValueKey('thinking-panel-toggle'),
-            borderRadius: BorderRadius.circular(8),
-            onTap: () {
-              setState(() {
-                _expanded = !_expanded;
-                _userToggled = true;
-              });
-              widget.onExpandedChanged?.call(_expanded);
-            },
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 4),
-              child: Row(
-                children: [
-                  widget.isStreaming
-                      ? FadeTransition(
-                          opacity: Tween(begin: 0.35, end: 1.0).animate(_pulse),
-                          child: Icon(
+    if (widget.workMode) {
+      return WorkRoundActivity(
+        conversationId: widget.conversationId,
+        messageId: widget.messageId,
+        reasoning: widget.reasoning,
+        activities: widget.activities,
+        running: widget.isStreaming,
+        onExpandedChanged: widget.onExpandedChanged,
+        onStop: widget.onStop,
+        onRetry: widget.onRetryStep,
+      );
+    }
+
+    final prose = segments.where((segment) => segment.isReasoning).toList();
+    return ThinkingTranslationHost(
+      conversationId: widget.conversationId,
+      messageId: widget.messageId,
+      segments: prose.map((segment) => segment.text!).toList(),
+      isStreaming: widget.isStreaming,
+      expanded: _expanded,
+      builder: (translationControls, renderReasoning) => Padding(
+        padding: const EdgeInsets.only(bottom: 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            InkWell(
+              key: const ValueKey('thinking-panel-toggle'),
+              borderRadius: BorderRadius.circular(8),
+              onTap: () {
+                setState(() {
+                  _expanded = !_expanded;
+                  _userToggled = true;
+                });
+                widget.onExpandedChanged?.call(_expanded);
+              },
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: Row(
+                  children: [
+                    widget.isStreaming
+                        ? FadeTransition(
+                            opacity: Tween(
+                              begin: 0.35,
+                              end: 1.0,
+                            ).animate(_pulse),
+                            child: Icon(
+                              Icons.auto_awesome,
+                              size: 16,
+                              color: scheme.primary,
+                            ),
+                          )
+                        : Icon(
                             Icons.auto_awesome,
                             size: 16,
-                            color: scheme.primary,
+                            color: scheme.onSurfaceVariant,
                           ),
-                        )
-                      : Icon(
-                          Icons.auto_awesome,
-                          size: 16,
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        _label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 13,
                           color: scheme.onSurfaceVariant,
+                          fontWeight: FontWeight.w600,
                         ),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      _label,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 13,
-                        color: scheme.onSurfaceVariant,
-                        fontWeight: FontWeight.w600,
                       ),
                     ),
-                  ),
-                  Icon(
-                    _expanded
-                        ? Icons.keyboard_arrow_up
-                        : Icons.keyboard_arrow_down,
-                    size: 18,
-                    color: scheme.onSurfaceVariant,
-                  ),
-                ],
+                    Icon(
+                      _expanded
+                          ? Icons.keyboard_arrow_up
+                          : Icons.keyboard_arrow_down,
+                      size: 18,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ],
+                ),
               ),
             ),
-          ),
-          AnimatedCrossFade(
-            firstChild:
-                !_expanded && widget.isStreaming && widget.reasoning.isNotEmpty
-                ? _CollapsedReasoningPreview(text: widget.reasoning)
-                : const SizedBox(width: double.infinity, height: 0),
-            secondChild: Padding(
-              padding: const EdgeInsets.only(top: 4, bottom: 4),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  for (final segment in segments)
-                    if (segment.isReasoning)
-                      _ReasoningQuote(text: segment.text!)
-                    else
-                      _ToolStepNode(
-                        activity: segment.activity!,
-                        onRetry:
-                            widget.onRetryStep == null ||
-                                widget.activities.any(
-                                  (a) =>
-                                      a.retryOfId == segment.activity!.id &&
-                                      a.status == SearchActivityStatus.done,
-                                )
-                            ? null
-                            : () => widget.onRetryStep!(segment.activity!),
-                        showSpinner:
-                            widget.isStreaming &&
-                            segment.activity!.status ==
-                                SearchActivityStatus.running,
-                      ),
-                  if (widget.onAnswerFromResults != null ||
-                      widget.onStop != null)
-                    Wrap(
-                      spacing: 8,
-                      children: [
-                        if (widget.onAnswerFromResults != null)
-                          TextButton.icon(
-                            onPressed: widget.onAnswerFromResults,
-                            icon: const Icon(Icons.done, size: 16),
-                            label: const Text('用已有资料回答'),
-                          ),
-                        if (widget.onStop != null)
-                          TextButton.icon(
-                            onPressed: widget.onStop,
-                            icon: const Icon(
-                              Icons.stop_circle_outlined,
-                              size: 16,
+            if (_expanded) translationControls,
+            AnimatedCrossFade(
+              firstChild:
+                  !_expanded &&
+                      widget.isStreaming &&
+                      widget.reasoning.isNotEmpty
+                  ? _CollapsedReasoningPreview(text: widget.reasoning)
+                  : const SizedBox(width: double.infinity, height: 0),
+              secondChild: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight: MediaQuery.sizeOf(context).height * 0.48,
+                ),
+                child: NotificationListener<UserScrollNotification>(
+                  onNotification: (n) {
+                    _followTimeline = n.metrics.extentAfter <= 12;
+                    return false;
+                  },
+                  child: Scrollbar(
+                    controller: _timelineScroll,
+                    child: SingleChildScrollView(
+                      key: const ValueKey('thinking-timeline-scroll'),
+                      controller: _timelineScroll,
+                      primary: false,
+                      child: Padding(
+                        padding: const EdgeInsets.only(top: 4, bottom: 4),
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            border: Border(
+                              left: BorderSide(color: scheme.outlineVariant),
                             ),
-                            label: const Text('停止任务'),
                           ),
-                      ],
+                          child: Padding(
+                            padding: const EdgeInsets.only(left: 10),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                for (final segment in segments)
+                                  if (segment.isReasoning)
+                                    renderReasoning(
+                                      prose.indexOf(segment),
+                                      segment.text!,
+                                      _ReasoningQuote(text: segment.text!),
+                                    )
+                                  else
+                                    _ToolStepNode(
+                                      activity: segment.activity!,
+                                      onRetry:
+                                          widget.onRetryStep == null ||
+                                              widget.activities.any(
+                                                (a) =>
+                                                    a.retryOfId ==
+                                                        segment.activity!.id &&
+                                                    a.status ==
+                                                        SearchActivityStatus
+                                                            .done,
+                                              )
+                                          ? null
+                                          : () => widget.onRetryStep!(
+                                              segment.activity!,
+                                            ),
+                                      showSpinner:
+                                          widget.isStreaming &&
+                                          segment.activity!.status ==
+                                              SearchActivityStatus.running,
+                                    ),
+                                if (widget.onAnswerFromResults != null ||
+                                    widget.onStop != null)
+                                  Wrap(
+                                    spacing: 8,
+                                    children: [
+                                      if (widget.onAnswerFromResults != null)
+                                        TextButton.icon(
+                                          onPressed: widget.onAnswerFromResults,
+                                          icon: const Icon(
+                                            Icons.done,
+                                            size: 16,
+                                          ),
+                                          label: const Text('用已有资料回答'),
+                                        ),
+                                      if (widget.onStop != null)
+                                        TextButton.icon(
+                                          onPressed: widget.onStop,
+                                          icon: const Icon(
+                                            Icons.stop_circle_outlined,
+                                            size: 16,
+                                          ),
+                                          label: const Text('停止任务'),
+                                        ),
+                                    ],
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
                     ),
-                ],
+                  ),
+                ),
               ),
+              crossFadeState: _expanded
+                  ? CrossFadeState.showSecond
+                  : CrossFadeState.showFirst,
+              duration: const Duration(milliseconds: 180),
             ),
-            crossFadeState: _expanded
-                ? CrossFadeState.showSecond
-                : CrossFadeState.showFirst,
-            duration: const Duration(milliseconds: 180),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -299,14 +392,19 @@ class _CollapsedReasoningPreviewState
       key: const ValueKey('thinking-collapsed-preview'),
       padding: const EdgeInsets.only(top: 4, bottom: 4, left: 12),
       child: SizedBox(
-        height: 13 * 1.65 * scale * 2,
+        height: 13 * 1.65 * scale * 5,
         child: ShaderMask(
           blendMode: BlendMode.dstIn,
           shaderCallback: (bounds) => const LinearGradient(
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
-            colors: [Colors.transparent, Colors.black, Colors.black],
-            stops: [0, 0.18, 1],
+            colors: [
+              Colors.transparent,
+              Colors.black,
+              Colors.black,
+              Colors.transparent,
+            ],
+            stops: [0, 0.10, 0.88, 1],
           ).createShader(bounds),
           child: NotificationListener<ScrollNotification>(
             onNotification: (notification) {
@@ -498,24 +596,30 @@ class _ToolStepNodeState extends State<_ToolStepNode> {
                 ),
               if (activity.resultText?.isNotEmpty ?? false)
                 TextButton(
-                  onPressed: () => showDialog<void>(
-                    context: context,
-                    builder: (dialog) => AlertDialog(
-                      title: const Text('步骤结果'),
-                      content: SizedBox(
-                        width: 600,
-                        child: SingleChildScrollView(
-                          child: SelectableText(activity.resultText!),
+                  onPressed: () => activity.toolName == 'work_run_command'
+                      ? showCommandActivityDialog(
+                          context,
+                          activity,
+                          title: '运行命令',
+                        )
+                      : showDialog<void>(
+                          context: context,
+                          builder: (dialog) => AlertDialog(
+                            title: const Text('步骤结果'),
+                            content: SizedBox(
+                              width: 600,
+                              child: SingleChildScrollView(
+                                child: SelectableText(activity.resultText!),
+                              ),
+                            ),
+                            actions: [
+                              TextButton(
+                                onPressed: () => Navigator.pop(dialog),
+                                child: const Text('关闭'),
+                              ),
+                            ],
+                          ),
                         ),
-                      ),
-                      actions: [
-                        TextButton(
-                          onPressed: () => Navigator.pop(dialog),
-                          child: const Text('关闭'),
-                        ),
-                      ],
-                    ),
-                  ),
                   child: const Text('查看结果'),
                 ),
             ],

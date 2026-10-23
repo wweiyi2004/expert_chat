@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import '../domain/memory/memory_codec.dart';
+import '../domain/memory/memory_content_key.dart';
 import '../domain/memory/memory_entry.dart';
 import '../domain/memory/memory_safety.dart';
 
@@ -125,7 +126,7 @@ class MemoryRepository {
         final duplicate = current.entries.cast<MemoryEntry?>().firstWhere(
           (entry) =>
               entry!.projectId == projectId &&
-              _dedupeKey(entry.content) == _dedupeKey(normalized),
+              memoryContentKey(entry.content) == memoryContentKey(normalized),
           orElse: () => null,
         );
         if (duplicate != null) {
@@ -184,7 +185,7 @@ class MemoryRepository {
         final duplicate = remaining.cast<MemoryEntry?>().firstWhere(
           (entry) =>
               entry!.projectId == projectId &&
-              _dedupeKey(entry.content) == _dedupeKey(normalized),
+              memoryContentKey(entry.content) == memoryContentKey(normalized),
           orElse: () => null,
         );
         if (duplicate != null) {
@@ -253,7 +254,8 @@ class MemoryRepository {
             (entry) =>
                 entry.id != mutation.existingId &&
                 entry.projectId == imported.projectId &&
-                _dedupeKey(entry.content) == _dedupeKey(imported.content),
+                memoryContentKey(entry.content) ==
+                    memoryContentKey(imported.content),
           );
           if (duplicateIndex >= 0) {
             entries.removeAt(index);
@@ -269,7 +271,8 @@ class MemoryRepository {
             (entry) =>
                 entry.id == imported.id ||
                 (entry.projectId == imported.projectId &&
-                    _dedupeKey(entry.content) == _dedupeKey(imported.content)),
+                    memoryContentKey(entry.content) ==
+                        memoryContentKey(imported.content)),
           );
           if (duplicate) {
             skipped++;
@@ -410,26 +413,6 @@ class MemoryRepository {
     );
     await _store.write(_codec.encode(next));
     _cache = next;
-  }
-
-  static String _dedupeKey(String value) {
-    // 连续空白压成一个空格而非删除,避免 "api key" 与 "apikey" 被误判为重复;
-    // 中文不使用空格分词,与汉字相邻的空格视为排版差异,一并去掉。
-    final collapsed = value
-        .toLowerCase()
-        .replaceAll(RegExp(r'\s+'), ' ')
-        .trim();
-    final cjk = RegExp(r'[㐀-鿿]');
-    final result = StringBuffer();
-    for (var i = 0; i < collapsed.length; i++) {
-      final char = collapsed[i];
-      final spaceTouchesCjk =
-          char == ' ' &&
-          ((i > 0 && cjk.hasMatch(collapsed[i - 1])) ||
-              (i + 1 < collapsed.length && cjk.hasMatch(collapsed[i + 1])));
-      if (!spaceTouchesCjk) result.write(char);
-    }
-    return result.toString();
   }
 
   static MemoryEntry _validatedImported(MemoryEntry entry, {String? id}) {

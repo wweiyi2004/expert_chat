@@ -60,10 +60,7 @@ void main() {
   test('original five vendors stay in the catalog', () {
     final byName = {for (final p in ProviderPreset.presets) p.name: p};
     expect(byName['DeepSeek']!.baseUrl, 'https://api.deepseek.com');
-    expect(
-      byName['DeepSeek']!.models,
-      contains('deepseek-v4-flash-vision-exp'),
-    );
+    expect(byName['DeepSeek']!.models, contains('deepseek-flash'));
     expect(byName['Grok (xAI)']!.baseUrl, 'https://api.x.ai/v1');
     expect(byName['OpenAI']!.baseUrl, 'https://api.openai.com/v1');
     expect(byName['Kimi (Moonshot)']!.baseUrl, 'https://api.moonshot.cn/v1');

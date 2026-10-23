@@ -60,7 +60,9 @@ class SearchToolExecutor {
         : _searchQueryFromArgs(call.argumentsJson, fallbackSearchQuery);
 
     if (fetching &&
-        (query == null || !allowedFetchUrls.contains(fetchUrlKey(query)))) {
+        (query == null ||
+            (!allowedFetchUrls.contains(fetchUrlKey(query)) &&
+                !prior.any((c) => fetchUrlKey(c.url) == fetchUrlKey(query))))) {
       final activity = SearchActivity(
         kind: SearchActivityKind.fetch,
         query: query ?? 'fetch_url',
@@ -77,7 +79,7 @@ class SearchToolExecutor {
       return SearchToolResult(
         content: query == null
             ? '无效的 URL 参数；请提供完整的 http(s) 网址。'
-            : '已拒绝读取：fetch_url 只能访问用户在本轮消息中明确提供的网址。',
+            : '已拒绝读取：fetch_url 只能访问本轮用户提供或搜索结果中的网址。',
         citations: prior,
       );
     }
@@ -85,7 +87,7 @@ class SearchToolExecutor {
     try {
       final engine = createEngine(
         backend: fetching && backend.isProviderHosted
-            ? SearchBackend.duckduckgo
+            ? SearchBackend.deepseek
             : backend,
         apiKey: searchApiKey,
       );

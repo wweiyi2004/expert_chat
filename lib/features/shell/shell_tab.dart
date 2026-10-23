@@ -14,7 +14,7 @@ enum ShellTab {
   String get label => switch (this) {
     ShellTab.chat => '会话',
     ShellTab.tools => '工具',
-    ShellTab.terminal => '终端',
+    ShellTab.terminal => '科研工作区',
     ShellTab.study => '学习',
     ShellTab.studio => '创作',
     ShellTab.settings => '设置',
@@ -97,8 +97,3 @@ void openShellTab(WidgetRef ref, ShellTab tab) {
     controller.set(tab);
   });
 }
-
-/// Legacy name kept so older call sites compile during migration — prefer
-/// [shellTabProvider].
-@Deprecated('Use shellTabProvider')
-final shellTabIndexProvider = shellTabProvider;

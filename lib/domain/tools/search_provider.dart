@@ -32,11 +32,12 @@ class SearchResult {
 
 /// Selectable search backends. The user supplies their own key (pure client),
 /// except [provider] which uses the active LLM vendor's hosted web search.
-enum SearchBackend { provider, duckduckgo, tavily, bocha, exa }
+enum SearchBackend { provider, deepseek, duckduckgo, tavily, bocha, exa }
 
 extension SearchBackendInfo on SearchBackend {
   String get label => switch (this) {
     SearchBackend.provider => 'API 提供商官方联网',
+    SearchBackend.deepseek => 'DeepSeek Search / Fetch',
     SearchBackend.duckduckgo => 'DuckDuckGo（免费，无 Key）',
     SearchBackend.tavily => 'Tavily',
     SearchBackend.bocha => '博查 Bocha（中文）',
@@ -47,7 +48,10 @@ extension SearchBackendInfo on SearchBackend {
 
   bool get requiresApiKey => switch (this) {
     SearchBackend.provider || SearchBackend.duckduckgo => false,
-    SearchBackend.tavily || SearchBackend.bocha || SearchBackend.exa => true,
+    SearchBackend.deepseek ||
+    SearchBackend.tavily ||
+    SearchBackend.bocha ||
+    SearchBackend.exa => true,
   };
 
   /// Hosted search runs on the LLM endpoint (DeepSeek Responses `web_search`
@@ -56,7 +60,7 @@ extension SearchBackendInfo on SearchBackend {
 
   static SearchBackend fromWire(String? v) => SearchBackend.values.firstWhere(
     (b) => b.name == v,
-    orElse: () => SearchBackend.duckduckgo,
+    orElse: () => SearchBackend.deepseek,
   );
 }
 
@@ -138,6 +142,18 @@ class HttpSearchProvider implements SearchProvider {
         content: '',
       );
     }
+    if (backend == SearchBackend.deepseek) {
+      final data = await _deepseekRequest('fetch', {
+        'url': trimmed,
+      }, cancelToken);
+      final content = data['content'] as String? ?? '';
+      return SearchResult(
+        title: data['title'] as String? ?? trimmed,
+        url: trimmed,
+        snippet: content.characters.take(200).toString(),
+        content: content,
+      );
+    }
     final content = await _fetchReadableText(trimmed, cancelToken);
     final title = _guessTitle(content, trimmed);
     return SearchResult(
@@ -179,6 +195,11 @@ class HttpSearchProvider implements SearchProvider {
     }
     try {
       return switch (backend) {
+        SearchBackend.deepseek => await _deepseek(
+          normalizedQuery,
+          boundedMaxResults,
+          cancelToken,
+        ),
         SearchBackend.provider => throw StateError(
           'provider search is server-side',
         ),
@@ -219,6 +240,55 @@ class HttpSearchProvider implements SearchProvider {
       }
       throw Exception('联网搜索失败：${e.message ?? e.type.name}');
     }
+  }
+
+  Future<Map<String, dynamic>> _deepseekRequest(
+    String operation,
+    Map<String, dynamic> body,
+    CancelToken? cancelToken,
+  ) async {
+    if (apiKey.trim().isEmpty) {
+      throw Exception('未配置 DeepSeek API Key，请连接 DeepSeek 或填写搜索 Key。');
+    }
+    final response = await _dio.post<Map<String, dynamic>>(
+      'https://api.deepseek.com/v1/tools/$operation',
+      data: body,
+      options: Options(
+        headers: {'Authorization': 'Bearer $apiKey'},
+        contentType: Headers.jsonContentType,
+      ),
+      cancelToken: cancelToken,
+    );
+    return response.data ?? const {};
+  }
+
+  Future<List<SearchResult>> _deepseek(
+    String query,
+    int maxResults,
+    CancelToken? cancelToken,
+  ) async {
+    // The API limit is Unicode code points, not UTF-16 code units.
+    if (query.runes.length > 128) {
+      throw ArgumentError('DeepSeek 搜索词最多 128 个字符，请缩短关键词。');
+    }
+    final data = await _deepseekRequest('search', {
+      'query': query,
+      'count': maxResults.clamp(1, 50),
+      'need_content': true,
+    }, cancelToken);
+    return [
+      for (final item
+          in (data['results'] as List? ?? const []).whereType<Map>())
+        if (isSafeHttpUrl(item['url']?.toString() ?? ''))
+          SearchResult(
+            title: item['title']?.toString() ?? '',
+            url: item['url'].toString(),
+            snippet: item['snippet']?.toString() ?? '',
+            content: (item['content']?.toString().trim().isNotEmpty ?? false)
+                ? item['content'].toString()
+                : item['summary']?.toString() ?? '',
+          ),
+    ];
   }
 
   Future<List<SearchResult>> _duckduckgo(

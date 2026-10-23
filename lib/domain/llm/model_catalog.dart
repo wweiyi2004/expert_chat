@@ -1,3 +1,5 @@
+export 'gemini_endpoint.dart';
+
 /// What a given model can do, used to shape the request (which optional
 /// fields/params are safe to send) and the UI (the reasoning panel). Resolved
 /// from the model id in [resolve] — the ONE place that encodes provider-specific
@@ -53,7 +55,7 @@ class KnownModels {
   static const reasoner = 'deepseek-v4-pro';
   static const vision = 'deepseek-v4-flash-vision-exp';
 
-  static const all = <String>[flash, chat, reasoner, vision];
+  static const all = <String>[flash, reasoner];
 
   static bool isReasoner(String model) =>
       ModelCapabilities.resolve(model).isReasoner;
@@ -66,7 +68,7 @@ class KnownModels {
 }
 
 /// Explicit built-in capabilities take priority over compatibility heuristics.
-/// Existing aliases intentionally keep their previous behavior in this refactor.
+/// Retired Flash aliases follow the current Flash vision capabilities.
 abstract final class ModelCatalog {
   static const entries = <String, ModelCapabilities>{
     KnownModels.flash: ModelCapabilities(
@@ -80,9 +82,9 @@ abstract final class ModelCatalog {
       isReasoner: false,
       supportsTools: true,
       sendThinkingField: true,
-      supportsVision: false,
+      supportsVision: true,
       supportsReasoningEffort: true,
-      supportsServerWebSearch: true,
+      supportsServerWebSearch: false,
     ),
     KnownModels.reasoner: ModelCapabilities(
       isReasoner: true,
@@ -98,7 +100,7 @@ abstract final class ModelCatalog {
       sendThinkingField: true,
       supportsVision: true,
       supportsReasoningEffort: true,
-      supportsServerWebSearch: true,
+      supportsServerWebSearch: false,
     ),
     'grok-4.3': ModelCapabilities(
       isReasoner: false,
@@ -128,6 +130,15 @@ abstract final class ModelCatalog {
   static bool isDeepSeek({required String baseUrl, required String model}) =>
       isOfficialDeepSeekEndpoint(baseUrl) ||
       model.toLowerCase().contains('deepseek');
+
+  /// True for Gemini 2.5+ / 3+ / thinking models that accept `thinkingConfig`
+  /// in native Gemini `generationConfig`.
+  static bool supportsGeminiThinkingConfig(String model) {
+    final m = normalizeId(model);
+    return m.startsWith('gemini-2.5') ||
+        m.startsWith('gemini-3') ||
+        (m.startsWith('gemini') && m.contains('thinking'));
+  }
 
   static ModelCapabilities resolve(String model) =>
       entries[normalizeId(model)] ?? _inferCapabilities(model);
@@ -212,6 +223,7 @@ abstract final class ModelCatalog {
         m.contains('gemini') ||
         m.contains('claude-3') ||
         m.contains('claude-4') ||
+        RegExp(r'^claude-(?:sonnet|opus|haiku)-[4-9]').hasMatch(m) ||
         m.contains('pixtral') ||
         m.contains('llava') ||
         m.contains('internvl') ||
@@ -219,8 +231,8 @@ abstract final class ModelCatalog {
             (m.contains('vision') ||
                 (m.startsWith('grok-4.') && !m.contains('build'))));
 
-    // V4.1 Flash ignores built-in `web_search`; retain the legacy V4 policy.
-    final serverWebSearch = !deepseekFlash && deepseekV4;
+    // Only Pro supports hosted Responses web_search. Flash uses Search / Fetch.
+    final serverWebSearch = m == 'deepseek-v4-pro';
 
     return ModelCapabilities(
       isReasoner: reasoner,

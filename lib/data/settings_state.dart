@@ -1,8 +1,11 @@
 import 'dart:async';
+import '../state/model_context.dart';
 
 import 'package:flutter/material.dart';
 
 import 'chat_skill.dart';
+import 'subagent_role.dart';
+import 'prompt_presets.dart';
 import 'jev_config.dart';
 import 'composer_modes.dart';
 import 'context_prefs.dart';
@@ -34,7 +37,7 @@ class SettingsState {
     this.apiKey = '',
     this.selectedModel,
     this.themeMode = ThemeMode.system,
-    this.searchBackend = SearchBackend.duckduckgo,
+    this.searchBackend = SearchBackend.deepseek,
     this.searchApiKey = '',
     this.searchBrainModel,
     this.searchMaxRounds = kDefaultSearchMaxRounds,
@@ -45,6 +48,11 @@ class SettingsState {
     this.reasoningEffort = ReasoningEffort.high,
     this.hasReasoningEffortOverride = false,
     this.systemPrompt = '',
+    this.workAgentInstructions = '',
+    this.subagentInstructions = '',
+    this.subagentRoles,
+    this.subagentRouterModel = '',
+    this.promptPresets = const PromptPresets(),
     this.chatSkills = const ChatSkillCatalog([]),
     this.jevConfig = const JevConfig(),
     this.jevApiKey = '',
@@ -58,6 +66,7 @@ class SettingsState {
     this.asrApi = const MediaApiConfig(),
     this.asrApiKey = '',
     this.context = const ContextPrefs(),
+    this.modelContexts = const {},
     this.gateway = const GatewayConfig(),
     this.gatewayToken = '',
     this.gatewayLegacyToken = '',
@@ -83,6 +92,16 @@ class SettingsState {
   /// Web-search backend + its key (for the "联网搜索" feature, M5).
   final SearchBackend searchBackend;
   final String searchApiKey;
+
+  /// Official DeepSeek search is a standalone API, available to both models.
+  SearchBackend get effectiveSearchBackend => SearchBackend.deepseek;
+
+  String get effectiveSearchApiKey =>
+      searchBackend == SearchBackend.deepseek && searchApiKey.trim().isNotEmpty
+      ? searchApiKey
+      : config.isOfficialDeepSeek
+      ? apiKey
+      : '';
 
   /// Model that plans multi-round retrieval for models without function
   /// calling ("搜索大脑"). Null/empty = follow the active profile's chat model.
@@ -110,6 +129,13 @@ class SettingsState {
   /// chat catalog fallback has factory text. Synced with
   /// [chatSkills].fallback.prompt when the user edits general.
   final String systemPrompt;
+  final String workAgentInstructions;
+  final String subagentInstructions;
+  final List<SubagentRole>? subagentRoles;
+  final String subagentRouterModel;
+  List<SubagentRole> get effectiveSubagentRoles =>
+      subagentRoles ?? SubagentRole.defaults(subagentInstructions);
+  final PromptPresets promptPresets;
 
   /// Per-turn skill catalog. Empty lists are sanitized on read/save.
   final ChatSkillCatalog chatSkills;
@@ -129,6 +155,7 @@ class SettingsState {
   final MediaApiConfig asrApi;
   final String asrApiKey;
   final ContextPrefs context;
+  final Map<String, ContextPrefs> modelContexts;
 
   /// One connection for every server-side Expert Chat capability.
   final GatewayConfig gateway;
@@ -153,7 +180,7 @@ class SettingsState {
   /// Creation hub tab (角色 / 世界书 / 导演故事). Default on; can hide for a cleaner nav.
   final bool creationModeEnabled;
 
-  bool get searchConfigured => searchApiKey.trim().isNotEmpty;
+  bool get searchConfigured => effectiveSearchApiKey.trim().isNotEmpty;
   bool get gatewayConfigured => gateway.isConfigured;
   bool get gatewaySignedIn => gatewayAuthSession != null;
   bool get supportsLongTasks =>
@@ -261,11 +288,11 @@ class SettingsState {
   }
 
   String get baseUrl => active?.baseUrl ?? '';
-  String get model => selectedModel ?? active?.chatModel ?? KnownModels.chat;
+  String get model => selectedModel ?? active?.chatModel ?? KnownModels.flash;
 
   /// Dedicated reasoner model for providers that cannot toggle thinking on
   /// the chat model. DeepSeek V4 ignores this and stays on [model].
-  String get reasonerModel => active?.reasonerModel ?? model;
+  String get reasonerModel => selectedModel ?? active?.reasonerModel ?? model;
 
   /// Resolved "搜索大脑" model: the explicit choice, else the active profile's
   /// chat model (NOT the possibly-reasoner override, which can't call tools).
@@ -278,13 +305,25 @@ class SettingsState {
   /// Models offered in the picker for the active profile.
   List<String> get availableModels => active?.models ?? KnownModels.all;
 
-  LlmConfig get config =>
-      LlmConfig(baseUrl: baseUrl, apiKey: apiKey, model: model);
+  LlmApiFormat get apiFormat => active?.apiFormat ?? LlmApiFormat.auto;
+
+  LlmConfig get config {
+    final base = LlmConfig(
+      profileId: active?.id,
+      authMode: active?.authMode ?? 'apiKey',
+      baseUrl: baseUrl,
+      apiKey: apiKey,
+      model: model,
+      apiFormat: apiFormat,
+    );
+    return applyContextConfig(base, effectiveContextPrefs(this, base));
+  }
 
   LlmConfig get visionConfig => LlmConfig(
     baseUrl: visionApi.baseUrl,
     apiKey: visionApiKey,
     model: visionApi.model,
+    apiFormat: visionApi.apiFormat,
     capabilities: const ModelCapabilities(
       isReasoner: false,
       supportsTools: false,
@@ -309,6 +348,11 @@ class SettingsState {
     ReasoningEffort? reasoningEffort,
     bool? hasReasoningEffortOverride,
     String? systemPrompt,
+    String? workAgentInstructions,
+    String? subagentInstructions,
+    List<SubagentRole>? subagentRoles,
+    String? subagentRouterModel,
+    PromptPresets? promptPresets,
     ChatSkillCatalog? chatSkills,
     JevConfig? jevConfig,
     String? jevApiKey,
@@ -322,6 +366,7 @@ class SettingsState {
     MediaApiConfig? asrApi,
     String? asrApiKey,
     ContextPrefs? context,
+    Map<String, ContextPrefs>? modelContexts,
     GatewayConfig? gateway,
     String? gatewayToken,
     String? gatewayLegacyToken,
@@ -354,6 +399,11 @@ class SettingsState {
     hasReasoningEffortOverride:
         hasReasoningEffortOverride ?? this.hasReasoningEffortOverride,
     systemPrompt: systemPrompt ?? this.systemPrompt,
+    workAgentInstructions: workAgentInstructions ?? this.workAgentInstructions,
+    subagentInstructions: subagentInstructions ?? this.subagentInstructions,
+    subagentRoles: subagentRoles ?? this.subagentRoles,
+    subagentRouterModel: subagentRouterModel ?? this.subagentRouterModel,
+    promptPresets: promptPresets ?? this.promptPresets,
     chatSkills: chatSkills ?? this.chatSkills,
     jevConfig: jevConfig ?? this.jevConfig,
     jevApiKey: jevApiKey ?? this.jevApiKey,
@@ -367,6 +417,7 @@ class SettingsState {
     asrApi: asrApi ?? this.asrApi,
     asrApiKey: asrApiKey ?? this.asrApiKey,
     context: context ?? this.context,
+    modelContexts: modelContexts ?? this.modelContexts,
     gateway: gateway ?? this.gateway,
     gatewayToken: gatewayToken ?? this.gatewayToken,
     gatewayLegacyToken: gatewayLegacyToken ?? this.gatewayLegacyToken,

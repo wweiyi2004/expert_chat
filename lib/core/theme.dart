@@ -11,6 +11,11 @@ class AppMetrics extends ThemeExtension<AppMetrics> {
     required this.bubbleMain,
     required this.bubbleTail,
     required this.chatSurface,
+    this.lineHeight = 1.85,
+    this.paragraphSpacing = 8,
+    this.messageSpacing = 24,
+    this.popoverMaxHeight = 420,
+    this.popoverTopMargin = 40,
   });
 
   final double radiusMd;
@@ -18,6 +23,11 @@ class AppMetrics extends ThemeExtension<AppMetrics> {
   final double bubbleMain;
   final double bubbleTail;
   final ChatSurfacePref chatSurface;
+  final double lineHeight,
+      paragraphSpacing,
+      messageSpacing,
+      popoverMaxHeight,
+      popoverTopMargin;
 
   factory AppMetrics.fromPrefs(UiPrefs ui) => AppMetrics(
     radiusMd: ui.cornerStyle.radiusMd,
@@ -25,6 +35,11 @@ class AppMetrics extends ThemeExtension<AppMetrics> {
     bubbleMain: ui.cornerStyle.bubbleMain,
     bubbleTail: ui.cornerStyle.bubbleTail,
     chatSurface: ui.chatSurface,
+    lineHeight: ui.lineHeight,
+    paragraphSpacing: ui.paragraphSpacing,
+    messageSpacing: ui.messageSpacing,
+    popoverMaxHeight: ui.popoverMaxHeight,
+    popoverTopMargin: ui.popoverTopMargin,
   );
 
   BorderRadius get bubbleUser => BorderRadius.only(
@@ -48,12 +63,22 @@ class AppMetrics extends ThemeExtension<AppMetrics> {
     double? bubbleMain,
     double? bubbleTail,
     ChatSurfacePref? chatSurface,
+    double? lineHeight,
+    double? paragraphSpacing,
+    double? messageSpacing,
+    double? popoverMaxHeight,
+    double? popoverTopMargin,
   }) => AppMetrics(
     radiusMd: radiusMd ?? this.radiusMd,
     radiusLg: radiusLg ?? this.radiusLg,
     bubbleMain: bubbleMain ?? this.bubbleMain,
     bubbleTail: bubbleTail ?? this.bubbleTail,
     chatSurface: chatSurface ?? this.chatSurface,
+    lineHeight: lineHeight ?? this.lineHeight,
+    paragraphSpacing: paragraphSpacing ?? this.paragraphSpacing,
+    messageSpacing: messageSpacing ?? this.messageSpacing,
+    popoverMaxHeight: popoverMaxHeight ?? this.popoverMaxHeight,
+    popoverTopMargin: popoverTopMargin ?? this.popoverTopMargin,
   );
 
   @override
@@ -65,6 +90,23 @@ class AppMetrics extends ThemeExtension<AppMetrics> {
       bubbleMain: lerpDouble(bubbleMain, other.bubbleMain, t) ?? bubbleMain,
       bubbleTail: lerpDouble(bubbleTail, other.bubbleTail, t) ?? bubbleTail,
       chatSurface: t < 0.5 ? chatSurface : other.chatSurface,
+      lineHeight: lerpDouble(lineHeight, other.lineHeight, t)!,
+      paragraphSpacing: lerpDouble(
+        paragraphSpacing,
+        other.paragraphSpacing,
+        t,
+      )!,
+      messageSpacing: lerpDouble(messageSpacing, other.messageSpacing, t)!,
+      popoverMaxHeight: lerpDouble(
+        popoverMaxHeight,
+        other.popoverMaxHeight,
+        t,
+      )!,
+      popoverTopMargin: lerpDouble(
+        popoverTopMargin,
+        other.popoverTopMargin,
+        t,
+      )!,
     );
   }
 }
@@ -375,6 +417,7 @@ class AppTheme {
 
     return ThemeData(
       useMaterial3: true,
+      iconTheme: IconThemeData(size: 20, color: scheme.onSurfaceVariant),
       colorScheme: scheme,
       fontFamily: 'NotoSansSC',
       fontFamilyFallback: _cjkFallback,
@@ -439,8 +482,8 @@ class AppTheme {
         style: FilledButton.styleFrom(
           backgroundColor: scheme.primary,
           foregroundColor: scheme.onPrimary,
-          minimumSize: const Size(48, 44),
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+          minimumSize: const Size(44, 38),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(r)),
         ),
       ),
@@ -448,7 +491,7 @@ class AppTheme {
         style: OutlinedButton.styleFrom(
           foregroundColor: scheme.primary,
           side: BorderSide(color: border),
-          minimumSize: const Size(48, 44),
+          minimumSize: const Size(44, 38),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(r)),
         ),
       ),
@@ -456,7 +499,7 @@ class AppTheme {
         style: IconButton.styleFrom(
           foregroundColor: scheme.onSurfaceVariant,
           minimumSize: const Size(44, 44),
-          padding: const EdgeInsets.all(10),
+          padding: const EdgeInsets.all(9),
           tapTargetSize: MaterialTapTargetSize.padded,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(r - 2),
@@ -466,7 +509,8 @@ class AppTheme {
       listTileTheme: ListTileThemeData(
         selectedColor: scheme.primary,
         selectedTileColor: scheme.primaryContainer.withValues(alpha: 0.55),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+        minVerticalPadding: 8,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 1),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(r)),
         iconColor: scheme.onSurfaceVariant,
       ),
@@ -546,9 +590,9 @@ class AppTheme {
         );
 
     return TextTheme(
-      displaySmall: base(28, FontWeight.w700, height: 1.2),
-      headlineSmall: base(22, FontWeight.w700, height: 1.25),
-      titleLarge: base(18, FontWeight.w700, height: 1.3),
+      displaySmall: base(26, FontWeight.w600, height: 1.2),
+      headlineSmall: base(21, FontWeight.w600, height: 1.25),
+      titleLarge: base(18, FontWeight.w600, height: 1.3),
       titleMedium: base(16, FontWeight.w600, height: 1.35),
       titleSmall: base(14, FontWeight.w600, height: 1.35),
       bodyLarge: base(15.5, FontWeight.w400, height: 1.65),

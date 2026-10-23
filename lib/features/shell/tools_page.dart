@@ -2,14 +2,17 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/desktop_providers.dart';
 import '../../state/settings_controller.dart';
 import '../../state/research_mode_fx.dart';
 import '../../state/research_terminal_controller.dart';
 import '../shared/recovery_notice.dart';
+import '../workspaces/desktop_workspaces_page.dart';
 import 'shell_tab.dart';
 
 class ToolsPage extends ConsumerStatefulWidget {
-  const ToolsPage({super.key});
+  const ToolsPage({super.key, this.onOpenNavigation});
+  final VoidCallback? onOpenNavigation;
   @override
   ConsumerState<ToolsPage> createState() => _ToolsPageState();
 }
@@ -111,7 +114,17 @@ class _ToolsPageState extends ConsumerState<ToolsPage> {
   Widget build(BuildContext context) {
     final settings = ref.watch(settingsControllerProvider);
     return Scaffold(
-      appBar: AppBar(title: const Text('工具'), automaticallyImplyLeading: false),
+      appBar: AppBar(
+        title: const Text('工具'),
+        automaticallyImplyLeading: false,
+        leading: widget.onOpenNavigation == null
+            ? null
+            : IconButton(
+                tooltip: '打开侧边栏',
+                onPressed: widget.onOpenNavigation,
+                icon: const Icon(Icons.menu_rounded),
+              ),
+      ),
       body: settings.when(
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (error, _) => Padding(
@@ -131,6 +144,22 @@ class _ToolsPageState extends ConsumerState<ToolsPage> {
             child: ListView(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
               children: [
+                if (ref.watch(desktopWorkspaceHostProvider).supported) ...[
+                  Card(
+                    child: ListTile(
+                      leading: const Icon(Icons.folder_copy_outlined),
+                      title: const Text('电脑工作区'),
+                      subtitle: const Text('添加项目目录，管理只读、读写与拒绝访问范围'),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => const DesktopWorkspacesPage(),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                ],
                 if (_error != null)
                   RecoveryNotice(error: _error!, title: '功能设置未完成'),
                 AbsorbPointer(

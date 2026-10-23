@@ -63,6 +63,34 @@ Future<SearchToolResult> _run(
 
 void main() {
   test(
+    'official fetch can read a page returned by this turn search without widening to arbitrary URLs',
+    () async {
+      final source = _Search()..results = [_page('https://example.com/found')];
+      final engine = ToolEngine(source);
+      final executor = SearchToolExecutor(
+        createEngine: ({required backend, required apiKey}) => engine,
+      );
+      final searched = await _run(executor, backend: SearchBackend.deepseek);
+      final fetched = await _run(
+        executor,
+        name: 'fetch_url',
+        args: '{"url":"https://example.com/found"}',
+        citations: searched.citations,
+        backend: SearchBackend.deepseek,
+      );
+      expect(fetched.error, isNull);
+      expect(source.fetched, ['https://example.com/found']);
+      await _run(
+        executor,
+        name: 'fetch_url',
+        args: '{"url":"https://example.com/not-returned"}',
+        citations: searched.citations,
+        backend: SearchBackend.deepseek,
+      );
+      expect(source.fetched, hasLength(1));
+    },
+  );
+  test(
     'search excludes earlier sources and continues their numbering without mutating input',
     () async {
       final source = _Search()
@@ -182,7 +210,7 @@ void main() {
         },
         citations: const [Citation(index: 1, title: 'Old', url: url)],
       );
-      expect(selected, [SearchBackend.duckduckgo]);
+      expect(selected, [SearchBackend.deepseek]);
       expect(source.fetched, [url]);
       expect(result.citations.map((c) => c.index), [1, 2]);
       expect(result.citations.last.url, url);

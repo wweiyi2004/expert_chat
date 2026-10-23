@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/providers.dart';
 import '../../data/provider_profile.dart';
 import '../../domain/llm/llm_provider.dart';
+import '../../domain/llm/llm_endpoint.dart';
 import '../../domain/llm/model_connection_tester.dart';
 import '../../state/settings_controller.dart';
 import '../shared/recovery_notice.dart';
@@ -34,6 +35,7 @@ class _ModelSetupPageState extends ConsumerState<ModelSetupPage> {
   ProviderProfile? _original;
   String? _credentialHost;
   int _preset = -1;
+  LlmApiFormat _apiFormat = LlmApiFormat.auto;
   bool _obscure = true;
   bool _checking = false;
   bool _saving = false;
@@ -55,6 +57,7 @@ class _ModelSetupPageState extends ConsumerState<ModelSetupPage> {
         ? profile.chatModel
         : settings!.model;
     _key.text = settings?.apiKey ?? '';
+    _apiFormat = profile.apiFormat;
     _credentialHost = Uri.tryParse(profile.baseUrl)?.host;
     _preset = ProviderPreset.presets.indexWhere(
       (p) => p.baseUrl == profile.baseUrl,
@@ -89,9 +92,15 @@ class _ModelSetupPageState extends ConsumerState<ModelSetupPage> {
         _url.text = preset.baseUrl;
         _credentialHost = Uri.tryParse(preset.baseUrl)?.host;
         _model.text = preset.chatModel;
+        _apiFormat = preset.apiFormat;
+      } else {
+        _apiFormat = LlmApiFormat.auto;
       }
     });
   }
+
+  String _apiFormatHelperText() =>
+      LlmEndpoint.helperText(_apiFormat, _url.text);
 
   String? _validateUrl(String? value) {
     final uri = Uri.tryParse(value?.trim() ?? '');
@@ -120,13 +129,15 @@ class _ModelSetupPageState extends ConsumerState<ModelSetupPage> {
     });
     final token = _cancel = CancelToken();
     try {
+      final cleanedUrl = GeminiEndpoint.cleanUserInputBaseUrl(_url.text);
       final elapsed = await ref
           .read(modelConnectionTesterProvider)
           .check(
             LlmConfig(
-              baseUrl: _url.text.trim().replaceFirst(RegExp(r'/+$'), ''),
+              baseUrl: cleanedUrl,
               apiKey: _key.text.trim(),
               model: _model.text.trim(),
+              apiFormat: _apiFormat,
             ),
             cancelToken: token,
           );
@@ -154,7 +165,7 @@ class _ModelSetupPageState extends ConsumerState<ModelSetupPage> {
       _saving = true;
       _error = null;
     });
-    final endpoint = _url.text.trim().replaceFirst(RegExp(r'/+$'), '');
+    final endpoint = GeminiEndpoint.cleanUserInputBaseUrl(_url.text);
     final existing =
         _original?.baseUrl.replaceFirst(RegExp(r'/+$'), '') == endpoint
         ? _original
@@ -177,6 +188,7 @@ class _ModelSetupPageState extends ConsumerState<ModelSetupPage> {
         ...?existing?.models,
         if (_preset >= 0) ...ProviderPreset.presets[_preset].models,
       }.toList(),
+      apiFormat: _apiFormat,
     );
     try {
       await ref
@@ -285,6 +297,73 @@ class _ModelSetupPageState extends ConsumerState<ModelSetupPage> {
                         }
                         _credentialHost = host;
                         _changed(value);
+                      },
+                    ),
+                    const SizedBox(height: 16),
+                    Builder(
+                      builder: (context) {
+                        final autoResolved = GeminiEndpoint.resolveFormat(
+                          format: LlmApiFormat.auto,
+                          baseUrl: _url.text,
+                        );
+                        return DropdownButtonFormField<LlmApiFormat>(
+                          key: ValueKey(
+                            'setup-api-format-${_apiFormat.name}-${autoResolved.name}',
+                          ),
+                          initialValue: _apiFormat,
+                          isExpanded: true,
+                          decoration: InputDecoration(
+                            labelText: '接口格式',
+                            helperText: _apiFormatHelperText(),
+                            helperMaxLines: 3,
+                          ),
+                          items: [
+                            DropdownMenuItem(
+                              value: LlmApiFormat.auto,
+                              child: Text(
+                                '自动尝试（优先：${autoResolved.shortLabel}）',
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            DropdownMenuItem(
+                              value: LlmApiFormat.openAiCompatible,
+                              child: Text(
+                                LlmApiFormat.openAiCompatible.label,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            for (final format in [
+                              LlmApiFormat.openAiResponses,
+                              LlmApiFormat.anthropicMessages,
+                            ])
+                              DropdownMenuItem(
+                                value: format,
+                                child: Text(
+                                  format.label,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            DropdownMenuItem(
+                              value: LlmApiFormat.geminiNative,
+                              child: Text(
+                                LlmApiFormat.geminiNative.label,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                          onChanged: _busy
+                              ? null
+                              : (value) {
+                                  if (value != null) {
+                                    setState(() {
+                                      _apiFormat = value;
+                                      _verified = null;
+                                      _error = null;
+                                      _notice = null;
+                                    });
+                                  }
+                                },
+                        );
                       },
                     ),
                     const SizedBox(height: 16),

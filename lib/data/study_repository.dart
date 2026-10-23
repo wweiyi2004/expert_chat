@@ -30,12 +30,15 @@ class StudyRepository {
 
   Future<StudyLibrary> load() async {
     await _ensureMigrated();
-    return _loadFromDb();
+    return _loadFromDb(skipUnreadable: true);
   }
 
   Future<void> save(StudyLibrary library) async {
     await _ensureMigrated();
-    await _db.transaction(() => _saveToDb(library));
+    await _db.transaction(() async {
+      await _loadFromDb();
+      await _saveToDb(library);
+    });
   }
 
   /// Read-modify-write inside one SQLite transaction. Concurrent study actions
@@ -155,7 +158,8 @@ class StudyRepository {
     }
   }
 
-  Future<StudyLibrary> _loadFromDb() async {
+  // Partial reads are suitable for display, never for a full-library write.
+  Future<StudyLibrary> _loadFromDb({bool skipUnreadable = false}) async {
     final rows = await (_db.select(
       _db.studyEntities,
     )..orderBy([(e) => OrderingTerm.asc(e.sortIndex)])).get();
@@ -166,7 +170,9 @@ class StudyRepository {
     for (final row in rows) {
       try {
         final decoded = jsonDecode(row.payloadJson);
-        if (decoded is! Map) continue;
+        if (decoded is! Map) {
+          throw const FormatException('学习条目必须为 JSON 对象');
+        }
         final map = Map<String, dynamic>.from(decoded);
         switch (row.kind) {
           case _courseKind:
@@ -179,6 +185,9 @@ class StudyRepository {
             wrongItems.add(StudyWrongItem.fromJson(map));
         }
       } catch (_) {
+        if (!skipUnreadable) {
+          throw FormatException('学习条目 ${row.kind}/${row.id} 无法读取，未保存任何更改。');
+        }
         // One damaged row must not hide the rest of the user's study library.
       }
     }

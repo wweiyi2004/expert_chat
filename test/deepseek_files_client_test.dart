@@ -73,6 +73,35 @@ void main() {
     expect(resolved.single.imageDataUrls, isEmpty);
   });
 
+  test('file cache is scoped to endpoint and API account', () async {
+    final adapter = _FilesAdapter();
+    final client = OpenAiCompatibleFilesClient(
+      dio: Dio()..httpClientAdapter = adapter,
+    );
+    const original = LlmConfig(
+      baseUrl: 'https://api.deepseek.com',
+      apiKey: 'account-a',
+      model: 'vision',
+    );
+    Future<String> upload(LlmConfig config) => client.uploadBytes(
+      config: config,
+      bytes: Uint8List.fromList([1, 2, 3]),
+      filename: 'image.png',
+      mimeType: 'image/png',
+    );
+    expect(await upload(original), 'file-api-1');
+    expect(await upload(original.copyWith(apiKey: 'account-b')), 'file-api-2');
+    expect(
+      await upload(original.copyWith(baseUrl: 'https://other.example/v1')),
+      'file-api-3',
+    );
+    expect(
+      await upload(original.copyWith(baseUrl: 'https://api.deepseek.com/')),
+      'file-api-1',
+    );
+    expect(adapter.uploadCount, 3);
+  });
+
   test(
     'attachFileIds leaves public URLs and non-DeepSeek hosts alone',
     () async {
@@ -172,7 +201,7 @@ class _FilesAdapter implements HttpClientAdapter {
     path = options.uri.path;
     return ResponseBody.fromString(
       jsonEncode({
-        'id': 'file-api-1',
+        'id': 'file-api-$uploadCount',
         'object': 'file',
         'filename': 'image.png',
         'purpose': 'user_data',

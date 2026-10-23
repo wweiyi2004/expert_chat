@@ -373,6 +373,8 @@ class GatewayConnection {
     this.localProcess,
     this.computerUse = false,
     this.allowForeground = false,
+    this.sessionId,
+    this.agentId,
   });
 
   final GatewayConfig config;
@@ -381,6 +383,21 @@ class GatewayConnection {
   final McpProcessConfig? localProcess;
   final bool computerUse;
   final bool allowForeground;
+
+  /// Runtime ownership only; never persisted or sent to the MCP server.
+  final String? sessionId;
+  final String? agentId;
+  GatewayConnection forSession(String id, {String? agentId}) =>
+      GatewayConnection(
+        config: config,
+        apiToken: apiToken,
+        tokenProvider: tokenProvider,
+        localProcess: localProcess,
+        computerUse: computerUse,
+        allowForeground: allowForeground,
+        sessionId: id,
+        agentId: agentId,
+      );
   bool get isConfigured =>
       config.enabled && (localProcess?.isConfigured ?? config.isConfigured);
 

@@ -209,6 +209,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "3.0.7"
+  crypto_keys:
+    dependency: transitive
+    description:
+      name: crypto_keys
+      sha256: "6e473fff865ec757174dcc585d6eaa7f5f40bf3cb58f444ec5ab4a01e9083cf9"
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.3.1"
   csslib:
     dependency: transitive
     description:
@@ -440,6 +448,13 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.0.34"
+  flutter_pty2:
+    dependency: "direct main"
+    description:
+      path: "third_party/flutter_pty2"
+      relative: true
+    source: path
+    version: "2.0.0"
   flutter_riverpod:
     dependency: "direct main"
     description:
@@ -660,6 +675,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.0.1"
+  jose:
+    dependency: "direct main"
+    description:
+      name: jose
+      sha256: a0a339d0a0652dc1bd89f8b92d38479e07e16db83858fb55fa57212479f323f7
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.3.5+2"
   json_annotation:
     dependency: transitive
     description:
@@ -1656,6 +1679,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "0.0.4"
+  x509:
+    dependency: transitive
+    description:
+      name: x509
+      sha256: cbd1a63846884afd273cda247b0365284c8d85a365ca98e110413f93d105b935
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.2.4+3"
   xdg_directories:
     dependency: transitive
     description:
@@ -1675,10 +1706,9 @@ packages:
   xterm:
     dependency: "direct main"
     description:
-      name: xterm
-      sha256: "168dfedca77cba33fdb6f52e2cd001e9fde216e398e89335c19b524bb22da3a2"
-      url: "https://pub.dev"
-    source: hosted
+      path: "third_party/xterm"
+      relative: true
+    source: path
     version: "4.0.0"
   yaml:
     dependency: transitive

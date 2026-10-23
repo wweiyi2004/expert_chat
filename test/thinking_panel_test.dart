@@ -5,6 +5,52 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   testWidgets(
+    'completed work folds by round and reveals summaries before raw details',
+    (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: ThinkingPanel(
+                reasoning: '',
+                isStreaming: false,
+                workMode: true,
+                activities: [
+                  SearchActivity(
+                    kind: SearchActivityKind.mcp,
+                    query: '工作区',
+                    status: SearchActivityStatus.done,
+                    toolName: 'coding_read_file',
+                    toolArguments: '{"path":"src/main.dart"}',
+                    resultText: '读取到的文件正文',
+                    roundElapsedMillis: 2209000,
+                  ),
+                  SearchActivity(
+                    kind: SearchActivityKind.mcp,
+                    query: '写入文件',
+                    status: SearchActivityStatus.failed,
+                    error: '目录为只读',
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+      expect(find.text('用时 36m 49s · 1 步未完成'), findsOneWidget);
+      expect(find.text('读取到的文件正文'), findsNothing);
+      await tester.tap(find.byKey(const ValueKey('work-round-toggle')));
+      await tester.pumpAndSettle();
+      expect(find.text('已读取文件 · src/main.dart'), findsOneWidget);
+      expect(find.text('读取到的文件正文'), findsNothing);
+      await tester.tap(find.text('已读取文件 · src/main.dart'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('读取到的文件正文'), findsOneWidget);
+      expect(find.byKey(const ValueKey('thinking-panel-toggle')), findsNothing);
+      expect(find.text('查看结果'), findsNothing);
+    },
+  );
+  testWidgets(
     'folded live reasoning follows the newest lines locally and hides when finished',
     (tester) async {
       var reasoning = List.generate(12, (index) => '思考步骤 $index').join('\n');
@@ -14,7 +60,6 @@ void main() {
         ),
       );
       await tester.pumpWidget(panel(true));
-      await tester.tap(find.byKey(const ValueKey('thinking-panel-toggle')));
       await tester.pump(const Duration(milliseconds: 200));
       final viewport = find.byKey(const ValueKey('thinking-collapsed-scroll'));
       expect(viewport, findsOneWidget);
@@ -154,6 +199,8 @@ void main() {
           ),
         ),
       );
+      await tester.tap(find.byKey(const ValueKey('thinking-panel-toggle')));
+      await tester.pump(const Duration(milliseconds: 200));
       final preview = tester.widget<SelectableText>(
         find.byType(SelectableText),
       );

@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/workspace_layout.dart';
+import '../../core/desktop_providers.dart';
+import '../../state/conversation_workspace_bindings.dart';
 import '../../domain/notify/generation_notify.dart';
 import '../../domain/share/shared_intake.dart';
 import '../../domain/update/shorebird_ui.dart';
@@ -20,10 +22,11 @@ import '../story/studio_page.dart';
 import '../study/study_hub_page.dart';
 import 'shell_tab.dart';
 import 'tools_page.dart';
+import 'desktop_navigation_rail.dart';
 
 /// Root chrome: 会话 / 工具 / 设置.
 ///
-/// Phone: bottom [NavigationBar]. Wide: a unified collapsible workspace and
+/// Phone: navigation drawer. Wide: a unified collapsible workspace and
 /// conversation sidebar.
 /// [IndexedStack] preserves scroll position and draft input across switches.
 /// Optional pages live under 工具 and mount only while their saved flag is on.
@@ -37,12 +40,24 @@ class AppShell extends ConsumerStatefulWidget {
 class _AppShellState extends ConsumerState<AppShell>
     with WidgetsBindingObserver {
   final _shellKey = GlobalKey();
+  final _pagesKey = GlobalKey();
+  final _scaffoldKey = GlobalKey<ScaffoldState>();
   bool _desktopSidebarExpanded = true;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    ref.listenManual(shellTabProvider, (previous, next) {
+      // Provider changes can originate in a popup dismissal or a layout pass.
+      scheduleMicrotask(() {
+        if (mounted) {
+          ref
+              .read(chatControllerProvider.notifier)
+              .reportChatVisible(next == ShellTab.chat);
+        }
+      });
+    });
     // Best-effort OTA + notifications after the first frame (Activity ready).
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted) return;
@@ -110,7 +125,11 @@ class _AppShellState extends ConsumerState<AppShell>
     required bool desktopShell,
   }) => switch (tab) {
     ShellTab.chat => ChatPage(desktopShell: desktopShell),
-    ShellTab.tools => const ToolsPage(),
+    ShellTab.tools => ToolsPage(
+      onOpenNavigation: desktopShell
+          ? null
+          : () => _scaffoldKey.currentState?.openDrawer(),
+    ),
     // Only mount heavy tabs when their mode is on; other stack slots stay put.
     ShellTab.terminal =>
       researchOn
@@ -120,7 +139,12 @@ class _AppShellState extends ConsumerState<AppShell>
       studyOn ? StudyHubPage(onBack: _backToTools) : const SizedBox.shrink(),
     ShellTab.studio =>
       creationOn ? StudioPage(onBack: _backToTools) : const SizedBox.shrink(),
-    ShellTab.settings => const SettingsPage(asRootTab: true),
+    ShellTab.settings => SettingsPage(
+      asRootTab: true,
+      onOpenNavigation: desktopShell
+          ? null
+          : () => _scaffoldKey.currentState?.openDrawer(),
+    ),
   };
 
   void _backToTools() =>
@@ -132,9 +156,12 @@ class _AppShellState extends ConsumerState<AppShell>
     final researchOn = settings?.researchModeEnabled ?? false;
     final studyOn = settings?.studyModeEnabled ?? true;
     final creationOn = settings?.creationModeEnabled ?? true;
-    const visible = ShellTab.navigation;
+    final visible = ShellTab.visible(
+      researchModeEnabled: researchOn,
+      studyModeEnabled: studyOn,
+      creationModeEnabled: creationOn,
+    );
     final selected = ref.watch(shellTabProvider);
-    final scheme = Theme.of(context).colorScheme;
 
     // Keep selection valid when mode flags hide the current tab.
     ref.listen(settingsControllerProvider, (prev, next) {
@@ -158,7 +185,6 @@ class _AppShellState extends ConsumerState<AppShell>
       }
     }
 
-    final navIndex = visible.indexOf(selected.navigationTab);
     final stackIndex = _stackOrder
         .indexOf(selected)
         .clamp(0, _stackOrder.length - 1);
@@ -166,71 +192,139 @@ class _AppShellState extends ConsumerState<AppShell>
     return PopScope(
       canPop: selected.navigationTab == selected,
       onPopInvokedWithResult: (didPop, result) {
-        if (!didPop) _backToTools();
+        if (!didPop && selected.navigationTab != selected) _backToTools();
       },
-      child: LayoutBuilder(
-        builder: (context, constraints) {
+      // Shell fills the app viewport. Resolve this breakpoint during build,
+      // not LayoutBuilder.performLayout: moving the preserved pages across
+      // desktop/mobile parents can reactivate a live tooltip overlay.
+      child: Builder(
+        builder: (context) {
           final useRail =
-              constraints.maxWidth >= WorkspaceBreakpoints.shellRail;
-          final stack = IndexedStack(
-            index: stackIndex,
-            children: [
-              for (final tab in _stackOrder)
-                KeyedSubtree(
-                  key: ValueKey(tab),
-                  child: ExcludeFocus(
-                    excluding: tab != selected,
-                    child: _pageFor(
-                      tab,
-                      researchOn: researchOn,
-                      studyOn: studyOn,
-                      creationOn: creationOn,
-                      desktopShell: useRail,
+              MediaQuery.sizeOf(context).width >=
+              WorkspaceBreakpoints.shellRail;
+          final stack = KeyedSubtree(
+            key: _pagesKey,
+            child: IndexedStack(
+              index: stackIndex,
+              children: [
+                for (final tab in _stackOrder)
+                  KeyedSubtree(
+                    key: ValueKey(tab),
+                    child: ExcludeFocus(
+                      excluding: tab != selected,
+                      child: _pageFor(
+                        tab,
+                        researchOn: researchOn,
+                        studyOn: studyOn,
+                        creationOn: creationOn,
+                        desktopShell: useRail,
+                      ),
                     ),
                   ),
-                ),
-            ],
+              ],
+            ),
           );
 
+          final desktopTheme = desktopWorkspaceTheme(Theme.of(context));
           final scaffold = useRail
-              ? Scaffold(
-                  body: Row(
-                    children: [
-                      AnimatedContainer(
-                        duration: const Duration(milliseconds: 180),
-                        curve: Curves.easeOutCubic,
-                        width: _desktopSidebarExpanded ? 288 : 64,
-                        child: _desktopSidebarExpanded
-                            ? ChatWorkspaceSidebar(
-                                onCollapse: () => setState(
-                                  () => _desktopSidebarExpanded = false,
-                                ),
-                              )
-                            : _CompactWorkspaceRail(
-                                visible: visible,
-                                selected: selected.navigationTab,
-                                onExpand: () => setState(
-                                  () => _desktopSidebarExpanded = true,
-                                ),
-                                onSelect: (tab) => ref
-                                    .read(shellTabProvider.notifier)
-                                    .set(tab),
-                                onNewChat: () {
+              ? Theme(
+                  data: desktopTheme,
+                  child: Scaffold(
+                    backgroundColor: desktopTheme.colorScheme.surfaceContainer,
+                    body: Row(
+                      children: [
+                        DesktopNavigationRail(
+                          visible: visible,
+                          selected: selected,
+                          sidebarExpanded: _desktopSidebarExpanded,
+                          onExpand: () =>
+                              setState(() => _desktopSidebarExpanded = true),
+                          onSelect: (tab) =>
+                              ref.read(shellTabProvider.notifier).set(tab),
+                          onNewChat: () async {
+                            final controller = ref.read(
+                              chatControllerProvider.notifier,
+                            );
+                            controller.newConversation();
+                            final id = ref
+                                .read(chatControllerProvider)
+                                .value
+                                ?.currentId;
+                            try {
+                              if (id != null &&
                                   ref
-                                      .read(chatControllerProvider.notifier)
-                                      .newConversation();
+                                      .read(desktopWorkspaceHostProvider)
+                                      .supported) {
+                                await ref
+                                    .read(
+                                      conversationWorkspaceBindingsProvider
+                                          .notifier,
+                                    )
+                                    .select(id, null);
+                              }
+                              if (!mounted ||
                                   ref
-                                      .read(shellTabProvider.notifier)
-                                      .set(ShellTab.chat);
-                                },
+                                          .read(chatControllerProvider)
+                                          .value
+                                          ?.currentId !=
+                                      id) {
+                                return;
+                              }
+                              ref
+                                  .read(shellTabProvider.notifier)
+                                  .set(ShellTab.chat);
+                            } catch (error) {
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(content: Text('新会话未完成：$error')),
+                                );
+                              }
+                            }
+                          },
+                        ),
+                        Expanded(
+                          child: Padding(
+                            padding: const EdgeInsets.fromLTRB(0, 8, 10, 10),
+                            child: DecoratedBox(
+                              decoration: BoxDecoration(
+                                color: desktopTheme.colorScheme.surface,
+                                borderRadius: BorderRadius.circular(20),
+                                border: Border.all(
+                                  color:
+                                      desktopTheme.colorScheme.outlineVariant,
+                                ),
                               ),
-                      ),
-                      VerticalDivider(
-                        width: 1,
-                        color: scheme.outlineVariant.withValues(alpha: 0.85),
-                      ),
-                      Expanded(child: stack),
-                    ],
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(20),
+                                child: Row(
+                                  children: [
+                                    if (_desktopSidebarExpanded) ...[
+                                      SizedBox(
+                                        width: 264,
+                                        child: ChatWorkspaceSidebar(
+                                          desktopMode: true,
+                                          onCollapse: () => setState(
+                                            () =>
+                                                _desktopSidebarExpanded = false,
+                                          ),
+                                        ),
+                                      ),
+                                      VerticalDivider(
+                                        width: 1,
+                                        color: desktopTheme
+                                            .colorScheme
+                                            .outlineVariant,
+                                      ),
+                                    ],
+                                    Expanded(child: stack),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 )
               // On the research terminal tab, do not shrink the body for the
@@ -239,31 +333,8 @@ class _AppShellState extends ConsumerState<AppShell>
               : Scaffold(
                   resizeToAvoidBottomInset: selected != ShellTab.terminal,
                   body: stack,
-                  bottomNavigationBar:
-                      MediaQuery.viewInsetsOf(context).bottom > 0
-                      ? null
-                      : NavigationBar(
-                          selectedIndex: navIndex,
-                          onDestinationSelected: (i) => ref
-                              .read(shellTabProvider.notifier)
-                              .set(visible[i]),
-                          backgroundColor: scheme.surfaceContainer.withValues(
-                            alpha: 0.96,
-                          ),
-                          indicatorColor: scheme.primaryContainer.withValues(
-                            alpha: 0.85,
-                          ),
-                          labelBehavior:
-                              NavigationDestinationLabelBehavior.alwaysShow,
-                          destinations: [
-                            for (final tab in visible)
-                              NavigationDestination(
-                                icon: Icon(tab.icon),
-                                selectedIcon: Icon(tab.selectedIcon),
-                                label: tab.label,
-                              ),
-                          ],
-                        ),
+                  key: _scaffoldKey,
+                  drawer: const Drawer(child: ChatWorkspaceSidebar()),
                 );
 
           return KeyedSubtree(
@@ -283,81 +354,6 @@ class _AppShellState extends ConsumerState<AppShell>
             ),
           );
         },
-      ),
-    );
-  }
-}
-
-class _CompactWorkspaceRail extends StatelessWidget {
-  const _CompactWorkspaceRail({
-    required this.visible,
-    required this.selected,
-    required this.onExpand,
-    required this.onSelect,
-    required this.onNewChat,
-  });
-
-  final List<ShellTab> visible;
-  final ShellTab selected;
-  final VoidCallback onExpand;
-  final ValueChanged<ShellTab> onSelect;
-  final VoidCallback onNewChat;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Material(
-      color: scheme.surfaceContainerLow.withValues(alpha: 0.96),
-      child: SafeArea(
-        child: Column(
-          children: [
-            const SizedBox(height: 8),
-            IconButton(
-              tooltip: '展开侧边栏',
-              onPressed: onExpand,
-              icon: const Icon(Icons.menu_rounded),
-            ),
-            const SizedBox(height: 4),
-            IconButton.filled(
-              tooltip: '新对话',
-              onPressed: onNewChat,
-              icon: const Icon(Icons.add_rounded),
-              style: IconButton.styleFrom(
-                backgroundColor: scheme.primary,
-                foregroundColor: scheme.onPrimary,
-              ),
-            ),
-            const SizedBox(height: 12),
-            for (final tab in visible.where((tab) => tab != ShellTab.settings))
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 2),
-                child: IconButton(
-                  tooltip: tab.label,
-                  isSelected: selected == tab,
-                  onPressed: () => onSelect(tab),
-                  icon: Icon(tab.icon),
-                  selectedIcon: Icon(tab.selectedIcon),
-                  style: IconButton.styleFrom(
-                    backgroundColor: selected == tab
-                        ? scheme.primaryContainer.withValues(alpha: 0.72)
-                        : Colors.transparent,
-                    foregroundColor: selected == tab
-                        ? scheme.primary
-                        : scheme.onSurfaceVariant,
-                  ),
-                ),
-              ),
-            const Spacer(),
-            IconButton(
-              tooltip: ShellTab.settings.label,
-              isSelected: selected == ShellTab.settings,
-              onPressed: () => onSelect(ShellTab.settings),
-              icon: Icon(ShellTab.settings.icon),
-              selectedIcon: Icon(ShellTab.settings.selectedIcon),
-            ),
-            const SizedBox(height: 8),
-          ],
-        ),
       ),
     );
   }

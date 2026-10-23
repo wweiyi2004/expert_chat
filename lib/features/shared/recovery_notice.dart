@@ -14,6 +14,7 @@ class RecoveryNotice extends StatefulWidget {
     this.onRetry,
     this.retryLabel = '重试',
     this.onConfigure,
+    this.onDismiss,
     this.secrets = const [],
   });
   final Object error;
@@ -22,6 +23,7 @@ class RecoveryNotice extends StatefulWidget {
   final Future<void> Function()? onRetry;
   final String retryLabel;
   final VoidCallback? onConfigure;
+  final VoidCallback? onDismiss;
   final Iterable<String> secrets;
   @override
   State<RecoveryNotice> createState() => _RecoveryNoticeState();
@@ -88,6 +90,18 @@ class _RecoveryNoticeState extends State<RecoveryNotice> {
                     ),
                   ),
                 ),
+                if (widget.onDismiss != null)
+                  IconButton(
+                    key: const ValueKey('dismiss-recovery-notice'),
+                    tooltip: '关闭提示',
+                    onPressed: widget.onDismiss,
+                    visualDensity: VisualDensity.compact,
+                    icon: Icon(
+                      Icons.close,
+                      size: 18,
+                      color: scheme.onErrorContainer,
+                    ),
+                  ),
               ],
             ),
             const SizedBox(height: 8),

@@ -1,9 +1,12 @@
+import '../state/model_context.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'chat_skill.dart';
+import 'subagent_role.dart';
+import 'prompt_presets.dart';
 import 'jev_config.dart';
 import 'composer_modes.dart';
 import 'context_prefs.dart';
@@ -33,6 +36,14 @@ class SettingsStorage {
   final Future<String> Function() freshGatewayToken;
 
   Future<SettingsState> load() async {
+    // Decode stored configuration before any startup migration writes.
+    var gateway = readGateway(prefs);
+    final storedSystemPrompt = prefs.getString(kSettingsSystemPrompt) ?? '';
+    final storedSkills = prefs.getString(kSettingsChatSkills);
+    final catalog = ChatSkillCatalog.decode(
+      storedSkills,
+      legacySystemPrompt: storedSystemPrompt,
+    );
     // Read before first-run profile migration writes defaults.
     final existingInstall =
         prefs.containsKey(kSettingsProfiles) ||
@@ -60,7 +71,7 @@ class SettingsStorage {
         final migrated = ProviderProfile(
           name: 'DeepSeek',
           baseUrl: legacyBaseUrl ?? 'https://api.deepseek.com',
-          chatModel: prefs.getString(kSettingsLegacyModel) ?? KnownModels.chat,
+          chatModel: prefs.getString(kSettingsLegacyModel) ?? KnownModels.flash,
           reasonerModel: KnownModels.reasoner,
           models: KnownModels.all,
         );
@@ -89,7 +100,7 @@ class SettingsStorage {
         for (final p in profiles)
           if (isLegacyDeepSeek(p))
             p.copyWith(
-              chatModel: KnownModels.chat,
+              chatModel: KnownModels.flash,
               reasonerModel: KnownModels.reasoner,
               models: KnownModels.all,
             )
@@ -99,12 +110,17 @@ class SettingsStorage {
       await writeProfiles(prefs, profiles);
     }
 
-    // Add the official vision model to already-migrated DeepSeek v4 profiles.
-    if (profiles.any(isDeepSeekMissingVision)) {
+    // Retired Flash aliases are now served by deepseek-flash. Only official
+    // endpoints migrate; gateway model IDs and custom models stay untouched.
+    if (profiles.any((p) => _needsFlashAliasUpgrade(p))) {
       profiles = [
         for (final p in profiles)
-          if (isDeepSeekMissingVision(p))
-            p.copyWith(models: [...p.models, KnownModels.vision])
+          if (_needsFlashAliasUpgrade(p))
+            p.copyWith(
+              chatModel: _currentDeepSeekModel(p.chatModel),
+              reasonerModel: _currentDeepSeekModel(p.reasonerModel),
+              models: p.models.map(_currentDeepSeekModel).toSet().toList(),
+            )
           else
             p,
       ];
@@ -146,8 +162,20 @@ class SettingsStorage {
     activeId ??= profiles.first.id;
     final apiKey =
         await secure.read(key: providerApiKeyStorageKey(activeId)) ?? '';
-    final searchApiKey =
-        await secure.read(key: kSettingsSearchApiKeySecure) ?? '';
+    var searchApiKey = await secure.read(
+      key: kSettingsDeepSeekSearchApiKeySecure,
+    );
+    // Only migrate a key already identified as DeepSeek's, never another search vendor's key.
+    if (searchApiKey == null &&
+        prefs.getString(kSettingsSearchBackend) ==
+            SearchBackend.deepseek.wire) {
+      searchApiKey = await secure.read(key: kSettingsSearchApiKeySecure);
+      if (searchApiKey != null)
+        await secure.write(
+          key: kSettingsDeepSeekSearchApiKeySecure,
+          value: searchApiKey,
+        );
+    }
     final visionApiKey =
         await secure.read(key: kSettingsVisionApiKeySecure) ?? '';
     final imageGenerationApiKey =
@@ -174,7 +202,6 @@ class SettingsStorage {
       await secure.write(key: activeTtsProfileSecureKey, value: ttsApiKey);
     }
     final asrApiKey = await secure.read(key: kSettingsAsrApiKeySecure) ?? '';
-    var gateway = readGateway(prefs);
     if (gateway == null) {
       gateway = migrateLegacyGateway(prefs);
       await prefs.setString(kSettingsGateway, jsonEncode(gateway.toJson()));
@@ -233,20 +260,36 @@ class SettingsStorage {
     );
     var selectedModel = prefs.getString(kSettingsSelectedModel);
     if (selectedModel != null &&
+        Uri.tryParse(activeProfile.baseUrl)?.host.toLowerCase() ==
+            'api.deepseek.com') {
+      final normalized = _currentDeepSeekModel(selectedModel);
+      if (normalized != selectedModel) {
+        selectedModel = normalized;
+        await prefs.setString(kSettingsSelectedModel, normalized);
+      }
+    }
+    if (selectedModel != null &&
         !activeProfile.models.contains(selectedModel)) {
       selectedModel = null;
       await prefs.remove(kSettingsSelectedModel);
     }
 
-    final storedSystemPrompt = prefs.getString(kSettingsSystemPrompt) ?? '';
-    final storedSkills = prefs.getString(kSettingsChatSkills);
-    final catalog = ChatSkillCatalog.decode(
-      storedSkills,
-      legacySystemPrompt: storedSystemPrompt,
-    );
     final encodedSkills = catalog.encode();
     if (storedSkills != encodedSkills) {
       await prefs.setString(kSettingsChatSkills, encodedSkills);
+    }
+
+    var searchBackend = SearchBackendInfo.fromWire(
+      prefs.getString(kSettingsSearchBackend),
+    );
+    if (!(prefs.getBool(kSettingsDeepSeekSearchDefaultMigrated) ?? false)) {
+      if (searchBackend == SearchBackend.duckduckgo ||
+          (searchBackend == SearchBackend.provider &&
+              ModelCatalog.isOfficialDeepSeekEndpoint(activeProfile.baseUrl))) {
+        searchBackend = SearchBackend.deepseek;
+      }
+      await prefs.setString(kSettingsSearchBackend, searchBackend.wire);
+      await prefs.setBool(kSettingsDeepSeekSearchDefaultMigrated, true);
     }
 
     return SettingsState(
@@ -256,10 +299,8 @@ class SettingsStorage {
       apiKey: apiKey,
       selectedModel: selectedModel,
       themeMode: readThemeMode(prefs),
-      searchBackend: SearchBackendInfo.fromWire(
-        prefs.getString(kSettingsSearchBackend),
-      ),
-      searchApiKey: searchApiKey,
+      searchBackend: SearchBackend.deepseek,
+      searchApiKey: searchApiKey ?? '',
       searchBrainModel: prefs.getString(kSettingsSearchBrainModel),
       searchMaxRounds:
           (prefs.getInt(kSettingsSearchMaxRounds) ?? kDefaultSearchMaxRounds)
@@ -278,7 +319,19 @@ class SettingsStorage {
       ),
       hasReasoningEffortOverride: prefs.containsKey(kSettingsReasoningEffort),
       systemPrompt: storedSystemPrompt,
+      workAgentInstructions:
+          prefs.getString(kSettingsWorkAgentInstructions) ?? '',
+      subagentInstructions:
+          prefs.getString(kSettingsSubagentInstructions) ?? '',
+      subagentRoles: SubagentRole.decode(
+        prefs.getString(kSettingsSubagentRoles),
+      ),
+      subagentRouterModel: prefs.getString(kSettingsSubagentRouterModel) ?? '',
       chatSkills: catalog,
+      promptPresets: PromptPresets.decode(
+        prefs.getString(PromptPresets.storageKey),
+        legacyPrompt: storedSystemPrompt,
+      ),
       jevConfig: JevConfig.decode(prefs.getString(kSettingsJevConfig)),
       jevApiKey: await secure.read(key: kSettingsJevApiKeySecure) ?? '',
       ui: readUiPrefs(prefs),
@@ -291,6 +344,9 @@ class SettingsStorage {
       asrApi: readMediaApi(prefs, kSettingsAsrApi),
       asrApiKey: asrApiKey,
       context: readContextPrefs(prefs),
+      modelContexts: decodeModelContexts(
+        prefs.getString(kSettingsModelContexts),
+      ),
       gateway: gateway,
       gatewayToken: gatewayToken,
       gatewayLegacyToken: gatewayLegacyToken,
@@ -345,17 +401,14 @@ class SettingsStorage {
 
   static GatewayConfig? readGateway(SharedPreferences prefs) {
     final raw = prefs.getString(kSettingsGateway);
-    if (raw == null || raw.isEmpty) return null;
+    if (raw == null) return null;
     try {
-      final decoded = jsonDecode(raw);
-      if (decoded is Map<String, dynamic>) {
-        return GatewayConfig.fromJson(decoded);
-      }
-      if (decoded is Map) {
-        return GatewayConfig.fromJson(Map<String, dynamic>.from(decoded));
-      }
-    } catch (_) {}
-    return null;
+      return GatewayConfig.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+    } on FormatException {
+      throw const FormatException('Gateway 配置无法解析，原始配置未被覆盖。');
+    } on TypeError {
+      throw const FormatException('Gateway 配置字段类型错误，原始配置未被覆盖。');
+    }
   }
 
   static GatewayConfig migrateLegacyGateway(SharedPreferences prefs) {
@@ -415,12 +468,16 @@ class SettingsStorage {
       p.models.contains('deepseek-chat') &&
       p.models.contains('deepseek-reasoner');
 
-  /// Official DeepSeek v4 profile that predates `deepseek-v4-flash-vision-exp`.
-  static bool isDeepSeekMissingVision(ProviderProfile p) =>
-      p.baseUrl.contains('api.deepseek.com') &&
-      p.models.contains(KnownModels.chat) &&
-      p.models.contains(KnownModels.reasoner) &&
-      !p.models.contains(KnownModels.vision);
+  static String _currentDeepSeekModel(String model) => switch (model) {
+    'deepseek-v4-flash' || 'deepseek-v4-flash-vision-exp' => KnownModels.flash,
+    _ => model,
+  };
+
+  static bool _needsFlashAliasUpgrade(ProviderProfile p) =>
+      Uri.tryParse(p.baseUrl)?.host.toLowerCase() == 'api.deepseek.com' &&
+      (p.chatModel != _currentDeepSeekModel(p.chatModel) ||
+          p.reasonerModel != _currentDeepSeekModel(p.reasonerModel) ||
+          p.models.any((m) => m != _currentDeepSeekModel(m)));
 
   static bool isDeepSeekMissingFlash(ProviderProfile p) =>
       Uri.tryParse(p.baseUrl)?.host.toLowerCase() == 'api.deepseek.com' &&

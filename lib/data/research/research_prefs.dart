@@ -13,8 +13,8 @@ class ResearchPrefs {
   static const blockCtrlCKey = 'researchBlockCtrlC';
   static const defaultAiContextLines = 36;
 
-  /// Default on: observing long training jobs must not die to accidental Ctrl+C.
-  static const defaultBlockCtrlC = true;
+  /// Standard terminal behavior by default; users can enable training-job protection.
+  static const defaultBlockCtrlC = false;
 
   List<SshProfile> loadProfiles() =>
       SshProfile.listFromJson(_prefs.getString(profilesKey));

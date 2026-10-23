@@ -4,9 +4,12 @@ class ContextPrefs {
     this.contextWindowTokens = 256000,
     this.reservedOutputTokens = 4096,
     this.maxHistoryMessages = 24,
+    this.maxOutputTokens = 0,
+    this.inputLimitTokens,
   });
 
   final bool enabled;
+  final int? inputLimitTokens;
 
   /// Total context window advertised by the selected model.
   final int contextWindowTokens;
@@ -17,26 +20,52 @@ class ContextPrefs {
   /// Maximum number of non-system messages sent from the active branch.
   final int maxHistoryMessages;
 
-  int get inputBudgetTokens => (contextWindowTokens - reservedOutputTokens)
-      .clamp(1024, contextWindowTokens);
+  /// Zero leaves the response limit to the provider. Separate from local reserve.
+  final int maxOutputTokens;
+
+  int get effectiveOutputReserve {
+    final output = maxOutputTokens >= contextWindowTokens
+        ? (contextWindowTokens ~/ 4).clamp(512, 32768)
+        : maxOutputTokens;
+    return (output > reservedOutputTokens ? output : reservedOutputTokens)
+        .clamp(512, contextWindowTokens - 1024);
+  }
+
+  int get inputBudgetTokens {
+    final budget = (contextWindowTokens - effectiveOutputReserve).clamp(
+      1024,
+      contextWindowTokens,
+    );
+    return inputLimitTokens != null &&
+            inputLimitTokens! > 0 &&
+            inputLimitTokens! < budget
+        ? inputLimitTokens!
+        : budget;
+  }
 
   ContextPrefs copyWith({
     bool? enabled,
     int? contextWindowTokens,
     int? reservedOutputTokens,
     int? maxHistoryMessages,
+    int? maxOutputTokens,
+    int? inputLimitTokens,
   }) => ContextPrefs(
     enabled: enabled ?? this.enabled,
+    inputLimitTokens: inputLimitTokens ?? this.inputLimitTokens,
     contextWindowTokens: contextWindowTokens ?? this.contextWindowTokens,
     reservedOutputTokens: reservedOutputTokens ?? this.reservedOutputTokens,
     maxHistoryMessages: maxHistoryMessages ?? this.maxHistoryMessages,
+    maxOutputTokens: maxOutputTokens ?? this.maxOutputTokens,
   );
 
   Map<String, dynamic> toJson() => {
     'enabled': enabled,
+    if (inputLimitTokens != null) 'inputLimitTokens': inputLimitTokens,
     'contextWindowTokens': contextWindowTokens,
     'reservedOutputTokens': reservedOutputTokens,
     'maxHistoryMessages': maxHistoryMessages,
+    'maxOutputTokens': maxOutputTokens,
   };
 
   factory ContextPrefs.fromJson(Map<String, dynamic> json) {
@@ -52,9 +81,14 @@ class ContextPrefs {
     );
     return ContextPrefs(
       enabled: json['enabled'] as bool? ?? true,
+      inputLimitTokens: (json['inputLimitTokens'] as num?)?.toInt(),
       contextWindowTokens: window,
       reservedOutputTokens: reserved,
       maxHistoryMessages: history,
+      maxOutputTokens: ((json['maxOutputTokens'] as num?)?.toInt() ?? 0).clamp(
+        0,
+        2000000,
+      ),
     );
   }
 }

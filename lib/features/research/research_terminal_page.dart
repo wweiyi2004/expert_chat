@@ -8,7 +8,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 import 'package:xterm/xterm.dart';
 
-import '../../core/workspace_layout.dart';
 import '../../data/research/research_prefs.dart';
 import '../../data/research/ssh_profile.dart';
 import '../../domain/research/command_risk.dart';
@@ -16,6 +15,14 @@ import '../../domain/research/research_copilot_service.dart';
 import '../../domain/research/research_ssh_client.dart';
 import '../../state/research_terminal_controller.dart';
 import '../shell/shell_tab.dart';
+import '../../state/research_files_controller.dart';
+import '../../state/chat_controller.dart';
+import '../../state/session_policy.dart';
+import '../../core/desktop_providers.dart';
+import 'research_files_panel.dart';
+import '../../domain/desktop/workspace_tools.dart';
+import '../workbench/runtime/workspace_command_panel.dart';
+import '../workbench/runtime/terminal_style.dart';
 
 /// M7 research terminal: SSH + tmux + AI command approval.
 ///
@@ -32,6 +39,11 @@ class ResearchTerminalPage extends ConsumerStatefulWidget {
 class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
     with WidgetsBindingObserver {
   final _termFocus = FocusNode();
+  bool _filesOpen = true;
+  bool _focusMode = false;
+  final _extraShells = <int, Future<WorkToolSession>>{};
+  int _nextShell = 0;
+  int? _activeShell;
 
   @override
   void initState() {
@@ -154,6 +166,16 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
     );
     return result == true;
   }
+
+  Future<void> _showFiles() => showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    useSafeArea: true,
+    builder: (ctx) => SizedBox(
+      height: MediaQuery.sizeOf(ctx).height * 0.85,
+      child: const ResearchFilesPanel(),
+    ),
+  );
 
   Future<void> _showConnectionManager() async {
     await showModalBottomSheet<void>(
@@ -410,6 +432,16 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
 
     // Keyboard interrupt blocked via terminal.onOutput — surface a snack once.
     ref.listen(researchTerminalProvider, (prev, next) {
+      if (prev?.connectionGeneration != next.connectionGeneration &&
+          _extraShells.isNotEmpty) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted)
+            setState(() {
+              _extraShells.clear();
+              _activeShell = null;
+            });
+        });
+      }
       if (next.interruptBlockedFlash && prev?.interruptBlockedFlash != true) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) _showInterruptBlockedSnack();
@@ -434,6 +466,7 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
           state: state,
           ctrl: ctrl,
           bottomGap: bottomGap,
+          workspaceWidth: constraints.maxWidth,
         );
       },
     );
@@ -444,11 +477,12 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
     required ResearchTerminalState state,
     required ResearchTerminalController ctrl,
     required double bottomGap,
+    required double workspaceWidth,
   }) {
     final scheme = Theme.of(context).colorScheme;
     final profile = state.activeProfile;
-    final wide =
-        MediaQuery.sizeOf(context).width >= WorkspaceBreakpoints.shellRail;
+    final wide = workspaceWidth >= 1000;
+    ref.watch(researchFilesProvider.select((s) => s.transfers.length));
 
     // The slice of keyboard that actually covers this page — the rest of it is
     // behind the shell's NavigationBar, which the IME hides anyway.
@@ -458,7 +492,7 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
     );
     final keyboardOpen = keyboardOverlap > 0;
 
-    final shortcutBar = state.isConnected
+    final shortcutBar = state.isConnected && _activeShell == null
         ? _ShortcutBar(
             ctrlLatched: state.ctrlLatched,
             onToggleCtrl: () => ctrl.setCtrlLatched(!state.ctrlLatched),
@@ -466,34 +500,108 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
             // Floating above the IME already clears the system gesture bar.
             bottomSafeArea: !keyboardOpen,
             // The wide layout docks the assistant on the right instead.
-            onOpenAi: wide ? null : () => unawaited(_openAiSheet()),
+            onOpenAi: wide && !_filesOpen && !_focusMode
+                ? null
+                : () => unawaited(_openAiSheet()),
           )
         : null;
 
     final body = Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _TmuxSessionBar(
-          state: state,
-          onNew: state.isConnected ? _newTmuxSession : null,
-          onList: state.isConnected ? _showTmuxList : null,
-          onRefresh: state.isConnected
-              ? () => unawaited(ctrl.refreshTmux())
-              : null,
-          onDetach: state.isConnected && state.currentTmuxName != null
-              ? () => unawaited(ctrl.detachTmuxSession())
-              : null,
-          onToggleBlockCtrlC: state.isConnected
-              ? (v) => unawaited(ctrl.setBlockCtrlC(v))
-              : null,
-          onForceCtrlC: state.isConnected ? _confirmSendCtrlC : null,
+        SizedBox(
+          height: 48,
+          child: Row(
+            children: [
+              Expanded(
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  child: Row(
+                    children: [
+                      InputChip(
+                        avatar: const Icon(Icons.terminal, size: 16),
+                        label: Text(profile?.name ?? 'SSH'),
+                        selected: _activeShell == null,
+                        onPressed: () => setState(() => _activeShell = null),
+                      ),
+                      for (final shell in _extraShells.keys)
+                        Padding(
+                          padding: const EdgeInsets.only(left: 6),
+                          child: InputChip(
+                            avatar: const Icon(Icons.terminal, size: 16),
+                            label: Text('终端 $shell'),
+                            selected: _activeShell == shell,
+                            onPressed: () =>
+                                setState(() => _activeShell = shell),
+                            onDeleted: () => setState(() {
+                              _extraShells.remove(shell);
+                              if (_activeShell == shell) _activeShell = null;
+                            }),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+              IconButton(
+                tooltip: '新建 SSH 终端',
+                icon: const Icon(Icons.add, size: 20),
+                onPressed: !state.isConnected
+                    ? null
+                    : () {
+                        final id = ++_nextShell;
+                        final session = ctrl.openWorkSession(
+                          state.activeProfileId!,
+                          ref.read(researchFilesProvider).directory,
+                        );
+                        session.ignore();
+                        setState(() {
+                          _extraShells[id] = session;
+                          _activeShell = id;
+                        });
+                      },
+              ),
+              IconButton(
+                tooltip: 'tmux 与终端保护',
+                icon: const Icon(Icons.more_horiz, size: 20),
+                onPressed: () => showModalBottomSheet<void>(
+                  context: context,
+                  showDragHandle: true,
+                  builder: (_) => SafeArea(
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: _TmuxSessionBar(
+                        state: state,
+                        onNew: state.isConnected ? _newTmuxSession : null,
+                        onList: state.isConnected ? _showTmuxList : null,
+                        onRefresh: state.isConnected
+                            ? () => unawaited(ctrl.refreshTmux())
+                            : null,
+                        onDetach:
+                            state.isConnected && state.currentTmuxName != null
+                            ? () => unawaited(ctrl.detachTmuxSession())
+                            : null,
+                        onToggleBlockCtrlC: state.isConnected
+                            ? (v) => unawaited(ctrl.setBlockCtrlC(v))
+                            : null,
+                        onForceCtrlC: state.isConnected
+                            ? _confirmSendCtrlC
+                            : null,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
         Expanded(
           child: Padding(
             padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
             child: DecoratedBox(
               decoration: BoxDecoration(
-                color: const Color(0xFF1A222D),
+                color: scheme.surface,
                 borderRadius: BorderRadius.circular(14),
                 border: Border.all(
                   color: scheme.outlineVariant.withValues(alpha: 0.5),
@@ -501,45 +609,72 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
               ),
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(14),
-                child: state.isConnected
-                    ? LayoutBuilder(
-                        builder: (context, constraints) {
-                          // Keep a paint surface even if parent briefly reports
-                          // a tiny height during IME animation.
-                          final h = constraints.maxHeight.isFinite
-                              ? constraints.maxHeight
-                              : 120.0;
-                          return SizedBox(
-                            width: constraints.maxWidth,
-                            height: h < 48 ? 48 : h,
-                            child: TerminalView(
-                              ctrl.terminal,
-                              focusNode: _termFocus,
-                              autofocus: false,
-                              backgroundOpacity: 1,
-                              theme: TerminalThemes.defaultTheme,
-                              textStyle: const TerminalStyle(
-                                fontSize: 13,
-                                fontFamily: 'Cascadia Mono',
-                                fontFamilyFallback: [
-                                  'Consolas',
-                                  'Courier New',
-                                  'monospace',
-                                ],
-                              ),
-                              padding: const EdgeInsets.all(8),
-                            ),
-                          );
-                        },
-                      )
-                    : _DisconnectedPane(
-                        web: kIsWeb,
-                        status: state.status,
-                        message: state.statusMessage,
-                        profile: profile,
-                        onConnect: kIsWeb ? null : _connectActiveOrPick,
-                        onManage: kIsWeb ? null : _showConnectionManager,
+                child: Stack(
+                  children: [
+                    Positioned.fill(
+                      child: Offstage(
+                        offstage: _activeShell != null,
+                        child: ExcludeFocus(
+                          excluding: _activeShell != null,
+                          child: state.isConnected
+                              ? LayoutBuilder(
+                                  builder: (context, constraints) {
+                                    // Keep a paint surface even if parent briefly reports
+                                    // a tiny height during IME animation.
+                                    final h = constraints.maxHeight.isFinite
+                                        ? constraints.maxHeight
+                                        : 120.0;
+                                    return SizedBox(
+                                      width: constraints.maxWidth,
+                                      height: h < 48 ? 48 : h,
+                                      child: TerminalView(
+                                        ctrl.terminal,
+                                        focusNode: _termFocus,
+                                        autofocus: false,
+                                        backgroundOpacity: 1,
+                                        theme: workspaceTerminalTheme(scheme),
+                                        textStyle: const TerminalStyle(
+                                          fontSize: 13,
+                                          fontFamily: 'Cascadia Mono',
+                                          fontFamilyFallback: [
+                                            'Consolas',
+                                            'Courier New',
+                                            'monospace',
+                                          ],
+                                        ),
+                                        padding: const EdgeInsets.all(8),
+                                      ),
+                                    );
+                                  },
+                                )
+                              : _DisconnectedPane(
+                                  web: kIsWeb,
+                                  status: state.status,
+                                  message: state.statusMessage,
+                                  profile: profile,
+                                  onConnect: kIsWeb
+                                      ? null
+                                      : _connectActiveOrPick,
+                                  onManage: kIsWeb
+                                      ? null
+                                      : _showConnectionManager,
+                                ),
+                        ),
                       ),
+                    ),
+                    for (final entry in _extraShells.entries)
+                      Positioned.fill(
+                        key: ValueKey(entry.key),
+                        child: Offstage(
+                          offstage: _activeShell != entry.key,
+                          child: WorkspaceCommandPanel(
+                            session: entry.value,
+                            active: _activeShell == entry.key,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -588,11 +723,78 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
           children: [
             Icon(Icons.terminal_rounded, color: scheme.primary),
             const SizedBox(width: 8),
-            const Flexible(child: Text('科研终端')),
+            const Flexible(child: Text('科研工作区')),
           ],
         ),
         actions: [
-          if (profile != null)
+          PopupMenuButton<String>(
+            tooltip: '新建工作会话',
+            icon: const Icon(Icons.add_task),
+            itemBuilder: (_) => [
+              if (ref.read(desktopWorkspaceHostProvider).supported)
+                const PopupMenuItem(value: 'local', child: Text('在本机工作')),
+              PopupMenuItem(
+                value: 'ssh',
+                enabled: ref.read(researchTerminalProvider).isConnected,
+                child: const Text('在当前 SSH 目录工作'),
+              ),
+            ],
+            onSelected: (target) async {
+              final terminal = ref.read(researchTerminalProvider);
+              final directory = ref.read(researchFilesProvider).directory;
+              final controller = ref.read(chatControllerProvider.notifier);
+              await ref.read(chatControllerProvider.future);
+              if (!mounted) return;
+              controller.newConversation(workMode: true, forceNew: true);
+              final id = ref
+                  .read(chatControllerProvider)
+                  .requireValue
+                  .currentId!;
+              await ref
+                  .read(sessionPolicyProvider.notifier)
+                  .save(
+                    id,
+                    SessionPolicy(
+                      sshProfileId: target == 'ssh'
+                          ? terminal.activeProfileId ?? ''
+                          : '',
+                      remoteRoot: directory,
+                    ),
+                  );
+              if (!mounted) return;
+              if (!context.mounted) return;
+              if (widget.onBack == null && Navigator.of(context).canPop()) {
+                Navigator.of(context).pop();
+              }
+              openShellTab(ref, ShellTab.chat);
+            },
+          ),
+          IconButton(
+            tooltip: '远程文件与传输',
+            icon: const Icon(Icons.folder_open_outlined),
+            onPressed: wide
+                ? () => setState(() {
+                    _filesOpen = true;
+                    _focusMode = false;
+                  })
+                : _showFiles,
+          ),
+          if (wide) ...[
+            IconButton(
+              tooltip: '科研助手',
+              icon: const Icon(Icons.auto_awesome_outlined),
+              onPressed: () => setState(() {
+                _filesOpen = false;
+                _focusMode = false;
+              }),
+            ),
+            IconButton(
+              tooltip: _focusMode ? '退出专注模式' : '专注终端',
+              icon: Icon(_focusMode ? Icons.fullscreen_exit : Icons.fullscreen),
+              onPressed: () => setState(() => _focusMode = !_focusMode),
+            ),
+          ],
+          if (profile != null && workspaceWidth >= 600)
             Padding(
               padding: const EdgeInsets.only(right: 4),
               child: Center(
@@ -642,7 +844,7 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
       // No FAB: an extended one floated over the right half of the shortcut
       // strip and swallowed the arrow keys. The assistant now lives at the
       // right end of that strip, where it also survives the IME being up.
-      body: wide
+      body: wide && !_focusMode
           ? Row(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
@@ -652,11 +854,14 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
                   color: scheme.outlineVariant.withValues(alpha: 0.7),
                 ),
                 SizedBox(
-                  width: 380,
-                  child: _AiAssistPanel(
-                    embedded: true,
-                    onRequestAnalyze: () => unawaited(ctrl.analyzeWithAi()),
-                  ),
+                  width: 340,
+                  child: _filesOpen
+                      ? const ResearchFilesPanel()
+                      : _AiAssistPanel(
+                          embedded: true,
+                          onRequestAnalyze: () =>
+                              unawaited(ctrl.analyzeWithAi()),
+                        ),
                 ),
               ],
             )
@@ -1013,7 +1218,7 @@ class _DisconnectedPane extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return ColoredBox(
-      color: const Color(0xFF1A222D),
+      color: scheme.surface,
       child: Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
@@ -1037,13 +1242,13 @@ class _DisconnectedPane extends StatelessWidget {
                 textAlign: TextAlign.center,
                 style: Theme.of(
                   context,
-                ).textTheme.titleMedium?.copyWith(color: Colors.white70),
+                ).textTheme.titleMedium?.copyWith(color: scheme.onSurface),
               ),
               if (profile != null) ...[
                 const SizedBox(height: 8),
                 Text(
                   '${profile!.username}@${profile!.host}:${profile!.port}',
-                  style: const TextStyle(color: Colors.white54),
+                  style: TextStyle(color: scheme.onSurfaceVariant),
                 ),
               ],
               const SizedBox(height: 20),
@@ -1150,7 +1355,17 @@ class _ConnectionManagerSheetState
   Future<void> _editProfile(SshProfile? existing) async {
     final result = await showDialog<_ProfileEditResult>(
       context: context,
-      builder: (_) => _ProfileEditDialog(existing: existing),
+      builder: (_) => _ProfileEditDialog(
+        existing: existing,
+        onTest: (draft) => ref
+            .read(researchTerminalProvider.notifier)
+            .testProfile(
+              draft.profile,
+              password: draft.password,
+              privateKeyPem: draft.privateKeyPem,
+              passphrase: draft.passphrase,
+            ),
+      ),
     );
     if (result == null || !mounted) return;
     await ref
@@ -1178,7 +1393,11 @@ class _ProfileEditResult {
 }
 
 class _ProfileEditDialog extends StatefulWidget {
-  const _ProfileEditDialog({this.existing});
+  const _ProfileEditDialog({this.existing, required this.onTest});
+  final Future<({Duration elapsed, String? fingerprint})> Function(
+    _ProfileEditResult,
+  )
+  onTest;
   final SshProfile? existing;
 
   @override
@@ -1194,6 +1413,9 @@ class _ProfileEditDialogState extends State<_ProfileEditDialog> {
   late final TextEditingController _privateKey;
   late final TextEditingController _passphrase;
   late SshAuthType _auth;
+  final _form = GlobalKey<FormState>();
+  bool _testing = false;
+  String? _testMessage, _testedFingerprint;
 
   @override
   void initState() {
@@ -1221,126 +1443,238 @@ class _ProfileEditDialogState extends State<_ProfileEditDialog> {
     super.dispose();
   }
 
+  _ProfileEditResult _draft() => _ProfileEditResult(
+    profile: SshProfile(
+      id: widget.existing?.id ?? const Uuid().v4(),
+      name: _name.text.trim().isEmpty ? _host.text.trim() : _name.text.trim(),
+      host: _host.text.trim(),
+      port: int.parse(_port.text.trim()),
+      username: _user.text.trim(),
+      authType: _auth,
+      trustedHostKeyFingerprint:
+          _testedFingerprint ?? widget.existing?.trustedHostKeyFingerprint,
+      lastUsedAt: widget.existing?.lastUsedAt,
+    ),
+    password: _auth == SshAuthType.password
+        ? (_password.text.isEmpty && widget.existing != null
+              ? null
+              : _password.text)
+        : null,
+    privateKeyPem: _auth == SshAuthType.privateKey
+        ? (_privateKey.text.isEmpty && widget.existing != null
+              ? null
+              : _privateKey.text)
+        : null,
+    passphrase: _auth == SshAuthType.privateKey
+        ? (_passphrase.text.isEmpty && widget.existing != null
+              ? null
+              : _passphrase.text)
+        : null,
+  );
+  bool _validDraft() {
+    if (!_form.currentState!.validate()) return false;
+    final port = int.tryParse(_port.text.trim());
+    if (port == null || port < 1 || port > 65535) {
+      setState(() => _testMessage = '请在高级选项中填写 1–65535 范围内的端口');
+      return false;
+    }
+    return true;
+  }
+
+  Future<void> _test() async {
+    if (!_validDraft()) return;
+    setState(() {
+      _testing = true;
+      _testMessage = null;
+    });
+    try {
+      final result = await widget.onTest(_draft());
+      if (mounted)
+        setState(() {
+          _testedFingerprint = result.fingerprint;
+          _testMessage = '连接成功 · ${result.elapsed.inMilliseconds} ms';
+        });
+    } catch (error) {
+      if (mounted) setState(() => _testMessage = '连接失败：$error');
+    } finally {
+      if (mounted) setState(() => _testing = false);
+    }
+  }
+
   @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: Text(widget.existing == null ? '添加主机' : '编辑主机'),
+  Widget build(BuildContext context) => PopScope(
+    canPop: !_testing,
+    child: AlertDialog(
+      icon: Icon(
+        Icons.dns_outlined,
+        color: Theme.of(context).colorScheme.primary,
+      ),
+      title: Text(widget.existing == null ? '添加 SSH 主机' : '编辑 SSH 主机'),
       content: SizedBox(
-        width: 420,
+        width: 440,
         child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: _name,
-                decoration: const InputDecoration(labelText: '显示名称'),
-              ),
-              TextField(
-                controller: _host,
-                decoration: const InputDecoration(labelText: '主机'),
-                autocorrect: false,
-              ),
-              TextField(
-                controller: _port,
-                decoration: const InputDecoration(labelText: '端口'),
-                keyboardType: TextInputType.number,
-              ),
-              TextField(
-                controller: _user,
-                decoration: const InputDecoration(labelText: '用户名'),
-                autocorrect: false,
-              ),
-              const SizedBox(height: 8),
-              SegmentedButton<SshAuthType>(
-                segments: const [
-                  ButtonSegment(value: SshAuthType.password, label: Text('密码')),
-                  ButtonSegment(
-                    value: SshAuthType.privateKey,
-                    label: Text('私钥'),
+          child: Form(
+            key: _form,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                TextFormField(
+                  controller: _host,
+                  enabled: !_testing,
+                  autocorrect: false,
+                  onChanged: (_) => _testedFingerprint = null,
+                  validator: (value) =>
+                      value == null ||
+                          value.trim().isEmpty ||
+                          value.contains('://')
+                      ? '填写主机名或 IP 地址'
+                      : null,
+                  decoration: const InputDecoration(
+                    labelText: '主机地址',
+                    hintText: '192.168.1.10 或 server.example.com',
+                    prefixIcon: Icon(Icons.language, size: 18),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                TextFormField(
+                  controller: _user,
+                  enabled: !_testing,
+                  autocorrect: false,
+                  validator: (value) => value == null || value.trim().isEmpty
+                      ? '填写 SSH 用户名'
+                      : null,
+                  decoration: const InputDecoration(
+                    labelText: '用户名',
+                    prefixIcon: Icon(Icons.person_outline, size: 18),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                SegmentedButton<SshAuthType>(
+                  showSelectedIcon: false,
+                  segments: const [
+                    ButtonSegment(
+                      value: SshAuthType.password,
+                      icon: Icon(Icons.lock_outline, size: 17),
+                      label: Text('密码'),
+                    ),
+                    ButtonSegment(
+                      value: SshAuthType.privateKey,
+                      icon: Icon(Icons.key_outlined, size: 17),
+                      label: Text('私钥'),
+                    ),
+                  ],
+                  selected: {_auth},
+                  onSelectionChanged: _testing
+                      ? null
+                      : (values) => setState(() => _auth = values.first),
+                ),
+                const SizedBox(height: 14),
+                if (_auth == SshAuthType.password)
+                  TextFormField(
+                    controller: _password,
+                    enabled: !_testing,
+                    obscureText: true,
+                    autocorrect: false,
+                    enableSuggestions: false,
+                    decoration: InputDecoration(
+                      labelText: widget.existing == null ? '密码' : '密码（留空沿用）',
+                    ),
+                  )
+                else ...[
+                  TextFormField(
+                    controller: _privateKey,
+                    enabled: !_testing,
+                    minLines: 3,
+                    maxLines: 6,
+                    autocorrect: false,
+                    enableSuggestions: false,
+                    validator: (value) =>
+                        (widget.existing == null ||
+                                widget.existing!.authType != _auth) &&
+                            (value?.trim().isEmpty ?? true)
+                        ? '请填写私钥'
+                        : null,
+                    decoration: InputDecoration(
+                      labelText: widget.existing == null
+                          ? 'OpenSSH 私钥'
+                          : '私钥（留空沿用）',
+                      alignLabelWithHint: true,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _passphrase,
+                    enabled: !_testing,
+                    obscureText: true,
+                    decoration: const InputDecoration(labelText: '私钥口令（可选）'),
                   ),
                 ],
-                selected: {_auth},
-                onSelectionChanged: (s) => setState(() => _auth = s.first),
-              ),
-              const SizedBox(height: 8),
-              if (_auth == SshAuthType.password)
-                TextField(
-                  controller: _password,
-                  obscureText: true,
-                  decoration: InputDecoration(
-                    labelText: widget.existing == null ? '密码' : '密码（留空保持原值）',
-                  ),
-                )
-              else ...[
-                TextField(
-                  controller: _privateKey,
-                  minLines: 3,
-                  maxLines: 8,
-                  decoration: InputDecoration(
-                    labelText: widget.existing == null
-                        ? 'OpenSSH 私钥 PEM'
-                        : '私钥 PEM（留空保持原值）',
-                    alignLabelWithHint: true,
-                  ),
+                const SizedBox(height: 8),
+                ExpansionTile(
+                  tilePadding: EdgeInsets.zero,
+                  title: const Text('高级选项'),
+                  initiallyExpanded:
+                      widget.existing?.port != null &&
+                      widget.existing!.port != 22,
+                  children: [
+                    TextField(
+                      controller: _name,
+                      enabled: !_testing,
+                      decoration: const InputDecoration(labelText: '显示名称（可选）'),
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: _port,
+                      enabled: !_testing,
+                      keyboardType: TextInputType.number,
+                      onChanged: (_) => _testedFingerprint = null,
+                      validator: (value) {
+                        final port = int.tryParse(value ?? '');
+                        return port == null || port < 1 || port > 65535
+                            ? '端口范围为 1–65535'
+                            : null;
+                      },
+                      decoration: const InputDecoration(
+                        labelText: '端口',
+                        hintText: '22',
+                      ),
+                    ),
+                  ],
                 ),
-                TextField(
-                  controller: _passphrase,
-                  obscureText: true,
-                  decoration: const InputDecoration(labelText: '私钥口令（可选）'),
-                ),
+                if (_testMessage != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 10),
+                    child: Text(
+                      _testMessage!,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
               ],
-            ],
+            ),
           ),
         ),
       ),
       actions: [
         TextButton(
-          onPressed: () => Navigator.of(context).pop(),
+          onPressed: _testing ? null : () => Navigator.pop(context),
           child: const Text('取消'),
         ),
-        FilledButton(onPressed: _submit, child: const Text('保存')),
+        OutlinedButton(
+          onPressed: _testing ? null : _test,
+          child: Text(_testing ? '连接中…' : '测试连接'),
+        ),
+        FilledButton(
+          onPressed: _testing
+              ? null
+              : () {
+                  if (_validDraft()) Navigator.pop(context, _draft());
+                },
+          child: const Text('保存'),
+        ),
       ],
-    );
-  }
-
-  void _submit() {
-    final host = _host.text.trim();
-    final user = _user.text.trim();
-    if (host.isEmpty || user.isEmpty) return;
-    final port = int.tryParse(_port.text.trim()) ?? 22;
-    final id = widget.existing?.id ?? const Uuid().v4();
-    final name = _name.text.trim().isEmpty ? host : _name.text.trim();
-    final profile = SshProfile(
-      id: id,
-      name: name,
-      host: host,
-      port: port,
-      username: user,
-      authType: _auth,
-      trustedHostKeyFingerprint: widget.existing?.trustedHostKeyFingerprint,
-      lastUsedAt: widget.existing?.lastUsedAt,
-    );
-    Navigator.of(context).pop(
-      _ProfileEditResult(
-        profile: profile,
-        password: _auth == SshAuthType.password
-            ? (_password.text.isEmpty && widget.existing != null
-                  ? null
-                  : _password.text)
-            : null,
-        privateKeyPem: _auth == SshAuthType.privateKey
-            ? (_privateKey.text.isEmpty && widget.existing != null
-                  ? null
-                  : _privateKey.text)
-            : null,
-        passphrase: _auth == SshAuthType.privateKey
-            ? (_passphrase.text.isEmpty && widget.existing != null
-                  ? null
-                  : _passphrase.text)
-            : null,
-      ),
-    );
-  }
+    ),
+  );
 }
 
 class _AiAssistPanel extends ConsumerStatefulWidget {

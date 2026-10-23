@@ -68,6 +68,7 @@ class OpenAiCompatibleFilesClient {
           imageFileIds: fileIds,
           responseOutputItems: message.responseOutputItems,
           isToolImageObservation: message.isToolImageObservation,
+          toolImageCallId: message.toolImageCallId,
         ),
       );
     }
@@ -99,11 +100,13 @@ class OpenAiCompatibleFilesClient {
     required String mimeType,
     CancelToken? cancelToken,
   }) async {
-    final cacheKey = sha256.convert(bytes).toString();
+    final endpoint = config.baseUrl.replaceAll(RegExp(r'/+$'), '');
+    final credentialScope = sha256.convert(utf8.encode(config.apiKey));
+    final cacheKey = '$endpoint:$credentialScope:${sha256.convert(bytes)}';
     final cached = _cache[cacheKey];
     if (cached != null && cached.isNotEmpty) return cached;
 
-    final url = '${config.baseUrl.replaceAll(RegExp(r"/+$"), "")}/files';
+    final url = '$endpoint/files';
     final form = FormData.fromMap({
       'purpose': 'user_data',
       'file': MultipartFile.fromBytes(

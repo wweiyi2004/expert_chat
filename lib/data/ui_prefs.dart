@@ -326,6 +326,15 @@ class UiPrefs {
     this.messageStyle = MessageStylePref.bubble,
     this.markdownStyle = MarkdownStylePref.standard,
     this.contentWidth = ContentWidthPref.regular,
+    this.workContentWidth = ContentWidthPref.full,
+    this.workMessageStyle = MessageStylePref.document,
+    this.lineHeight = 1.85,
+    this.paragraphSpacing = 8,
+    this.messageSpacing = 24,
+    this.adaptiveMessagePadding = true,
+    this.messagePadding = 32,
+    this.popoverMaxHeight = 420,
+    this.popoverTopMargin = 40,
     this.colorTheme = ColorThemePref.minimal,
     this.cornerStyle = CornerStylePref.medium,
     this.chatSurface = ChatSurfacePref.plain,
@@ -340,6 +349,15 @@ class UiPrefs {
   final MessageStylePref messageStyle;
   final MarkdownStylePref markdownStyle;
   final ContentWidthPref contentWidth;
+  final ContentWidthPref workContentWidth;
+  final MessageStylePref workMessageStyle;
+  final double lineHeight, paragraphSpacing, messageSpacing, messagePadding;
+  final double popoverMaxHeight, popoverTopMargin;
+  final bool adaptiveMessagePadding;
+
+  double horizontalMessagePadding(double width) => adaptiveMessagePadding
+      ? (width < 480 ? 16 : (width * .04).clamp(24.0, 48.0))
+      : messagePadding.clamp(12.0, width < 480 ? 24.0 : 72.0);
   final ColorThemePref colorTheme;
   final CornerStylePref cornerStyle;
   final ChatSurfacePref chatSurface;
@@ -363,6 +381,15 @@ class UiPrefs {
     MessageStylePref? messageStyle,
     MarkdownStylePref? markdownStyle,
     ContentWidthPref? contentWidth,
+    ContentWidthPref? workContentWidth,
+    MessageStylePref? workMessageStyle,
+    double? lineHeight,
+    double? paragraphSpacing,
+    double? messageSpacing,
+    double? messagePadding,
+    double? popoverMaxHeight,
+    double? popoverTopMargin,
+    bool? adaptiveMessagePadding,
     ColorThemePref? colorTheme,
     CornerStylePref? cornerStyle,
     ChatSurfacePref? chatSurface,
@@ -376,6 +403,16 @@ class UiPrefs {
     messageStyle: messageStyle ?? this.messageStyle,
     markdownStyle: markdownStyle ?? this.markdownStyle,
     contentWidth: contentWidth ?? this.contentWidth,
+    workContentWidth: workContentWidth ?? this.workContentWidth,
+    workMessageStyle: workMessageStyle ?? this.workMessageStyle,
+    lineHeight: lineHeight ?? this.lineHeight,
+    paragraphSpacing: paragraphSpacing ?? this.paragraphSpacing,
+    messageSpacing: messageSpacing ?? this.messageSpacing,
+    messagePadding: messagePadding ?? this.messagePadding,
+    adaptiveMessagePadding:
+        adaptiveMessagePadding ?? this.adaptiveMessagePadding,
+    popoverMaxHeight: popoverMaxHeight ?? this.popoverMaxHeight,
+    popoverTopMargin: popoverTopMargin ?? this.popoverTopMargin,
     colorTheme: colorTheme ?? this.colorTheme,
     cornerStyle: cornerStyle ?? this.cornerStyle,
     chatSurface: chatSurface ?? this.chatSurface,
@@ -391,6 +428,15 @@ class UiPrefs {
     'messageStyle': messageStyle.wire,
     'markdownStyle': markdownStyle.wire,
     'contentWidth': contentWidth.wire,
+    'workContentWidth': workContentWidth.wire,
+    'workMessageStyle': workMessageStyle.wire,
+    'lineHeight': lineHeight,
+    'paragraphSpacing': paragraphSpacing,
+    'messageSpacing': messageSpacing,
+    'messagePadding': messagePadding,
+    'adaptiveMessagePadding': adaptiveMessagePadding,
+    'popoverMaxHeight': popoverMaxHeight,
+    'popoverTopMargin': popoverTopMargin,
     'colorTheme': colorTheme.wire,
     'styleVersion': currentStyleVersion,
     'cornerStyle': cornerStyle.wire,
@@ -423,12 +469,32 @@ class UiPrefs {
     // (which the settings layer would then persist over the healthy ones).
     String? str(String key) => json[key] is String ? json[key] as String : null;
     bool? flag(String key) => json[key] is bool ? json[key] as bool : null;
+    double number(String key, double fallback, double min, double max) {
+      final value = json[key];
+      return value is num && value.isFinite
+          ? value.toDouble().clamp(min, max)
+          : fallback;
+    }
+
     return UiPrefs(
       textScale: TextScalePref.fromWire(str('textScale')),
       density: DensityPref.fromWire(str('density')),
       messageStyle: MessageStylePref.fromWire(str('messageStyle')),
       markdownStyle: MarkdownStylePref.fromWire(str('markdownStyle')),
       contentWidth: ContentWidthPref.fromWire(str('contentWidth')),
+      workContentWidth: str('workContentWidth') == null
+          ? ContentWidthPref.full
+          : ContentWidthPref.fromWire(str('workContentWidth')),
+      workMessageStyle: str('workMessageStyle') == null
+          ? MessageStylePref.document
+          : MessageStylePref.fromWire(str('workMessageStyle')),
+      lineHeight: number('lineHeight', 1.85, 1.2, 2.4),
+      paragraphSpacing: number('paragraphSpacing', 8, 0, 24),
+      messageSpacing: number('messageSpacing', 24, 8, 48),
+      messagePadding: number('messagePadding', 32, 12, 72),
+      adaptiveMessagePadding: flag('adaptiveMessagePadding') ?? true,
+      popoverMaxHeight: number('popoverMaxHeight', 420, 280, 600),
+      popoverTopMargin: number('popoverTopMargin', 40, 16, 64),
       colorTheme: _migrateColorTheme(
         ColorThemePref.fromWire(str('colorTheme')),
         json['styleVersion'],

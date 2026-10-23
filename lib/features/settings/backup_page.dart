@@ -10,6 +10,7 @@ import '../../state/character_controller.dart';
 import '../../state/memory_controller.dart';
 import '../../state/settings_controller.dart';
 import '../../state/study_controller.dart';
+import '../../state/learning_plan_controller.dart';
 import '../../state/world_info_controller.dart';
 import 'widgets/backup_compatibility_notice.dart';
 
@@ -35,7 +36,8 @@ class _BackupPageState extends ConsumerState<BackupPage> {
     try {
       await ref.read(chatControllerProvider.future);
       await ref.read(chatControllerProvider.notifier).prepareDataMaintenance();
-      if (ref.read(studyControllerProvider.notifier).hasActiveRequest) {
+      if (ref.read(studyControllerProvider.notifier).hasActiveRequest ||
+          ref.read(learningBusyProvider).isNotEmpty) {
         throw StateError('请先等待学习内容生成结束。');
       }
       await ref.read(memoryRepositoryProvider).withMaintenance(action);
@@ -99,6 +101,7 @@ class _BackupPageState extends ConsumerState<BackupPage> {
           .restoreCopies(preview, restorePreferences: _preferences);
       ref.invalidate(chatControllerProvider);
       ref.invalidate(studyControllerProvider);
+      ref.invalidate(learningPlanControllerProvider);
       ref.invalidate(characterCardsProvider);
       ref.invalidate(worldInfoProvider);
       if (_preferences) ref.invalidate(settingsControllerProvider);
@@ -136,7 +139,7 @@ class _BackupPageState extends ConsumerState<BackupPage> {
                   SizedBox(height: 8),
                   Text('恢复时创建副本，不覆盖现有聊天和资料，也不会自动继续未完成的远程任务。'),
                   SizedBox(height: 8),
-                  Text('支持数据结构 15、16 的完整备份；已知旧结构会先转换。更新版本需先升级应用。'),
+                  Text('支持数据结构 15、16、17 的完整备份；已知旧结构会先转换。更新版本需先升级应用。'),
                 ],
               ),
               const SizedBox(height: 20),
@@ -169,6 +172,7 @@ class _BackupPageState extends ConsumerState<BackupPage> {
                   '会话 ${preview.count('conversations')} · 消息 ${preview.count('messages')}\n'
                   '素材 ${preview.count('library_items')} · 记忆 ${preview.memories}\n'
                   '学习条目 ${preview.count('study_entities')} · 项目 ${preview.count('projects')}\n'
+                  '学习档案 ${preview.learningPlans}\n'
                   '生图记录 ${preview.count('generation_records')}',
                 ),
                 CheckboxListTile(

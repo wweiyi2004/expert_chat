@@ -1,6 +1,16 @@
 #include "flutter_window.h"
 
 #include <optional>
+#include <shellapi.h>
+#include <flutter/standard_method_codec.h>
+#include "resource.h"
+
+namespace {
+constexpr UINT kTrayMessage = WM_APP + 42;
+constexpr UINT kTrayId = 1;
+constexpr UINT kTrayOpen = 1001;
+constexpr UINT kTrayExit = 1002;
+}
 
 #include "flutter/generated_plugin_registrant.h"
 
@@ -26,6 +36,23 @@ bool FlutterWindow::OnCreate() {
   }
   RegisterPlugins(flutter_controller_->engine());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
+  AddTrayIcon();
+  generation_channel_ =
+      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+          flutter_controller_->engine()->messenger(), "expert_chat/generation",
+          &flutter::StandardMethodCodec::GetInstance());
+  generation_channel_->SetMethodCallHandler(
+      [](const auto& call, auto result) {
+        if (call.method_name() == "start") {
+          SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED);
+          result->Success();
+        } else if (call.method_name() == "stop") {
+          SetThreadExecutionState(ES_CONTINUOUS);
+          result->Success();
+        } else {
+          result->NotImplemented();
+        }
+      });
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
     this->Show();
@@ -40,6 +67,9 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  RemoveTrayIcon();
+  SetThreadExecutionState(ES_CONTINUOUS);
+  generation_channel_ = nullptr;
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }
@@ -47,10 +77,68 @@ void FlutterWindow::OnDestroy() {
   Win32Window::OnDestroy();
 }
 
+void FlutterWindow::AddTrayIcon() {
+  NOTIFYICONDATAW icon{};
+  icon.cbSize = sizeof(icon);
+  icon.hWnd = GetHandle();
+  icon.uID = kTrayId;
+  icon.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+  icon.uCallbackMessage = kTrayMessage;
+  icon.hIcon = LoadIcon(GetModuleHandle(nullptr), MAKEINTRESOURCE(IDI_APP_ICON));
+  wcscpy_s(icon.szTip, L"Expert Chat");
+  tray_available_ = Shell_NotifyIconW(NIM_ADD, &icon) != FALSE;
+}
+
+void FlutterWindow::RemoveTrayIcon() {
+  if (!tray_available_) return;
+  NOTIFYICONDATAW icon{};
+  icon.cbSize = sizeof(icon);
+  icon.hWnd = GetHandle();
+  icon.uID = kTrayId;
+  Shell_NotifyIconW(NIM_DELETE, &icon);
+  tray_available_ = false;
+}
+
+void FlutterWindow::RestoreFromTray() {
+  ShowWindow(GetHandle(), SW_RESTORE);
+  SetForegroundWindow(GetHandle());
+}
+
 LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
+  if (message == RegisterWindowMessageW(L"TaskbarCreated")) {
+    AddTrayIcon();
+    // If Explorer cannot restore the tray, keep the app reachable.
+    if (!tray_available_) RestoreFromTray();
+    return 0;
+  }
+  if (message == WM_CLOSE && tray_available_) {
+    ShowWindow(hwnd, SW_HIDE);
+    return 0;
+  }
+  if (message == kTrayMessage) {
+    if (lparam == WM_LBUTTONUP || lparam == WM_LBUTTONDBLCLK) {
+      RestoreFromTray();
+    } else if (lparam == WM_RBUTTONUP || lparam == WM_CONTEXTMENU) {
+      HMENU menu = CreatePopupMenu();
+      AppendMenuW(menu, MF_STRING, kTrayOpen, L"打开 Expert Chat");
+      AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+      AppendMenuW(menu, MF_STRING, kTrayExit, L"退出");
+      POINT point{};
+      GetCursorPos(&point);
+      SetForegroundWindow(hwnd);
+      const UINT command = TrackPopupMenu(menu,
+          TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+          point.x, point.y, 0, hwnd, nullptr);
+      DestroyMenu(menu);
+      if (command == kTrayOpen) RestoreFromTray();
+      if (command == kTrayExit) DestroyWindow(hwnd);
+      PostMessage(hwnd, WM_NULL, 0, 0);
+    }
+    return 0;
+  }
   // Give Flutter, including plugins, an opportunity to handle window messages.
   if (flutter_controller_) {
     std::optional<LRESULT> result =

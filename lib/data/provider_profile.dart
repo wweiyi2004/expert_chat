@@ -1,4 +1,5 @@
 import 'package:uuid/uuid.dart';
+import 'model_token_limits.dart';
 
 import '../domain/llm/model_catalog.dart';
 
@@ -15,10 +16,15 @@ class ProviderProfile {
     required this.chatModel,
     required this.reasonerModel,
     List<String>? models,
+    this.apiFormat = LlmApiFormat.auto,
+    this.authMode = 'apiKey',
+    this.modelLimits = const {},
   }) : id = id ?? _uuid.v4(),
        models = models ?? const [];
 
   final String id;
+  final String authMode;
+  final Map<String, ModelTokenLimits> modelLimits;
 
   /// User-facing label, e.g. "DeepSeek" or "My OpenAI".
   final String name;
@@ -36,33 +42,52 @@ class ProviderProfile {
   /// All selectable model ids for this provider (for the model dropdown).
   final List<String> models;
 
+  /// Wire protocol preference. Auto is resolved by the LLM router at runtime.
+  final LlmApiFormat apiFormat;
+
+  LlmApiFormat get effectiveApiFormat =>
+      GeminiEndpoint.resolveFormat(format: apiFormat, baseUrl: baseUrl);
+
   ProviderProfile copyWith({
     String? name,
     String? baseUrl,
     String? chatModel,
     String? reasonerModel,
     List<String>? models,
+    LlmApiFormat? apiFormat,
+    String? authMode,
+    Map<String, ModelTokenLimits>? modelLimits,
   }) => ProviderProfile(
     id: id,
+    authMode: authMode ?? this.authMode,
+    modelLimits: modelLimits ?? this.modelLimits,
     name: name ?? this.name,
     baseUrl: baseUrl ?? this.baseUrl,
     chatModel: chatModel ?? this.chatModel,
     reasonerModel: reasonerModel ?? this.reasonerModel,
     models: models ?? this.models,
+    apiFormat: apiFormat ?? this.apiFormat,
   );
 
   Map<String, dynamic> toJson() => {
     'id': id,
+    if (authMode != 'apiKey') 'authMode': authMode,
     'name': name,
     'baseUrl': baseUrl,
     'chatModel': chatModel,
     'reasonerModel': reasonerModel,
     'models': models,
+    if (modelLimits.isNotEmpty)
+      'modelLimits': modelLimits.map(
+        (key, value) => MapEntry(key, value.toJson()),
+      ),
+    if (apiFormat != LlmApiFormat.auto) 'apiFormat': apiFormat.wire,
   };
 
   factory ProviderProfile.fromJson(Map<String, dynamic> json) =>
       ProviderProfile(
         id: json['id'] as String?,
+        authMode: json['authMode'] as String? ?? 'apiKey',
         name: json['name'] as String? ?? '未命名',
         baseUrl: json['baseUrl'] as String? ?? '',
         chatModel: json['chatModel'] as String? ?? '',
@@ -73,6 +98,13 @@ class ProviderProfile {
         models: (json['models'] as List<dynamic>? ?? [])
             .map((e) => e.toString())
             .toList(),
+        modelLimits: (json['modelLimits'] as Map<String, dynamic>? ?? {}).map(
+          (key, value) => MapEntry(
+            key,
+            ModelTokenLimits.fromJson(Map<String, dynamic>.from(value as Map)),
+          ),
+        ),
+        apiFormat: LlmApiFormat.fromWire(json['apiFormat'] as String?),
       );
 }
 
@@ -97,6 +129,7 @@ class ProviderPreset {
     required this.models,
     this.group = ProviderPresetGroup.global,
     this.hint = '',
+    this.apiFormat = LlmApiFormat.auto,
   });
 
   final String name;
@@ -109,12 +142,15 @@ class ProviderPreset {
   /// Short note shown in the picker (path quirks, /v1 suffix, etc.).
   final String hint;
 
+  final LlmApiFormat apiFormat;
+
   ProviderProfile toProfile() => ProviderProfile(
     name: name,
     baseUrl: baseUrl,
     chatModel: chatModel,
     reasonerModel: reasonerModel,
     models: models,
+    apiFormat: apiFormat,
   );
 
   bool matchesQuery(String query) {
@@ -133,11 +169,11 @@ class ProviderPreset {
       name: 'DeepSeek',
       group: ProviderPresetGroup.china,
       baseUrl: 'https://api.deepseek.com',
-      chatModel: KnownModels.chat,
+      chatModel: KnownModels.flash,
       reasonerModel: KnownModels.reasoner,
       models: KnownModels.all,
       hint:
-          'DeepSeek V4.1 Flash：deepseek-flash，支持看图与思考，联网请用客户端搜索；旧 Flash 名称为兼容别名',
+          'V4.1 Flash 支持识图与思考，Pro 适合复杂推理；官方联网通过 Search / Fetch API，复用 DeepSeek Key',
     ),
     ProviderPreset(
       name: 'Kimi (Moonshot)',
@@ -341,13 +377,24 @@ class ProviderPreset {
       hint: '一个 Key 转接多家模型，模型名带厂商前缀',
     ),
     ProviderPreset(
+      name: 'Google Gemini (原生 API)',
+      group: ProviderPresetGroup.global,
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+      chatModel: 'gemini-2.5-flash',
+      reasonerModel: 'gemini-2.5-pro',
+      models: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash'],
+      hint: '官方 Gemini 原生端点 (/v1beta/models)',
+      apiFormat: LlmApiFormat.geminiNative,
+    ),
+    ProviderPreset(
       name: 'Google Gemini',
       group: ProviderPresetGroup.global,
       baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
       chatModel: 'gemini-2.5-flash',
       reasonerModel: 'gemini-2.5-pro',
       models: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash'],
-      hint: '官方 OpenAI 兼容端点',
+      hint: '官方 OpenAI 兼容端点 (/v1beta/openai)',
+      apiFormat: LlmApiFormat.openAiCompatible,
     ),
     ProviderPreset(
       name: 'Groq',
@@ -520,6 +567,115 @@ class ProviderPreset {
       reasonerModel: 'local-model',
       models: ['local-model'],
       hint: 'llama-server 默认端口 8080',
+    ),
+
+    ProviderPreset(
+      name: 'OpenCode Console / Zen (OpenAI)',
+      baseUrl: 'https://opencode.ai/inference/openai/v1',
+      chatModel: '',
+      reasonerModel: '',
+      models: [],
+      apiFormat: LlmApiFormat.auto,
+      hint: '登录 OpenCode 控制台取得 Key；GPT、Grok 与 OpenAI 兼容模型',
+    ),
+    ProviderPreset(
+      name: 'OpenCode Go (OpenAI)',
+      baseUrl: 'https://opencode.ai/inference/go/openai/v1',
+      chatModel: '',
+      reasonerModel: '',
+      models: [],
+      apiFormat: LlmApiFormat.auto,
+      hint: '使用 OpenCode Go 套餐专用 Key',
+    ),
+    ProviderPreset(
+      name: 'OpenCode Console (Claude)',
+      baseUrl: 'https://opencode.ai/inference/anthropic/v1',
+      chatModel: '',
+      reasonerModel: '',
+      models: [],
+      apiFormat: LlmApiFormat.anthropicMessages,
+      hint: 'Claude 与 Anthropic 兼容模型',
+    ),
+    ProviderPreset(
+      name: 'OpenCode Go (Claude)',
+      baseUrl: 'https://opencode.ai/inference/go/anthropic/v1',
+      chatModel: '',
+      reasonerModel: '',
+      models: [],
+      apiFormat: LlmApiFormat.anthropicMessages,
+      hint: 'OpenCode Go 的 Anthropic 协议模型',
+    ),
+    ProviderPreset(
+      name: 'OpenCode Console (Gemini)',
+      baseUrl: 'https://opencode.ai/inference/google/v1beta',
+      chatModel: '',
+      reasonerModel: '',
+      models: [],
+      apiFormat: LlmApiFormat.geminiNative,
+      hint: 'Gemini 原生协议模型',
+    ),
+    ProviderPreset(
+      name: 'OpenCode Go (Gemini)',
+      baseUrl: 'https://opencode.ai/inference/go/google/v1beta',
+      chatModel: '',
+      reasonerModel: '',
+      models: [],
+      apiFormat: LlmApiFormat.geminiNative,
+      hint: 'OpenCode Go 的 Gemini 原生模型',
+    ),
+    ProviderPreset(
+      name: '智谱 GLM Coding Plan',
+      baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
+      chatModel: '',
+      reasonerModel: '',
+      models: [],
+      apiFormat: LlmApiFormat.openAiCompatible,
+      hint: '套餐专用地址；可用性以账号与平台支持范围为准',
+    ),
+    ProviderPreset(
+      name: 'Z.AI GLM Coding Plan',
+      baseUrl: 'https://api.z.ai/api/coding/paas/v4',
+      chatModel: '',
+      reasonerModel: '',
+      models: [],
+      apiFormat: LlmApiFormat.openAiCompatible,
+      hint: '国际 Coding Plan，使用对应套餐 Key',
+    ),
+    ProviderPreset(
+      name: 'Kimi Code / Coding Plan',
+      baseUrl: 'https://api.kimi.com/coding/v1',
+      chatModel: '',
+      reasonerModel: '',
+      models: [],
+      apiFormat: LlmApiFormat.auto,
+      hint: 'Kimi Code 专用 Key，与 Moonshot 按量 API 分开',
+    ),
+    ProviderPreset(
+      name: '阿里云 Coding Plan',
+      baseUrl: 'https://coding.dashscope.aliyuncs.com/v1',
+      chatModel: '',
+      reasonerModel: '',
+      models: [],
+      apiFormat: LlmApiFormat.openAiCompatible,
+      hint: '使用 sk-sp- 开头的套餐专用 Key',
+    ),
+    ProviderPreset(
+      name: 'MiniMax M Plan / Coding Plan',
+      baseUrl: 'https://api.minimaxi.com/anthropic/v1',
+      chatModel: '',
+      reasonerModel: '',
+      models: [],
+      apiFormat: LlmApiFormat.anthropicMessages,
+      hint: '使用 M Plan / Coding Plan Key，与普通 API 计费分开',
+    ),
+    ProviderPreset(
+      name: 'Anthropic Claude API',
+      baseUrl: 'https://api.anthropic.com/v1',
+      chatModel: '',
+      reasonerModel: '',
+      models: [],
+      apiFormat: LlmApiFormat.anthropicMessages,
+      hint: '官方 API Key，不是 Claude Pro/Max 网页订阅登录',
     ),
   ];
 }

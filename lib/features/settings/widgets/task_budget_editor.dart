@@ -14,6 +14,19 @@ class TaskBudgetEditor extends StatelessWidget {
   Widget build(BuildContext context) => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
+      Text('模型响应等待', style: Theme.of(context).textTheme.titleMedium),
+      const SizedBox(height: 8),
+      _number(
+        '工作模式首次响应等待（秒）',
+        value.workResponseTimeoutSeconds,
+        30,
+        600,
+        (n) => value.copyWith(workResponseTimeoutSeconds: n),
+      ),
+      const Text(
+        '默认 120 秒，适用于工作主代理和子代理的模型请求。这里只控制收到响应头前的等待；连接建立及流式输出空闲超时独立计算。普通聊天仍使用原有等待时间。设置变更在主任务下一完整工具轮生效。',
+      ),
+      const SizedBox(height: 20),
       Text('任务执行预算', style: Theme.of(context).textTheme.titleMedium),
       const SizedBox(height: 8),
       DropdownButtonFormField<TaskBudgetPreset>(
@@ -28,7 +41,13 @@ class TaskBudgetEditor extends StatelessWidget {
             ),
         ],
         onChanged: (p) {
-          if (p != null) onChanged(TaskBudgetPrefs.forPreset(p));
+          if (p != null) {
+            onChanged(
+              TaskBudgetPrefs.forPreset(p).copyWith(
+                workResponseTimeoutSeconds: value.workResponseTimeoutSeconds,
+              ),
+            );
+          }
         },
       ),
       Padding(
@@ -52,6 +71,7 @@ class TaskBudgetEditor extends StatelessWidget {
           3600,
           (n) => TaskBudgetPrefs(
             workSeconds: n,
+            workResponseTimeoutSeconds: value.workResponseTimeoutSeconds,
             maxSearches: value.maxSearches,
             maxToolCalls: value.maxToolCalls,
           ),
@@ -63,6 +83,7 @@ class TaskBudgetEditor extends StatelessWidget {
           192,
           (n) => TaskBudgetPrefs(
             workSeconds: value.workSeconds,
+            workResponseTimeoutSeconds: value.workResponseTimeoutSeconds,
             maxSearches: n,
             maxToolCalls: value.maxToolCalls,
           ),
@@ -76,6 +97,7 @@ class TaskBudgetEditor extends StatelessWidget {
             workSeconds: value.workSeconds,
             maxSearches: value.maxSearches,
             maxToolCalls: n,
+            workResponseTimeoutSeconds: value.workResponseTimeoutSeconds,
           ),
         ),
       ],

@@ -100,10 +100,18 @@ dependencies:
   # In-app local HTML/SVG preview on Windows (WebView2).
   webview_windows: 0.4.0
   flutter_tts: ^4.2.5
+  flutter_pty2: 2.0.0
+  jose: ^0.3.5+2
 
 # Stock speech_to_text_windows 1.0.1 never calls SAPI SetInterest, so listen
 # appears to start but never yields transcripts. Use our patched copy.
 dependency_overrides:
+  # Windows text input requires the containing Flutter view ID.
+  xterm:
+    path: third_party/xterm
+  # Keep redirected app handles out of ConPTY children.
+  flutter_pty2:
+    path: third_party/flutter_pty2
   speech_to_text_windows:
     path: third_party/speech_to_text_windows
 
@@ -148,6 +156,7 @@ flutter:
       fonts:
         - asset: assets/fonts/NotoSansSC.ttf
   assets:
+    - assets/branding/
     - shorebird.yaml
     # Short Edge-TTS samples used as optional clone seeds for anime-style
     # voice packs (archetypes, not copyrighted character rips).

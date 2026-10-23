@@ -12,6 +12,7 @@ import 'backup_journal.dart';
 import 'db/app_database.dart';
 import 'library_file_store.dart';
 import 'library_paths.dart';
+import 'learning_plan.dart';
 import 'memory_repository.dart';
 
 /// Restore is additive. Existing database rows/files are never overwritten.
@@ -27,6 +28,7 @@ class FullBackupService {
   bool _busy = false;
   static const _uuid = Uuid();
   static const _codec = MemoryMarkdownCodec();
+  static const maxRecords = 100000;
   static const tableNames = [
     'projects',
     'character_cards',
@@ -46,6 +48,9 @@ class FullBackupService {
     'themeMode',
     'uiPrefs',
     'contextPrefs',
+    'modelContextPrefs',
+    'workAgentLimits.v1',
+    'workAgentModelPool.v1',
     'taskBudget',
     'searchMaxRounds',
     'searchMaxResults',
@@ -53,19 +58,33 @@ class FullBackupService {
     'composerImageGenMode',
     'reasoningEffort',
     'systemPrompt',
+    'workAgentInstructions',
+    'subagentInstructions',
+    'subagentRoles.v1',
+    'subagentRouterModel',
     'chatSkills',
+    'promptPresetsV1',
     'memoryEnabled',
     'studyModeEnabled',
     'creationModeEnabled',
   };
 
+  // Retain the v17 wire location for compatibility with existing backups.
+  // Learning plans are business data, not optional/replaceable preferences.
+  static const _learningPlansKey = 'learningPlansV1';
+  static const _storedKeys = {...preferenceKeys, _learningPlansKey};
+
   Future<Uint8List> exportBackup() => _exclusive(() async {
     if (await journal.read() != null) throw StateError('请先重启应用完成恢复检查。');
+    _learningPlanRows(prefs.getString(_learningPlansKey));
     final tables = <String, dynamic>{};
     await db.transaction(() async {
       var approximateBytes = 0;
+      var rowCount = 0;
       for (final name in tableNames) {
         final rows = await db.customSelect('SELECT * FROM "$name"').get();
+        rowCount += rows.length;
+        _checkRecordCount(rowCount);
         tables[name] = [for (final row in rows) row.data];
         approximateBytes += utf8.encode(jsonEncode(tables[name])).length;
         if (approximateBytes > BackupCodec.maxBytes) {
@@ -96,7 +115,7 @@ class FullBackupService {
       'files': blobs,
       'memory': await memory.read() ?? '',
       'preferences': {
-        for (final key in preferenceKeys)
+        for (final key in _storedKeys)
           if (prefs.containsKey(key)) key: prefs.get(key),
       },
     });
@@ -140,7 +159,7 @@ class FullBackupService {
         payload['memory'] is! String ||
         tables.length != tableNames.length ||
         !tables.keys.every(tableNames.contains) ||
-        !preferences.keys.every(preferenceKeys.contains)) {
+        !preferences.keys.every(_storedKeys.contains)) {
       throw const FormatException('备份目录或设置字段不合法。');
     }
     var rowCount = 0;
@@ -151,7 +170,7 @@ class FullBackupService {
       final rows = tables[name];
       if (rows is! List) throw const FormatException('备份数据表格式错误。');
       rowCount += rows.length;
-      if (rowCount > 100000) throw const FormatException('备份记录数超过 100000 条。');
+      _checkRecordCount(rowCount);
       final keys = <String>{};
       for (final row in rows) {
         if (row is! Map<String, dynamic> ||
@@ -241,6 +260,29 @@ class FullBackupService {
           : e.value is! String) {
         throw FormatException('偏好设置 ${e.key} 的类型错误。');
       }
+    }
+    _learningPlanRows(preferences[_learningPlansKey]);
+  }
+
+  static List<Map<String, dynamic>> _learningPlanRows(Object? raw) {
+    if (raw == null) return [];
+    try {
+      final rows = (jsonDecode(raw as String) as List)
+          .map((row) => Map<String, dynamic>.from(row as Map))
+          .toList();
+      _checkRecordCount(rows.length);
+      final ids = <String>{};
+      for (final row in rows) {
+        final plan = LearningPlan.fromJson(row);
+        // Fully traverse nested records, including lazily cast ID lists.
+        jsonEncode(plan.toJson());
+        if (plan.id.isEmpty || !ids.add(plan.id)) {
+          throw const FormatException('学习档案 ID 无效或重复');
+        }
+      }
+      return rows;
+    } catch (_) {
+      throw const FormatException('学习档案格式错误，未覆盖原有记录。');
     }
   }
 
@@ -359,6 +401,20 @@ class FullBackupService {
     final preferences = restorePreferences
         ? Map<String, dynamic>.from(payload['preferences'] as Map)
         : <String, dynamic>{};
+    preferences.remove(_learningPlansKey);
+    final importedPlans = _learningPlanRows(
+      payload['preferences'][_learningPlansKey],
+    );
+    if (importedPlans.isNotEmpty) {
+      final currentPlans = _learningPlanRows(
+        prefs.getString(_learningPlansKey),
+      );
+      preferences[_learningPlansKey] = jsonEncode([
+        ...currentPlans,
+        // Knowledge IDs are scoped to each plan; preserve their references.
+        for (final plan in importedPlans) {...plan, 'id': _uuid.v4()},
+      ]);
+    }
     final undo = <String, dynamic>{
       'id': _uuid.v4(),
       'memory': oldMemory,
@@ -426,7 +482,7 @@ class FullBackupService {
       final oldPreferences = Map<String, dynamic>.from(
         undo['preferences'] as Map,
       );
-      if (!oldPreferences.keys.every(preferenceKeys.contains)) {
+      if (!oldPreferences.keys.every(_storedKeys.contains)) {
         throw const FormatException('恢复日志设置字段不合法。');
       }
       await _writePreferences(oldPreferences);
@@ -468,6 +524,12 @@ class FullBackupService {
       _busy = false;
     }
   }
+
+  static void _checkRecordCount(int count) {
+    if (count > maxRecords) {
+      throw const FormatException('备份记录数超过 $maxRecords 条。');
+    }
+  }
 }
 
 dynamic _remapJson(
@@ -501,6 +563,9 @@ class BackupPreview {
   int get targetSchemaVersion => _payload['schemaVersion'] as int;
   bool get requiresUpgrade => sourceSchemaVersion != targetSchemaVersion;
   int count(String table) => (_payload['tables'][table] as List).length;
+  int get learningPlans => FullBackupService._learningPlanRows(
+    _payload['preferences'][FullBackupService._learningPlansKey],
+  ).length;
   int get memories => const MemoryMarkdownCodec()
       .decode(_payload['memory'] as String)
       .entries

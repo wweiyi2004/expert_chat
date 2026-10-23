@@ -408,11 +408,3 @@ class _CourseNodePlayerPageState extends ConsumerState<CourseNodePlayerPage> {
     );
   }
 }
-
-extension _FirstOrNull2<E> on Iterable<E> {
-  E? get firstOrNull {
-    final it = iterator;
-    if (!it.moveNext()) return null;
-    return it.current;
-  }
-}

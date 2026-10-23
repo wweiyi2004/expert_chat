@@ -2,7 +2,7 @@ part of '../chat_controller.dart';
 
 /// Recovery is an explicit user action, never an automatic replay of side effects.
 mixin ChatTaskRecovery on ChatSessions {
-  void requestTaskAnswer(String convoId, String msgId) {
+  void requestTaskAnswer(String convoId, String msgId) => _withSession(() {
     if (_s.streamingConvoId != convoId || _execution.isCancelled) return;
     final last = _s.conversations
         .where((c) => c.id == convoId)
@@ -11,68 +11,69 @@ mixin ChatTaskRecovery on ChatSessions {
         .lastOrNull;
     if (last?.id != msgId || last?.kind == MessageKind.generatedImage) return;
     _execution.budget?.requestFinish('用户选择使用已有资料回答');
-  }
+  }, conversationId: convoId);
 
-  Future<void> answerFromResults(String convoId, String msgId) async {
-    if (_s.isStreaming) {
-      requestTaskAnswer(convoId, msgId);
-      return;
-    }
-    if (_execution.isActive || _s.currentId != convoId) return;
-    final convo = _s.current;
-    final source = _messageById(convoId, msgId);
-    if (convo == null ||
-        source == null ||
-        source.role != MessageRole.assistant ||
-        source.kind == MessageKind.generatedImage ||
-        convo.isStoryLike ||
-        convo.isStudy) {
-      return;
-    }
-    final user = _parentUserForTurn(convo, msgId);
-    if (user == null) return;
-    if (!_tryStartGeneration()) return;
-    try {
-      final settings = await _readySettingsForTurn();
-      if (settings == null || _execution.isCancelled) return;
-      final answer = ChatMessage(
-        role: MessageRole.assistant,
-        content: '',
-        model: settings.model,
-        parentId: user.id,
-        citations: source.citations,
-        searchActivities: source.searchActivities,
-        attachments: source.attachments,
-      );
-      final working = convo.copyWith(
-        messages: [...convo.messages, answer],
-        activeChildren: activeChildrenAfterAppending(
-          convo.activeChildren,
-          pathToMessage(convo, user.id),
-          parentId: user.id,
-          childId: answer.id,
-        ),
-      );
-      await _generate(
-        working: working,
-        assistantId: answer.id,
-        config: settings.config.copyWith(allowReasoningRetry: false),
-        settings: settings,
-        searchQuery: user.content,
-        thinking: false,
-        recoverySource: source,
-      );
-    } finally {
-      _finishStarting();
-    }
-  }
+  Future<void> answerFromResults(String convoId, String msgId) =>
+      _inSession(() async {
+        if (_s.isStreaming) {
+          requestTaskAnswer(convoId, msgId);
+          return;
+        }
+        if (_execution.isActive || _s.currentId != convoId) return;
+        final convo = _s.current;
+        final source = _messageById(convoId, msgId);
+        if (convo == null ||
+            source == null ||
+            source.role != MessageRole.assistant ||
+            source.kind == MessageKind.generatedImage ||
+            convo.isStoryLike ||
+            convo.isStudy) {
+          return;
+        }
+        final user = _parentUserForTurn(convo, msgId);
+        if (user == null) return;
+        if (!_tryStartGeneration()) return;
+        try {
+          final settings = await _readySettingsForTurn();
+          if (settings == null || _execution.isCancelled) return;
+          final answer = ChatMessage(
+            role: MessageRole.assistant,
+            content: '',
+            model: settings.model,
+            parentId: user.id,
+            citations: source.citations,
+            searchActivities: source.searchActivities,
+            attachments: source.attachments,
+          );
+          final working = convo.copyWith(
+            messages: [...convo.messages, answer],
+            activeChildren: activeChildrenAfterAppending(
+              convo.activeChildren,
+              pathToMessage(convo, user.id),
+              parentId: user.id,
+              childId: answer.id,
+            ),
+          );
+          await _generate(
+            working: working,
+            assistantId: answer.id,
+            config: settings.config.copyWith(allowReasoningRetry: false),
+            settings: settings,
+            searchQuery: user.content,
+            thinking: false,
+            recoverySource: source,
+          );
+        } finally {
+          _finishStarting();
+        }
+      }, conversationId: convoId);
 
   Future<void> retryTaskStep(
     String convoId,
     String msgId,
     String stepId, {
     bool confirmedPaidRequest = false,
-  }) async {
+  }) => _inSession(() async {
     if (_s.isStreaming || _execution.isActive || _s.currentId != convoId) {
       return;
     }
@@ -109,7 +110,7 @@ mixin ChatTaskRecovery on ChatSessions {
     _execution.attachRequest(token);
     var targetMsgId = msgId;
     try {
-      final settings = await ref.read(settingsControllerProvider.future);
+      final settings = await _settingsForSession();
       if (_execution.isCancelled) return;
       final isSearch = step.toolName == 'web_search';
       if ((isSearch && _s.searchMode == SearchMode.off) ||
@@ -180,9 +181,9 @@ mixin ChatTaskRecovery on ChatSessions {
         cancelToken: token,
         imageBudget: _TurnImageBudget(),
         imageCharacter: await _resolveImageCharacter(convo),
-        clientSearchBackend: settings.searchBackend.isProviderHosted
-            ? SearchBackend.duckduckgo
-            : settings.searchBackend,
+        clientSearchBackend: settings.effectiveSearchBackend.isProviderHosted
+            ? SearchBackend.deepseek
+            : settings.effectiveSearchBackend,
         editableAttachments: user.attachments,
       );
       final latest = _messageById(convoId, targetMsgId);
@@ -233,5 +234,5 @@ mixin ChatTaskRecovery on ChatSessions {
       await _persistence.persistSafely(convoId);
       _finishStarting();
     }
-  }
+  }, conversationId: convoId);
 }

@@ -146,6 +146,7 @@ class _QuizPlayerPageState extends ConsumerState<QuizPlayerPage> {
             })
           else
             TextField(
+              key: ValueKey(_item.id),
               enabled: grade == null,
               onChanged: (v) => _answers[_item.id] = v,
               maxLines: 4,

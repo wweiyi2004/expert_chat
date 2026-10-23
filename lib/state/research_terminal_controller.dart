@@ -12,6 +12,8 @@ import '../data/research/ssh_profile.dart';
 import '../domain/research/command_risk.dart';
 import '../domain/research/research_copilot_service.dart';
 import '../domain/research/research_ssh_client.dart';
+import '../domain/research/research_files.dart';
+import '../domain/research/research_workspace.dart';
 import '../domain/research/terminal_input_guard.dart';
 import '../domain/research/terminal_transcript_buffer.dart';
 import '../domain/research/tmux_service.dart';
@@ -132,6 +134,70 @@ final researchTerminalProvider =
     );
 
 class ResearchTerminalController extends Notifier<ResearchTerminalState> {
+  Future<ResearchWorkspaceSession> openWorkSession(
+    String profileId,
+    String directory,
+  ) async {
+    final client = _client;
+    final generation = state.connectionGeneration;
+    if (client == null ||
+        !client.isConnected ||
+        state.activeProfileId != profileId ||
+        client is! ResearchCommandHost) {
+      throw ResearchSshException('请先在科研工作区连接所选 SSH 服务器。');
+    }
+    final fileService = files;
+    final root = await fileService.absolute(directory);
+    void validate() {
+      if (_disposed ||
+          !identical(_client, client) ||
+          !client.isConnected ||
+          state.connectionGeneration != generation ||
+          state.activeProfileId != profileId) {
+        throw ResearchSshException('SSH 连接已变化，本轮停止使用旧工作区，请重新发起任务。');
+      }
+    }
+
+    validate();
+    return ResearchWorkspaceSession(
+      profileId: profileId,
+      root: root,
+      label: state.activeProfile!.name,
+      files: fileService,
+      validate: validate,
+      openTerminal: client is ResearchTerminalHost
+          ? (columns, rows) async {
+              validate();
+              final terminal = await (client as ResearchTerminalHost)
+                  .openTerminal(root, columns, rows);
+              try {
+                validate();
+                return terminal;
+              } catch (_) {
+                await terminal.close();
+                rethrow;
+              }
+            }
+          : null,
+      command: (command, timeout, token, {onOutput, onComplete}) async {
+        validate();
+        return (client as ResearchCommandHost).runWorkspaceCommand(
+          command,
+          timeout,
+          token,
+          onOutput: onOutput,
+          onComplete: onComplete,
+        );
+      },
+    );
+  }
+
+  ResearchFiles get files {
+    final client = _client;
+    if (client is ResearchFilesHost) return (client as ResearchFilesHost).files;
+    throw ResearchSshException('当前连接不支持 SFTP');
+  }
+
   ResearchSshClient? _client;
   final transcript = TerminalTranscriptBuffer();
   final terminal = Terminal(maxLines: 10000);
@@ -313,6 +379,41 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
   void clearInterruptBlockedFlash() {
     if (state.interruptBlockedFlash) {
       state = state.copyWith(interruptBlockedFlash: false);
+    }
+  }
+
+  Future<({Duration elapsed, String? fingerprint})> testProfile(
+    SshProfile profile, {
+    String? password,
+    String? privateKeyPem,
+    String? passphrase,
+  }) async {
+    final secure = ref.read(secureStorageProvider);
+    final client = _clientFactory();
+    final watch = Stopwatch()..start();
+    try {
+      await client.connect(
+        profile: profile,
+        password:
+            password ??
+            await secure.read(key: ResearchSecureKeys.password(profile.id)),
+        privateKeyPem:
+            privateKeyPem ??
+            await secure.read(key: ResearchSecureKeys.privateKey(profile.id)),
+        passphrase:
+            passphrase ??
+            await secure.read(key: ResearchSecureKeys.passphrase(profile.id)),
+        onHostKeyTrust: (info) async =>
+            await _hostKeyTrustHandler?.call(info) ?? false,
+        onHostKeyMismatch: (info, previous) async =>
+            await _hostKeyMismatchHandler?.call(info, previous) ?? false,
+      );
+      return (
+        elapsed: watch.elapsed,
+        fingerprint: client.lastHostKeyFingerprint,
+      );
+    } finally {
+      await client.disconnect();
     }
   }
 
@@ -586,10 +687,12 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
     try {
       final sessions = await _tmux.listSessions(client);
       if (!_ownsConnection(client, generation)) return;
+      final current = await _tmux.currentSession(client);
+      if (!_ownsConnection(client, generation)) return;
       state = state.copyWith(
         tmuxSessions: sessions,
         tmuxError: null,
-        currentTmuxName: _reconcileCurrentTmux(sessions),
+        currentTmuxName: current,
       );
     } on TmuxNotInstalledException {
       if (!_ownsConnection(client, generation)) return;
@@ -604,26 +707,6 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
     }
   }
 
-  /// The session we still believe we are attached to, per the server's view.
-  ///
-  /// The user can leave tmux behind our back (typing `exit`, or `C-b d` on a
-  /// hardware keyboard), after which the banner would keep claiming an
-  /// attachment that no longer exists and `switchTmuxSession` would send
-  /// `switch-client` into a bare shell. Anything the server no longer reports
-  /// as attached is dropped.
-  ///
-  /// `session_attached` counts *all* clients, so a session another terminal
-  /// holds open still reads as attached. That direction is the safe one: we
-  /// keep a possibly-stale name rather than dropping a live one.
-  String? _reconcileCurrentTmux(List<TmuxSessionInfo> sessions) {
-    final current = state.currentTmuxName;
-    if (current == null) return null;
-    for (final s in sessions) {
-      if (s.name == current) return s.attached > 0 ? current : null;
-    }
-    return null;
-  }
-
   Future<void> createTmuxSession(String name) async {
     final client = _client;
     if (client == null || !client.isConnected) return;
@@ -636,11 +719,7 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
       await refreshTmux();
       if (!_ownsConnection(client, generation)) return;
       // Creating from inside tmux must switch, not nest an attach.
-      await _tmux.switchOrAttachInShell(
-        client,
-        name,
-        currentlyInTmux: state.currentTmuxName != null,
-      );
+      await _tmux.switchOrAttachInShell(client, name);
       if (!_ownsConnection(client, generation)) return;
       state = state.copyWith(currentTmuxName: name, tmuxError: null);
     } catch (e) {
@@ -649,12 +728,7 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
     }
   }
 
-  void attachTmuxSession(String name) {
-    final client = _client;
-    if (client == null || !client.isConnected) return;
-    _tmux.attachInShell(client, name);
-    state = state.copyWith(currentTmuxName: name);
-  }
+  Future<void> attachTmuxSession(String name) => switchTmuxSession(name);
 
   /// Switch to [name] directly: switch-client when already in tmux, else attach.
   Future<void> switchTmuxSession(String name) async {
@@ -662,17 +736,11 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
     if (client == null || !client.isConnected) return;
     final target = name.trim();
     if (target.isEmpty) return;
-    if (state.currentTmuxName == target) return;
     final generation = state.connectionGeneration;
-    final inTmux = state.currentTmuxName != null;
     try {
-      await _tmux.switchOrAttachInShell(
-        client,
-        target,
-        currentlyInTmux: inTmux,
-      );
+      await _tmux.switchOrAttachInShell(client, target);
       if (!_ownsConnection(client, generation)) return;
-      state = state.copyWith(currentTmuxName: target);
+      state = state.copyWith(currentTmuxName: target, tmuxError: null);
     } catch (e) {
       if (!_ownsConnection(client, generation)) return;
       state = state.copyWith(tmuxError: _safeError(e));
@@ -689,7 +757,7 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
     if (name == null) return;
     final generation = state.connectionGeneration;
     try {
-      await _tmux.detachSession(client, name);
+      await _tmux.detachSession(client);
       if (!_ownsConnection(client, generation)) return;
       state = state.copyWith(currentTmuxName: null, tmuxError: null);
     } catch (e) {

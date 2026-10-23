@@ -39,7 +39,7 @@ class CourseTreeCodec {
         );
       } else {
         final map = Map<String, dynamic>.from(decoded);
-        final rootTitle = (map['title'] ?? map['name'] ?? title).toString();
+        final rootTitle = map['title'] ?? map['name'];
         final children = map['children'] ?? map['nodes'] ?? map['chapters'];
         if (children is List) {
           _walkList(
@@ -50,6 +50,11 @@ class CourseTreeCodec {
             orderBase: 0,
           );
         } else {
+          if (children != null ||
+              rootTitle is! String ||
+              rootTitle.trim().isEmpty) {
+            return null;
+          }
           // Single leaf course.
           nodes.add(
             StudyNode(
@@ -64,18 +69,7 @@ class CourseTreeCodec {
         }
       }
 
-      if (nodes.isEmpty) {
-        nodes.add(
-          StudyNode(
-            courseId: course.id,
-            parentId: null,
-            title: '第 1 课',
-            orderIndex: 0,
-            kind: StudyNodeKind.leaf,
-            progress: StudyNodeProgress.available,
-          ),
-        );
-      }
+      if (nodes.isEmpty) return null;
 
       // Ensure at least one available leaf.
       final leaves = nodes.where((n) => n.kind == StudyNodeKind.leaf).toList();
@@ -155,28 +149,6 @@ class CourseTreeCodec {
         );
       }
     }
-  }
-
-  /// Fallback mini course when AI parse fails.
-  ({StudyCourse course, List<StudyNode> nodes}) fallback({
-    required String title,
-    String sourceSummary = '',
-    StudySourceType sourceType = StudySourceType.topic,
-  }) {
-    final course = StudyCourse(
-      title: title.trim().isEmpty ? '未命名课程' : title.trim(),
-      sourceType: sourceType,
-      sourceSummary: sourceSummary,
-    );
-    final node = StudyNode(
-      courseId: course.id,
-      parentId: null,
-      title: '入门',
-      orderIndex: 0,
-      kind: StudyNodeKind.leaf,
-      progress: StudyNodeProgress.available,
-    );
-    return (course: course, nodes: [node]);
   }
 
   /// Mark [doneId] done and unlock the next leaf in tree order.

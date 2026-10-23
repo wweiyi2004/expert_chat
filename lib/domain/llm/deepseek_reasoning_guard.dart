@@ -50,7 +50,7 @@ class DeepSeekReasoningGuard implements LlmProvider {
     String? forceToolName,
     CancelToken? cancelToken,
   }) async* {
-    if (!config.isDeepSeek) {
+    if (!config.isDeepSeek || !config.reasoningGuardEnabled) {
       yield* delegate.streamChat(
         config: config,
         messages: messages,

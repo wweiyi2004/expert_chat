@@ -6,6 +6,7 @@ import '../llm/llm_provider.dart';
 import '../story/story_generation_intent.dart';
 import '../story/story_prompt_assembler.dart';
 import 'chat_skill_router.dart';
+import 'tool_loop_policy.dart';
 
 /// Already-loaded turn data. Loading and error/cancellation handling belong to
 /// the caller; preparing a request never reads live application state.
@@ -151,6 +152,9 @@ class RequestContextBuilder {
       history.insertAll(
         0,
         _notes([
+          if (conversation.mode == ConversationMode.chat &&
+              conversation.workMode)
+            ToolLoopPolicy.workModeHint,
           notes.tools,
           notes.vision,
           notes.image,

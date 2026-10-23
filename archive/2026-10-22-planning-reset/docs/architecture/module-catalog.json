@@ -1,0 +1,588 @@
+{
+  "schema_version": 1,
+  "as_of": "2026-10-22",
+  "kind": "incremental_reference_inventory",
+  "physical_migration_done": false,
+  "semantics": {
+    "current_paths": "现有定位证据，混合文件可出现在多个模块；不代表排他归属或已完成物理迁移。",
+    "target_paths": "按实际使用方逐步建立的建议路径，不要求一次创建；电脑端首期为单个 crate，23 项登记不对应 23 个包或服务。",
+    "depends_on": "目标模块公开 API 的逻辑依赖；不同语言可以分别实现同一能力，不能据此声称 Dart 可直接被 Rust 复用。",
+    "integrates_with": "运行时集成关系，不等于源代码依赖。",
+    "scope": "保存现有来源定位和此前增量方案的 23 项职责登记；不是 V2 的包划分或当前主实施清单。"
+  },
+  "modules": [
+    {
+      "id": "contracts",
+      "name": "公共契约",
+      "group": "foundation",
+      "status": "partial",
+      "current_paths": [
+        "lib/data/models.dart",
+        "lib/domain/llm/llm_provider.dart",
+        "lib/domain/mcp/mcp_host_tools.dart"
+      ],
+      "target_paths": [
+        "contracts/agent/",
+        "lib/contracts/",
+        "desktop_agent/src/contracts/"
+      ],
+      "depends_on": [],
+      "integrates_with": [],
+      "responsibility": "任务、事件、目标、工具、产物的最小共同语义",
+      "data_owner": "契约版本与一致性样例",
+      "migration_phase": "P1 本机类型；P3/P4 跨进程语义"
+    },
+    {
+      "id": "storage",
+      "name": "存储与恢复",
+      "group": "foundation",
+      "status": "partial",
+      "current_paths": [
+        "lib/data/db/",
+        "lib/data/full_backup_service.dart",
+        "lib/data/backup_codec.dart",
+        "lib/data/backup_journal.dart"
+      ],
+      "target_paths": [
+        "lib/infrastructure/storage/",
+        "desktop_agent/src/storage/"
+      ],
+      "depends_on": [
+        "contracts"
+      ],
+      "integrates_with": [],
+      "responsibility": "连接、存储、事务与备份协调；领域实体由业务模块解释",
+      "data_owner": "数据库连接、迁移记录、恢复提交标记",
+      "migration_phase": "P1/P5"
+    },
+    {
+      "id": "platform_services",
+      "name": "平台与运行维护",
+      "group": "foundation",
+      "status": "existing",
+      "current_paths": [
+        "lib/domain/notify/",
+        "lib/domain/share/",
+        "lib/domain/clipboard/",
+        "lib/domain/cache/",
+        "lib/domain/update/",
+        "lib/domain/support/",
+        "lib/domain/html/",
+        "android/app/src/main/kotlin/com/wweiyi/expert_chat/GenerationService.kt"
+      ],
+      "target_paths": [
+        "lib/infrastructure/platform/"
+      ],
+      "depends_on": [
+        "contracts",
+        "storage"
+      ],
+      "integrates_with": [],
+      "responsibility": "通知、生命周期、分享、剪贴板、预览、缓存与更新，按子能力维护",
+      "data_owner": "平台运行配置与维护记录",
+      "migration_phase": "P5"
+    },
+    {
+      "id": "model_access",
+      "name": "模型访问",
+      "group": "capability",
+      "status": "existing",
+      "current_paths": [
+        "lib/domain/llm/",
+        "lib/data/provider_profile.dart"
+      ],
+      "target_paths": [
+        "lib/capabilities/models/",
+        "desktop_agent/src/models/"
+      ],
+      "depends_on": [
+        "contracts"
+      ],
+      "integrates_with": [],
+      "responsibility": "四协议、自动尝试、流式解析与用量；long_task_gateway_client 另属兼容层",
+      "data_owner": "模型连接配置和密钥引用；不拥有会话",
+      "migration_phase": "P1/P3"
+    },
+    {
+      "id": "mcp_connector",
+      "name": "MCP 连接器",
+      "group": "capability",
+      "status": "existing",
+      "current_paths": [
+        "lib/domain/mcp/"
+      ],
+      "target_paths": [
+        "lib/capabilities/mcp/",
+        "desktop_agent/src/executors/mcp/"
+      ],
+      "depends_on": [
+        "contracts"
+      ],
+      "integrates_with": [
+        "document_service"
+      ],
+      "responsibility": "HTTP/stdio 初始化、发现、调用、资源与连接生命周期",
+      "data_owner": "MCP 会话和能力发现缓存",
+      "migration_phase": "P1/P3"
+    },
+    {
+      "id": "content_capabilities",
+      "name": "内容能力组",
+      "group": "capability",
+      "status": "existing",
+      "current_paths": [
+        "lib/domain/tools/",
+        "lib/domain/document/",
+        "lib/domain/media/",
+        "lib/domain/speech/"
+      ],
+      "target_paths": [
+        "lib/capabilities/search/",
+        "lib/capabilities/documents/",
+        "lib/capabilities/media/",
+        "lib/capabilities/speech/"
+      ],
+      "depends_on": [
+        "contracts",
+        "model_access",
+        "mcp_connector",
+        "storage",
+        "platform_services"
+      ],
+      "integrates_with": [
+        "document_service"
+      ],
+      "responsibility": "搜索、文档、媒体、语音各自实现；通用工具路由另归 registry",
+      "data_owner": "处理请求和暂存产物；资产由 workspace 登记",
+      "migration_phase": "P1/P5"
+    },
+    {
+      "id": "tool_registry",
+      "name": "工具注册与分发",
+      "group": "execution",
+      "status": "partial",
+      "current_paths": [
+        "lib/domain/chat/tool_call_runner.dart",
+        "lib/domain/chat/tool_image_context.dart",
+        "lib/state/chat/tools.dart",
+        "lib/domain/mcp/mcp_host_tools.dart"
+      ],
+      "target_paths": [
+        "lib/runtime/tools/",
+        "desktop_agent/src/runtime/tools/"
+      ],
+      "depends_on": [
+        "contracts"
+      ],
+      "integrates_with": [],
+      "responsibility": "工具元数据、执行器选择、能力约束和结果归一，具体实现注入",
+      "data_owner": "工具描述与本次授权能力快照",
+      "migration_phase": "P1"
+    },
+    {
+      "id": "agent_runtime",
+      "name": "本机任务运行",
+      "group": "execution",
+      "status": "partial",
+      "current_paths": [
+        "lib/domain/chat/generation_execution.dart",
+        "lib/domain/chat/generation_stream.dart",
+        "lib/domain/chat/task_budget.dart",
+        "lib/domain/chat/tool_loop_policy.dart",
+        "lib/state/chat/generation.dart",
+        "lib/state/chat/streaming.dart",
+        "lib/state/chat/task_recovery.dart"
+      ],
+      "target_paths": [
+        "lib/runtime/agent/"
+      ],
+      "depends_on": [
+        "contracts",
+        "model_access",
+        "tool_registry"
+      ],
+      "integrates_with": [],
+      "responsibility": "任务状态、模型/工具循环、预算、取消、核验与恢复",
+      "data_owner": "本机任务、尝试、步骤和事件",
+      "migration_phase": "P1"
+    },
+    {
+      "id": "android_executor",
+      "name": "Android 手机执行器",
+      "group": "execution",
+      "status": "planned",
+      "current_paths": [],
+      "target_paths": [
+        "lib/adapters/android_agent/",
+        "android/app/src/main/kotlin/com/wweiyi/expert_chat/agent/"
+      ],
+      "depends_on": [
+        "contracts",
+        "platform_services"
+      ],
+      "integrates_with": [],
+      "responsibility": "Kotlin 观察、动作、权限与操作后回读，经 Dart 桥注册",
+      "data_owner": "观察引用、权限状态与动作执行回执",
+      "migration_phase": "P2"
+    },
+    {
+      "id": "remote_link",
+      "name": "设备连接与续传",
+      "group": "execution",
+      "status": "planned",
+      "current_paths": [],
+      "target_paths": [
+        "lib/adapters/remote_agent/"
+      ],
+      "depends_on": [
+        "contracts",
+        "storage"
+      ],
+      "integrates_with": [
+        "desktop_runtime"
+      ],
+      "responsibility": "配对、身份、能力协商、任务提交与事件续传，不决定任务终态",
+      "data_owner": "设备身份、连接状态与事件游标",
+      "migration_phase": "P4"
+    },
+    {
+      "id": "desktop_runtime",
+      "name": "电脑 Agent 运行时",
+      "group": "execution",
+      "status": "planned",
+      "current_paths": [],
+      "target_paths": [
+        "desktop_agent/src/runtime/",
+        "desktop_agent/src/executors/",
+        "desktop_agent/src/bin/host.rs"
+      ],
+      "depends_on": [
+        "contracts",
+        "model_access",
+        "tool_registry",
+        "mcp_connector",
+        "storage"
+      ],
+      "integrates_with": [],
+      "responsibility": "独立任务服务、模型循环、命令/文件/MCP 执行、核验与进程管理",
+      "data_owner": "电脑任务数据库、进程、日志和工作区产物",
+      "migration_phase": "P3/P4"
+    },
+    {
+      "id": "desktop_cli",
+      "name": "电脑命令行入口",
+      "group": "execution",
+      "status": "planned",
+      "current_paths": [],
+      "target_paths": [
+        "desktop_agent/src/bin/cli.rs"
+      ],
+      "depends_on": [
+        "contracts",
+        "desktop_runtime"
+      ],
+      "integrates_with": [],
+      "responsibility": "通过公开任务接口提交、查看、跟随、停止任务",
+      "data_owner": "CLI 交互状态，不复制权威任务库",
+      "migration_phase": "P3"
+    },
+    {
+      "id": "workspace",
+      "name": "工作资料",
+      "group": "product",
+      "status": "existing",
+      "current_paths": [
+        "lib/features/projects/",
+        "lib/features/library/",
+        "lib/features/memory/",
+        "lib/domain/memory/",
+        "lib/data/project_repository.dart",
+        "lib/data/library_repository.dart",
+        "lib/data/memory_repository.dart",
+        "lib/data/generation_repository.dart"
+      ],
+      "target_paths": [
+        "lib/modules/workspace/"
+      ],
+      "depends_on": [
+        "contracts",
+        "storage",
+        "model_access",
+        "content_capabilities"
+      ],
+      "integrates_with": [],
+      "responsibility": "projects/library/memory 三个子域的资料、作用域和资产管理",
+      "data_owner": "项目、资料、生成版本、记忆与审核记录",
+      "migration_phase": "P5"
+    },
+    {
+      "id": "conversation",
+      "name": "会话工作区",
+      "group": "product",
+      "status": "partial",
+      "current_paths": [
+        "lib/features/chat/",
+        "lib/state/chat_controller.dart",
+        "lib/state/chat/",
+        "lib/domain/chat/conversation_tree.dart",
+        "lib/domain/chat/conversation_outline.dart",
+        "lib/domain/chat/request_context_builder.dart",
+        "lib/domain/export/",
+        "lib/data/drift_conversation_repository.dart"
+      ],
+      "target_paths": [
+        "lib/modules/conversation/"
+      ],
+      "depends_on": [
+        "contracts",
+        "agent_runtime",
+        "workspace",
+        "platform_services"
+      ],
+      "integrates_with": [],
+      "responsibility": "消息树、草稿、展示、导出、任务输入快照和事件投影",
+      "data_owner": "会话、消息、分支与草稿",
+      "migration_phase": "P1/P5"
+    },
+    {
+      "id": "learning",
+      "name": "学习工作区",
+      "group": "product",
+      "status": "existing",
+      "current_paths": [
+        "lib/features/study/",
+        "lib/domain/study/",
+        "lib/state/study_controller.dart",
+        "lib/state/learning_plan_controller.dart",
+        "lib/data/study_repository.dart",
+        "lib/data/learning_plan.dart"
+      ],
+      "target_paths": [
+        "lib/modules/learning/"
+      ],
+      "depends_on": [
+        "contracts",
+        "agent_runtime",
+        "model_access",
+        "workspace",
+        "storage"
+      ],
+      "integrates_with": [],
+      "responsibility": "导师、课程、刷题、复习与每日学习档案，按业务规则提交结果",
+      "data_owner": "学习实体、实际作答、反馈与掌握证据",
+      "migration_phase": "P5"
+    },
+    {
+      "id": "creation",
+      "name": "创作工作区",
+      "group": "product",
+      "status": "existing",
+      "current_paths": [
+        "lib/features/story/",
+        "lib/domain/story/",
+        "lib/state/character_controller.dart",
+        "lib/state/world_info_controller.dart",
+        "lib/data/character_repository.dart",
+        "lib/data/world_info_repository.dart"
+      ],
+      "target_paths": [
+        "lib/modules/creation/"
+      ],
+      "depends_on": [
+        "contracts",
+        "agent_runtime",
+        "model_access",
+        "workspace",
+        "storage"
+      ],
+      "integrates_with": [],
+      "responsibility": "角色、世界信息、故事状态和创作上下文贡献",
+      "data_owner": "角色、世界信息、剧情与创作设定",
+      "migration_phase": "P5"
+    },
+    {
+      "id": "research",
+      "name": "科研终端工作区",
+      "group": "product",
+      "status": "existing",
+      "current_paths": [
+        "lib/features/research/",
+        "lib/domain/research/",
+        "lib/data/research/",
+        "lib/state/research_terminal_controller.dart",
+        "lib/state/research_files_controller.dart"
+      ],
+      "target_paths": [
+        "lib/modules/research/"
+      ],
+      "depends_on": [
+        "contracts",
+        "model_access",
+        "remote_link",
+        "storage",
+        "platform_services"
+      ],
+      "integrates_with": [],
+      "responsibility": "交互 SSH/tmux/SFTP 与命令提议；显式转交电脑任务",
+      "data_owner": "终端连接、主机配置引用、传输与提议",
+      "migration_phase": "P5"
+    },
+    {
+      "id": "settings",
+      "name": "设置工作区",
+      "group": "product",
+      "status": "partial",
+      "current_paths": [
+        "lib/features/settings/",
+        "lib/state/settings_controller.dart",
+        "lib/data/settings_state.dart",
+        "lib/data/settings_storage.dart"
+      ],
+      "target_paths": [
+        "lib/modules/settings/"
+      ],
+      "depends_on": [
+        "contracts",
+        "model_access",
+        "mcp_connector",
+        "remote_link",
+        "storage",
+        "platform_services"
+      ],
+      "integrates_with": [],
+      "responsibility": "编辑模块配置片段并协调保存，业务能力由所属模块提供",
+      "data_owner": "设置编辑草稿与聚合视图；配置数据分属各模块",
+      "migration_phase": "P1/P5"
+    },
+    {
+      "id": "task_workspace",
+      "name": "任务中心",
+      "group": "product",
+      "status": "planned",
+      "current_paths": [],
+      "target_paths": [
+        "lib/modules/tasks/"
+      ],
+      "depends_on": [
+        "contracts",
+        "agent_runtime",
+        "remote_link",
+        "workspace"
+      ],
+      "integrates_with": [],
+      "responsibility": "本机/电脑任务查看、动作确认、停止、恢复与产物入口",
+      "data_owner": "客户端任务投影，不复制执行端权威状态",
+      "migration_phase": "P1/P4"
+    },
+    {
+      "id": "document_service",
+      "name": "Python 文档服务",
+      "group": "service",
+      "status": "existing",
+      "current_paths": [
+        "server/mcp_server/",
+        "server/document_core/"
+      ],
+      "target_paths": [
+        "server/mcp_server/",
+        "server/document_core/"
+      ],
+      "depends_on": [],
+      "integrates_with": [],
+      "responsibility": "上传、文档检查/编辑/转换与受限 worker",
+      "data_owner": "服务端文档、上传偏移与回执",
+      "migration_phase": "保留并按能力演进"
+    },
+    {
+      "id": "legacy_gateway",
+      "name": "旧 Gateway 兼容",
+      "group": "compatibility",
+      "status": "compatibility",
+      "current_paths": [
+        "lib/domain/gateway/",
+        "lib/domain/chat/long_task_runner.dart",
+        "lib/domain/chat/long_task_configuration.dart",
+        "lib/domain/llm/long_task_gateway_client.dart",
+        "server/gateway/",
+        "server/doc_edit/",
+        "server/authservice/",
+        "server/edge/"
+      ],
+      "target_paths": [
+        "lib/compatibility/gateway/",
+        "server/gateway/",
+        "server/doc_edit/",
+        "server/authservice/",
+        "server/edge/"
+      ],
+      "depends_on": [
+        "contracts",
+        "model_access",
+        "mcp_connector",
+        "storage"
+      ],
+      "integrates_with": [],
+      "responsibility": "既有 REST/OIDC/文档长任务兼容；edge 是可选部署组件",
+      "data_owner": "旧部署账户/任务与其恢复记录",
+      "migration_phase": "P4/P5"
+    },
+    {
+      "id": "web_experiment",
+      "name": "React Web 实验原型",
+      "group": "experiment",
+      "status": "experimental",
+      "current_paths": [
+        "remote_lab_ui/"
+      ],
+      "target_paths": [
+        "remote_lab_ui/"
+      ],
+      "depends_on": [],
+      "integrates_with": [],
+      "responsibility": "独立实验 UI；不作为 Android 操作器或电脑任务服务",
+      "data_owner": "仅原型自身明确实现的数据",
+      "migration_phase": "独立维护"
+    },
+    {
+      "id": "app",
+      "name": "应用装配与导航",
+      "group": "product",
+      "status": "existing",
+      "current_paths": [
+        "lib/main.dart",
+        "lib/core/",
+        "lib/features/shell/"
+      ],
+      "target_paths": [
+        "lib/main.dart",
+        "lib/app/"
+      ],
+      "depends_on": [
+        "contracts",
+        "conversation",
+        "workspace",
+        "learning",
+        "creation",
+        "research",
+        "settings",
+        "task_workspace",
+        "agent_runtime",
+        "tool_registry",
+        "model_access",
+        "content_capabilities",
+        "mcp_connector",
+        "android_executor",
+        "remote_link",
+        "storage",
+        "platform_services",
+        "legacy_gateway"
+      ],
+      "integrates_with": [],
+      "responsibility": "启动、导航、主题、功能入口与依赖装配",
+      "data_owner": "应用级显示与入口状态",
+      "migration_phase": "P1/P5"
+    }
+  ],
+  "active_architecture": "docs/architecture/V2-ARCHITECTURE.md",
+  "active_plan": "docs/plans/AGENT-V2-REBUILD.md"
+}

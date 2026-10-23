@@ -119,6 +119,11 @@ class _ExpertChatAppState extends ConsumerState<ExpertChatApp> {
         _themeUi!.colorTheme != ui.colorTheme ||
         _themeUi!.cornerStyle != ui.cornerStyle ||
         _themeUi!.chatSurface != ui.chatSurface ||
+        _themeUi!.lineHeight != ui.lineHeight ||
+        _themeUi!.paragraphSpacing != ui.paragraphSpacing ||
+        _themeUi!.messageSpacing != ui.messageSpacing ||
+        _themeUi!.popoverMaxHeight != ui.popoverMaxHeight ||
+        _themeUi!.popoverTopMargin != ui.popoverTopMargin ||
         _themeDensity != density) {
       _themeUi = ui;
       _themeDensity = density;

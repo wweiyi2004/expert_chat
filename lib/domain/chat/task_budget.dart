@@ -37,6 +37,11 @@ class TaskBudget {
     _timer?.cancel();
   }
 
+  void waitForApproval() {
+    _clock.stop();
+    _timer?.cancel();
+  }
+
   bool takeTool() {
     if (finishing || _disposed) return false;
     if (toolCalls >= prefs.maxToolCalls) {

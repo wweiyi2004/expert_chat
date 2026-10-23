@@ -31,6 +31,13 @@ import '../../state/character_controller.dart';
 import '../../state/chat_controller.dart';
 import '../../state/memory_controller.dart';
 import '../../state/settings_controller.dart';
+import '../../state/session_policy.dart';
+import '../../state/work_changes.dart';
+import 'widgets/work_delivery_files.dart';
+import 'widgets/work_question_cards.dart';
+import 'widgets/work_approval_card.dart';
+import '../../state/conversation_workspace_bindings.dart';
+import '../workbench/workspace_workbench_page.dart';
 import '../shell/shell_tab.dart';
 import '../settings/model_setup_page.dart';
 import '../shared/recovery_notice.dart';
@@ -47,8 +54,13 @@ import 'chat_workspace_sidebar.dart';
 import 'controllers/chat_speech_controller.dart';
 import 'controllers/voice_conversation_controller.dart';
 import 'widgets/chat_composer.dart';
+import 'widgets/composer_popover.dart';
+import 'widgets/composer_model_picker.dart';
 import 'widgets/context_usage_chip.dart';
+import 'widgets/work_session_footer.dart';
+import 'widgets/session_policy_controls.dart';
 import 'widgets/chat_work_mode_switch.dart';
+import 'widgets/chat_workspace_options.dart';
 import 'widgets/conversation_outline_panel.dart';
 import 'widgets/image_pick_confirm_bar.dart';
 import 'widgets/attachment_picker.dart';
@@ -281,6 +293,13 @@ class _ChatPageState extends ConsumerState<ChatPage>
   /// Wide-layout conversation outline pane.
   bool _outlineOpen = false;
   double _outlineWidth = 280;
+  bool _workbenchOpen = true;
+  bool _workbenchMounted = true;
+  bool _workbenchExpanded = false;
+  int _workbenchTab = -1;
+  WorkFileChange? _workbenchDelivery;
+  int _deliveryRequestId = 0;
+  double _workbenchWidth = 560;
 
   /// Wide-layout history pane toggle (desktop).
   bool _historyOpen = true;
@@ -529,7 +548,10 @@ class _ChatPageState extends ConsumerState<ChatPage>
     if (wide) {
       setState(() {
         _outlineOpen = !_outlineOpen;
-        if (_outlineOpen) _toolsOpen = false;
+        if (_outlineOpen) {
+          _toolsOpen = false;
+          _workbenchOpen = false;
+        }
       });
       return;
     }
@@ -1270,64 +1292,67 @@ class _ChatPageState extends ConsumerState<ChatPage>
     unawaited(_rememberInLibrary(take));
   }
 
-  Future<void> _openConversationMcpPicker() async {
+  Future<void> _openConversationMcpPicker([BuildContext? anchor]) async {
     final settings = ref.read(settingsControllerProvider).value;
     final current = ref.read(chatControllerProvider).value?.current;
     if (settings == null || current == null) return;
     final choices = settings.availableMcpServers;
     if (choices.isEmpty) return;
     final selected = current.customMcpServerIds.toSet();
-    final result = await showModalBottomSheet<List<String>>(
-      context: context,
-      showDragHandle: true,
+    var query = '';
+    final result = await showComposerPopover<List<String>>(
+      anchor ?? context,
       builder: (sheetContext) {
         var next = {...selected};
         return StatefulBuilder(
           builder: (context, setSheetState) {
-            return SafeArea(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Text(
-                      '这个对话使用的 MCP',
-                      style: Theme.of(context).textTheme.titleMedium,
+            return ComposerPopoverFrame(
+              title: '这个对话使用的 MCP',
+              body: ListView(
+                shrinkWrap: true,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                children: [
+                  Text(
+                    '只把勾选的服务器工具交给模型。新对话默认不勾选。',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    decoration: const InputDecoration(
+                      prefixIcon: Icon(Icons.search, size: 18),
+                      hintText: '搜索 MCP',
                     ),
-                    const SizedBox(height: 8),
-                    Text(
-                      '只把勾选的服务器工具交给模型。新对话默认不勾选。',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                    const SizedBox(height: 8),
-                    for (final choice in choices)
-                      CheckboxListTile(
-                        contentPadding: EdgeInsets.zero,
-                        title: Text(choice.name),
-                        subtitle: Text(
-                          choice.toolsDiscovered ? '已发现工具' : '尚未发现工具，先在设置里连接',
-                        ),
-                        value: next.contains(choice.id),
-                        onChanged: (checked) {
-                          setSheetState(() {
-                            if (checked == true) {
-                              next.add(choice.id);
-                            } else {
-                              next.remove(choice.id);
-                            }
-                          });
-                        },
+                    onChanged: (value) =>
+                        setSheetState(() => query = value.toLowerCase()),
+                  ),
+                  const SizedBox(height: 6),
+                  for (final choice in choices.where(
+                    (c) => c.name.toLowerCase().contains(query),
+                  ))
+                    CheckboxListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(choice.name),
+                      subtitle: Text(
+                        choice.toolsDiscovered ? '已发现工具' : '尚未发现工具，先在设置里连接',
                       ),
-                    FilledButton(
-                      onPressed: () => Navigator.pop(sheetContext, [
-                        for (final choice in choices)
-                          if (next.contains(choice.id)) choice.id,
-                      ]),
-                      child: const Text('完成'),
+                      value: next.contains(choice.id),
+                      onChanged: (checked) => setSheetState(() {
+                        if (checked == true) {
+                          next.add(choice.id);
+                        } else {
+                          next.remove(choice.id);
+                        }
+                      }),
                     ),
-                  ],
-                ),
+                ],
+              ),
+              footer: FilledButton(
+                onPressed: () => Navigator.pop(sheetContext, [
+                  for (final choice in choices)
+                    if (next.contains(choice.id)) choice.id,
+                ]),
+                child: const Text('完成'),
               ),
             );
           },
@@ -1867,8 +1892,60 @@ class _ChatPageState extends ConsumerState<ChatPage>
             final showHistory =
                 ownsWorkspaceSidebar && dualPane && _historyOpen;
             final showTools = triplePane && storyLike && _toolsOpen;
+            final hasWorkbench =
+                slice.workMode &&
+                !storyLike &&
+                !slice.isStudy &&
+                slice.currentId != null;
+            final workspaceWidth =
+                constraints.maxWidth - (showHistory ? _historyWidth + 10 : 0);
+            final canDockWorkbench = workspaceWidth >= 820;
+            final showWorkbench =
+                hasWorkbench && canDockWorkbench && _workbenchOpen;
+            final maxWorkbenchWidth = (workspaceWidth - 430).clamp(
+              340.0,
+              900.0,
+            );
+            final workbenchWidth = showWorkbench && _workbenchExpanded
+                ? workspaceWidth - 10
+                : _workbenchWidth.clamp(340.0, maxWorkbenchWidth);
+            final workspaceId = ref.watch(
+              conversationWorkspaceBindingsProvider.select(
+                (bindings) => bindings[slice.currentId],
+              ),
+            );
+            final workspaceTarget = ref.watch(
+              sessionPolicyProvider.select((policies) {
+                final policy = policies[slice.currentId];
+                return (policy?.sshProfileId ?? '', policy?.remoteRoot ?? '.');
+              }),
+            );
+            void openWorkbench(int tab) {
+              if (!canDockWorkbench) {
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => WorkspaceWorkbenchPage(
+                      conversationId: slice.currentId!,
+                      initialTab: tab,
+                    ),
+                  ),
+                );
+                return;
+              }
+              setState(() {
+                _workbenchMounted = true;
+                _workbenchOpen = !_workbenchOpen;
+                _workbenchTab = tab;
+                _outlineOpen = false;
+              });
+            }
+
             final showOutline =
-                dualPane && _outlineOpen && slice.hasCurrent && !showTools;
+                dualPane &&
+                _outlineOpen &&
+                slice.hasCurrent &&
+                !showTools &&
+                !showWorkbench;
             final scheme = Theme.of(context).colorScheme;
             final speakerName = _characterNameForId(
               slice.isStory ? slice.characterId : null,
@@ -1904,256 +1981,334 @@ class _ChatPageState extends ConsumerState<ChatPage>
                   )?[slice.currentId!];
             final contextInputBudget = settings?.context.inputBudgetTokens ?? 0;
             final showWorkMode =
-                slice.hasCurrent &&
-                !slice.isStory &&
-                !slice.isEnsemble &&
-                !slice.isStudy;
-            return Scaffold(
-              appBar: AppBar(
-                centerTitle: false,
-                toolbarHeight: constraints.maxWidth < 600 && showWorkMode
-                    ? 72
-                    : null,
-                titleSpacing: dualPane ? 20 : 8,
-                title: LayoutBuilder(
-                  builder: (context, constraints) {
-                    final compactTitle =
-                        showWorkMode && constraints.maxWidth < 240;
-                    final modeIcon = Container(
-                      width: 32,
-                      height: 32,
-                      decoration: BoxDecoration(
-                        color: modeColor.withValues(alpha: 0.14),
-                        borderRadius: BorderRadius.circular(11),
-                        border: Border.all(
-                          color: modeColor.withValues(alpha: 0.28),
+                !slice.isStory && !slice.isEnsemble && !slice.isStudy;
+            final conversationAppBar = AppBar(
+              primary: false,
+              backgroundColor: widget.desktopShell ? scheme.surface : null,
+              surfaceTintColor: widget.desktopShell ? Colors.transparent : null,
+              elevation: widget.desktopShell ? 0 : null,
+              scrolledUnderElevation: widget.desktopShell ? 0 : null,
+              automaticallyImplyLeading: !widget.desktopShell,
+              centerTitle: showWorkMode,
+              leadingWidth: widget.desktopShell
+                  ? 12
+                  : showWorkMode
+                  ? ownsWorkspaceSidebar && !dualPane
+                        ? 96
+                        : 48
+                  : null,
+              leading: widget.desktopShell
+                  ? const SizedBox(width: 12)
+                  : showWorkMode
+                  ? Row(
+                      children: [
+                        if (ownsWorkspaceSidebar && !dualPane)
+                          const DrawerButton(),
+                        IconButton(
+                          key: const ValueKey('chat-new-conversation-button'),
+                          tooltip: '新会话',
+                          icon: const Icon(Icons.edit_square),
+                          onPressed: controller.newConversation,
                         ),
-                      ),
-                      child: Icon(
-                        ModeStyle.icon(mode, outlined: false),
-                        size: 17,
-                        color: modeColor,
+                      ],
+                    )
+                  : null,
+              toolbarHeight: widget.desktopShell
+                  ? 84
+                  : constraints.maxWidth < 600 && showWorkMode
+                  ? 72
+                  : null,
+              titleSpacing: dualPane ? 20 : 8,
+              title: LayoutBuilder(
+                builder: (context, constraints) {
+                  if (showWorkMode) {
+                    return Center(
+                      widthFactor: 1,
+                      heightFactor: 1,
+                      child: ChatWorkModeSwitch(
+                        prominent: true,
+                        onWorkOptions: slice.currentId != null
+                            ? () => showChatWorkspaceOptions(
+                                context,
+                                slice.currentId!,
+                              )
+                            : null,
+                        workMode: slice.workMode,
+                        onChanged: slice.isStreaming
+                            ? null
+                            : controller.switchConversationMode,
                       ),
                     );
-                    final titleBlock = Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(titleText, overflow: TextOverflow.ellipsis),
-                        if (slice.hasCurrent && storyLike)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 2),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                _ModePill(
-                                  label: slice.hasLocalCast
-                                      ? '导演故事'
-                                      : ModeStyle.label(mode),
-                                  color: modeColor,
-                                  icon: ModeStyle.icon(mode),
+                  }
+                  final compactTitle =
+                      showWorkMode && constraints.maxWidth < 240;
+                  final modeIcon = Container(
+                    width: 32,
+                    height: 32,
+                    decoration: BoxDecoration(
+                      color: modeColor.withValues(alpha: 0.14),
+                      borderRadius: BorderRadius.circular(11),
+                      border: Border.all(
+                        color: modeColor.withValues(alpha: 0.28),
+                      ),
+                    ),
+                    child: Icon(
+                      ModeStyle.icon(mode, outlined: false),
+                      size: 17,
+                      color: modeColor,
+                    ),
+                  );
+                  final titleBlock = Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(titleText, overflow: TextOverflow.ellipsis),
+                      if (slice.hasCurrent && storyLike)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              _ModePill(
+                                label: slice.hasLocalCast
+                                    ? '导演故事'
+                                    : ModeStyle.label(mode),
+                                color: modeColor,
+                                icon: ModeStyle.icon(mode),
+                              ),
+                              if (beatProgress != null) ...[
+                                const SizedBox(width: 8),
+                                Text(
+                                  beatProgress,
+                                  style: Theme.of(context).textTheme.labelSmall
+                                      ?.copyWith(
+                                        color: scheme.onSurfaceVariant,
+                                      ),
                                 ),
-                                if (beatProgress != null) ...[
-                                  const SizedBox(width: 8),
-                                  Text(
-                                    beatProgress,
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .labelSmall
-                                        ?.copyWith(
-                                          color: scheme.onSurfaceVariant,
-                                        ),
-                                  ),
-                                ],
-                                const SizedBox(width: 6),
-                                GestureDetector(
-                                  onTap: () {
-                                    final convo = ref
-                                        .read(chatControllerProvider)
-                                        .value
-                                        ?.current;
-                                    if (convo != null) {
-                                      _openPlot(convo, canPinTools: triplePane);
-                                    }
-                                  },
-                                  child: Text(
-                                    '情节',
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .labelSmall
-                                        ?.copyWith(
-                                          color: modeColor,
-                                          fontWeight: FontWeight.w700,
-                                        ),
-                                  ),
+                              ],
+                              const SizedBox(width: 6),
+                              GestureDetector(
+                                onTap: () {
+                                  final convo = ref
+                                      .read(chatControllerProvider)
+                                      .value
+                                      ?.current;
+                                  if (convo != null) {
+                                    _openPlot(convo, canPinTools: triplePane);
+                                  }
+                                },
+                                child: Text(
+                                  '情节',
+                                  style: Theme.of(context).textTheme.labelSmall
+                                      ?.copyWith(
+                                        color: modeColor,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  );
+                  return SizedBox(
+                    width: constraints.maxWidth,
+                    height: constraints.maxHeight.isFinite
+                        ? constraints.maxHeight
+                        : 56,
+                    child: Row(
+                      children: [
+                        if (!compactTitle) ...[
+                          modeIcon,
+                          const SizedBox(width: 8),
+                        ],
+                        if (showWorkMode && compactTitle)
+                          Expanded(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  titleText,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: Theme.of(
+                                    context,
+                                  ).textTheme.labelMedium,
+                                ),
+                                ChatWorkModeSwitch(
+                                  onWorkOptions: slice.currentId != null
+                                      ? () => showChatWorkspaceOptions(
+                                          context,
+                                          slice.currentId!,
+                                        )
+                                      : null,
+                                  workMode: slice.workMode,
+                                  onChanged: slice.isStreaming
+                                      ? null
+                                      : controller.switchConversationMode,
                                 ),
                               ],
                             ),
-                          ),
-                      ],
-                    );
-                    return SizedBox(
-                      width: constraints.maxWidth,
-                      height: constraints.maxHeight.isFinite
-                          ? constraints.maxHeight
-                          : 56,
-                      child: Row(
-                        children: [
-                          if (!compactTitle) ...[
-                            modeIcon,
+                          )
+                        else ...[
+                          Expanded(child: titleBlock),
+                          if (showWorkMode) ...[
                             const SizedBox(width: 8),
-                          ],
-                          if (showWorkMode && compactTitle)
-                            Expanded(
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    titleText,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: Theme.of(
+                            ChatWorkModeSwitch(
+                              onWorkOptions: slice.currentId != null
+                                  ? () => showChatWorkspaceOptions(
                                       context,
-                                    ).textTheme.labelMedium,
-                                  ),
-                                  ChatWorkModeSwitch(
-                                    workMode: slice.workMode,
-                                    onChanged: controller.setWorkMode,
-                                  ),
-                                ],
-                              ),
-                            )
-                          else ...[
-                            Expanded(child: titleBlock),
-                            if (showWorkMode) ...[
-                              const SizedBox(width: 8),
-                              ChatWorkModeSwitch(
-                                workMode: slice.workMode,
-                                onChanged: controller.setWorkMode,
-                              ),
-                            ],
+                                      slice.currentId!,
+                                    )
+                                  : null,
+                              workMode: slice.workMode,
+                              onChanged: slice.isStreaming
+                                  ? null
+                                  : controller.switchConversationMode,
+                            ),
                           ],
                         ],
-                      ),
-                    );
-                  },
-                ),
-                bottom: PreferredSize(
-                  preferredSize: const Size.fromHeight(1),
-                  child: Container(
-                    height: 1,
-                    color: scheme.outlineVariant.withValues(alpha: 0.85),
-                  ),
-                ),
-                actions: [
-                  if (contextEnabled)
-                    Padding(
-                      padding: const EdgeInsets.only(right: 4),
-                      child: Center(
-                        child: ContextUsageChip(
-                          compact: constraints.maxWidth < 480,
-                          report: contextReport,
-                          inputBudget: contextInputBudget,
-                        ),
-                      ),
-                    ),
-                  if (ownsWorkspaceSidebar && dualPane)
-                    IconButton(
-                      tooltip: _historyOpen ? '隐藏会话列表' : '显示会话列表',
-                      icon: Icon(
-                        _historyOpen
-                            ? Icons.view_sidebar_outlined
-                            : Icons.view_sidebar,
-                      ),
-                      onPressed: () =>
-                          setState(() => _historyOpen = !_historyOpen),
-                    ),
-                  if (slice.hasCurrent && dualPane)
-                    IconButton(
-                      tooltip: _outlineOpen ? '隐藏大纲' : '大纲',
-                      icon: Icon(
-                        _outlineOpen ? Icons.list_alt : Icons.list_alt_outlined,
-                      ),
-                      onPressed: () => _toggleOutline(wide: true),
-                    ),
-                  if (triplePane && storyLike)
-                    IconButton(
-                      tooltip: _toolsOpen ? '隐藏情节面板' : '显示情节面板',
-                      icon: Icon(
-                        _toolsOpen
-                            ? Icons.vertical_split
-                            : Icons.vertical_split_outlined,
-                      ),
-                      onPressed: () => setState(() {
-                        _toolsOpen = !_toolsOpen;
-                        if (_toolsOpen) _outlineOpen = false;
-                      }),
-                    ),
-                  if (!widget.desktopShell)
-                    PopupMenuButton<String>(
-                      tooltip: '新建',
-                      icon: const Icon(Icons.add_comment_outlined),
-                      onSelected: (v) {
-                        if (v == 'chat') {
-                          controller.newConversation();
-                        } else if (v == 'story') {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) => const DirectorStorySetupPage(),
-                            ),
-                          );
-                        } else if (v == 'ensemble') {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) => const EnsembleSetupPage(),
-                            ),
-                          );
-                        }
-                      },
-                      itemBuilder: (_) => [
-                        PopupMenuItem(
-                          value: 'chat',
-                          child: ListTile(
-                            dense: true,
-                            contentPadding: EdgeInsets.zero,
-                            leading: Icon(
-                              ModeStyle.icon(ConversationMode.chat),
-                              color: ModeStyle.chat,
-                            ),
-                            title: Text(
-                              ModeStyle.longLabel(ConversationMode.chat),
-                            ),
-                          ),
-                        ),
-                        PopupMenuItem(
-                          value: 'story',
-                          child: ListTile(
-                            dense: true,
-                            contentPadding: EdgeInsets.zero,
-                            leading: Icon(
-                              ModeStyle.icon(ConversationMode.story),
-                              color: ModeStyle.story,
-                            ),
-                            title: Text('导演故事'),
-                          ),
-                        ),
-                        PopupMenuItem(
-                          value: 'ensemble',
-                          child: ListTile(
-                            dense: true,
-                            contentPadding: EdgeInsets.zero,
-                            leading: Icon(
-                              ModeStyle.icon(ConversationMode.ensemble),
-                              color: ModeStyle.ensemble,
-                            ),
-                            title: Text(
-                              ModeStyle.longLabel(ConversationMode.ensemble),
-                            ),
-                          ),
-                        ),
                       ],
                     ),
+                  );
+                },
+              ),
+              bottom: widget.desktopShell
+                  ? null
+                  : PreferredSize(
+                      preferredSize: const Size.fromHeight(1),
+                      child: Container(
+                        height: 1,
+                        color: scheme.outlineVariant.withValues(alpha: 0.85),
+                      ),
+                    ),
+              actions: [
+                if (hasWorkbench)
+                  IconButton(
+                    tooltip: showWorkbench ? '收起工作台' : '打开工作台',
+                    icon: Icon(
+                      showWorkbench
+                          ? Icons.vertical_split
+                          : Icons.vertical_split_outlined,
+                    ),
+                    onPressed: () => openWorkbench(-1),
+                  ),
+                if (contextEnabled &&
+                    !slice.workMode &&
+                    constraints.maxWidth >= 600 &&
+                    (!widget.desktopShell || slice.hasUserActivity))
+                  Padding(
+                    padding: const EdgeInsets.only(right: 4),
+                    child: Center(
+                      child: ContextUsageChip(
+                        compact: constraints.maxWidth < 480,
+                        report: contextReport,
+                        inputBudget: contextInputBudget,
+                      ),
+                    ),
+                  ),
+                if (ownsWorkspaceSidebar && dualPane)
+                  IconButton(
+                    tooltip: _historyOpen ? '隐藏会话列表' : '显示会话列表',
+                    icon: Icon(
+                      _historyOpen
+                          ? Icons.view_sidebar_outlined
+                          : Icons.view_sidebar,
+                    ),
+                    onPressed: () =>
+                        setState(() => _historyOpen = !_historyOpen),
+                  ),
+                if (slice.hasCurrent &&
+                    dualPane &&
+                    (!widget.desktopShell || slice.hasUserActivity))
+                  IconButton(
+                    tooltip: _outlineOpen ? '隐藏大纲' : '大纲',
+                    icon: Icon(
+                      _outlineOpen ? Icons.list_alt : Icons.list_alt_outlined,
+                    ),
+                    onPressed: () => _toggleOutline(wide: true),
+                  ),
+                if (triplePane && storyLike)
+                  IconButton(
+                    tooltip: _toolsOpen ? '隐藏情节面板' : '显示情节面板',
+                    icon: Icon(
+                      _toolsOpen
+                          ? Icons.vertical_split
+                          : Icons.vertical_split_outlined,
+                    ),
+                    onPressed: () => setState(() {
+                      _toolsOpen = !_toolsOpen;
+                      if (_toolsOpen) _outlineOpen = false;
+                    }),
+                  ),
+                if (!showWorkMode &&
+                    !widget.desktopShell &&
+                    constraints.maxWidth >= 600)
+                  PopupMenuButton<String>(
+                    tooltip: '新建',
+                    icon: const Icon(Icons.add_comment_outlined),
+                    onSelected: (v) {
+                      if (v == 'chat') {
+                        controller.newConversation();
+                      } else if (v == 'story') {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => const DirectorStorySetupPage(),
+                          ),
+                        );
+                      } else if (v == 'ensemble') {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => const EnsembleSetupPage(),
+                          ),
+                        );
+                      }
+                    },
+                    itemBuilder: (_) => [
+                      PopupMenuItem(
+                        value: 'chat',
+                        child: ListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(
+                            ModeStyle.icon(ConversationMode.chat),
+                            color: ModeStyle.chat,
+                          ),
+                          title: Text(
+                            ModeStyle.longLabel(ConversationMode.chat),
+                          ),
+                        ),
+                      ),
+                      PopupMenuItem(
+                        value: 'story',
+                        child: ListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(
+                            ModeStyle.icon(ConversationMode.story),
+                            color: ModeStyle.story,
+                          ),
+                          title: Text('导演故事'),
+                        ),
+                      ),
+                      PopupMenuItem(
+                        value: 'ensemble',
+                        child: ListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(
+                            ModeStyle.icon(ConversationMode.ensemble),
+                            color: ModeStyle.ensemble,
+                          ),
+                          title: Text(
+                            ModeStyle.longLabel(ConversationMode.ensemble),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                if (!showWorkMode)
                   PopupMenuButton<String>(
                     tooltip: '更多',
                     icon: const Icon(Icons.more_horiz),
@@ -2221,111 +2376,280 @@ class _ChatPageState extends ConsumerState<ChatPage>
                         ),
                     ],
                   ),
-                ],
-              ),
+              ],
+            );
+            return Scaffold(
               drawer: ownsWorkspaceSidebar && !dualPane
                   ? const _HistoryDrawer()
                   : null,
-              body: Row(
-                children: [
-                  if (showHistory) ...[
-                    SizedBox(
-                      width: _historyWidth,
-                      child: const ChatWorkspaceSidebar(),
-                    ),
-                    _PaneResizeHandle(
-                      onDrag: (dx) {
-                        setState(() {
-                          _historyWidth = (_historyWidth + dx).clamp(
-                            WorkspacePaneDefaults.historyMin,
-                            WorkspacePaneDefaults.historyMax,
-                          );
-                        });
-                      },
-                    ),
-                  ],
-                  Expanded(
-                    child: slice.isLoading
-                        ? const Center(child: CircularProgressIndicator())
-                        : slice.hasError
-                        ? Center(
-                            child: SingleChildScrollView(
-                              padding: const EdgeInsets.all(20),
-                              child: RecoveryNotice(
-                                error: slice.loadError!,
-                                title: '会话暂时无法加载',
-                                onRetry: () async {
-                                  ref.invalidate(chatControllerProvider);
-                                  await ref.read(chatControllerProvider.future);
-                                },
-                              ),
-                            ),
-                          )
-                        : _chatColumn(
-                            slice,
-                            controller,
-                            canPinTools: triplePane,
-                          ),
-                  ),
-                  if (showOutline) ...[
-                    _PaneResizeHandle(
-                      onDrag: (dx) {
-                        setState(() {
-                          _outlineWidth = (_outlineWidth - dx).clamp(
-                            220.0,
-                            420.0,
-                          );
-                        });
-                      },
-                    ),
-                    SizedBox(
-                      width: _outlineWidth,
-                      child: Consumer(
-                        builder: (context, ref, _) {
-                          final path =
-                              ref.watch(
-                                chatControllerProvider.select(
-                                  (async) => async.value?.current?.activePath,
-                                ),
-                              ) ??
-                              const <ChatMessage>[];
-                          return ConversationOutlinePanel(
-                            entries: buildConversationOutline(path),
-                            onJump: _jumpToOutline,
-                            onClose: () => setState(() => _outlineOpen = false),
-                          );
+              body: SafeArea(
+                bottom: false,
+                child: Row(
+                  children: [
+                    if (showHistory) ...[
+                      SizedBox(
+                        width: _historyWidth,
+                        child: const ChatWorkspaceSidebar(),
+                      ),
+                      _PaneResizeHandle(
+                        onDrag: (dx) {
+                          setState(() {
+                            _historyWidth = (_historyWidth + dx).clamp(
+                              WorkspacePaneDefaults.historyMin,
+                              WorkspacePaneDefaults.historyMax,
+                            );
+                          });
                         },
                       ),
-                    ),
-                  ],
-                  if (showTools) ...[
-                    _PaneResizeHandle(
-                      onDrag: (dx) {
-                        setState(() {
-                          _toolsWidth = (_toolsWidth - dx).clamp(
-                            WorkspacePaneDefaults.toolsMin,
-                            WorkspacePaneDefaults.toolsMax,
-                          );
-                        });
-                      },
-                    ),
-                    SizedBox(
-                      width: _toolsWidth,
-                      child: StoryPanelBody(
-                        key: ValueKey('tools-${slice.currentId}'),
-                        conversationId: slice.currentId!,
-                        embedded: true,
-                        onClose: () => setState(() => _toolsOpen = false),
+                    ],
+                    Expanded(
+                      child: Offstage(
+                        offstage: showWorkbench && _workbenchExpanded,
+                        child: OverflowBox(
+                          alignment: Alignment.centerLeft,
+                          minWidth: showWorkbench && _workbenchExpanded
+                              ? workspaceWidth
+                              : null,
+                          maxWidth: showWorkbench && _workbenchExpanded
+                              ? workspaceWidth
+                              : null,
+                          child: Column(
+                            children: [
+                              SizedBox(
+                                height: conversationAppBar.preferredSize.height,
+                                child: conversationAppBar,
+                              ),
+                              Expanded(
+                                child: slice.isLoading
+                                    ? const Center(
+                                        child: CircularProgressIndicator(),
+                                      )
+                                    : slice.hasError
+                                    ? Center(
+                                        child: SingleChildScrollView(
+                                          padding: const EdgeInsets.all(20),
+                                          child: RecoveryNotice(
+                                            error: slice.loadError!,
+                                            title: '会话暂时无法加载',
+                                            onRetry: () async {
+                                              ref.invalidate(
+                                                chatControllerProvider,
+                                              );
+                                              await ref.read(
+                                                chatControllerProvider.future,
+                                              );
+                                            },
+                                          ),
+                                        ),
+                                      )
+                                    : _chatColumn(
+                                        slice,
+                                        controller,
+                                        canPinTools: triplePane,
+                                      ),
+                              ),
+                            ],
+                          ),
+                        ),
                       ),
                     ),
+                    if (showOutline) ...[
+                      _PaneResizeHandle(
+                        onDrag: (dx) {
+                          setState(() {
+                            _outlineWidth = (_outlineWidth - dx).clamp(
+                              220.0,
+                              420.0,
+                            );
+                          });
+                        },
+                      ),
+                      SizedBox(
+                        width: _outlineWidth,
+                        child: Consumer(
+                          builder: (context, ref, _) {
+                            final path =
+                                ref.watch(
+                                  chatControllerProvider.select(
+                                    (async) => async.value?.current?.activePath,
+                                  ),
+                                ) ??
+                                const <ChatMessage>[];
+                            return ConversationOutlinePanel(
+                              entries: buildConversationOutline(path),
+                              onJump: _jumpToOutline,
+                              onClose: () =>
+                                  setState(() => _outlineOpen = false),
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                    if (showTools) ...[
+                      _PaneResizeHandle(
+                        onDrag: (dx) {
+                          setState(() {
+                            _toolsWidth = (_toolsWidth - dx).clamp(
+                              WorkspacePaneDefaults.toolsMin,
+                              WorkspacePaneDefaults.toolsMax,
+                            );
+                          });
+                        },
+                      ),
+                      SizedBox(
+                        width: _toolsWidth,
+                        child: StoryPanelBody(
+                          key: ValueKey('tools-${slice.currentId}'),
+                          conversationId: slice.currentId!,
+                          embedded: true,
+                          onClose: () => setState(() => _toolsOpen = false),
+                        ),
+                      ),
+                    ],
+                    if (hasWorkbench && _workbenchMounted)
+                      Offstage(
+                        offstage: !showWorkbench,
+                        child: ExcludeFocus(
+                          excluding: !showWorkbench,
+                          child: Row(
+                            children: [
+                              _PaneResizeHandle(
+                                onDrag: (dx) => setState(() {
+                                  _workbenchExpanded = false;
+                                  _workbenchWidth = (workbenchWidth - dx).clamp(
+                                    340.0,
+                                    maxWorkbenchWidth,
+                                  );
+                                }),
+                              ),
+                              SizedBox(
+                                width: workbenchWidth,
+                                child: WorkspaceWorkbenchPage(
+                                  key: ValueKey((
+                                    slice.currentId,
+                                    workspaceId,
+                                    workspaceTarget,
+                                  )),
+                                  conversationId: slice.currentId!,
+                                  embedded: true,
+                                  initialTab: _workbenchTab,
+                                  initialDelivery:
+                                      _workbenchDelivery?.conversationId ==
+                                          slice.currentId
+                                      ? _workbenchDelivery
+                                      : null,
+                                  deliveryRequestId: _deliveryRequestId,
+                                  expanded: _workbenchExpanded,
+                                  onToggleExpanded: () => setState(
+                                    () => _workbenchExpanded =
+                                        !_workbenchExpanded,
+                                  ),
+                                  onClose: () =>
+                                      setState(() => _workbenchOpen = false),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
                   ],
-                ],
+                ),
               ),
             );
           },
         ),
       ),
     );
+  }
+
+  void _openDeliveredFile(WorkFileChange file) {
+    final width = context.size?.width ?? MediaQuery.sizeOf(context).width;
+    final available =
+        width - (!widget.desktopShell && _historyOpen ? _historyWidth + 10 : 0);
+    if (available < 820) {
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => WorkspaceWorkbenchPage(
+            conversationId: file.conversationId,
+            initialTab: -1,
+            initialDelivery: file,
+          ),
+        ),
+      );
+      return;
+    }
+    setState(() {
+      _workbenchMounted = true;
+      _workbenchOpen = true;
+      _outlineOpen = false;
+      _workbenchDelivery = file;
+      _deliveryRequestId++;
+    });
+  }
+
+  Future<void> _openConversationOptions({required bool wide}) async {
+    final current = ref.read(chatControllerProvider).value?.current;
+    final settings = ref.read(settingsControllerProvider).value;
+    final streaming =
+        ref.read(chatControllerProvider).value?.isStreaming ?? false;
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheet) => SafeArea(
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (current != null)
+                SessionPolicyControls(
+                  conversationId: current.id,
+                  workMode: current.workMode,
+                  busy: streaming,
+                ),
+
+              if (current != null)
+                ListTile(
+                  leading: const Icon(Icons.list_alt_outlined),
+                  title: const Text('大纲'),
+                  onTap: () => Navigator.pop(sheet, 'outline'),
+                ),
+              ListTile(
+                leading: const Icon(Icons.ios_share_outlined),
+                title: const Text('导出 Markdown'),
+                onTap: () => Navigator.pop(sheet, 'export'),
+              ),
+              if (current?.activePath.any((m) => m.role == MessageRole.user) ??
+                  false)
+                ListTile(
+                  leading: const Icon(Icons.auto_awesome_outlined),
+                  title: const Text('整理候选记忆'),
+                  enabled:
+                      settings?.memoryEnabled == true &&
+                      !streaming &&
+                      !_extractingMemoryCandidates,
+                  subtitle: Text(
+                    settings?.memoryEnabled == true
+                        ? '从当前会话提取，确认后才写入'
+                        : '请先在设置中开启长期记忆',
+                  ),
+                  onTap: () => Navigator.pop(sheet, 'memory'),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (!mounted) return;
+    switch (action) {
+      case 'outline':
+        _toggleOutline(wide: wide);
+      case 'export':
+        await _export(current);
+      case 'memory':
+        if (current != null) await _extractMemoryCandidates(current);
+      default:
+        break;
+    }
   }
 
   Widget _chatColumn(
@@ -2342,6 +2666,18 @@ class _ChatPageState extends ConsumerState<ChatPage>
         showError && AppFailure.from(slice.error!).needsConfiguration;
     final settings = ref.watch(settingsControllerProvider).value;
     final ui = settings?.ui ?? const UiPrefs();
+    final desktopEmpty =
+        !slice.isStory &&
+        !slice.isEnsemble &&
+        !slice.isStudy &&
+        (convo?.activePath.isEmpty ?? true) &&
+        !_selecting &&
+        !_voice.active &&
+        !showError &&
+        !slice.hasError;
+    if (desktopEmpty) {
+      return _desktopWelcome(slice, controller, convo, settings);
+    }
     return Column(
       children: [
         if (convo?.recoveredStorage.isNotEmpty == true)
@@ -2352,6 +2688,8 @@ class _ChatPageState extends ConsumerState<ChatPage>
         if (showError && slice.error != null)
           RecoveryNotice(
             error: slice.error!,
+            onDismiss: () =>
+                controller.dismissError(conversationId: slice.currentId),
             secrets: [
               if (settings != null) settings.apiKey,
               if (settings != null) settings.searchApiKey,
@@ -2436,86 +2774,288 @@ class _ChatPageState extends ConsumerState<ChatPage>
         if (!_selecting && _voice.active)
           VoiceConversationPanel(controller: _voice),
         if (!_selecting && !_voice.active)
-          ConstrainedBox(
+          _buildComposer(slice, controller, convo, settings),
+      ],
+    );
+  }
+
+  Widget _desktopWelcome(
+    _ChatScaffoldSlice slice,
+    ChatController controller,
+    Conversation? convo,
+    SettingsState? settings,
+  ) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact =
+            constraints.maxHeight < 480 || constraints.maxWidth < 600;
+        return SingleChildScrollView(
+          key: const ValueKey('desktop-chat-welcome'),
+          padding: EdgeInsets.fromLTRB(
+            constraints.maxWidth < 600 ? 4 : 24,
+            20,
+            constraints.maxWidth < 600 ? 4 : 24,
+            30,
+          ),
+          child: ConstrainedBox(
             constraints: BoxConstraints(
-              maxHeight: MediaQuery.sizeOf(context).height * 0.55,
+              minHeight: (constraints.maxHeight - 50).clamp(
+                0.0,
+                double.infinity,
+              ),
             ),
-            child: CustomScrollView(
-              shrinkWrap: true,
-              slivers: [
-                SliverToBoxAdapter(
-                  child: ChatComposer(
-                    controller: _input,
-                    isStreaming: slice.isStreaming,
-                    deepThink: slice.deepThink,
-                    reasoningEffort: slice.reasoningEffort,
-                    supportsReasoningEffort:
-                        settings?.config.capabilities.supportsReasoningEffort ??
-                        false,
-                    searchMode: slice.searchMode,
-                    imageGenMode: slice.imageGenMode,
-                    attachments: _attachments,
-                    picking: _picking,
-                    storyLike: slice.isStory || slice.isEnsemble,
-                    isStudy: slice.isStudy,
-                    directorMode: slice.hasLocalCast,
-                    canAttachImages:
-                        settings?.canAttachImages(deepThink: slice.deepThink) ??
-                        false,
-                    imageGenerationConfigured:
-                        settings?.imageGenerationConfigured ?? false,
-                    imageMode:
-                        _imageMode &&
-                        (settings?.imageGenerationConfigured ?? false),
-                    longTaskMode: _longTaskMode,
-                    longTaskAvailable:
-                        (settings?.supportsLongTasks ?? false) &&
-                        attachmentsAreDocuments(_attachments) &&
-                        !_imageMode,
-                    maxImageEditReferences:
-                        settings?.imageGenerationApi.maxImageEditReferences ??
-                        1,
-                    documentEditAvailable:
-                        (settings?.supportsDocumentEdit ?? false) &&
-                        _attachments.any((a) => a.isEditableDocument) &&
-                        !_imageMode,
-                    speechBusy: _speech.busy,
-                    speechListening: _speech.listening,
-                    speechUsesCloudAsr: _speech.usesCloudAsr,
-                    onToggleDeepThink: controller.toggleDeepThink,
-                    onReasoningEffortChanged: controller.setReasoningEffort,
-                    mcpAvailable:
-                        (settings?.availableMcpServers.isNotEmpty ?? false) &&
-                        !slice.isStory &&
-                        !slice.isEnsemble &&
-                        !slice.isStudy,
-                    mcpSelectedCount: slice.customMcpServerIds.isEmpty
-                        ? 0
-                        : slice.customMcpServerIds.split(',').length,
-                    onToggleSearch: controller.toggleSearch,
-                    onPickMcpServers: _openConversationMcpPicker,
-                    onSetImageGenMode: controller.setImageGenMode,
-                    onToggleImageMode: _toggleImageMode,
-                    onToggleLongTask: () =>
-                        setState(() => _longTaskMode = !_longTaskMode),
-                    onPickDocuments: _pickDocuments,
-                    onPickImages: _pickImages,
-                    onPickLibrary: _openLibraryPicker,
-                    onPaste: _handleComposerPaste,
-                    onRemoveAttachment: _removeAttachment,
-                    onToggleSpeech: _speech.toggleSpeech,
-                    onVoiceConversation: kIsWeb
-                        ? null
-                        : _startVoiceConversation,
-                    onSend: () => _send(),
-                    onDocumentEdit: () => _send(forceDocumentEdit: true),
-                    onStop: controller.stop,
-                  ),
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 880),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      slice.workMode ? '今天想推进什么工作？' : '今天想完成什么？',
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.headlineLarge
+                          ?.copyWith(
+                            fontSize: compact ? 24 : 30,
+                            fontWeight: FontWeight.w600,
+                            letterSpacing: -.8,
+                          ),
+                    ),
+                    SizedBox(height: compact ? 18 : 26),
+                    if (_pendingImagePicks?.isNotEmpty ?? false)
+                      ImagePickConfirmBar(
+                        candidates: _pendingImagePicks!,
+                        maxSelectable: _pendingImageMaxSlots.clamp(1, 64),
+                        onChanged: () => setState(() {}),
+                        onCancel: _cancelPendingImages,
+                        onConfirm: _confirmPendingImages,
+                      ),
+                    _buildComposer(slice, controller, convo, settings),
+                    if (!(settings?.config.isReady ?? false))
+                      Padding(
+                        padding: const EdgeInsets.only(top: 12),
+                        child: TextButton.icon(
+                          key: const ValueKey('chat-connect-model'),
+                          onPressed: _openModelSetup,
+                          icon: const Icon(Icons.tune, size: 18),
+                          label: const Text('配置模型以开始对话'),
+                        ),
+                      ),
+                    SizedBox(height: compact ? 0 : 50),
+                  ],
                 ),
-              ],
+              ),
             ),
           ),
-      ],
+        );
+      },
+    );
+  }
+
+  Widget _buildComposer(
+    _ChatScaffoldSlice slice,
+    ChatController controller,
+    Conversation? convo,
+    SettingsState? settings,
+  ) {
+    final waitingForBackground = ref.watch(
+      chatControllerProvider.select(
+        (value) =>
+            value.value?.sessionCheckpoints[slice.currentId]?.status ==
+            SessionExecutionStatus.waiting,
+      ),
+    );
+    return Align(
+      alignment: Alignment.bottomCenter,
+      heightFactor: 1,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxWidth: widget.desktopShell ? 880 : double.infinity,
+        ),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.sizeOf(context).height * 0.55,
+          ),
+          child: CustomScrollView(
+            shrinkWrap: true,
+            slivers: [
+              if (slice.currentId != null &&
+                  !slice.isStory &&
+                  !slice.isEnsemble &&
+                  !slice.isStudy)
+                SliverToBoxAdapter(
+                  child: WorkSessionFooter(
+                    conversationId: slice.currentId!,
+                    busy: slice.isStreaming,
+                    workMode: slice.workMode,
+                  ),
+                ),
+              SliverToBoxAdapter(
+                child: ChatComposer(
+                  // Draft text belongs to _input. Recreate the local widget
+                  // when moving from welcome to transcript; grafting a live
+                  // tooltip/OverlayPortal with a GlobalKey during sliver layout
+                  // mutates the overlay while another subtree is laying out.
+                  key: const ValueKey('chat-composer-instance'),
+                  desktopLayout:
+                      !slice.isStory && !slice.isEnsemble && !slice.isStudy,
+                  controller: _input,
+                  isStreaming: slice.isStreaming || waitingForBackground,
+                  deepThink: slice.deepThink,
+                  reasoningEffort: slice.reasoningEffort,
+                  permissionControl: convo == null || !slice.workMode
+                      ? null
+                      : ComposerPermissionControl(conversationId: convo.id),
+                  attachedToolbar:
+                      convo == null ||
+                          slice.isStory ||
+                          slice.isEnsemble ||
+                          slice.isStudy
+                      ? null
+                      : Wrap(
+                          spacing: 4,
+                          runSpacing: 2,
+                          children: [
+                            if (slice.workMode)
+                              Builder(
+                                builder: (anchor) => TextButton.icon(
+                                  onPressed: () => showChatWorkspaceOptions(
+                                    anchor,
+                                    convo.id,
+                                  ),
+                                  icon: const Icon(
+                                    Icons.folder_open_outlined,
+                                    size: 15,
+                                  ),
+                                  label: const Text('项目 / 执行位置'),
+                                ),
+                              ),
+                            TextButton.icon(
+                              onPressed: () {
+                                if (!slice.workMode) {
+                                  _openLibraryPicker();
+                                  return;
+                                }
+                                if (MediaQuery.sizeOf(context).width < 1100) {
+                                  Navigator.of(context).push(
+                                    MaterialPageRoute<void>(
+                                      builder: (_) => WorkspaceWorkbenchPage(
+                                        conversationId: convo.id,
+                                        initialTab: 0,
+                                      ),
+                                    ),
+                                  );
+                                } else {
+                                  setState(() {
+                                    _workbenchOpen = true;
+                                    _workbenchMounted = true;
+                                    _workbenchTab = 0;
+                                  });
+                                }
+                              },
+                              icon: const Icon(
+                                Icons.insert_drive_file_outlined,
+                                size: 15,
+                              ),
+                              label: const Text('文件'),
+                            ),
+                            if (settings?.availableMcpServers.isNotEmpty ??
+                                false)
+                              Builder(
+                                builder: (anchor) => TextButton.icon(
+                                  onPressed: () =>
+                                      _openConversationMcpPicker(anchor),
+                                  icon: const Icon(
+                                    Icons.extension_outlined,
+                                    size: 15,
+                                  ),
+                                  label: const Text('MCP'),
+                                ),
+                              ),
+                          ],
+                        ),
+                  modelPicker:
+                      convo == null ||
+                          slice.isStory ||
+                          slice.isEnsemble ||
+                          slice.isStudy
+                      ? null
+                      : ComposerModelPicker(
+                          conversationId: convo.id,
+                          enabled: true,
+                        ),
+                  supportsReasoningEffort:
+                      settings?.config.capabilities.supportsReasoningEffort ??
+                      false,
+                  searchMode: slice.searchMode,
+                  imageGenMode: slice.imageGenMode,
+                  attachments: _attachments,
+                  picking: _picking,
+                  storyLike: slice.isStory || slice.isEnsemble,
+                  isStudy: slice.isStudy,
+                  workMode: slice.workMode,
+                  directorMode: slice.hasLocalCast,
+                  canAttachImages:
+                      settings?.canAttachImages(deepThink: slice.deepThink) ??
+                      false,
+                  imageGenerationConfigured:
+                      settings?.imageGenerationConfigured ?? false,
+                  imageMode:
+                      _imageMode &&
+                      (settings?.imageGenerationConfigured ?? false),
+                  longTaskMode: _longTaskMode,
+                  longTaskAvailable:
+                      (settings?.supportsLongTasks ?? false) &&
+                      attachmentsAreDocuments(_attachments) &&
+                      !_imageMode,
+                  maxImageEditReferences:
+                      settings?.imageGenerationApi.maxImageEditReferences ?? 1,
+                  documentEditAvailable:
+                      (settings?.supportsDocumentEdit ?? false) &&
+                      _attachments.any((a) => a.isEditableDocument) &&
+                      !_imageMode,
+                  speechBusy: _speech.busy,
+                  speechListening: _speech.listening,
+                  speechUsesCloudAsr: _speech.usesCloudAsr,
+                  onToggleDeepThink: controller.toggleDeepThink,
+                  onReasoningEffortChanged: controller.setReasoningEffort,
+                  mcpAvailable:
+                      (settings?.availableMcpServers.isNotEmpty ?? false) &&
+                      !slice.isStory &&
+                      !slice.isEnsemble &&
+                      !slice.isStudy,
+                  mcpSelectedCount: slice.customMcpServerIds.isEmpty
+                      ? 0
+                      : slice.customMcpServerIds.split(',').length,
+                  onConversationOptions:
+                      !slice.isStory && !slice.isEnsemble && !slice.isStudy
+                      ? () => _openConversationOptions(
+                          wide:
+                              MediaQuery.sizeOf(context).width >=
+                              WorkspaceBreakpoints.dualPane,
+                        )
+                      : null,
+                  onToggleSearch: controller.toggleSearch,
+                  onPickMcpServers: _openConversationMcpPicker,
+                  onSetImageGenMode: controller.setImageGenMode,
+                  onToggleImageMode: _toggleImageMode,
+                  onToggleLongTask: () =>
+                      setState(() => _longTaskMode = !_longTaskMode),
+                  onPickDocuments: _pickDocuments,
+                  onPickImages: _pickImages,
+                  onPickLibrary: _openLibraryPicker,
+                  onPaste: _handleComposerPaste,
+                  onRemoveAttachment: _removeAttachment,
+                  onToggleSpeech: _speech.toggleSpeech,
+                  onVoiceConversation: kIsWeb ? null : _startVoiceConversation,
+                  onSend: () => _send(),
+                  onDocumentEdit: () => _send(forceDocumentEdit: true),
+                  onStop: controller.stop,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
@@ -2523,7 +3063,8 @@ class _ChatPageState extends ConsumerState<ChatPage>
     final state = ref.watch(chatControllerProvider).value;
     final convo = state?.current;
     final messages = convo?.activePath ?? const <ChatMessage>[];
-    final streamingHere = convo != null && state?.streamingConvoId == convo.id;
+    final streamingHere =
+        convo != null && (state?.isConversationRunning(convo.id) ?? false);
     final speakerName = _characterNameFor(convo);
     final settings = ref.watch(settingsControllerProvider).value;
     final memory = settings?.memoryEnabled == true
@@ -2533,7 +3074,9 @@ class _ChatPageState extends ConsumerState<ChatPage>
       for (final entry in memory?.entries ?? const <MemoryEntry>[])
         if (entry.sourceMessageId != null) entry.sourceMessageId!,
     };
-    final contentMax = ui.contentWidth.maxWidth;
+    final contentMax = convo?.workMode == true
+        ? ui.workContentWidth.maxWidth
+        : ui.contentWidth.maxWidth;
     final densityPad = ui.density == DensityPref.compact
         ? const EdgeInsets.fromLTRB(16, 12, 16, 20)
         : const EdgeInsets.fromLTRB(24, 18, 24, 28);
@@ -2544,13 +3087,10 @@ class _ChatPageState extends ConsumerState<ChatPage>
           needsSetup:
               !(ref.watch(settingsControllerProvider).value?.config.isReady ??
                   false),
+          workMode:
+              ref.watch(chatControllerProvider).value?.current?.workMode ??
+              false,
           onSetup: _openModelSetup,
-          onExample: (text) {
-            if (_input.text.trim().isEmpty) {
-              _input.text = text;
-              _input.selection = TextSelection.collapsed(offset: text.length);
-            }
-          },
         ),
       );
     }
@@ -2559,113 +3099,156 @@ class _ChatPageState extends ConsumerState<ChatPage>
         Center(
           child: ConstrainedBox(
             constraints: BoxConstraints(maxWidth: contentMax),
-            child: ListView.builder(
-              controller: _scroll,
-              padding: densityPad,
-              itemCount: messages.length,
-              itemBuilder: (context, i) {
-                final m = messages[i];
-                final isLast = i == messages.length - 1;
-                final isLastAssistant =
-                    isLast && m.role == MessageRole.assistant;
-                final (bIdx, bCount) = convo!.branchInfo(m.id);
-                final ttsForMessage = _speech.playback.isFor(m.id);
-                return KeyedSubtree(
-                  key: _keyForMessage(m.id),
-                  child: MessageBubble(
-                    key: ValueKey(m.id),
-                    message: m,
-                    onAnswerFromResults:
-                        !_selecting &&
-                            m.role == MessageRole.assistant &&
-                            m.kind != MessageKind.generatedImage &&
-                            !convo.isStoryLike &&
-                            !convo.isStudy &&
-                            ((streamingHere && isLastAssistant) ||
-                                (state?.isStreaming != true &&
-                                    m.searchActivities.any(
-                                      (a) =>
-                                          a.status == SearchActivityStatus.done,
-                                    )))
-                        ? () => unawaited(
-                            controller.answerFromResults(convo.id, m.id),
-                          )
-                        : null,
-                    onStopTask: streamingHere && isLastAssistant && !_selecting
-                        ? controller.stop
-                        : null,
-                    onRetryStep: state?.isStreaming != true && !_selecting
-                        ? (step) =>
-                              unawaited(_retryProcessStep(convo.id, m.id, step))
-                        : null,
-                    isStreaming: streamingHere && isLastAssistant,
-                    speakerName: m.role == MessageRole.assistant
-                        ? (m.speakerName ?? speakerName)
-                        : null,
-                    userLabel: convo.localCast.isNotEmpty ? '导演' : null,
-                    onRegenerate:
-                        (isLastAssistant &&
-                            state?.isStreaming != true &&
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                // Measure the conversation pane, not the entire desktop window.
+                // Keep a gutter even with the workbench open beside the transcript.
+                final gutter = ui.horizontalMessagePadding(
+                  constraints.maxWidth,
+                );
+                final messagePadding = EdgeInsets.fromLTRB(
+                  gutter,
+                  densityPad.top,
+                  gutter,
+                  densityPad.bottom,
+                );
+                return ListView.builder(
+                  controller: _scroll,
+                  padding: messagePadding,
+                  itemCount: messages.length,
+                  itemBuilder: (context, i) {
+                    final m = messages[i];
+                    final isLast = i == messages.length - 1;
+                    final isLastAssistant =
+                        isLast && m.role == MessageRole.assistant;
+                    final (bIdx, bCount) = convo!.branchInfo(m.id);
+                    final ttsForMessage = _speech.playback.isFor(m.id);
+                    return KeyedSubtree(
+                      key: _keyForMessage(m.id),
+                      child: MessageBubble(
+                        key: ValueKey(m.id),
+                        conversationId: convo.id,
+                        workMode: convo.workMode,
+                        interaction: m.role == MessageRole.assistant
+                            ? Column(
+                                children: [
+                                  WorkQuestionCards(
+                                    conversationId: convo.id,
+                                    message: m,
+                                  ),
+                                  if (isLastAssistant)
+                                    WorkApprovalCard(conversationId: convo.id),
+                                ],
+                              )
+                            : null,
+                        deliveryFiles:
+                            convo.workMode && m.role == MessageRole.assistant
+                            ? WorkDeliveryFiles(
+                                conversationId: convo.id,
+                                assistantId: m.id,
+                                onOpen: _openDeliveredFile,
+                              )
+                            : null,
+                        message: m,
+                        onAnswerFromResults:
                             !_selecting &&
-                            m.kind != MessageKind.generatedImage &&
-                            m.longTask == null)
-                        ? controller.regenerate
-                        : null,
-                    onCancelLongTask:
-                        m.longTask?.isActive == true && !_selecting
-                        ? () => unawaited(
-                            controller.cancelLongTask(convo.id, m.id),
-                          )
-                        : null,
-                    onRetryLongTask: m.longTask?.canRetry == true && !_selecting
-                        ? () => unawaited(
-                            controller.retryLongTask(convo.id, m.id),
-                          )
-                        : null,
-                    onEdit:
-                        (m.role == MessageRole.user &&
-                            state?.isStreaming != true &&
-                            !_selecting)
-                        ? (text) => controller.editMessage(m.id, text)
-                        : null,
-                    onSpeak:
-                        (m.role == MessageRole.assistant &&
-                            m.content.trim().isNotEmpty &&
-                            !_selecting)
-                        ? () => _toggleTextToSpeech(m, settings)
-                        : null,
-                    isSpeechLoading:
-                        ttsForMessage &&
-                        _speech.playback.phase == TextToSpeechPhase.loading,
-                    isSpeaking:
-                        ttsForMessage &&
-                        _speech.playback.phase == TextToSpeechPhase.speaking,
-                    onRemember:
-                        settings?.memoryEnabled == true &&
-                            !_selecting &&
-                            state?.isStreaming != true &&
-                            m.content.trim().isNotEmpty
-                        ? () => _rememberMessage(convo, m)
-                        : null,
-                    isRemembered: rememberedMessageIds.contains(m.id),
-                    branchIndex: bIdx,
-                    branchCount: bCount,
-                    onPrevBranch: () => controller.switchBranch(m.id, -1),
-                    onNextBranch: () => controller.switchBranch(m.id, 1),
-                    messageStyle: ui.messageStyle,
-                    markdownStyle: ui.markdownStyle,
-                    liveMarkdown: ui.liveMarkdown,
-                    onThinkingExpandedChanged: isLastAssistant
-                        ? (expanded) {
-                            _thinkingExpanded = expanded;
-                            _reportStreamView();
-                          }
-                        : null,
-                    selectionMode: _selecting,
-                    selected: _selectedIds.contains(m.id),
-                    onToggleSelect: () => _toggleSelect(m.id),
-                    onStartSelect: () => _enterSelect(m.id),
-                  ),
+                                m.role == MessageRole.assistant &&
+                                m.kind != MessageKind.generatedImage &&
+                                !convo.isStoryLike &&
+                                !convo.isStudy &&
+                                ((streamingHere && isLastAssistant) ||
+                                    (state?.isStreaming != true &&
+                                        m.searchActivities.any(
+                                          (a) =>
+                                              a.status ==
+                                              SearchActivityStatus.done,
+                                        )))
+                            ? () => unawaited(
+                                controller.answerFromResults(convo.id, m.id),
+                              )
+                            : null,
+                        onStopTask:
+                            streamingHere && isLastAssistant && !_selecting
+                            ? controller.stop
+                            : null,
+                        onRetryStep: state?.isStreaming != true && !_selecting
+                            ? (step) => unawaited(
+                                _retryProcessStep(convo.id, m.id, step),
+                              )
+                            : null,
+                        isStreaming: streamingHere && isLastAssistant,
+                        speakerName: m.role == MessageRole.assistant
+                            ? (m.speakerName ?? speakerName)
+                            : null,
+                        userLabel: convo.localCast.isNotEmpty ? '导演' : null,
+                        onRegenerate:
+                            (isLastAssistant &&
+                                state?.isStreaming != true &&
+                                !_selecting &&
+                                m.kind != MessageKind.generatedImage &&
+                                m.longTask == null)
+                            ? controller.regenerate
+                            : null,
+                        onCancelLongTask:
+                            m.longTask?.isActive == true && !_selecting
+                            ? () => unawaited(
+                                controller.cancelLongTask(convo.id, m.id),
+                              )
+                            : null,
+                        onRetryLongTask:
+                            m.longTask?.canRetry == true && !_selecting
+                            ? () => unawaited(
+                                controller.retryLongTask(convo.id, m.id),
+                              )
+                            : null,
+                        onEdit:
+                            (m.role == MessageRole.user &&
+                                state?.isStreaming != true &&
+                                !_selecting)
+                            ? (text) => controller.editMessage(m.id, text)
+                            : null,
+                        onSpeak:
+                            (m.role == MessageRole.assistant &&
+                                m.content.trim().isNotEmpty &&
+                                !_selecting)
+                            ? () => _toggleTextToSpeech(m, settings)
+                            : null,
+                        isSpeechLoading:
+                            ttsForMessage &&
+                            _speech.playback.phase == TextToSpeechPhase.loading,
+                        isSpeaking:
+                            ttsForMessage &&
+                            _speech.playback.phase ==
+                                TextToSpeechPhase.speaking,
+                        onRemember:
+                            settings?.memoryEnabled == true &&
+                                !_selecting &&
+                                state?.isStreaming != true &&
+                                m.content.trim().isNotEmpty
+                            ? () => _rememberMessage(convo, m)
+                            : null,
+                        isRemembered: rememberedMessageIds.contains(m.id),
+                        branchIndex: bIdx,
+                        branchCount: bCount,
+                        onPrevBranch: () => controller.switchBranch(m.id, -1),
+                        onNextBranch: () => controller.switchBranch(m.id, 1),
+                        messageStyle: ui.messageStyle,
+                        workMessageStyle: ui.workMessageStyle,
+                        markdownStyle: ui.markdownStyle,
+                        liveMarkdown: ui.liveMarkdown,
+                        onThinkingExpandedChanged: isLastAssistant
+                            ? (expanded) {
+                                _thinkingExpanded = expanded;
+                                _reportStreamView();
+                              }
+                            : null,
+                        selectionMode: _selecting,
+                        selected: _selectedIds.contains(m.id),
+                        onToggleSelect: () => _toggleSelect(m.id),
+                        onStartSelect: () => _enterSelect(m.id),
+                      ),
+                    );
+                  },
                 );
               },
             ),
@@ -3050,26 +3633,59 @@ class _SessionMiniButton extends StatelessWidget {
 }
 
 /// Thin drag strip between workspace panes.
-class _PaneResizeHandle extends StatelessWidget {
+class _PaneResizeHandle extends StatefulWidget {
   const _PaneResizeHandle({required this.onDrag});
-
   final ValueChanged<double> onDrag;
+  @override
+  State<_PaneResizeHandle> createState() => _PaneResizeHandleState();
+}
 
+class _PaneResizeHandleState extends State<_PaneResizeHandle> {
+  bool _hover = false, _dragging = false;
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return MouseRegion(
-      cursor: SystemMouseCursors.resizeColumn,
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onHorizontalDragUpdate: (d) => onDrag(d.delta.dx),
-        child: Container(
-          width: 6,
-          color: Colors.transparent,
-          child: Center(
-            child: Container(
-              width: 1,
-              color: scheme.outlineVariant.withValues(alpha: 0.9),
+    final highlighted = _hover || _dragging;
+    return Semantics(
+      label: '拖动调整左右区域宽度',
+      child: MouseRegion(
+        cursor: SystemMouseCursors.resizeColumn,
+        onEnter: (_) => setState(() => _hover = true),
+        onExit: (_) => setState(() => _hover = false),
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onHorizontalDragStart: (_) => setState(() => _dragging = true),
+          onHorizontalDragUpdate: (event) => widget.onDrag(event.delta.dx),
+          onHorizontalDragEnd: (_) => setState(() => _dragging = false),
+          onHorizontalDragCancel: () => setState(() => _dragging = false),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 120),
+            width: 10,
+            color: highlighted
+                ? scheme.primary.withValues(alpha: .12)
+                : scheme.surfaceContainerLow,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                Positioned(
+                  top: 0,
+                  bottom: 0,
+                  child: Container(
+                    width: 1,
+                    color: highlighted ? scheme.primary : scheme.outlineVariant,
+                  ),
+                ),
+                Container(
+                  width: 4,
+                  height: 38,
+                  decoration: BoxDecoration(
+                    color: highlighted
+                        ? scheme.primary
+                        : scheme.outline.withValues(alpha: .55),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
+              ],
             ),
           ),
         ),
@@ -3122,12 +3738,12 @@ class _JumpToBottomButton extends StatelessWidget {
 class _EmptyState extends StatelessWidget {
   const _EmptyState({
     required this.needsSetup,
+    this.workMode = false,
     required this.onSetup,
-    required this.onExample,
   });
   final bool needsSetup;
+  final bool workMode;
   final VoidCallback onSetup;
-  final ValueChanged<String> onExample;
 
   @override
   Widget build(BuildContext context) {
@@ -3154,57 +3770,31 @@ class _EmptyState extends StatelessWidget {
                   padding: compact
                       ? const EdgeInsets.fromLTRB(20, 18, 20, 18)
                       : const EdgeInsets.fromLTRB(28, 28, 28, 24),
-                  decoration: BoxDecoration(
-                    color: scheme.surfaceContainer.withValues(alpha: 0.88),
-                    borderRadius: BorderRadius.circular(compact ? 20 : 24),
-                    border: Border.all(
-                      color: scheme.outlineVariant.withValues(alpha: 0.9),
-                    ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: scheme.shadow.withValues(alpha: 0.05),
-                        blurRadius: 24,
-                        offset: const Offset(0, 10),
-                      ),
-                    ],
-                  ),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Container(
-                        width: compact ? 44 : 56,
-                        height: compact ? 44 : 56,
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            colors: [
-                              scheme.primary,
-                              Color.lerp(
-                                scheme.primary,
-                                scheme.secondary,
-                                0.35,
-                              )!,
-                            ],
-                          ),
-                          borderRadius: BorderRadius.circular(
-                            compact ? 15 : 18,
-                          ),
-                        ),
-                        child: Icon(
-                          Icons.auto_awesome,
-                          color: scheme.onPrimary,
-                          size: compact ? 23 : 28,
+                      Image.asset(
+                        'assets/branding/assistant.png',
+                        width: compact ? 48 : 64,
+                        height: compact ? 48 : 64,
+                        errorBuilder: (context, error, stackTrace) => Icon(
+                          Icons.auto_awesome_outlined,
+                          size: compact ? 48 : 64,
+                          color: scheme.primary,
                         ),
                       ),
                       SizedBox(height: compact ? 12 : 18),
                       Text(
-                        '开始一段对话',
+                        workMode ? '把目标交给工作模式' : '开始一段对话',
                         style: Theme.of(context).textTheme.titleLarge,
                       ),
                       SizedBox(height: compact ? 6 : 8),
                       Text(
                         needsSetup
                             ? '先连接你使用的模型服务，验证成功后即可开始。'
-                            : '写下你的问题，或从一个小任务开始。',
+                            : workMode
+                            ? '描述目标与交付要求，分步执行、检查结果；可使用文件与已连接工具。'
+                            : '适合问答、讨论与按需搜索。需要多步执行和交付结果时，切换到工作。',
                         textAlign: TextAlign.center,
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
                           color: scheme.onSurfaceVariant,
@@ -3218,24 +3808,6 @@ class _EmptyState extends StatelessWidget {
                           onPressed: onSetup,
                           icon: const Icon(Icons.add),
                           label: const Text('连接模型，开始使用'),
-                        )
-                      else
-                        Wrap(
-                          alignment: WrapAlignment.center,
-                          spacing: 8,
-                          runSpacing: 8,
-                          children: [
-                            OutlinedButton(
-                              onPressed: () =>
-                                  onExample('帮我梳理一个问题，并给出清晰的行动步骤。'),
-                              child: const Text('梳理思路'),
-                            ),
-                            OutlinedButton(
-                              onPressed: () =>
-                                  onExample('请帮我解读接下来提供的资料，提炼重点和待确认的问题。'),
-                              child: const Text('解读资料'),
-                            ),
-                          ],
                         ),
                     ],
                   ),

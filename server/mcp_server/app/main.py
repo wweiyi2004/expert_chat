@@ -278,9 +278,9 @@ def _store_output(
     output: DocumentOutput,
 ) -> StoredDocument:
     size = path.stat().st_size
-    if size <= 0 or size > MAX_FILE_BYTES:
+    if size > MAX_FILE_BYTES:
         path.unlink(missing_ok=True)
-        raise RuntimeError("生成文件为空或超过服务器限制。")
+        raise RuntimeError("生成文件超过服务器限制。")
     created_at = _now()
     try:
         with _db(immediate=True) as db:

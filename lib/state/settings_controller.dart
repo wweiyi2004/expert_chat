@@ -1,3 +1,4 @@
+import 'model_context.dart';
 import 'dart:async';
 import 'dart:convert';
 
@@ -6,6 +7,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/providers.dart';
 import '../data/chat_skill.dart';
+import '../data/subagent_role.dart';
+import '../data/prompt_presets.dart';
 import '../data/jev_config.dart';
 import '../data/composer_modes.dart';
 import '../data/context_prefs.dart';
@@ -159,18 +162,23 @@ class SettingsController extends AsyncNotifier<SettingsState> {
 
   /// Set the web-search backend.
   Future<void> setSearchBackend(SearchBackend backend) async {
-    state = AsyncData(_current.copyWith(searchBackend: backend));
+    state = AsyncData(_current.copyWith(searchBackend: SearchBackend.deepseek));
     await ref
         .read(sharedPrefsProvider)
-        .setString(kSettingsSearchBackend, backend.wire);
+        .setString(kSettingsSearchBackend, SearchBackend.deepseek.wire);
   }
 
   /// Set the web-search API key (stored in secure storage).
   Future<void> setSearchApiKey(String key) async {
-    state = AsyncData(_current.copyWith(searchApiKey: key));
+    state = AsyncData(
+      _current.copyWith(
+        searchApiKey: key,
+        searchBackend: SearchBackend.deepseek,
+      ),
+    );
     await ref
         .read(secureStorageProvider)
-        .write(key: kSettingsSearchApiKeySecure, value: key);
+        .write(key: kSettingsDeepSeekSearchApiKeySecure, value: key);
   }
 
   /// Pick the "搜索大脑" model; null/empty follows the profile's chat model.
@@ -196,25 +204,19 @@ class SettingsController extends AsyncNotifier<SettingsState> {
   Future<void> setSearchMode(SearchMode mode) async {
     if (_current.searchMode == mode) return;
     state = AsyncData(_current.copyWith(searchMode: mode));
-    try {
-      await ref
-          .read(sharedPrefsProvider)
-          .setString(kSettingsComposerSearchMode, mode.wire);
-    } catch (_) {
-      // Widget tests override settings without SharedPreferences.
-    }
+    final saved = await ref
+        .read(sharedPrefsProvider)
+        .setString(kSettingsComposerSearchMode, mode.wire);
+    if (!saved) throw StateError('搜索设置保存失败');
   }
 
   Future<void> setImageGenMode(ImageGenMode mode) async {
     if (_current.imageGenMode == mode) return;
     state = AsyncData(_current.copyWith(imageGenMode: mode));
-    try {
-      await ref
-          .read(sharedPrefsProvider)
-          .setString(kSettingsComposerImageGenMode, mode.wire);
-    } catch (_) {
-      // Widget tests override settings without SharedPreferences.
-    }
+    final saved = await ref
+        .read(sharedPrefsProvider)
+        .setString(kSettingsComposerImageGenMode, mode.wire);
+    if (!saved) throw StateError('配图设置保存失败');
   }
 
   Future<void> setReasoningEffort(ReasoningEffort effort) async {
@@ -518,6 +520,83 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     await prefs.setString(kSettingsSystemPrompt, next.fallback.prompt);
   }
 
+  Future<void> setWorkAgentInstructions(String value) async {
+    if (value.length > 24000) throw const FormatException('系统指令最多 24000 字符');
+    final text = value.trim();
+    if (!await ref
+        .read(sharedPrefsProvider)
+        .setString(kSettingsWorkAgentInstructions, text)) {
+      throw StateError('工作主代理系统指令保存失败');
+    }
+    if (ref.mounted)
+      state = AsyncData(_current.copyWith(workAgentInstructions: text));
+  }
+
+  Future<void> setSubagentInstructions(String value) async {
+    if (value.length > 24000) throw const FormatException('系统指令最多 24000 字符');
+    final text = value.trim();
+    if (!await ref
+        .read(sharedPrefsProvider)
+        .setString(kSettingsSubagentInstructions, text)) {
+      throw StateError('子代理系统指令保存失败');
+    }
+    if (ref.mounted)
+      state = AsyncData(_current.copyWith(subagentInstructions: text));
+  }
+
+  Future<void> setSubagentRoles(List<SubagentRole> roles) async {
+    if (roles.length > 40 ||
+        roles.any(
+          (r) =>
+              r.instructions.length > 24000 ||
+              r.name.trim().isEmpty ||
+              r.id.isEmpty,
+        )) {
+      throw const FormatException('最多 40 个角色；角色名称不能为空，单个指令最多 24000 字符');
+    }
+    if (roles.map((r) => r.id).toSet().length != roles.length)
+      throw const FormatException('角色标识重复');
+    if (!await ref
+        .read(sharedPrefsProvider)
+        .setString(
+          kSettingsSubagentRoles,
+          jsonEncode(roles.map((r) => r.toJson()).toList()),
+        ))
+      throw StateError('角色库保存失败');
+    if (ref.mounted)
+      state = AsyncData(
+        _current.copyWith(subagentRoles: List.unmodifiable(roles)),
+      );
+  }
+
+  Future<void> setSubagentRouterModel(String model) async {
+    if (!await ref
+        .read(sharedPrefsProvider)
+        .setString(kSettingsSubagentRouterModel, model))
+      throw StateError('分配模型保存失败');
+    if (ref.mounted)
+      state = AsyncData(_current.copyWith(subagentRouterModel: model));
+  }
+
+  Future<void> _presetWriteTail = Future<void>.value();
+  Future<void> setPromptPresets(PromptPresets presets) {
+    final normalized = PromptPresets.decode(jsonEncode(presets.toJson()));
+    final prefs = ref.read(sharedPrefsProvider);
+    state = AsyncData(_current.copyWith(promptPresets: normalized));
+    return _presetWriteTail = _presetWriteTail.catchError((Object _) {}).then((
+      _,
+    ) async {
+      await prefs.setString(
+        PromptPresets.storageKey,
+        jsonEncode(normalized.toJson()),
+      );
+    });
+  }
+
+  Future<void> selectPromptPreset(String? id) => setPromptPresets(
+    PromptPresets(items: _current.promptPresets.items, activeId: id),
+  );
+
   /// Set the global preset/system prompt (persisted in shared preferences).
   Future<void> setSystemPrompt(String prompt) async {
     final updated = _current.chatSkills.update(
@@ -526,6 +605,27 @@ class SettingsController extends AsyncNotifier<SettingsState> {
           : s,
     );
     await setChatSkills(updated);
+  }
+
+  Future<void> setModelContextPrefs(
+    String endpoint,
+    String model,
+    ContextPrefs? value,
+  ) async {
+    final key = modelContextKey(endpoint, model);
+    final next = {..._current.modelContexts};
+    if (value == null) {
+      next.remove(key);
+    } else {
+      next[key] = value;
+    }
+    await ref
+        .read(sharedPrefsProvider)
+        .setString(
+          kSettingsModelContexts,
+          jsonEncode(next.map((key, value) => MapEntry(key, value.toJson()))),
+        );
+    if (ref.mounted) state = AsyncData(_current.copyWith(modelContexts: next));
   }
 
   Future<void> setContextPrefs(ContextPrefs context) async {
@@ -703,6 +803,42 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     }
   }
 
+  /// Save a service without changing the currently selected model.
+  Future<void> saveModelService(ProviderProfile profile, String apiKey) async {
+    final profiles = [
+      for (final current in _current.profiles)
+        if (current.id == profile.id) profile else current,
+      if (!_current.profiles.any((current) => current.id == profile.id))
+        profile,
+    ];
+    final storage = ref.read(secureStorageProvider);
+    final key = providerApiKeyStorageKey(profile.id);
+    final previousKey = await storage.read(key: key);
+    try {
+      await storage.write(key: key, value: apiKey.trim());
+      await SettingsStorage.writeProfiles(
+        ref.read(sharedPrefsProvider),
+        profiles,
+      );
+    } catch (_) {
+      if (previousKey == null) {
+        await storage.delete(key: key);
+      } else {
+        await storage.write(key: key, value: previousKey);
+      }
+      rethrow;
+    }
+    if (ref.mounted)
+      state = AsyncData(
+        _current.copyWith(
+          profiles: profiles,
+          apiKey: _current.activeProfileId == profile.id
+              ? apiKey.trim()
+              : _current.apiKey,
+        ),
+      );
+  }
+
   /// Switch the active profile, loading its stored key.
   Future<void> selectProfile(String id) async {
     if (!_current.profiles.any((p) => p.id == id)) return;
@@ -856,6 +992,13 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       'taskBudget': current.taskBudget.toJson(),
       'reasoningEffort': current.reasoningEffort.wire,
       'systemPrompt': current.systemPrompt,
+      'workAgentInstructions': current.workAgentInstructions,
+      'subagentInstructions': current.subagentInstructions,
+      'subagentRoles': current.effectiveSubagentRoles
+          .map((r) => r.toJson())
+          .toList(),
+      'subagentRouterModel': current.subagentRouterModel,
+      'promptPresets': current.promptPresets.toJson(),
       'jev': {...current.jevConfig.toJson(), 'apiKey': current.jevApiKey},
       'chatSkills': [
         for (final skill in current.chatSkills.skills) skill.toJson(),
@@ -873,6 +1016,9 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       'ttsProfiles': ttsProfiles,
       'asr': SettingsBundle.mediaToJson(current.asrApi, current.asrApiKey),
       'context': current.context.toJson(),
+      'modelContexts': current.modelContexts.map(
+        (key, value) => MapEntry(key, value.toJson()),
+      ),
       'gateway': {
         ...current.gateway.toJson(),
         'token': current.gatewayLegacyToken,
@@ -966,7 +1112,9 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       }
       if (search.containsKey('apiKey')) {
         await secure.write(
-          key: kSettingsSearchApiKeySecure,
+          key: search['backend'] == SearchBackend.deepseek.wire
+              ? kSettingsDeepSeekSearchApiKeySecure
+              : kSettingsSearchApiKeySecure,
           value: search['apiKey']?.toString() ?? '',
         );
       }
@@ -1029,6 +1177,11 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     }
 
     final skillsRaw = json['chatSkills'];
+    if (json['promptPresets'] is Map) {
+      await setPromptPresets(
+        PromptPresets.decode(jsonEncode(json['promptPresets'])),
+      );
+    }
     if (skillsRaw is List || skillsRaw is String) {
       final encoded = skillsRaw is String ? skillsRaw : jsonEncode(skillsRaw);
       final catalog = ChatSkillCatalog.decode(
@@ -1044,6 +1197,30 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       );
     }
 
+    if (json['workAgentInstructions'] is String) {
+      await prefs.setString(
+        kSettingsWorkAgentInstructions,
+        json['workAgentInstructions'] as String,
+      );
+    }
+    if (json['subagentInstructions'] is String) {
+      await prefs.setString(
+        kSettingsSubagentInstructions,
+        json['subagentInstructions'] as String,
+      );
+    }
+    if (json['subagentRoles'] is List) {
+      final roles = SubagentRole.decode(jsonEncode(json['subagentRoles']))!;
+      await prefs.setString(
+        kSettingsSubagentRoles,
+        jsonEncode(roles.map((r) => r.toJson()).toList()),
+      );
+    }
+    if (json['subagentRouterModel'] is String)
+      await prefs.setString(
+        kSettingsSubagentRouterModel,
+        json['subagentRouterModel'] as String,
+      );
     final ui = SettingsBundle.asMap(json['ui']);
     if (ui != null) {
       await prefs.setString(
@@ -1052,6 +1229,13 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       );
     }
 
+    if (json['modelContexts'] is Map) {
+      final values = decodeModelContexts(jsonEncode(json['modelContexts']));
+      await prefs.setString(
+        kSettingsModelContexts,
+        jsonEncode(values.map((key, value) => MapEntry(key, value.toJson()))),
+      );
+    }
     final context = SettingsBundle.asMap(json['context']);
     if (context != null) {
       await prefs.setString(
@@ -1199,4 +1383,8 @@ class SettingsController extends AsyncNotifier<SettingsState> {
 final settingsControllerProvider =
     AsyncNotifierProvider<SettingsController, SettingsState>(
       SettingsController.new,
+      // Re-reading unchanged malformed JSON cannot repair it.
+      retry: (count, error) => error is FormatException
+          ? null
+          : ProviderContainer.defaultRetry(count, error),
     );

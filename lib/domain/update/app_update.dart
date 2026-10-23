@@ -53,7 +53,9 @@ class UpdateCheckResult {
 
 /// Checks GitHub Releases for a newer version and resolves a platform asset.
 class AppUpdateChecker {
-  AppUpdateChecker({Dio? dio}) : _dio = dio ?? Dio();
+  AppUpdateChecker({Dio? dio, this.releaseApis = const []})
+    : _dio = dio ?? Dio();
+  final List<String> releaseApis;
 
   final Dio _dio;
 
@@ -74,20 +76,36 @@ class AppUpdateChecker {
       );
     }
 
-    final response = await _dio.get<Map<String, dynamic>>(
-      kGithubReleasesApi,
-      options: Options(
-        headers: {
-          'Accept': 'application/vnd.github+json',
-          'User-Agent': 'expert_chat-update-check',
-        },
-        connectTimeout: const Duration(seconds: 15),
-        receiveTimeout: const Duration(seconds: 15),
-        validateStatus: (s) => s != null && s < 500,
-      ),
-    );
-
-    if (response.statusCode == 404) {
+    Response<Map<String, dynamic>>? response;
+    Object? lastError;
+    var selectedApi = kGithubReleasesApi;
+    for (final api in {kGithubReleasesApi, ...releaseApis}) {
+      try {
+        final candidate = await _dio.get<Map<String, dynamic>>(
+          api,
+          options: Options(
+            headers: {
+              'Accept': 'application/json',
+              'User-Agent': 'expert_chat-update-check',
+            },
+            connectTimeout: const Duration(seconds: 15),
+            receiveTimeout: const Duration(seconds: 15),
+            validateStatus: (s) => s != null && s < 500,
+          ),
+        );
+        if (candidate.statusCode == 404) continue;
+        if (candidate.statusCode != 200 || candidate.data == null) {
+          throw Exception('检查更新失败（HTTP ${candidate.statusCode}）');
+        }
+        response = candidate;
+        selectedApi = api;
+        break;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (response == null) {
+      if (lastError != null) throw lastError;
       return UpdateCheckResult(
         currentVersion: current,
         latestVersion: current,
@@ -103,14 +121,30 @@ class AppUpdateChecker {
     final data = response.data!;
     final tag = (data['tag_name'] as String? ?? '').trim();
     final latest = normalizeVersion(tag);
+    final apiUri = Uri.parse(selectedApi);
+    final releasePage =
+        apiUri.host == 'gitee.com' && apiUri.pathSegments.length >= 6
+        ? 'https://gitee.com/${apiUri.pathSegments[3]}/${apiUri.pathSegments[4]}/releases'
+        : kGithubReleasesPage;
     final htmlUrl = (data['html_url'] as String?)?.trim().isNotEmpty == true
         ? data['html_url'] as String
-        : kGithubReleasesPage;
+        : releasePage;
     var notes = (data['body'] as String? ?? '').trim();
     if (notes.startsWith('\uFEFF')) notes = notes.substring(1).trim();
-    final assets = (data['assets'] as List<dynamic>? ?? [])
+    final rawAssets = data['assets'];
+    final assetList = rawAssets is List
+        ? rawAssets
+        : rawAssets is Map && rawAssets['links'] is List
+        ? rawAssets['links'] as List
+        : const [];
+    final assets = assetList
         .whereType<Map>()
-        .map((e) => Map<String, dynamic>.from(e))
+        .map(
+          (e) => <String, dynamic>{
+            ...Map<String, dynamic>.from(e),
+            'browser_download_url': e['browser_download_url'] ?? e['url'],
+          },
+        )
         .toList();
 
     final abi = preferredAbi ?? await InstallApk.primaryAbi();

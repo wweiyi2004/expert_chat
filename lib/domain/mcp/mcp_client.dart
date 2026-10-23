@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -78,14 +79,53 @@ class McpClient {
   final Dio _dio;
   int _nextId = 0;
   final Map<String, StdioTransport> _local = {};
+  final Map<String, String> _localOwners = {};
+  final Map<String, Future<void>> _localQueues = {};
+  final Map<String, int> _sessionEpochs = {};
+  int _stopEpoch = 0;
   final _computer = ComputerUsePolicy();
   bool _computerBusy = false;
 
   Future<void> stopLocalServers() async {
+    _stopEpoch++;
     _computer.reset();
     final transports = _local.values.toList();
     _local.clear();
+    _localOwners.clear();
     await Future.wait(transports.map((transport) => transport.close()));
+  }
+
+  /// Stop only this conversation's owned browser/agent processes. Other active
+  /// conversations keep their page state and pending tool requests.
+  Future<void> stopLocalSession(String sessionId) async {
+    _sessionEpochs[sessionId] = (_sessionEpochs[sessionId] ?? 0) + 1;
+    final keys = _localOwners.entries
+        .where((entry) => entry.value == sessionId)
+        .map((entry) => entry.key)
+        .toList();
+    final closed = <Future<void>>[];
+    for (final key in keys) {
+      _localOwners.remove(key);
+      final transport = _local.remove(key);
+      if (transport != null) closed.add(transport.close());
+    }
+    await Future.wait(closed);
+  }
+
+  String _localKey(GatewayConnection connection) {
+    final config = connection.localProcess!;
+    if (!config.requiresSession) return config.identity;
+    if (connection.sessionId?.isNotEmpty != true) {
+      throw const McpClientException(
+        '此 MCP 工具必须在所属会话中运行',
+        code: 'session_required',
+      );
+    }
+    return jsonEncode([
+      config.identity,
+      connection.sessionId,
+      connection.agentId,
+    ]);
   }
 
   Future<void> close() async {
@@ -101,11 +141,13 @@ class McpClient {
       throw const McpClientException('本地 MCP 尚未启用或配置');
     }
     final config = connection.localProcess!;
-    var transport = _local[config.identity];
+    final key = _localKey(connection);
+    var transport = _local[key];
     if (transport == null || transport.isClosed) {
       _computer.reset();
       transport = StdioTransport(config);
-      _local[config.identity] = transport;
+      _local[key] = transport;
+      if (config.requiresSession) _localOwners[key] = connection.sessionId!;
     }
     try {
       await transport.initialize(
@@ -114,8 +156,9 @@ class McpClient {
       );
       return transport;
     } catch (error) {
-      if (identical(_local[config.identity], transport)) {
-        _local.remove(config.identity);
+      if (identical(_local[key], transport)) {
+        _local.remove(key);
+        _localOwners.remove(key);
       }
       await transport.close();
       throw McpClientException(
@@ -126,6 +169,26 @@ class McpClient {
   }
 
   Future<McpServerDescription> discover({
+    required GatewayConnection connection,
+    CancelToken? cancelToken,
+  }) async {
+    if (connection.localProcess?.requiresSession == true) {
+      // Discovery must never borrow a live conversation's browser process.
+      final discoveryId = 'mcp-discovery-${++_nextId}';
+      try {
+        return await _discover(
+          connection: connection.forSession(discoveryId),
+          cancelToken: cancelToken,
+        );
+      } finally {
+        await stopLocalSession(discoveryId);
+        _sessionEpochs.remove(discoveryId);
+      }
+    }
+    return _discover(connection: connection, cancelToken: cancelToken);
+  }
+
+  Future<McpServerDescription> _discover({
     required GatewayConnection connection,
     CancelToken? cancelToken,
   }) async {
@@ -182,6 +245,36 @@ class McpClient {
     required Map<String, dynamic> arguments,
     CancelToken? cancelToken,
   }) async {
+    if (connection.localProcess?.requiresSession == true &&
+        !connection.computerUse) {
+      final key = _localKey(connection);
+      final epoch = _sessionEpochs[connection.sessionId] ?? 0;
+      final stopEpoch = _stopEpoch;
+      final previous = _localQueues[key] ?? Future<void>.value();
+      final completed = Completer<void>();
+      _localQueues[key] = completed.future;
+      try {
+        // Browser operations must retain order within one agent, even if the
+        // provider emits several calls in a parallel tool batch.
+        await previous;
+        if (cancelToken?.isCancelled == true ||
+            stopEpoch != _stopEpoch ||
+            epoch != (_sessionEpochs[connection.sessionId] ?? 0)) {
+          throw const McpClientException('MCP 请求已取消', code: 'cancelled');
+        }
+        return await _callTool(
+          connection: connection,
+          name: name,
+          arguments: arguments,
+          cancelToken: cancelToken,
+        );
+      } finally {
+        completed.complete();
+        if (identical(_localQueues[key], completed.future)) {
+          _localQueues.remove(key);
+        }
+      }
+    }
     if (connection.computerUse) {
       if (_computerBusy) throw const McpClientException('另一个电脑操作正在执行');
       _computerBusy = true;
@@ -342,7 +435,11 @@ class McpClient {
         );
       } catch (error) {
         if (!transport.isAlive) {
-          _local.remove(connection.localProcess!.identity);
+          final key = _localKey(connection);
+          if (identical(_local[key], transport)) {
+            _local.remove(key);
+            _localOwners.remove(key);
+          }
           await transport.close();
         }
         throw McpClientException(

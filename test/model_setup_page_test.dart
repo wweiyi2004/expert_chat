@@ -244,16 +244,22 @@ void main() {
       await enterKey(tester);
       await check(tester);
       storage.failNextWrite = true;
-      await tester.ensureVisible(find.text('保存并开始对话'));
-      await tester.tap(find.text('保存并开始对话'));
+      final saveButton = find.widgetWithText(FilledButton, '保存并开始对话');
+      await tester.ensureVisible(saveButton);
+      await tester.pumpAndSettle();
+      expect(saveButton.hitTestable(), findsOneWidget);
+      await tester.tap(saveButton);
       await tester.pumpAndSettle();
       expect(find.byType(ModelSetupPage), findsOneWidget);
       expect(
         container.read(settingsControllerProvider).requireValue.apiKey,
         isEmpty,
       );
-      await tester.ensureVisible(find.text('保存并开始对话'));
-      await tester.tap(find.text('保存并开始对话'));
+      // The storage error inserts a notice above the button and moves it down.
+      await tester.ensureVisible(saveButton);
+      await tester.pumpAndSettle();
+      expect(saveButton.hitTestable(), findsOneWidget);
+      await tester.tap(saveButton);
       await tester.pumpAndSettle();
       expect(find.byType(ModelSetupPage), findsNothing);
       expect(probe.calls, hasLength(1));

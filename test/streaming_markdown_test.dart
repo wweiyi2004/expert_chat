@@ -1,10 +1,50 @@
 import 'package:expert_chat/data/ui_prefs.dart';
+import 'package:expert_chat/core/theme.dart';
 import 'package:expert_chat/features/chat/widgets/streaming_markdown.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
 
 void main() {
+  testWidgets(
+    'saved line height and paragraph spacing update existing replies',
+    (tester) async {
+      Future<void> show(UiPrefs prefs) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: AppTheme.light(prefs),
+            home: const Scaffold(
+              body: SingleChildScrollView(
+                child: StreamingGptMarkdown(
+                  'First line\nsecond line\n\nAnother paragraph',
+                  key: ValueKey('reading-preview'),
+                ),
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+      }
+
+      await show(const UiPrefs(lineHeight: 1.2, paragraphSpacing: 0));
+      final small = tester
+          .getSize(find.byKey(const ValueKey('reading-preview')))
+          .height;
+      await show(const UiPrefs(lineHeight: 2.2, paragraphSpacing: 20));
+      expect(
+        tester
+            .widget<GptMarkdown>(find.byType(GptMarkdown).first)
+            .style
+            ?.height,
+        2.2,
+      );
+      expect(
+        tester.getSize(find.byKey(const ValueKey('reading-preview'))).height,
+        greaterThan(small),
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
   testWidgets('keeps stable block keys while the tail grows and finalizes', (
     tester,
   ) async {

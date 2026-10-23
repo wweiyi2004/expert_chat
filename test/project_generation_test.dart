@@ -321,6 +321,7 @@ void main() {
       expect(first.libraryItemId, second.libraryItemId);
       expect(second.parentGenerationId, one);
       expect(first.providerHost, 'https://media.example');
+      expect(first.apiFormat, LlmApiFormat.openAiCompatible.wire);
       await library.delete(first.libraryItemId!);
       expect((await generations.list()), hasLength(2));
       expect((await generations.get(one))!.libraryItemId, isNull);
@@ -453,6 +454,113 @@ void main() {
           .last;
       expect(next.messageId, answer.id);
       expect(answer.content, contains('图生图'));
+    },
+  );
+
+  for (final originalFormat in [
+    LlmApiFormat.geminiNative,
+    LlmApiFormat.openAiCompatible,
+  ]) {
+    test(
+      'version replay restores $originalFormat after same-origin protocol changes',
+      () async {
+        final media = _CaptureMedia();
+        final c = await container(FakeLlmProvider([]), media: media);
+        final controller = c.read(chatControllerProvider.notifier);
+        final settings = c.read(settingsControllerProvider.notifier);
+        await c.read(settingsControllerProvider.future);
+        final original = MediaApiConfig(
+          baseUrl: 'https://media.example/v1beta',
+          model: 'gemini-2.5-flash-image',
+          apiFormat: originalFormat == LlmApiFormat.geminiNative
+              ? LlmApiFormat.auto
+              : originalFormat,
+        );
+        await settings.setMediaApiConfig(
+          MediaApiKind.imageGeneration,
+          original,
+        );
+        expect(await controller.generateImage('蓝色的小鸟'), isTrue);
+        final first = (await generations.list()).single;
+        expect(
+          first.apiFormat,
+          originalFormat.wire,
+          reason: 'Record the resolved protocol, never auto',
+        );
+        final otherFormat = originalFormat == LlmApiFormat.geminiNative
+            ? LlmApiFormat.openAiCompatible
+            : LlmApiFormat.geminiNative;
+        await settings.setMediaApiConfig(
+          MediaApiKind.imageGeneration,
+          original.copyWith(apiFormat: otherFormat),
+        );
+        expect(await controller.regenerateImageVersion(first), isTrue);
+        expect(media.requests.last.config.apiFormat, originalFormat);
+        expect(media.requests.last.config.effectiveApiFormat, originalFormat);
+        final next = (await generations.list()).singleWhere(
+          (r) => r.parentGenerationId == first.id,
+        );
+        expect(next.apiFormat, originalFormat.wire);
+        expect(
+          c
+              .read(settingsControllerProvider)
+              .requireValue
+              .imageGenerationApi
+              .apiFormat,
+          otherFormat,
+          reason: 'Replaying a version must not change the current settings',
+        );
+      },
+    );
+  }
+
+  test(
+    'legacy version uses current protocol and unknown protocol does not silently fall back',
+    () async {
+      final media = _CaptureMedia();
+      final c = await container(FakeLlmProvider([]), media: media);
+      final controller = c.read(chatControllerProvider.notifier);
+      final settings = c.read(settingsControllerProvider.notifier);
+      await c.read(settingsControllerProvider.future);
+      const config = MediaApiConfig(
+        baseUrl: 'https://media.example/v1beta',
+        model: 'gemini-2.5-flash-image',
+        apiFormat: LlmApiFormat.geminiNative,
+      );
+      await settings.setMediaApiConfig(MediaApiKind.imageGeneration, config);
+      expect(await controller.generateImage('蓝色的小鸟'), isTrue);
+      final first = (await generations.list()).single;
+      await db.customStatement(
+        'UPDATE generation_records SET api_format = NULL WHERE id = ?',
+        [first.id],
+      );
+      final legacy = (await generations.get(first.id))!;
+      await settings.setMediaApiConfig(
+        MediaApiKind.imageGeneration,
+        config.copyWith(apiFormat: LlmApiFormat.openAiCompatible),
+      );
+      expect(await controller.regenerateImageVersion(legacy), isTrue);
+      expect(
+        media.requests.last.config.apiFormat,
+        LlmApiFormat.openAiCompatible,
+      );
+      expect(
+        (await generations.list())
+            .singleWhere((r) => r.parentGenerationId == first.id)
+            .apiFormat,
+        LlmApiFormat.openAiCompatible.wire,
+      );
+
+      await db.customStatement(
+        'UPDATE generation_records SET api_format = ? WHERE id = ?',
+        ['futureProtocol', first.id],
+      );
+      await expectLater(
+        controller.regenerateImageVersion((await generations.get(first.id))!),
+        throwsArgumentError,
+      );
+      expect(media.requests, hasLength(2));
+      expect(await generations.list(), hasLength(2));
     },
   );
 

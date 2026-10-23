@@ -161,20 +161,20 @@ class QuizCodec {
     if (blob == null) return null;
     try {
       final map = jsonDecode(blob);
-      if (map is! Map) return null;
-      final m = Map<String, dynamic>.from(map);
-      final correct = m['correct'] == true || m['correct'] == 'true';
-      final partial = m['partial'] == true || m['partial'] == 'true';
-      final score = (m['score'] is num)
-          ? (m['score'] as num).toDouble()
-          : (correct ? 1.0 : (partial ? 0.5 : 0.0));
+      if (map is! Map ||
+          map['correct'] is! bool ||
+          map['partial'] is! bool ||
+          map['score'] is! num ||
+          map['explanation'] is! String) {
+        return null;
+      }
       return QuizGrade(
-        correct: correct,
-        partial: partial,
-        explanation: (m['explanation'] ?? m['解析'] ?? '').toString(),
-        score: score,
+        correct: map['correct'] as bool,
+        partial: map['partial'] as bool,
+        explanation: map['explanation'] as String,
+        score: (map['score'] as num).toDouble(),
       );
-    } catch (_) {
+    } on FormatException {
       return null;
     }
   }

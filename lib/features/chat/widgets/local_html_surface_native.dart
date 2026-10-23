@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:path_provider/path_provider.dart';
+import '../../../domain/html/windows_webview_environment.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_windows/webview_windows.dart' as windows;
 
@@ -16,26 +16,10 @@ class LocalHtmlSurface extends StatefulWidget {
 }
 
 class _LocalHtmlSurfaceState extends State<LocalHtmlSurface> {
-  static Future<void>? _environment;
   windows.WebviewController? _windows;
   WebViewController? _mobile;
   StreamSubscription<windows.WebErrorStatus>? _loadErrors;
   String? _error;
-
-  static Future<void> _ensureEnvironment() => _environment ??=
-      (() async {
-        if (await windows.WebviewController.getWebViewVersion() == null) {
-          throw StateError('此电脑尚未安装 WebView2，可使用右上角的浏览器预览。');
-        }
-        final folder = await getApplicationSupportDirectory();
-        await folder.create(recursive: true);
-        await windows.WebviewController.initializeEnvironment(
-          userDataPath: '${folder.path}/code-preview-webview',
-        );
-      })().catchError((Object error) {
-        _environment = null;
-        throw error;
-      });
 
   @override
   void initState() {
@@ -48,7 +32,7 @@ class _LocalHtmlSurfaceState extends State<LocalHtmlSurface> {
     var initialized = false;
     try {
       if (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows) {
-        await _ensureEnvironment();
+        await ensureWindowsWebviewEnvironment();
         if (!mounted) return;
         pending = windows.WebviewController();
         await pending.initialize();

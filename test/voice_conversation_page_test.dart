@@ -62,9 +62,9 @@ void main() {
     );
     await drain(tester);
 
-    await tester.tap(
-      find.byKey(const ValueKey('composer-voice-conversation-button')),
-    );
+    await tester.tap(find.byKey(const ValueKey('composer-plus-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('语音对话'));
     await drain(tester);
     expect(
       find.byKey(const ValueKey('voice-conversation-panel')),
@@ -99,7 +99,7 @@ void main() {
       findsNothing,
     );
     expect(
-      find.byKey(const ValueKey('composer-voice-conversation-button')),
+      find.byKey(const ValueKey('composer-microphone-button')),
       findsOneWidget,
     );
   });

@@ -249,9 +249,7 @@ void main() {
     });
 
     test('completeLeaf unlocks next', () {
-      final pack = tree.fallback(title: 't');
-      // expand with two leaves manually
-      final c = pack.course;
+      final c = StudyCourse(title: 't');
       final a = StudyNode(
         courseId: c.id,
         title: 'A',

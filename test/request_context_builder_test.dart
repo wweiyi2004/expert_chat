@@ -69,6 +69,17 @@ List<String> contents(PreparedRequestContext value) =>
     value.messages.map((m) => m.content).toList();
 
 void main() {
+  test('work mode carries execution guidance even without tools', () {
+    final result = builder.prepare(
+      conversation: conversation().copyWith(workMode: true),
+      assistantId: 'pending',
+      contextPrefs: noTrimming,
+      fallbackPrompt: '固定预设',
+    );
+    expect(contents(result).any((text) => text.contains('当前是工作模式')), isTrue);
+    expect(contents(result), contains('固定预设'));
+  });
+
   test(
     'chat preserves prefix order, active branch and search insertion point',
     () {

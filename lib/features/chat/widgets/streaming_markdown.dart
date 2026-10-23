@@ -3,6 +3,7 @@ import 'package:gpt_markdown/custom_widgets/markdown_config.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
 
 import '../../../data/ui_prefs.dart';
+import '../../../core/theme.dart';
 import '../../../domain/chat/markdown_blocks.dart';
 
 /// Renders Markdown as frozen completed blocks plus a live last block.
@@ -108,7 +109,17 @@ class _StreamingGptMarkdownState extends State<StreamingGptMarkdown> {
           for (final block in blocks)
             RepaintBoundary(
               key: ValueKey(block.id),
-              child: _markdown(context, block.source),
+              child: Padding(
+                padding: EdgeInsets.only(
+                  bottom: identical(block, blocks.last)
+                      ? 0
+                      : Theme.of(
+                              context,
+                            ).extension<AppMetrics>()?.paragraphSpacing ??
+                            8,
+                ),
+                child: _markdown(context, block.source),
+              ),
             ),
         ],
       ),
@@ -133,21 +144,23 @@ extension MarkdownStylePrefTheme on MarkdownStylePref {
   TextStyle? bodyStyle(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final text = Theme.of(context).textTheme;
+    final lineHeight =
+        Theme.of(context).extension<AppMetrics>()?.lineHeight ?? 1.85;
     return switch (this) {
       MarkdownStylePref.standard => text.bodyLarge?.copyWith(
-        height: 1.65,
+        height: lineHeight,
         color: scheme.onSurface,
       ),
       MarkdownStylePref.github => text.bodyLarge?.copyWith(
-        height: 1.7,
+        height: lineHeight,
         color: scheme.onSurface,
       ),
       MarkdownStylePref.notion => text.bodyLarge?.copyWith(
-        height: 1.75,
+        height: lineHeight,
         color: scheme.onSurface,
       ),
       MarkdownStylePref.terminal => text.bodyMedium?.copyWith(
-        height: 1.5,
+        height: lineHeight,
         fontFamily: 'monospace',
         color: scheme.onSurface,
       ),

@@ -2,6 +2,9 @@ import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:expert_chat/core/providers.dart';
+import 'package:expert_chat/core/desktop_providers.dart';
+import 'package:expert_chat/domain/desktop/workspace_host_stub.dart'
+    as desktop_stub;
 import 'package:expert_chat/core/theme.dart';
 import 'package:expert_chat/domain/context/context_window_manager.dart';
 import 'package:expert_chat/state/chat_controller.dart';
@@ -16,6 +19,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class _MemoryConversationRepository
     with ConversationRepositoryViaLoadAll
@@ -67,6 +71,8 @@ void main() {
       testWidgets(
         'managed context keeps work-mode labels visible at $width / $scale',
         (tester) async {
+          SharedPreferences.setMockInitialValues({});
+          final prefs = await SharedPreferences.getInstance();
           tester.view.physicalSize = Size(width, 720);
           tester.view.devicePixelRatio = 1;
           addTearDown(tester.view.resetPhysicalSize);
@@ -74,6 +80,10 @@ void main() {
           await tester.pumpWidget(
             ProviderScope(
               overrides: [
+                sharedPrefsProvider.overrideWithValue(prefs),
+                desktopWorkspaceHostProvider.overrideWithValue(
+                  desktop_stub.createDesktopWorkspaceHost(),
+                ),
                 settingsControllerProvider.overrideWith(
                   _LayoutSettingsController.new,
                 ),
@@ -115,23 +125,30 @@ void main() {
               ),
             );
           }
-          expect(find.text('任务').hitTestable(), findsOneWidget);
-          final title = find.descendant(
-            of: find.byType(AppBar),
-            matching: find.text('长对话'),
+          expect(find.text('工作').hitTestable(), findsOneWidget);
+          // Mobile chrome reserves the center for the chat/work switch.
+          expect(
+            find.byKey(const ValueKey('chat-context-usage')),
+            findsNothing,
           );
-          expect(title, findsOneWidget);
-          final titleRect = tester.getRect(title);
-          final modeRect = tester.getRect(switchFinder);
-          expect(titleRect.overlaps(modeRect), isFalse);
-          final titleParagraph = tester.renderObject<RenderParagraph>(
-            find.descendant(of: title, matching: find.byType(RichText)),
+          expect(find.byTooltip('切换提示词预设'), findsNothing);
+          expect(
+            find
+                .byKey(const ValueKey('chat-new-conversation-button'))
+                .hitTestable(),
+            findsOneWidget,
           );
-          expect(titleParagraph.didExceedMaxLines, isFalse);
+          expect(
+            find.descendant(
+              of: find.byType(AppBar),
+              matching: find.byIcon(Icons.more_horiz),
+            ),
+            findsNothing,
+          );
           final input = tester.getRect(
             find.byKey(const ValueKey('composer-text-field')),
           );
-          expect(input.width, greaterThan(width - 65));
+          expect(input.width, greaterThan(width - 120));
           if (const bool.fromEnvironment('RENDER_MOBILE')) {
             final boundary = tester.renderObject<RenderRepaintBoundary>(
               find.byKey(const ValueKey('mobile-render')),
@@ -156,6 +173,8 @@ void main() {
   testWidgets('desktop sidebar unifies workspaces and conversation history', (
     tester,
   ) async {
+    SharedPreferences.setMockInitialValues({});
+    final prefs = await SharedPreferences.getInstance();
     tester.view.physicalSize = const Size(1200, 800);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -164,6 +183,7 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          sharedPrefsProvider.overrideWithValue(prefs),
           conversationRepositoryProvider.overrideWithValue(
             _MemoryConversationRepository(),
           ),
@@ -187,10 +207,10 @@ void main() {
 
     expect(find.text('Expert Chat'), findsOneWidget);
     expect(find.byKey(const ValueKey('sidebar-new-chat')), findsOneWidget);
-    expect(find.text('工作区'), findsOneWidget);
+    expect(find.text('资料库'), findsOneWidget);
     expect(find.text('工具'), findsOneWidget);
-    expect(find.text('学习'), findsNothing);
-    expect(find.text('创作'), findsNothing);
+    expect(find.text('学习'), findsOneWidget);
+    expect(find.text('创作'), findsOneWidget);
     expect(
       find.byKey(const ValueKey('conversation-mode-filter')),
       findsOneWidget,
@@ -209,6 +229,8 @@ void main() {
   testWidgets(
     'short window keeps the empty state scroll-safe and composer low',
     (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
       tester.view.physicalSize = const Size(1000, 320);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.resetPhysicalSize);
@@ -217,6 +239,7 @@ void main() {
       await tester.pumpWidget(
         ProviderScope(
           overrides: [
+            sharedPrefsProvider.overrideWithValue(prefs),
             conversationRepositoryProvider.overrideWithValue(
               _MemoryConversationRepository(),
             ),
@@ -231,7 +254,7 @@ void main() {
 
       expect(tester.takeException(), isNull);
       expect(
-        find.byKey(const ValueKey('chat-empty-state-scroll')),
+        find.byKey(const ValueKey('desktop-chat-welcome')),
         findsOneWidget,
       );
       expect(find.byKey(const ValueKey('chat-context-usage')), findsOneWidget);
@@ -252,7 +275,7 @@ void main() {
       expect(contextCenter, lessThan(appBarBottom));
 
       // Mode chips stay on the strip; tools/MCP live in the “+” tray.
-      expect(find.text('深度思考'), findsOneWidget);
+      expect(find.byTooltip('思考与搜索'), findsOneWidget);
       expect(
         find.byKey(const ValueKey('chat-work-mode-switch')),
         findsOneWidget,
@@ -271,7 +294,7 @@ void main() {
       );
       expect(find.byKey(const ValueKey('composer-plus-tray')), findsNothing);
       expect(find.byTooltip('语音输入'), findsOneWidget);
-      expect(find.byTooltip('发送'), findsOneWidget);
+      expect(find.byTooltip('发送'), findsNothing);
 
       await tester.tap(find.byKey(const ValueKey('composer-plus-button')));
       await tester.pumpAndSettle();
@@ -348,6 +371,9 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          desktopWorkspaceHostProvider.overrideWithValue(
+            desktop_stub.createDesktopWorkspaceHost(),
+          ),
           conversationRepositoryProvider.overrideWithValue(
             _MemoryConversationRepository(),
           ),
@@ -361,12 +387,13 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(tester.takeException(), isNull);
-    expect(find.text('开始一段对话'), findsOneWidget);
+    expect(find.text('今天想完成什么？'), findsOneWidget);
     expect(find.byKey(const ValueKey('chat-composer')), findsOneWidget);
     expect(find.byKey(const ValueKey('chat-work-mode-switch')), findsOneWidget);
 
-    await tester.tap(find.text('任务'));
+    await tester.tap(find.text('工作'));
     await tester.pumpAndSettle();
+    expect(find.text('今天想推进什么工作？'), findsOneWidget);
     expect(tester.takeException(), isNull);
 
     final switchRect = tester.getRect(

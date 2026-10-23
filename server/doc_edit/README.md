@@ -11,7 +11,7 @@ $env:GATEWAY_API_TOKEN = 'change-me'
 uv run --frozen uvicorn doc_edit.app.main:app --host 127.0.0.1 --port 8787
 ```
 
-保留 `POST /v1/documents/edit` 和 `POST /v1/documents/convert`。协议见 [文档协议](../../docs/document-edit-contract.md)。
+保留 `POST /v1/documents/edit` 和 `POST /v1/documents/convert`。协议见 [文档协议](../../archive/2026-10-22-planning-reset/docs/document-edit-contract.md)。
 
 独立容器必须使用 `server` 作为构建上下文，以包含共享处理模块：
 
@@ -19,4 +19,4 @@ uv run --frozen uvicorn doc_edit.app.main:app --host 127.0.0.1 --port 8787
 docker build -f doc_edit/Dockerfile -t expert-chat-doc-edit:local .
 ```
 
-资源预算、依赖更新及运行数据备份见 [维护制度](../../docs/MAINTENANCE.md)。
+资源预算、依赖更新及运行数据备份见 [维护制度](../../archive/2026-10-22-planning-reset/docs/MAINTENANCE.md)。

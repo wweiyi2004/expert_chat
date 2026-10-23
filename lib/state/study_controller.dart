@@ -149,33 +149,22 @@ class StudyController extends AsyncNotifier<StudyLibrary> {
     final sourceType = material.trim().isEmpty
         ? StudySourceType.topic
         : StudySourceType.attachment;
-    ({StudyCourse course, List<StudyNode> nodes})? parsed;
-    try {
-      parsed = await _completeStructured(
-        feature: '课程大纲',
-        system: '你是课程设计师。只输出合法 JSON，不要 Markdown 说明。',
-        user: _prompts.courseOutlineUserPrompt(
-          topic: title,
-          material: sourceSummary,
-        ),
-        parse: (raw) => _tree.parse(
-          raw: raw,
-          title: title,
-          sourceSummary: sourceSummary,
-          sourceType: sourceType,
-        ),
-        isValid: (value) => value != null && value.nodes.isNotEmpty,
-      );
-    } catch (_) {
-      parsed = null;
-    }
-    final pack =
-        parsed ??
-        _tree.fallback(
-          title: title,
-          sourceSummary: sourceSummary,
-          sourceType: sourceType,
-        );
+    final parsed = await _completeStructured(
+      feature: '课程大纲',
+      system: '你是课程设计师。只输出合法 JSON，不要 Markdown 说明。',
+      user: _prompts.courseOutlineUserPrompt(
+        topic: title,
+        material: sourceSummary,
+      ),
+      parse: (raw) => _tree.parse(
+        raw: raw,
+        title: title,
+        sourceSummary: sourceSummary,
+        sourceType: sourceType,
+      ),
+      isValid: (value) => value != null && value.nodes.isNotEmpty,
+    );
+    final pack = parsed!;
     await _mutate(
       (lib) => lib.copyWith(
         courses: [pack.course, ...lib.courses],
@@ -423,31 +412,18 @@ class StudyController extends AsyncNotifier<StudyLibrary> {
   Future<QuizGrade> gradeItem(StudyQuizItem item, String userAnswer) async {
     final local = _quiz.gradeLocal(item, userAnswer);
     if (local != null) return local;
-    try {
-      final grade = await _completeStructured<QuizGrade?>(
-        feature: '简答题批改',
-        system: '你是严谨的阅卷老师。只输出 JSON。',
-        user: _prompts.gradeShortUserPrompt(
-          stem: item.stem,
-          expected: item.answerText.isNotEmpty
-              ? item.answerText
-              : item.answerKey,
-          userAnswer: userAnswer,
-        ),
-        parse: _quiz.parseGrade,
-        isValid: (value) => value != null,
-      );
-      return grade!;
-    } on StudyStructuredOutputException catch (error) {
-      return QuizGrade(
-        correct: false,
-        partial: false,
-        explanation: error.rawOutput.trim().isEmpty
-            ? '无法自动批改，请对照题目解析人工判断。'
-            : '自动批改结构无法识别，以下为模型原始意见：\n${error.rawOutput.trim()}',
-        score: 0,
-      );
-    }
+    final grade = await _completeStructured<QuizGrade?>(
+      feature: '简答题批改',
+      system: '你是严谨的阅卷老师。只输出 JSON。',
+      user: _prompts.gradeShortUserPrompt(
+        stem: item.stem,
+        expected: item.answerText.isNotEmpty ? item.answerText : item.answerKey,
+        userAnswer: userAnswer,
+      ),
+      parse: _quiz.parseGrade,
+      isValid: (value) => value != null,
+    );
+    return grade!;
   }
 
   Future<String> summarizeTranscript(String transcript) => completeText(
@@ -587,11 +563,7 @@ class StudyController extends AsyncNotifier<StudyLibrary> {
     if (settings == null || settings.apiKey.trim().isEmpty) {
       throw StateError('请先在设置中配置 API Key');
     }
-    final config = LlmConfig(
-      baseUrl: settings.baseUrl,
-      apiKey: settings.apiKey,
-      model: settings.model,
-    );
+    final config = settings.config;
     final buf = StringBuffer();
     await for (final chunk
         in ref
@@ -607,14 +579,5 @@ class StudyController extends AsyncNotifier<StudyLibrary> {
       if (chunk.contentDelta != null) buf.write(chunk.contentDelta);
     }
     return buf.toString().trim();
-  }
-}
-
-// Dart 3 iterable helper if missing on older — use extension fallback.
-extension _FirstOrNull<E> on Iterable<E> {
-  E? get firstOrNull {
-    final it = iterator;
-    if (!it.moveNext()) return null;
-    return it.current;
   }
 }

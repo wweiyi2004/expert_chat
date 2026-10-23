@@ -287,6 +287,12 @@ class FakeSettings extends SettingsController {
 }
 
 /// Settings with the factory chat-skill catalog so [_generate] can route.
+class FakeTextOnlySettings extends FakeSettings {
+  @override
+  Future<SettingsState> build() async =>
+      (await super.build()).copyWith(selectedModel: KnownModels.reasoner);
+}
+
 class FakeChatSkillSettings extends FakeSettings {
   @override
   Future<SettingsState> build() async {
@@ -525,14 +531,14 @@ class FakeVisionSettings extends SettingsController {
   }
 }
 
-/// DeepSeek flash (no native vision) plus a separate vision API.
+/// DeepSeek Pro (no native vision) plus a separate vision API.
 class FakeVisionToolSettings extends SettingsController {
   @override
   Future<SettingsState> build() async {
     final profile = ProviderProfile(
       name: 'DeepSeek',
       baseUrl: 'https://api.deepseek.com',
-      chatModel: KnownModels.chat,
+      chatModel: KnownModels.reasoner,
       reasonerModel: KnownModels.reasoner,
       models: KnownModels.all,
     );
@@ -1077,6 +1083,36 @@ void main() {
     expect(assistant.content, contains('输出额度'));
     expect(assistant.reasoning, '还在分析中……');
   });
+
+  for (final reason in [
+    'length',
+    'max_output_tokens',
+    'content_filter',
+    'incomplete',
+  ]) {
+    test(
+      'unfinished streamed answer keeps partial text and reports $reason',
+      () async {
+        final repo = InMemoryRepo();
+        final c = _container(
+          FakeLlmProvider([
+            ChatChunk(contentDelta: '已收到的部分正文', finishReason: reason),
+          ]),
+          repo,
+        );
+        addTearDown(c.dispose);
+        await c.read(chatControllerProvider.future);
+        await c.read(chatControllerProvider.notifier).sendMessage('请回答');
+
+        final state = c.read(chatControllerProvider).requireValue;
+        expect(state.current!.activePath.last.content, '已收到的部分正文');
+        expect(state.isStreaming, isFalse);
+        expect(state.error, contains('未完成'));
+        expect(state.retryOperation, isNotNull);
+        expect(repo.store.single.activePath.last.content, '已收到的部分正文');
+      },
+    );
+  }
 
   test(
     'deleting a conversation during send preflight does not resurrect it',
@@ -2872,10 +2908,10 @@ void main() {
       expect(c.isReasoner, isFalse);
       expect(c.supportsTools, isTrue);
       expect(c.sendThinkingField, isTrue);
-      expect(c.supportsVision, isFalse);
+      expect(c.supportsVision, isTrue);
       expect(c.supportsReasoningEffort, isTrue);
       expect(c.reasoningCanBeDisabled, isFalse);
-      expect(c.supportsServerWebSearch, isTrue);
+      expect(c.supportsServerWebSearch, isFalse);
     });
 
     test('DeepSeek V4 flash-vision-exp: vision + tools, not reasoner', () {
@@ -2885,7 +2921,7 @@ void main() {
       expect(c.sendThinkingField, isTrue);
       expect(c.supportsVision, isTrue);
       expect(c.supportsReasoningEffort, isTrue);
-      expect(c.supportsServerWebSearch, isTrue);
+      expect(c.supportsServerWebSearch, isFalse);
     });
 
     test('DeepSeek V4 pro: reasoner AND tool-capable (V4 hybrid)', () {
@@ -2990,14 +3026,14 @@ void main() {
       expect(ModelCapabilities.resolve('hunyuan-turbos').supportsTools, isTrue);
     });
 
-    test('vision detection: gpt-4o yes, deepseek-v4 no, qwen-vl yes', () {
+    test('vision detection: gpt-4o, current Flash aliases and qwen-vl', () {
       expect(ModelCapabilities.resolve('gpt-4o').supportsVision, isTrue);
       expect(ModelCapabilities.resolve('gpt-4o-mini').supportsVision, isTrue);
       expect(ModelCapabilities.resolve('qwen-vl-max').supportsVision, isTrue);
       expect(ModelCapabilities.resolve('glm-4v').supportsVision, isTrue);
       expect(
         ModelCapabilities.resolve('deepseek-v4-flash').supportsVision,
-        isFalse,
+        isTrue,
       );
       expect(
         ModelCapabilities.resolve(KnownModels.vision).supportsVision,
@@ -3022,7 +3058,7 @@ void main() {
     for (final b in SearchBackend.values) {
       expect(SearchBackendInfo.fromWire(b.wire), b);
     }
-    expect(SearchBackendInfo.fromWire('garbage'), SearchBackend.duckduckgo);
+    expect(SearchBackendInfo.fromWire('garbage'), SearchBackend.deepseek);
     expect(SearchBackend.provider.requiresApiKey, isFalse);
     expect(SearchBackend.provider.isProviderHosted, isTrue);
     expect(SearchBackend.duckduckgo.requiresApiKey, isFalse);
@@ -3439,7 +3475,7 @@ void main() {
       );
 
       expect(accepted, isTrue);
-      expect(llm.lastConfig!.model, KnownModels.chat);
+      expect(llm.lastConfig!.model, KnownModels.reasoner);
       expect(llm.lastConfig!.apiKey, 'sk-test');
       expect(
         llm.lastTools!.any((t) => t.name == VisionTools.analyzeImageToolName),
@@ -3454,7 +3490,11 @@ void main() {
     'image send is rejected when the optional vision API is not configured',
     () async {
       final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'ok')]);
-      final c = _container(llm, InMemoryRepo()); // default DeepSeek (no vision)
+      final c = _container(
+        llm,
+        InMemoryRepo(),
+        settingsBuilder: FakeTextOnlySettings.new,
+      );
       addTearDown(c.dispose);
       final ctrl = c.read(chatControllerProvider.notifier);
       await c.read(chatControllerProvider.future);
@@ -4168,6 +4208,7 @@ void main() {
         find.byKey(const ValueKey('composer-text-field')),
         'hi',
       );
+      await tester.pump();
       await tester.tap(find.byTooltip('发送'));
       await _drain(tester);
       await tester.tap(find.byTooltip('朗读'));
@@ -4257,6 +4298,7 @@ void main() {
       expect(find.text('正在听… 识别文字不会自动发送'), findsOneWidget);
       expect(llm.callCount, 0);
 
+      await tester.pump();
       await tester.tap(find.byTooltip('发送'));
       await _drain(tester);
 
@@ -4308,6 +4350,7 @@ void main() {
       await _pumpChat(tester, c);
 
       await tester.enterText(find.byType(TextField).first, 'hi');
+      await tester.pump();
       await tester.tap(find.byTooltip('发送'));
       await _drain(tester);
 
@@ -4398,9 +4441,10 @@ void main() {
       await _pumpChat(tester, c);
 
       // Fresh conversation → empty state visible.
-      expect(find.text('开始一段对话'), findsOneWidget);
+      expect(find.text('今天想完成什么？'), findsOneWidget);
 
       await tester.enterText(find.byType(TextField).first, 'hi');
+      await tester.pump();
       await tester.tap(find.byTooltip('发送'));
       await _drain(tester);
 
@@ -4416,13 +4460,15 @@ void main() {
       expect(find.text('开始一段对话'), findsNothing);
     });
 
-    testWidgets('深度思考 chip toggles deep-think state', (tester) async {
+    testWidgets('深度思考 menu toggles deep-think state', (tester) async {
       final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'x')]);
       final c = _container(llm, InMemoryRepo());
       addTearDown(c.dispose);
       await _pumpChat(tester, c);
 
       expect(c.read(chatControllerProvider).value!.deepThink, isFalse);
+      await tester.tap(find.byTooltip('思考与搜索'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('深度思考'));
       await tester.pump();
       expect(c.read(chatControllerProvider).value!.deepThink, isTrue);
@@ -4441,6 +4487,7 @@ void main() {
       await _pumpChat(tester, c);
 
       await tester.enterText(find.byType(TextField).first, 'hi');
+      await tester.pump();
       await tester.tap(find.byTooltip('发送'));
       await _drain(tester);
 

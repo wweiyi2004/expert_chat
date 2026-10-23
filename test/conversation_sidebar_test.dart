@@ -264,8 +264,10 @@ void main() {
     }
 
     Finder row(String id) => find.byKey(ValueKey('conversation-row-$id'));
-    ConversationHistoryList list(WidgetTester tester) => tester
-        .widget<ConversationHistoryList>(find.byType(ConversationHistoryList));
+    ConversationHistoryList list(WidgetTester tester) =>
+        tester.widget<ConversationHistoryList>(
+          find.byType(ConversationHistoryList).first,
+        );
     Future<void> query(WidgetTester tester, String text) async {
       await tester.enterText(
         find.byKey(const ValueKey('conversation-search-field')),

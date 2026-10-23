@@ -34,6 +34,12 @@ jobs:
       - name: Verify checked-in generated code
         run: git diff --exit-code -- lib/data/db/app_database.g.dart test/generated_migrations
       - run: python scripts/check.py --scope client
+      - name: Verify chat to desktop workspace tools
+        if: runner.os == 'Windows'
+        run: |
+          rustup toolchain install 1.96.0 --profile minimal
+          cargo +1.96.0 build --manifest-path next/Cargo.toml --locked
+          flutter test test/desktop_workspace_host_test.dart test/chat_workspace_execution_test.dart --dart-define=DESKTOP_WORKSPACE_NATIVE_TEST=true
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
@@ -69,7 +75,30 @@ jobs:
         with:
           python-version: '3.12'
       - run: npm ci --prefix remote_lab_ui --registry=https://registry.npmjs.org
+      - name: Test release mirroring
+        run: node --test scripts/sync_gitee_release.test.mjs
       - run: python scripts/check.py --scope web --security
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - run: rustup toolchain install 1.96.0 --profile minimal --component rustfmt,clippy
+      - run: rustup override set 1.96.0
+      - run: python scripts/check.py --scope desktop
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: desktop-checks-${{ matrix.os }}
+          path: output/checks/
+          retention-days: 14
   secrets:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -81,7 +110,7 @@ jobs:
       - run: .tools/gitleaks git --redact=100 --log-opts=--all --no-banner
   required:
     if: always()
-    needs: [client, server, web, secrets]
+    needs: [client, server, web, desktop, secrets]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

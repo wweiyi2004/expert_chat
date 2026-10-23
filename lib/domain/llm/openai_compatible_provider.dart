@@ -1,9 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:characters/characters.dart';
 import 'package:dio/dio.dart';
 
+import 'llm_http_errors.dart';
+import 'llm_endpoint.dart';
 import 'llm_provider.dart';
 import 'llm_request_policy.dart';
 
@@ -38,10 +39,6 @@ class OpenAiCompatibleProvider implements LlmProvider {
   /// and desktop connections while still allowing providers to stream slowly.
   static const _streamIdleTimeout = Duration(seconds: 90);
 
-  /// Error payloads are untrusted server input. Keep a useful diagnostic while
-  /// avoiding an accidental multi-megabyte error page being buffered in memory.
-  static const _maxErrorBodyBytes = 64 * 1024;
-
   @override
   Stream<ChatChunk> streamChat({
     required LlmConfig config,
@@ -52,9 +49,12 @@ class OpenAiCompatibleProvider implements LlmProvider {
     String? forceToolName,
     CancelToken? cancelToken,
   }) async* {
-    final url =
-        '${config.baseUrl.replaceAll(RegExp(r"/+$"), "")}'
-        '/chat/completions';
+    final headerTimeout = config.responseHeaderTimeout ?? responseHeaderTimeout;
+    if (cancelToken?.isCancelled ?? false) return;
+    final url = LlmEndpoint.action(
+      config.openAiCompatibleBaseUrl,
+      'chat/completions',
+    );
 
     final body = <String, dynamic>{
       'model': config.model,
@@ -76,6 +76,16 @@ class OpenAiCompatibleProvider implements LlmProvider {
           )
           .toList(),
     };
+    if (config.maxOutputTokens != null) {
+      final model = ModelCatalog.normalizeId(config.model);
+      final openAi =
+          Uri.tryParse(config.baseUrl)?.host == 'api.openai.com' ||
+          model.startsWith('gpt-5') ||
+          model.startsWith('gpt-6') ||
+          RegExp(r'^o[1-9]').hasMatch(model);
+      body[openAi ? 'max_completion_tokens' : 'max_tokens'] =
+          config.maxOutputTokens;
+    }
     // DeepSeek V4 defaults thinking to ENABLED, so we must explicitly disable it
     // for fast normal chat (and enable it for deep-think). The `thinking` field
     // is DeepSeek-specific; `capabilities.sendThinkingField` gates it so other
@@ -132,6 +142,7 @@ class OpenAiCompatibleProvider implements LlmProvider {
             options: Options(
               responseType: ResponseType.stream,
               headers: {
+                ...config.transportHeaders,
                 'Authorization': 'Bearer ${config.apiKey}',
                 'Content-Type': 'application/json',
                 'Accept': 'text/event-stream',
@@ -141,23 +152,20 @@ class OpenAiCompatibleProvider implements LlmProvider {
             cancelToken: requestToken,
           )
           .timeout(
-            responseHeaderTimeout,
+            headerTimeout,
             onTimeout: () {
               requestToken.cancel('响应超时');
-              throw TimeoutException('响应头等待超时', responseHeaderTimeout);
+              throw TimeoutException('响应头等待超时', headerTimeout);
             },
           );
     } on DioException catch (e) {
       // Stop pressed during connection setup → end the stream quietly.
       if (CancelToken.isCancel(e)) return;
-      throw await _humanizeError(e);
+      throw await humanizeLlmHttpError(e);
     } on TimeoutException {
       // If cancellation races with the timeout, stopping remains quiet.
       if (cancelToken?.isCancelled ?? false) return;
-      throw Exception(
-        '响应超时：服务端在 ${responseHeaderTimeout.inSeconds} 秒内没有开始返回数据，'
-        '请检查网络或稍后重试。',
-      );
+      throw llmResponseTimeout(headerTimeout);
     }
 
     // allowMalformed: a connection dropped mid-multibyte-character leaves a
@@ -237,14 +245,11 @@ class OpenAiCompatibleProvider implements LlmProvider {
     } on DioException catch (e) {
       // Stop pressed mid-stream → end quietly instead of surfacing an error.
       if (CancelToken.isCancel(e)) return;
-      throw await _humanizeError(e);
+      throw await humanizeLlmHttpError(e);
     } on TimeoutException {
       // If cancellation races with the timeout, stopping remains quiet.
       if (cancelToken?.isCancelled ?? false) return;
-      throw Exception(
-        '响应超时：服务端在 ${_streamIdleTimeout.inSeconds} 秒内没有返回数据，'
-        '请检查网络或稍后重试。',
-      );
+      throw llmResponseTimeout(_streamIdleTimeout, headers: false);
     }
   }
 
@@ -325,18 +330,18 @@ class OpenAiCompatibleProvider implements LlmProvider {
     if (error is Map) {
       final message = error['message'] ?? error['detail'];
       if (message is String && message.trim().isNotEmpty) {
-        return _clipErrorMessage(message);
+        return clipLlmErrorMessage(message);
       }
     }
     if (error is String && error.trim().isNotEmpty) {
-      return _clipErrorMessage(error);
+      return clipLlmErrorMessage(error);
     }
 
     // A few compatible providers omit `error` but send an error-shaped
     // payload with a top-level message and no choices.
     final message = payload['message'];
     if (payload['choices'] == null && message is String && message.isNotEmpty) {
-      return _clipErrorMessage(message);
+      return clipLlmErrorMessage(message);
     }
     return null;
   }
@@ -357,98 +362,5 @@ class OpenAiCompatibleProvider implements LlmProvider {
       );
     }
     return out.isEmpty ? null : out;
-  }
-
-  Future<Exception> _humanizeError(DioException e) async {
-    final status = e.response?.statusCode;
-    final apiMsg = await _extractApiMessage(e.response?.data);
-    final detail = apiMsg == null ? '' : '：$apiMsg';
-    if (status == 400) return Exception('请求有误（400）$detail');
-    if (status == 401) return Exception('鉴权失败（401）：请检查 API Key 是否正确。');
-    if (status == 402) return Exception('额度不足（402）：账户余额不足。');
-    if (status == 404) {
-      return Exception('接口未找到（404）：请检查 Base URL 或模型名是否正确。$detail');
-    }
-    if (status == 422) return Exception('参数有误（422）$detail');
-    if (status == 429) return Exception('请求过于频繁（429）：稍后重试。');
-    if (e.type == DioExceptionType.connectionTimeout) {
-      return Exception('连接超时：请检查网络或 Base URL。');
-    }
-    if (e.type == DioExceptionType.receiveTimeout) {
-      return Exception('响应超时：服务端长时间没有返回数据，请稍后重试。');
-    }
-    if (e.type == DioExceptionType.sendTimeout) {
-      return Exception('请求发送超时：请检查网络后重试。');
-    }
-    if (e.type == DioExceptionType.connectionError) {
-      return Exception('连接失败：请检查网络或 Base URL。');
-    }
-    if (e.type == DioExceptionType.badCertificate) {
-      return Exception('TLS 证书校验失败：请检查 Base URL 是否可信。');
-    }
-    if (e.type == DioExceptionType.unknown) {
-      return Exception('网络连接中断：请检查网络后重试。');
-    }
-    if (status != null) return Exception('请求失败（$status）$detail');
-    return Exception('请求失败：${e.message ?? e.type.name}');
-  }
-
-  /// Best-effort extraction of the provider's error message from a (possibly
-  /// streamed) error body. Never throws.
-  Future<String?> _extractApiMessage(dynamic data) async {
-    try {
-      String? raw;
-      if (data is ResponseBody) {
-        final bytes = <int>[];
-        await for (final chunk in data.stream) {
-          final remaining = _maxErrorBodyBytes - bytes.length;
-          if (remaining <= 0) break;
-          if (chunk.length <= remaining) {
-            bytes.addAll(chunk);
-          } else {
-            bytes.addAll(chunk.take(remaining));
-            break;
-          }
-        }
-        raw = utf8.decode(bytes, allowMalformed: true);
-      } else if (data is String) {
-        raw = data;
-      } else if (data is Map) {
-        return _messageFromMap(data);
-      }
-      if (raw == null || raw.trim().isEmpty) return null;
-      try {
-        final decoded = jsonDecode(raw);
-        if (decoded is Map) return _messageFromMap(decoded);
-      } catch (_) {
-        // Not JSON — fall through to the raw text.
-      }
-      final trimmed = raw.trim();
-      // Grapheme-aware cut so we can't split an emoji/surrogate pair.
-      return trimmed.length > 200
-          ? '${trimmed.characters.take(200)}…'
-          : trimmed;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  String? _messageFromMap(Map<dynamic, dynamic> map) {
-    final err = map['error'];
-    if (err is Map && err['message'] is String) {
-      return _clipErrorMessage(err['message'] as String);
-    }
-    if (err is String) return _clipErrorMessage(err);
-    if (map['message'] is String) {
-      return _clipErrorMessage(map['message'] as String);
-    }
-    return null;
-  }
-
-  String _clipErrorMessage(String value) {
-    final trimmed = value.trim();
-    return trimmed.characters.length > 200
-        ? '${trimmed.characters.take(200)}…'
-        : trimmed;
   }
 }

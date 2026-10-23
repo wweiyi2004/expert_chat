@@ -61,6 +61,13 @@ void main() {
     );
     await tester.pumpAndSettle();
 
+    await tester.scrollUntilVisible(
+      find.text('模型'),
+      120,
+      scrollable: find.byType(Scrollable).last,
+    );
+    await tester.tap(find.text('模型'));
+    await tester.pumpAndSettle();
     expect(find.text('DeepSeek 余额'), findsOneWidget);
     expect(find.text('¥110.00'), findsOneWidget);
     expect(find.text('¥100.00'), findsOneWidget);

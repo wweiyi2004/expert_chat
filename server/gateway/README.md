@@ -2,7 +2,7 @@
 
 统一承载超长文件后台任务、文档编辑/转换、账户隔离、分类授权、配额和审计。文档能力同时通过现有 REST API 和标准 MCP Streamable HTTP 暴露；它不是 OpenAI API 的复刻。上游只需提供兼容 `/chat/completions` 的模型接口。
 
-完整模块规则见 [Gateway 架构约定](../../docs/gateway-architecture.md)。
+完整模块规则见 [Gateway 架构约定](../../archive/2026-10-22-planning-reset/docs/gateway-architecture.md)。
 
 ## 本地开发
 
@@ -125,4 +125,4 @@ docker run -d --name expert-chat-gateway \
 
 ## 维护与恢复
 
-开发/打包要求 Python 3.12、uv 0.11.2；依赖统一来自 `server/uv.lock` 和带哈希的 `requirements.lock`。不要分别手动升级不同入口的依赖副本。详见 [维护制度](../../docs/MAINTENANCE.md)。
+开发/打包要求 Python 3.12、uv 0.11.2；依赖统一来自 `server/uv.lock` 和带哈希的 `requirements.lock`。不要分别手动升级不同入口的依赖副本。详见 [维护制度](../../archive/2026-10-22-planning-reset/docs/MAINTENANCE.md)。

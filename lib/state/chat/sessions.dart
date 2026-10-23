@@ -3,7 +3,7 @@ part of '../chat_controller.dart';
 mixin ChatSessions on ChatTurns {
   /// The caller must keep a modal barrier up until maintenance is finished.
   Future<void> prepareDataMaintenance() async {
-    if (_execution.isActive ||
+    if (runningConversationIds.isNotEmpty ||
         _s.isStreaming ||
         _s.conversations.any(
           (c) => c.messages.any((m) => m.longTask?.isActive == true),
@@ -101,21 +101,25 @@ mixin ChatSessions on ChatTurns {
     return fresh;
   }
 
-  void newConversation({String? projectId}) {
+  void newConversation({
+    String? projectId,
+    bool workMode = false,
+    bool forceNew = false,
+  }) {
     // Chat / story / ensemble are separate: only reuse an unused *chat*.
     // Once a turn has entered preflight, its origin session is reserved even
     // though the user message has not been appended yet. Reusing that blank
     // session here would make “new conversation” keep the same id and let the
     // pending turn appear in the view the user tried to leave.
-    final candidate = _execution.isActive
+    final candidate = _execution.isActive || forceNew
         ? null
-        : _findUnusedSession(ConversationMode.chat);
+        : _findUnusedSession(ConversationMode.chat, workMode: workMode);
     final existing = candidate?.projectId == projectId ? candidate : null;
     if (existing != null) {
       _selectExistingSession(existing);
       return;
     }
-    final fresh = Conversation(projectId: projectId);
+    final fresh = Conversation(projectId: projectId, workMode: workMode);
     _set(
       _s.copyWith(
         conversations: [fresh, ..._s.conversations],
@@ -167,10 +171,13 @@ mixin ChatSessions on ChatTurns {
     bool? requireLocalCast,
     bool? forbidLocalCast,
     bool currentOnly = false,
+    bool? workMode,
   }) {
     bool matches(Conversation c) {
+      if (isConversationRunning(c.id)) return false;
       if (!c.messagesLoaded) return false;
       if (c.mode != mode || !c.isUnusedSession) return false;
+      if (workMode != null && c.workMode != workMode) return false;
       if (characterId != null && c.characterId != characterId) return false;
       if (requireLocalCast == true && c.localCast.isEmpty) return false;
       if (forbidLocalCast == true && c.localCast.isNotEmpty) return false;
@@ -499,7 +506,9 @@ mixin ChatSessions on ChatTurns {
   Future<void> continueCurrentScene() =>
       _runStorySceneTurn(StoryGenerationIntent.continueScene);
 
-  Future<void> _runStorySceneTurn(StoryGenerationIntent intent) async {
+  Future<void> _runStorySceneTurn(
+    StoryGenerationIntent intent,
+  ) => _inSession(() async {
     if (_s.isStreaming || _execution.isActive) return;
     final convo = _s.current;
     if (convo == null || !convo.isStory) return;
@@ -582,7 +591,7 @@ mixin ChatSessions on ChatTurns {
     } finally {
       _finishStarting();
     }
-  }
+  });
 
   /// User bubbles that mean "advance the outline", including director cues.
   static bool isPlotAdvanceUserContent(String content) {
@@ -597,7 +606,7 @@ mixin ChatSessions on ChatTurns {
     /// Explicit target conversation (auto-play pins its origin so the loop
     /// keeps writing there even after the user switches conversations).
     String? conversationId,
-  }) async {
+  }) => _inSession(() async {
     if (_s.isStreaming || _execution.isActive) return;
     final convo = conversationId == null
         ? _s.current
@@ -661,12 +670,12 @@ mixin ChatSessions on ChatTurns {
     } finally {
       _finishStarting();
     }
-  }
+  }, conversationId: conversationId);
 
   /// Auto-run [rounds] ensemble turns (or until stop) on the conversation that
   /// started the run. Reading [_s.current] each round instead would retarget
   /// the loop whenever the user switches to another ensemble conversation.
-  Future<void> ensembleAutoPlay({int rounds = 6}) async {
+  Future<void> ensembleAutoPlay({int rounds = 6}) => _inSession(() async {
     final target = _s.current;
     if (target == null || !target.isEnsemble) return;
     final targetId = target.id;
@@ -685,15 +694,17 @@ mixin ChatSessions on ChatTurns {
           _s.errorConvoId == null || _s.errorConvoId == targetId;
       if (err != null && err.isNotEmpty && errOnTarget) return;
     }
-  }
+  });
 
   /// Toggle the "深度思考" switch shown next to the composer.
   void toggleDeepThink() {
+    if (_s.currentId case final id?) _composerThinking[id] = !_s.deepThink;
     _set(_s.copyWith(deepThink: !_s.deepThink));
   }
 
   void setReasoningEffort(ReasoningEffort effort) {
     _editedComposerPrefs.add('effort');
+    if (_s.currentId case final id?) _composerEffort[id] = effort;
     _set(_s.copyWith(reasoningEffort: effort));
     unawaited(
       ref.read(settingsControllerProvider.notifier).setReasoningEffort(effort),
@@ -706,7 +717,14 @@ mixin ChatSessions on ChatTurns {
     final next = _s.searchMode.next;
     _set(_s.copyWith(searchMode: next));
     unawaited(
-      ref.read(settingsControllerProvider.notifier).setSearchMode(next),
+      ref
+          .read(settingsControllerProvider.notifier)
+          .setSearchMode(next)
+          .catchError((Object error) {
+            if (ref.mounted) {
+              _set(_s.copyWith(error: '搜索设置保存失败：${describeError(error)}'));
+            }
+          }),
     );
   }
 
@@ -740,11 +758,27 @@ mixin ChatSessions on ChatTurns {
     _editedComposerPrefs.add('image');
     _set(_s.copyWith(imageGenMode: mode));
     unawaited(
-      ref.read(settingsControllerProvider.notifier).setImageGenMode(mode),
+      ref
+          .read(settingsControllerProvider.notifier)
+          .setImageGenMode(mode)
+          .catchError((Object error) {
+            if (ref.mounted) {
+              _set(_s.copyWith(error: '配图设置保存失败：${describeError(error)}'));
+            }
+          }),
     );
   }
 
+  /// The top-level chat/work tabs open independent sessions. Never relabel an
+  /// existing transcript or transfer its project/tool grants to the new mode.
+  void switchConversationMode(bool enabled) {
+    if (_s.current?.workMode == enabled) return;
+    newConversation(workMode: enabled, forceNew: true);
+  }
+
   void setWorkMode(bool enabled) {
+    if (_s.isStreaming) return;
+    if (_s.current == null) newConversation();
     final current = _s.current;
     if (current == null || current.workMode == enabled) return;
     final updated = current.copyWith(workMode: enabled);
@@ -802,12 +836,15 @@ mixin ChatSessions on ChatTurns {
   Future<void> deleteConversation(String id) async {
     // Deleting the conversation that is currently streaming: abort the stream
     // first, WITHOUT persisting it (a late save would resurrect the row).
-    if (_s.streamingConvoId == id) stop(persist: false);
+    if (_sessionRuns.containsKey(id)) stop(persist: false, conversationId: id);
+    unawaited(ref.read(mcpClientProvider).stopLocalSession(id));
 
     // Also tombstone it against a generation that is still preflighting
     // (awaiting settings): streamingConvoId is not set yet, so only this
     // record can stop _generate from re-inserting the stale snapshot.
     _rememberDeletedConversation(id);
+    ref.read(workHooksProvider).unbind(id);
+    _sessionCheckpoints.remove(id);
 
     // Remove it from memory before awaiting the database operation. The stream
     // teardown may resume as soon as stop() completes; persistById then sees
@@ -871,6 +908,20 @@ mixin ChatSessions on ChatTurns {
       return;
     }
 
+    if (ref.mounted) {
+      try {
+        await ref.read(conversationPreviewsProvider.notifier).remove(id);
+        await ref.read(workChangesProvider.notifier).removeConversation(id);
+        await ref.read(workRuntimeLogsProvider.notifier).clearConversation(id);
+        await ref
+            .read(reasoningTranslationProvider.notifier)
+            .forgetConversation(id);
+        if (ref.mounted)
+          ref.read(workTaskRuntimeProvider.notifier).removeConversation(id);
+      } catch (error) {
+        debugPrint('Sidebar preview cleanup: $error');
+      }
+    }
     if (createsFreshConversation) {
       _persistence.persistSoon(_persistence.persist());
     }

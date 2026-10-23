@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:dio/dio.dart';
 import '../../data/mcp_process_config.dart';
+import 'playwright_process_io.dart';
 
 class StdioTransportException implements Exception {
   const StdioTransportException(this.message);
@@ -48,12 +49,13 @@ class StdioTransport {
       throw const StdioTransportException('本地 MCP 仅支持桌面平台');
     }
     try {
+      final launch = await prepareMcpProcess(config);
       final started = await Process.start(
-        config.command.trim(),
-        config.arguments,
-        workingDirectory: config.workingDirectory.trim().isEmpty
-            ? null
-            : config.workingDirectory.trim(),
+        launch.command,
+        launch.arguments,
+        workingDirectory: launch.directory,
+        environment: launch.environment,
+        includeParentEnvironment: launch.environment == null,
         runInShell: false,
         mode: ProcessStartMode.normal,
       );
@@ -98,6 +100,9 @@ class StdioTransport {
     } catch (error) {
       await close();
       if (error is StdioTransportException) rethrow;
+      if (error is StateError) {
+        throw StdioTransportException(error.message.toString());
+      }
       throw const StdioTransportException('无法启动本地 MCP：请检查程序路径、参数及运行环境');
     }
   }

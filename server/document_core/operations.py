@@ -6,10 +6,12 @@ import io
 import json
 import re
 import shutil
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from docx import Document
+from docx.oxml import OxmlElement
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils import coordinate_to_tuple
 from pptx import Presentation
@@ -116,7 +118,11 @@ def edit_document_path(
     except ValueError as exc:
         raise DocumentOperationError("patch_invalid", str(exc)) from exc
     return DocumentOutput(
-        filename=validated.get("output_filename") or _default_out_name(source_name, ext),
+        filename=_sanitize_output_filename(
+            validated.get("output_filename") or _default_out_name(source_name, ext),
+            source_name,
+            ext,
+        ),
         media_type=MEDIA_TYPES[ext],
     )
 
@@ -300,7 +306,7 @@ def _apply_xlsx(in_path: Path, out_path: Path, patch: dict[str, Any]) -> None:
                 if not isinstance(row, list):
                     raise ValueError("set_range 行必须是数组")
                 for c, value in enumerate(row):
-                    ws.cell(row=row0 + r, column=col0 + c, value=_cell_py(value))
+                    ws.cell(row=row0 + r, column=col0 + c).value = _cell_py(value)
     wb.save(out_path)
 
 
@@ -321,21 +327,8 @@ def _docx_replace(doc: Document, find: str, replace: str, all_occ: bool) -> None
 
     def do_para(p: Any) -> None:
         nonlocal replaced
-        if find not in p.text:
-            return
         if all_occ or replaced == 0:
-            # Simple full-paragraph text rewrite keeps runs minimal but robust.
-            new_text = (
-                p.text.replace(find, replace) if all_occ else p.text.replace(find, replace, 1)
-            )
-            if new_text != p.text:
-                for run in p.runs:
-                    run.text = ""
-                if p.runs:
-                    p.runs[0].text = new_text
-                else:
-                    p.add_run(new_text)
-                replaced += 1 if not all_occ else p.text.count(replace)  # best-effort
+            replaced += _replace_paragraph_text(p, find, replace, all_occ)
 
     for p in doc.paragraphs:
         do_para(p)
@@ -349,6 +342,42 @@ def _docx_replace(doc: Document, find: str, replace: str, all_occ: bool) -> None
                         do_para(p)
                         if not all_occ and replaced:
                             return
+
+
+def _replace_paragraph_text(paragraph, find: str, replace: str, all_occ: bool) -> int:
+    # Match the same text-bearing elements as python-docx Run.text, including
+    # runs inside hyperlinks. Modify only affected text nodes: run properties,
+    # hyperlink relationships, drawings and other XML remain in place.
+    tokens = []
+    offset = 0
+    for run in paragraph._p.xpath("./w:r | ./w:hyperlink/w:r"):
+        for node in run.xpath("w:br | w:cr | w:noBreakHyphen | w:ptab | w:t | w:tab"):
+            text = str(node)
+            if text:
+                tokens.append((node, text, offset, offset + len(text)))
+                offset += len(text)
+    text = "".join(token[1] for token in tokens)
+    matches = list(re.finditer(re.escape(find), text))
+    if not all_occ:
+        matches = matches[:1]
+    starts = [match.start() for match in matches]
+    ends = [match.end() for match in matches]
+    for node, original, start, end in tokens:
+        updated = original
+        overlaps = matches[bisect_right(ends, start) : bisect_left(starts, end)]
+        for match in reversed(overlaps):
+            left = max(match.start() - start, 0)
+            right = min(match.end() - start, len(original))
+            insertion = replace if start <= match.start() < end else ""
+            updated = updated[:left] + insertion + updated[right:]
+        if updated != original:
+            # CT_R.text encodes tabs/newlines and preserves surrounding spaces.
+            fragment = OxmlElement("w:r")
+            fragment.text = updated
+            for child in list(fragment):
+                node.addprevious(child)
+            node.getparent().remove(node)
+    return len(matches)
 
 
 def _read_text_file(path: Path) -> str:

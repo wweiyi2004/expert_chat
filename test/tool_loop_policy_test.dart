@@ -1,5 +1,6 @@
 import 'package:expert_chat/data/models.dart';
 import 'package:expert_chat/domain/chat/tool_loop_policy.dart';
+import 'package:expert_chat/domain/llm/llm_request_policy.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -10,8 +11,7 @@ void main() {
       maxRounds,
     );
     expect(
-      ToolLoopPolicy.allowToolsThisRound(
-        workMode: false,
+      LlmRequestPolicy.allowToolsThisRound(
         round: 0,
         maxRounds: maxRounds,
         enableTools: true,
@@ -20,8 +20,7 @@ void main() {
       isTrue,
     );
     expect(
-      ToolLoopPolicy.allowToolsThisRound(
-        workMode: false,
+      LlmRequestPolicy.allowToolsThisRound(
         round: maxRounds - 1,
         maxRounds: maxRounds,
         enableTools: true,
@@ -39,8 +38,7 @@ void main() {
     );
     expect(maxRounds, ToolLoopPolicy.workSafetyRounds);
     expect(
-      ToolLoopPolicy.allowToolsThisRound(
-        workMode: true,
+      LlmRequestPolicy.allowToolsThisRound(
         round: 10,
         maxRounds: maxRounds,
         enableTools: true,
@@ -49,8 +47,7 @@ void main() {
       isTrue,
     );
     expect(
-      ToolLoopPolicy.allowToolsThisRound(
-        workMode: true,
+      LlmRequestPolicy.allowToolsThisRound(
         round: maxRounds - 1,
         maxRounds: maxRounds,
         enableTools: true,

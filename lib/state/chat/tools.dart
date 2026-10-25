@@ -1054,8 +1054,9 @@ mixin ChatTools on ChatMutations {
         return registry.visibleTools;
       },
       prepareIsolation: (record) async {
-        if (!_planAllowsTool(convoId, 'work_run_command'))
+        if (!_planAllowsTool(convoId, 'work_run_command')) {
           throw StateError('计划模式不能创建独立工作树');
+        }
         final inherited = childConfiguration();
         final run = _SessionRun(convoId)
           ..configuration = inherited
@@ -2184,8 +2185,9 @@ mixin ChatTools on ChatMutations {
 
   bool _planAllowsTool(String conversation, String? name) {
     final desired = ref.read(sessionPolicyProvider)[conversation];
-    if (!(desired?.planOnly ?? false) && !(_policyFor(conversation).planOnly))
+    if (!(desired?.planOnly ?? false) && !(_policyFor(conversation).planOnly)) {
       return true;
+    }
     return const {
       'work_ask_user',
       'coding_workspace_info',
@@ -2243,8 +2245,9 @@ mixin ChatTools on ChatMutations {
     final policy = _policyFor(convoId);
     if (ref
         .read(workApprovalsProvider.notifier)
-        .isAllowed(convoId, call.name ?? '工具', call.argumentsJson, target))
+        .isAllowed(convoId, call.name ?? '工具', call.argumentsJson, target)) {
       return true;
+    }
     if (policy.approval == WorkApprovalMode.full) return true;
     var reason = call.name == 'work_run_command' ? '命令以系统账号权限运行；工作目录不是沙箱。' : '';
     if (policy.approval == WorkApprovalMode.assisted) {

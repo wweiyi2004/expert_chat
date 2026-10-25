@@ -172,7 +172,12 @@ void main() {
     db = AppDatabase(NativeDatabase.memory());
     llm = _Llm();
     final host = CliDesktopWorkspaceHost(
-      executable: p.absolute('next/target/debug/expert-desktop.exe'),
+      executable: p.absolute(
+        const String.fromEnvironment(
+          'DESKTOP_WORKSPACE_TEST_EXECUTABLE',
+          defaultValue: 'next/target/debug/expert-desktop.exe',
+        ),
+      ),
       dataDirectory: p.join(root.path, 'state'),
     );
     container = ProviderContainer(
@@ -249,6 +254,39 @@ void main() {
         .read(workApprovalsProvider)
         .firstWhere((a) => a.conversationId == id);
   }
+
+  test(
+    'nested file completion stays within the registered workspace',
+    () async {
+      final nested = await Directory(
+        p.join(root.path, 'project', 'lib'),
+      ).create();
+      await File(
+        p.join(nested.path, 'example.dart'),
+      ).writeAsString('void main() {}');
+      final listing = await call('files.list', {'query': 'lib/'});
+      expect(
+        (listing['files'] as List).any(
+          (item) => (item as Map)['path'] == 'lib/example.dart',
+        ),
+        true,
+      );
+      await expectLater(
+        call('files.list', {'query': '../'}),
+        throwsA(isA<BridgeFailure>()),
+      );
+      final initialized = await Process.run('git', [
+        'init',
+        '--quiet',
+        root.path,
+      ]);
+      expect(initialized.exitCode, 0);
+      // The project is a subdirectory of a repo outside its grant. Startup must
+      // not discover that parent's branch or inspect that parent's work tree.
+      final snapshot = await call('snapshot.get');
+      expect((snapshot['startup'] as Map)['branch'], isNull);
+    },
+  );
 
   test(
     'production discovery writes random token under protected user/SYSTEM ACL and rejects junctions',

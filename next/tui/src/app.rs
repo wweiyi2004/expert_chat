@@ -490,6 +490,12 @@ impl App {
                 self.completion_closed = false;
                 if c == '@' {
                     out.push(self.command("files.list", json!({"query":""})));
+                } else if c == '/'
+                    && let Some((_, query)) = self.input.rsplit_once('@')
+                    && !query.chars().any(char::is_whitespace)
+                {
+                    self.files.clear();
+                    out.push(self.command("files.list", json!({"query":query})));
                 }
             }
             _ => {}

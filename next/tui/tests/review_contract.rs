@@ -88,6 +88,22 @@ fn failed_tool_keeps_exit_evidence_instead_of_a_successful_fold() {
 }
 
 #[test]
+fn entering_a_nested_attachment_directory_requests_authorized_children() {
+    use crossterm::event::{KeyCode, KeyEvent};
+    let mut a = app("running");
+    a.input = "查看 @lib".into();
+    a.cursor = a.input.len();
+    let commands = a.key(
+        KeyEvent::from(KeyCode::Char('/')),
+        std::time::Instant::now(),
+        80,
+    );
+    assert_eq!(commands.len(), 1);
+    assert_eq!(commands[0].method, "files.list");
+    assert_eq!(commands[0].params["query"], "lib/");
+}
+
+#[test]
 fn steps_stay_with_their_own_assistant_message_across_turns() {
     let mut a = app("running");
     a.expanded = true;

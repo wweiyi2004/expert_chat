@@ -17,6 +17,7 @@ import '../../state/chat_controller.dart';
 import '../../state/conversation_model_choice.dart';
 import '../../state/conversation_workspace_bindings.dart';
 import '../../state/model_route_groups.dart';
+import '../../state/model_service_credentials.dart';
 import '../../state/session_policy.dart';
 import '../../state/settings_controller.dart';
 import '../../state/task_acceptance_provider.dart';
@@ -42,6 +43,8 @@ class ControllerBridgeBackend implements BridgeBackend {
   final _profileSecrets = <String>{};
   final _availableProfiles = <String>{};
   DateTime _secretRead = DateTime.fromMillisecondsSinceEpoch(0);
+  Object? _secretSettings;
+  String _secretEpochSignature = '';
   Future<void>? _secretsPending;
   Future<String?>? _version;
   final _resuming = <String>{};
@@ -317,6 +320,8 @@ class ControllerBridgeBackend implements BridgeBackend {
     final version = await (_version ??= PackageInfo.fromPlatform()
         .then<String?>((info) => info.version)
         .catchError((Object _) => null));
+    // A key may rotate while workspace or package metadata is loading.
+    await _refreshSecrets();
     if (binding !=
         container.read(conversationWorkspaceBindingsProvider)[session]) {
       return snapshot(session);
@@ -842,33 +847,50 @@ class ControllerBridgeBackend implements BridgeBackend {
     }
   }
 
-  Future<void> _refreshSecrets() {
-    if (_secretsPending != null) return _secretsPending!;
-    if (DateTime.now().difference(_secretRead).inSeconds < 5) {
-      return Future.value();
-    }
-    _secretRead = DateTime.now();
-    return _secretsPending =
-        (() async {
-          final settings = container.read(settingsControllerProvider).value;
-          if (settings == null) return;
-          _availableProfiles.clear();
-          for (final profile in settings.profiles) {
-            try {
-              final credentials = await container
-                  .read(settingsControllerProvider.notifier)
-                  .readCurrentProfileCredentials(profile.id);
-              if (credentials.apiKey.isNotEmpty) {
-                _profileSecrets.add(credentials.apiKey);
-                _availableProfiles.add(profile.id);
-              }
-            } catch (_) {
-              /* An unavailable credential is never serialized. */
+  Future<void> _refreshSecrets() async {
+    while (true) {
+      if (_secretsPending case final pending?) {
+        await pending;
+        continue;
+      }
+      final settings = container.read(settingsControllerProvider).value;
+      final epochs = jsonEncode(
+        container.read(explicitCredentialEpochProvider),
+      );
+      if (identical(settings, _secretSettings) &&
+          epochs == _secretEpochSignature &&
+          DateTime.now().difference(_secretRead).inSeconds < 5) {
+        return;
+      }
+      final reading = (() async {
+        _availableProfiles.clear();
+        if (settings == null) return;
+        for (final profile in settings.profiles) {
+          try {
+            final credentials = await container
+                .read(settingsControllerProvider.notifier)
+                .readCurrentProfileCredentials(profile.id);
+            if (credentials.apiKey.isNotEmpty) {
+              _profileSecrets.add(credentials.apiKey);
+              _availableProfiles.add(profile.id);
             }
+          } catch (_) {
+            /* An unavailable credential is never serialized. */
           }
-        })().whenComplete(() {
-          _secretsPending = null;
-        });
+        }
+      })();
+      _secretsPending = reading;
+      try {
+        await reading;
+        _secretSettings = settings;
+        _secretEpochSignature = epochs;
+        _secretRead = DateTime.now();
+      } finally {
+        _secretsPending = null;
+      }
+      // Recheck after I/O: callers waiting for an older refresh must also see
+      // rotations that happened while that refresh was in flight.
+    }
   }
 
   Future<Map<String, Object?>> _git(DesktopWorkspace workspace) {
@@ -884,16 +906,30 @@ class ControllerBridgeBackend implements BridgeBackend {
         return <String, Object?>{};
       }
       try {
+        final root = await Directory(workspace.root).resolveSymbolicLinks();
+        final gitDirectory = Directory(p.join(root, '.git'));
+        if (!await gitDirectory.exists() ||
+            !p.isWithin(root, await gitDirectory.resolveSymbolicLinks())) {
+          return <String, Object?>{};
+        }
+        final location = [
+          '--git-dir=${gitDirectory.path}',
+          '--work-tree=$root',
+        ];
         final branch = await Process.run(
           'git',
-          ['-C', workspace.root, 'symbolic-ref', '--short', 'HEAD'],
+          [...location, 'symbolic-ref', '--short', 'HEAD'],
           environment: {'GIT_OPTIONAL_LOCKS': '0'},
         ).timeout(const Duration(seconds: 2));
         final status = await Process.run(
           'git',
           [
-            '-C',
-            workspace.root,
+            '--no-optional-locks',
+            '-c',
+            'core.fsmonitor=false',
+            '-c',
+            'core.untrackedCache=false',
+            ...location,
             'status',
             '--porcelain=v1',
             '-z',
@@ -929,6 +965,16 @@ class ControllerBridgeBackend implements BridgeBackend {
   }
 
   Future<Map<String, Object?>> _files(String id, String query) async {
+    final normalized = query.replaceAll(r'\', '/');
+    if (normalized.startsWith('/') ||
+        normalized.contains(':') ||
+        normalized.split('/').contains('..')) {
+      throw const BridgeFailure('invalid_params', '只允许工作区内的相对路径');
+    }
+    final slash = normalized.lastIndexOf('/');
+    final directory = slash < 0 ? '.' : normalized.substring(0, slash);
+    final prefix = slash < 0 ? '' : normalized.substring(0, slash + 1);
+    final filter = normalized.substring(slash + 1).toLowerCase();
     final binding = container.read(conversationWorkspaceBindingsProvider)[id];
     if (binding == null || _policy(id).sshProfileId.isNotEmpty) {
       throw const BridgeFailure('unsupported', '请先选择本机已授权工作区');
@@ -942,7 +988,7 @@ class ControllerBridgeBackend implements BridgeBackend {
     try {
       final result = jsonDecode(
         await session.call('coding_list_directory', {
-          'path': '.',
+          'path': directory.isEmpty ? '.' : directory,
           'scope': 'root',
         }, token),
       );
@@ -957,10 +1003,10 @@ class ControllerBridgeBackend implements BridgeBackend {
           for (final item in values)
             if (item is Map &&
                 '${item['name'] ?? item['path']}'.toLowerCase().contains(
-                  query.toLowerCase(),
+                  filter,
                 ))
               {
-                'path': item['path'] ?? item['name'],
+                'path': '$prefix${item['name'] ?? item['path']}',
                 'kind': item['kind'] ?? item['type'] ?? 'file',
               },
         ],

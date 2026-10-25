@@ -17,7 +17,7 @@ use expert_tui::{
 use serde_json::json;
 use std::{
     io::{self, IsTerminal, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 #[derive(Parser)]
@@ -108,6 +108,7 @@ fn run() -> Result<()> {
         io::stdin().is_terminal() && io::stdout().is_terminal(),
         "Interactive TUI needs a terminal. Use --snapshot <scene> for text output."
     );
+    let (workspace, initial) = resolve_target(args.target.as_deref(), &std::env::current_dir()?)?;
     let demo = args.demo.is_some();
     let mut source: Box<dyn DataSource> = if let Some(name) = args.demo.as_deref() {
         Box::new(DemoSource::new(name)?)
@@ -118,23 +119,6 @@ fn run() -> Result<()> {
             auto_start: !args.no_auto_start,
         }))
     };
-    let target = args.target.as_deref();
-    if let Some(target) = target
-        && (target.contains(':')
-            || target.starts_with('.')
-            || target.starts_with('/')
-            || target.contains('\\'))
-        && !std::path::Path::new(target).is_dir()
-    {
-        anyhow::bail!("工作区目录不存在：{target}");
-    }
-    let workspace = target
-        .filter(|s| std::path::Path::new(s).is_dir())
-        .map(PathBuf::from)
-        .unwrap_or(std::env::current_dir()?);
-    let initial = target
-        .filter(|s| !std::path::Path::new(s).is_dir())
-        .map(str::to_owned);
     let mut boot = !demo;
     let resume = args.command.map(|StartCommand::Resume { id }| id);
     app.suppress_welcome = resume.is_some() || initial.is_some();
@@ -480,5 +464,88 @@ fn send(source: &mut dyn DataSource, app: &mut App, c: Command) {
     if let Err(e) = source.send(c) {
         app.restore_draft();
         app.notice = e.to_string();
+    }
+}
+
+fn resolve_target(target: Option<&str>, cwd: &Path) -> Result<(PathBuf, Option<String>)> {
+    anyhow::ensure!(cwd.is_absolute(), "当前工作目录必须是绝对路径");
+    let Some(target) = target else {
+        return Ok((cwd.to_owned(), None));
+    };
+    let path = Path::new(target);
+    let resolved = if path.is_absolute() {
+        path.to_owned()
+    } else {
+        cwd.join(path)
+    };
+    if resolved.is_dir() {
+        return Ok((resolved, None));
+    }
+    let bytes = target.as_bytes();
+    let drive = bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
+    let explicit = path.is_absolute()
+        || drive
+        || target == "."
+        || target == ".."
+        || ["./", "../", ".\\", "..\\", "\\\\"]
+            .iter()
+            .any(|p| target.starts_with(p))
+        || (!target.chars().any(char::is_whitespace) && target.contains('\\'));
+    anyhow::ensure!(
+        !explicit && !resolved.exists(),
+        "工作区目录不存在或不是目录：{target}"
+    );
+    Ok((cwd.to_owned(), Some(target.to_owned())))
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::resolve_target;
+    #[test]
+    fn existing_relative_workspaces_are_absolute() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("subdir")).unwrap();
+        for name in [".", "subdir"] {
+            let (workspace, task) = resolve_target(Some(name), temp.path()).unwrap();
+            assert!(workspace.is_absolute());
+            assert!(workspace.is_dir());
+            assert!(task.is_none());
+        }
+        let absolute = temp.path().join("subdir");
+        assert_eq!(
+            resolve_target(absolute.to_str(), temp.path()).unwrap().0,
+            absolute
+        );
+    }
+    #[test]
+    fn colon_prose_remains_an_initial_task() {
+        let temp = tempfile::tempdir().unwrap();
+        let task = "fix: preserve SVG aspect ratio";
+        assert_eq!(
+            resolve_target(Some(task), temp.path()).unwrap(),
+            (temp.path().to_owned(), Some(task.into()))
+        );
+        assert_eq!(
+            resolve_target(None, temp.path()).unwrap(),
+            (temp.path().to_owned(), None)
+        );
+    }
+    #[test]
+    fn explicit_missing_paths_and_files_are_rejected_before_launch() {
+        let temp = tempfile::tempdir().unwrap();
+        for target in [
+            "./missing",
+            "../missing",
+            ".\\missing",
+            "C:\\missing",
+            "\\\\server\\missing",
+        ] {
+            assert!(
+                resolve_target(Some(target), temp.path()).is_err(),
+                "{target}"
+            );
+        }
+        std::fs::write(temp.path().join("file.txt"), "file").unwrap();
+        assert!(resolve_target(Some("file.txt"), temp.path()).is_err());
     }
 }

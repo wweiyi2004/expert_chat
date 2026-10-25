@@ -462,12 +462,11 @@ impl WorkspaceFiles {
                 }
                 Err(error) => return Err(error.into()),
             };
-            let recovery_path;
-            if expected == "new" {
+            let recovery_path = if expected == "new" {
                 let mut temporary = cap_tempfile::TempFile::new(&parent)?;
                 temporary.as_file_mut().write_all(content.as_bytes())?;
                 temporary.as_file().sync_all()?;
-                recovery_path = publish_new_file(&parent, name, temporary)?;
+                publish_new_file(&parent, name, temporary)?
             } else {
                 let mut temporary = cap_tempfile::TempFile::new(&parent)?;
                 temporary.as_file_mut().write_all(content.as_bytes())?;
@@ -478,15 +477,15 @@ impl WorkspaceFiles {
                 if let Some(reviewed) = &reviewed_version {
                     revalidate_stable_file(&parent, Path::new(name), reviewed)?;
                 }
-                recovery_path = guarded_mutation(
+                guarded_mutation(
                     &parent,
                     name,
                     reviewed_version
                         .take()
                         .context("Missing reviewed version")?,
                     Some(temporary),
-                )?;
-            }
+                )?
+            };
             Ok(WriteReceipt {
                 scope: scope.into(),
                 path: path.into(),

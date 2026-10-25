@@ -672,3 +672,12 @@ Android也已完成：[签名APK](../output/releases/work-polish-20261025-130222
 [Windows包](../output/releases/task-core-20261025-233905/expert-chat-windows-3.8.1+4113-task-core.zip) 34,656,050字节，SHA256 `60D61D633CBF03FA4F0B2C571A22FE336A0F11E204038498CD271C2BD9BFCF9F`，65文件和CLI5项核验通过；[Android原证书签名包](../output/releases/task-core-20261025-233905/expert-chat-android-3.8.1+4113-task-core.apk) 117,884,509字节，SHA256 `80CDC0EC003C84B52B1F77B07CC16D19510FCDB588C03D7A1251B38220E5911A`，v2/证书/三ABI/资源核验通过，未自动安装。[启动核验](../output/task-core-review/windows-launch-verification.json)：旧46112退出，新42644响应正常，二次49020退出0，全机客户端1。[交付清单](../output/releases/task-core-20261025-233905/release-manifest.json)与校验和完整生成，运行Windows包保持封存。
 
 边界如实保留：旧记录缺安全信息拒绝恢复；导入备份清机器绑定和执行权限；本地模型编排仍由ChatController协调而非改成独立daemon；不支持独占硬链接的文件系统安全拒绝；二进制/删除不冒充可文本回退；SSH仅协议竞争夹具验证，保留恢复副本并返回路径，未使用用户真实SSH测试。未新增依赖、提交或推送。本轮六项全部实施并交付。
+
+
+## 21. Expert TUI 与共享桥接（2026-10-26）
+
+按 design/tui/AGENT-PROMPT.md、TUI-SPEC.md 及用户1A/2A/3A/4A/5A/6A完成 Windows TUI：Rust字符终端、同一GUI控制器桥接、后台单实例启动、当前目录首次确认、来源模型和可调思考、批准/队列/停止恢复/差异/任务树/验收、JSON宠物和窄屏适配。关闭终端保留任务，`/gui`进入同一GUI，`/bridge off`仅停通信。新增必要计划模式、精准会话批准、撤回均走共享执行与持久化。
+
+[完整报告](../output/tui-build/FINAL-REPORT.md)与[持续日志](../design/tui/BUILD-LOG.md)包含架构、修订、失败与修复、逐项验收和平台限制。全量analyze0、Flutter 1956、Rust 67、Clippy0、最终包CLI/桥接7、原生单实例7、42终端快照通过。真实DeepSeek Flash流程11次请求，临时工作区、仅请求批准；最终包只读复核与实际终端重连通过。
+
+[最终Windows包](E:/wweiyi/Project/Software/expert_chat/output/releases/tui-20261026-045848/ExpertChat-TUI-windows.zip)，35,599,095字节，SHA256 `4e33b461d878d0e807c9339fac24d8430682f60975351e22bcd81ed2cd18c1b7`。源SHA256 `5b08e5463f7cea8980c351a3a8cc6681f94a5fe990acd213586db79217bdad75`。已将expert启动器放入现有用户bin，打开TUI并保留一个后台GUI；运行包封存。仅本地提交到feat/tui，未push。本次交付Windows；物理tmux/SSH终端、POSIX OSC11、真实图片剪贴板端到端未验证，未伪称完成跨平台实机验收。

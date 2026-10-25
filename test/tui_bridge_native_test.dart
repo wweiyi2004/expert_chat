@@ -540,6 +540,18 @@ void main() {
         true,
       );
       expect(
+        writeSteps.every((step) => (step as Map)['object'] == 'hello.txt'),
+        true,
+      );
+      expect(
+        (snapshot['steps'] as List).any(
+          (step) =>
+              (step as Map)['verb'] == '运行' &&
+              step['object'] == 'Write-Output verified',
+        ),
+        true,
+      );
+      expect(
         (snapshot['changes'] as List),
         isNotEmpty,
         reason:

@@ -18,6 +18,24 @@ class TuiSnapshotEvidence {
   final List<ChatMessage> messages;
   final List<WorkFileChange> changes;
 
+  static String stepObject(SearchActivity activity) {
+    final args = _object(activity.toolArguments);
+    final value = switch (activity.toolName) {
+      'coding_read_file' ||
+      'coding_write_file' ||
+      'coding_list_directory' ||
+      'coding_create_directory' ||
+      'coding_artifact_manifest' ||
+      'work_integrate_agent_file' => args?['path'],
+      'work_run_command' || 'work_start_process' => args?['command'],
+      'web_search' => args?['query'],
+      'fetch_url' => args?['url'],
+      'work_spawn_agent' => args?['task'],
+      _ => null,
+    };
+    return value is String && value.trim().isNotEmpty ? value : activity.query;
+  }
+
   static Map<String, dynamic>? _object(String? value) {
     try {
       final decoded = jsonDecode(value ?? '');

@@ -435,7 +435,7 @@ class ControllerBridgeBackend implements BridgeBackend {
               'message_id': m.id,
               'round_id': null,
               'verb': _verb(a.toolName),
-              'object': a.query,
+              'object': TuiSnapshotEvidence.stepObject(a),
               'status':
                   a.status == SearchActivityStatus.running &&
                       _status(c!) == 'approval'

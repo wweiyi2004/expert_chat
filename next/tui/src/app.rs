@@ -226,6 +226,9 @@ impl App {
     pub fn active(&self) -> bool {
         matches!(self.status(), "running" | "approval" | "retrying")
     }
+    pub fn reviewing_proposed_write(&self) -> bool {
+        self.view == View::Changes && self.snapshot["approvals"][0]["tool"] == "coding_write_file"
+    }
     pub fn command(&self, method: &str, mut params: Value) -> Command {
         if let Some(id) = self.session_id() {
             params["session_id"] = json!(id);
@@ -330,7 +333,10 @@ impl App {
                 KeyCode::Char('g') => {
                     self.view = View::Changes;
                     self.selected = 0;
-                    if let Some(change) = items(&self.snapshot, "changes").first() {
+                    self.scroll = 0;
+                    if !self.reviewing_proposed_write()
+                        && let Some(change) = items(&self.snapshot, "changes").first()
+                    {
                         out.push(self.command("changes.diff", json!({"id":change["id"]})));
                     }
                 }
@@ -338,7 +344,10 @@ impl App {
                     self.view = View::Agents;
                     self.selected = 0;
                 }
-                KeyCode::Char('y') => self.approval_collapsed = false,
+                KeyCode::Char('y') => {
+                    self.approval_collapsed = false;
+                    self.view = View::Chat;
+                }
                 KeyCode::Char('r') => self.open(Drawer::History),
                 KeyCode::Char('b') if self.input.is_empty() && width >= 140 => {
                     self.sidebar = !self.sidebar
@@ -608,6 +617,8 @@ impl App {
    "/login"|"/settings"|"/doctor"|"/mcp"=>return vec![self.command("gui.open",json!({"page":"settings"}))],
    "/library"=>return vec![self.command("gui.open",json!({"page":"library"}))],
    "/media"=>return vec![self.command("gui.open",json!({"page":"media"}))],
+   "/bridge" if arg == "off" => return vec![self.command("bridge.stop", json!({}))],
+   "/bridge" => self.notice = "使用 /bridge off 关闭桥接；后台任务继续运行".into(),
    "/compact"=>self.notice="请在 GUI 中整理上下文".into(),
    _ if cmd.starts_with('/')=>self.notice=format!("未知命令：{cmd} · /help"),
    _=>{if items(&self.snapshot,"models").is_empty(){self.input=input;self.cursor=self.input.len();self.open(Drawer::Login);}else{let attachments=std::mem::take(&mut self.attachments);self.pending_draft=Some((input.clone(),attachments.clone()));return vec![self.command(if self.active(){"queue.add"}else{"message.send"},json!({"text":input,"attachments":attachments}))];}}
@@ -627,6 +638,19 @@ impl App {
     }
     fn view_key(&mut self, key: KeyEvent) -> Vec<Command> {
         let mut out = vec![];
+        if self.reviewing_proposed_write() {
+            match key.code {
+                KeyCode::Char('q') => self.view = View::Chat,
+                KeyCode::Char(' ') | KeyCode::PageDown => {
+                    self.scroll = self.scroll.saturating_add(8)
+                }
+                KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(8),
+                KeyCode::Char('j') | KeyCode::Down => self.scroll = self.scroll.saturating_add(1),
+                KeyCode::Char('k') | KeyCode::Up => self.scroll = self.scroll.saturating_sub(1),
+                _ => {}
+            }
+            return out;
+        }
         let before = self.selected;
         match key.code {
             KeyCode::Char('q') => self.view = View::Chat,
@@ -790,6 +814,7 @@ impl App {
     }
 }
 pub const COMMANDS: &[&str] = &[
+    "/bridge",
     "/library",
     "/media",
     "/model",

@@ -886,6 +886,23 @@ fn nearest_xterm(r: u8, g: u8, b: u8) -> u8 {
 }
 fn full_view(f: &mut Frame, a: &App, area: Rect) {
     let t = Theme::new(a);
+    if a.reviewing_proposed_write() {
+        let approval = &a.snapshot["approvals"][0];
+        let mut lines = vec![
+            pair(
+                " 拟写入差异 · 尚未执行".into(),
+                "q 返回 · ctrl+y 批准".into(),
+                area.width as usize,
+                a,
+                t.warn,
+                t.muted,
+            ),
+            line(glyph(a, "─", "-").repeat(area.width as usize), t.muted),
+        ];
+        lines.extend(diff_lines(a, approval).into_iter().skip(a.scroll as usize));
+        f.render_widget(Paragraph::new(lines), area);
+        return;
+    }
     let mut lines = vec![
         pair(
             format!(
@@ -1046,7 +1063,13 @@ pub fn draw(f: &mut Frame, a: &App) {
         return;
     }
     if a.view != View::Chat {
-        full_view(f, a, area);
+        if area.height >= 3 {
+            full_view(f, a, Rect::new(area.x, area.y, area.width, area.height - 1));
+        }
+        f.render_widget(
+            Paragraph::new(footer(a, area.width as usize)),
+            Rect::new(area.x, area.bottom() - 1, area.width, 1),
+        );
         return;
     }
     let t = Theme::new(a);

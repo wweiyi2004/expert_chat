@@ -274,6 +274,7 @@ fn run() -> Result<()> {
                         app.pending_draft = None;
                         app.notice.clear();
                     }
+                    "bridge.stop" => app.exit = true,
                     "models.list" => app.snapshot["models"] = result["models"].clone(),
                     "session.list" => app.snapshot["sessions"] = result["sessions"].clone(),
                     "workspace.list" => app.snapshot["workspaces"] = result["workspaces"].clone(),

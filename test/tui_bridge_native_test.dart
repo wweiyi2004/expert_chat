@@ -498,6 +498,11 @@ void main() {
         ),
       ]);
       final write = await approval();
+      final pendingPreview = await call('snapshot.get');
+      expect(
+        ((pendingPreview['approvals'] as List).first as Map)['diff'],
+        contains('+hello'),
+      );
       await call('approval.decide', {'id': write.id, 'decision': 'once'});
       final second = await llm.request(1);
       expect(
@@ -525,6 +530,15 @@ void main() {
       final controller = container.read(chatControllerProvider.notifier);
       await until(() => !controller.isConversationRunning(id));
       final snapshot = await bridge.snapshot(id);
+      final writeSteps = (snapshot['steps'] as List).where(
+        (step) => (step as Map)['verb'] == '编辑',
+      );
+      expect(
+        writeSteps.any(
+          (step) => (step as Map)['added'] == 1 && step['removed'] == 0,
+        ),
+        true,
+      );
       expect(
         (snapshot['changes'] as List),
         isNotEmpty,

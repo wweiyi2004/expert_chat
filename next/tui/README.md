@@ -13,6 +13,8 @@ scripts/expert.ps1 resume SESSION_ID
 
 The desktop executable must include the TUI bridge. `--gui` or `EXPERT_CHAT_GUI` supplies its absolute path. Startup connects in the background; there is no demo fallback on connection errors. First use of the current directory requires an explicit read-only/read-write confirmation. Actions against a provisional GUI session are blocked until the selected workspace or resumed session has been bound.
 
+`/bridge off` closes the authenticated bridge and exits the terminal after acknowledgement; hosted tasks continue. Starting `expert` again re-enables the bridge through the same desktop instance. During a proposed file write, Ctrl+G shows the full expected-version diff; Ctrl+Y returns to its approval card. A missing verified original is displayed as unavailable rather than invented. Execution still validates the actual file version.
+
 `/model`, `/permissions`, `/sessions`, `/workspace`, `/help`, `/pet`, `/accept`, `/new`, `/stop` and `/quit` are available in the command completion list. `/library` opens the existing library and `/media` opens image generation in the same GUI. Login, provider settings and complex configuration also open the same desktop GUI. Ctrl+J inserts a newline; pasted content longer than five lines remains intact behind a compact label. Ctrl+V imports a Windows clipboard image as an explicit PNG attachment, limited to 512 KiB; larger images and other platform clipboards use the GUI attachment flow. Pending drafts are restored on errors and never automatically replayed after reconnect.
 
 Deterministic terminal snapshots use exactly the same reducer and renderer:

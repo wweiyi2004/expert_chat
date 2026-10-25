@@ -144,3 +144,68 @@ fn steps_stay_with_their_own_assistant_message_across_turns() {
         "steps separated from their turn:\n{output}"
     );
 }
+
+#[test]
+fn approval_diff_view_reviews_the_proposal_without_accepting_a_task() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut a = app("approval");
+    a.snapshot["approvals"][0]["tool"] = json!("coding_write_file");
+    a.snapshot["approvals"][0]["diff"] = json!(["-BEFORE", "+PROPOSED_AFTER"]);
+    a.snapshot["changes"] = json!([{"id":"old", "path":"old.txt", "diff":["+OLDER_CHANGE"]}]);
+    let command = a.key(
+        KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL),
+        std::time::Instant::now(),
+        80,
+    );
+    assert!(command.is_empty());
+    let output = render(&a, 80, 24);
+    assert!(output.contains("尚未执行"));
+    assert!(output.contains("+PROPOSED_AFTER"));
+    assert!(!output.contains("OLDER_CHANGE"));
+    assert!(
+        a.key(
+            KeyEvent::from(KeyCode::Char('a')),
+            std::time::Instant::now(),
+            80
+        )
+        .is_empty()
+    );
+    a.key(
+        KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL),
+        std::time::Instant::now(),
+        80,
+    );
+    assert_eq!(a.view, expert_tui::app::View::Chat);
+}
+
+#[test]
+fn full_screen_reviews_keep_full_access_visible() {
+    for view in [
+        expert_tui::app::View::Changes,
+        expert_tui::app::View::Agents,
+    ] {
+        let mut a = app("accepted");
+        a.view = view;
+        a.snapshot["session"]["permission"] = json!("full");
+        assert!(render(&a, 40, 24).contains("完全访问"));
+    }
+}
+
+#[test]
+fn bridge_off_is_explicit_and_does_not_issue_task_stop() {
+    use crossterm::event::{KeyCode, KeyEvent};
+    let mut a = app("running");
+    a.input = "/bridge off".into();
+    a.cursor = a.input.len();
+    let commands = a.key(
+        KeyEvent::from(KeyCode::Enter),
+        std::time::Instant::now(),
+        80,
+    );
+    assert_eq!(commands.len(), 1);
+    assert_eq!(commands[0].method, "bridge.stop");
+    assert!(
+        !a.exit,
+        "wait for the server acknowledgement before exiting"
+    );
+}

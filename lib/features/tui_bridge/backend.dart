@@ -34,6 +34,7 @@ import '../shell/shell_tab.dart';
 import '../library/resources_page.dart';
 import 'protocol.dart';
 import 'gui_navigation.dart';
+import 'snapshot_evidence.dart';
 
 class ControllerBridgeBackend implements BridgeBackend {
   ControllerBridgeBackend(this.container);
@@ -356,6 +357,11 @@ class ControllerBridgeBackend implements BridgeBackend {
           ..sort((a, b) => b.startedAt.compareTo(a.startedAt));
     final runtime = records.firstOrNull;
     final path = c?.activePath ?? <ChatMessage>[];
+    final evidence = TuiSnapshotEvidence(
+      conversationId: session,
+      messages: path,
+      changes: container.read(workChangesProvider),
+    );
     final data = <String, Object?>{
       'session': c == null
           ? null
@@ -448,8 +454,7 @@ class ControllerBridgeBackend implements BridgeBackend {
                         .difference(a.startedAt!)
                         .inMilliseconds,
               'exit_code': _exitCode(a.resultText),
-              'added': null,
-              'removed': null,
+              ...evidence.stepLineCounts(m.id, a),
               'detail': a.error,
             },
       ],
@@ -464,7 +469,7 @@ class ControllerBridgeBackend implements BridgeBackend {
             'arguments': a.arguments,
             'target': a.target,
             'reason': a.reason,
-            'diff': <String>[],
+            'diff': evidence.approvalDiff(a),
           },
       ],
       'questions': [

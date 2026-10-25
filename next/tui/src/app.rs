@@ -623,7 +623,7 @@ impl App {
         let arg = split.next().unwrap_or("");
         match cmd {
    "/model"=>self.open(Drawer::Model),"/permissions"=>self.open(Drawer::Permissions),"/workspace"=>self.open(Drawer::Workspace),"/sessions"=>self.open(Drawer::Sessions),"/help"=>self.open(Drawer::Help),
-   "/resume"=>{if !arg.is_empty(){return vec![Command{method:"session.open".into(),params:json!({"session_id":arg})}];} else if let Some(s)=items(&self.snapshot,"sessions").first(){return vec![Command{method:"session.open".into(),params:json!({"session_id":s["id"]})}];}self.open(Drawer::Sessions);},
+   "/resume"=>{if !arg.is_empty(){return vec![Command{method:"session.open".into(),params:json!({"session_id":arg})}];} else if let Some(s)=items(&self.snapshot,"sessions").iter().find(|s| s["id"]!=self.snapshot["session"]["id"] && s["empty"]!=true && (self.snapshot["session"]["workspace_id"].is_null() || s["workspace_id"]==self.snapshot["session"]["workspace_id"])) {return vec![Command{method:"session.open".into(),params:json!({"session_id":s["id"]})}];}self.open(Drawer::Sessions);},
    "/pet"=>{if arg=="off"{self.pet.enabled=false;if let Err(e)=crate::config::save_pet(false){self.notice=e.to_string();}}else{self.pet.click(Instant::now(),self.reduce_motion);}},
    "/mode"=>return vec![self.command("mode.set",json!({"mode":if arg=="plan"||self.snapshot["session"]["mode"]!="plan"{"plan"}else{"work"}}))],
    "/accept"=>return vec![self.command("task.accept",json!({}))],"/stop"=>return vec![self.command("task.stop",json!({}))],
@@ -632,6 +632,7 @@ impl App {
    "/login"|"/settings"|"/doctor"|"/mcp"=>return vec![self.command("gui.open",json!({"page":"settings"}))],
    "/library"=>return vec![self.command("gui.open",json!({"page":"library"}))],
    "/media"=>return vec![self.command("gui.open",json!({"page":"media"}))],
+   "/gui"=>return vec![self.command("gui.open",json!({"page":"session"}))],
    "/bridge" if arg == "off" => return vec![self.command("bridge.stop", json!({}))],
    "/bridge" => self.notice = "使用 /bridge off 关闭桥接；后台任务继续运行".into(),
    "/compact"=>self.notice="请在 GUI 中整理上下文".into(),
@@ -835,6 +836,7 @@ impl App {
     }
 }
 pub const COMMANDS: &[&str] = &[
+    "/gui",
     "/bridge",
     "/library",
     "/media",

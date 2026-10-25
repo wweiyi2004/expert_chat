@@ -76,7 +76,7 @@ hello 必须首个请求，5 秒内完成，返回 `{protocol:1,server_id,pid,ca
   queued:[{id,text,status}],
   models:[{choice,id,source_id,source,efforts:[],thinking_supported}],
   workspaces:[{id,name,path,access,remote}],
-  sessions:[{id,title,status,workspace_id,updated_at}]
+  sessions:[{id,title,status,workspace_id,updated_at,empty?}]
 }
 ```
 
@@ -85,6 +85,8 @@ Step.status：queued/running/approval/done/failed/stopped。Agent.status：queue
 mode work/plan；permission request/assisted/full；effort 使用后端实际 wire 值，不能统一给所有模型虚构五挡。
 
 agents 按父节点先于子节点的深度优先顺序输出；有当前任务根身份时只返回该根的树。task/depth 是可选只读元信息；客户端以 parent_id 绘制层级，并在快照排序变化时保持选中的 agent id。
+
+Session 列表的 empty 为可选 bool/null：仅已加载的空会话为 true，未加载历史为 null。最近会话和无参数 /resume 排除已知空会话，/resume 还排除当前会话并优先同一工作区；不把刚创建的输入会话当成上次任务。
 
 ## 增量事件
 

@@ -2,6 +2,8 @@
 
 `expert` is the terminal client for the running Expert desktop application. It uses the same sessions, controller, approvals, model sources and task acceptance evidence. Closing the terminal disconnects the client; `/stop`, double Esc, or Ctrl+C during a running task explicitly stop a task.
 
+`/resume` opens recent activity in the current project, skipping the new empty input session. `/sessions` lets you choose another session explicitly. `/gui` opens the current session in the same desktop instance, including its existing detailed tool views and workspace previews.
+
 Build from the repository root:
 
 ```powershell

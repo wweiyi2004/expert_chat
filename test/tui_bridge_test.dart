@@ -445,6 +445,48 @@ void main() {
       await db.close();
     });
     test(
+      'fresh terminal thinking is high enabled and remains adjustable',
+      () async {
+        final controller = container.read(chatControllerProvider.notifier);
+        final gui = await controller.createWorkSession(title: 'GUI');
+        await controller.selectConversation(gui);
+        controller.toggleDeepThink();
+        controller.setReasoningEffort(ReasoningEffort.low);
+        final terminal = await controller.createWorkSession(title: 'TUI');
+        expect(controller.thinkingForSession(terminal), true);
+        expect(controller.effortForSession(terminal), ReasoningEffort.high);
+        expect(await controller.sendToSession(terminal, 'first'), true);
+        expect(llm.lastThinking, true);
+        expect(llm.lastReasoningEffort, ReasoningEffort.high);
+        expect(
+          container.read(chatControllerProvider).requireValue.currentId,
+          gui,
+        );
+        expect(
+          container.read(chatControllerProvider).requireValue.deepThink,
+          false,
+        );
+        controller.configureSessionThinking(
+          terminal,
+          false,
+          ReasoningEffort.low,
+        );
+        expect(await controller.sendToSession(terminal, 'second'), true);
+        expect(llm.lastThinking, false);
+        expect(llm.lastReasoningEffort, isNull);
+        expect(controller.effortForSession(terminal), ReasoningEffort.low);
+        controller.configureSessionThinking(
+          terminal,
+          true,
+          ReasoningEffort.low,
+        );
+        expect(await controller.sendToSession(terminal, 'third'), true);
+        expect(llm.lastThinking, true);
+        expect(llm.lastReasoningEffort, ReasoningEffort.low);
+      },
+    );
+
+    test(
       'new session persists itself and explicit send never follows GUI selection',
       () async {
         final controller = container.read(chatControllerProvider.notifier);
@@ -476,6 +518,17 @@ void main() {
         );
         final snapshot = await backend.snapshot(a);
         expect((snapshot['session'] as Map)['id'], a);
+        final catalog = snapshot['sessions'] as List;
+        expect(
+          (catalog.firstWhere((row) => (row as Map)['id'] == a)
+              as Map)['empty'],
+          false,
+        );
+        expect(
+          (catalog.firstWhere((row) => (row as Map)['id'] == b)
+              as Map)['empty'],
+          true,
+        );
         expect(jsonEncode(snapshot), isNot(contains('gateway-token')));
         expect(jsonEncode(snapshot), isNot(contains('search-key')));
       },

@@ -1864,6 +1864,7 @@ class ChatController extends _ChatControllerBase
 
   Future<String> createWorkSession({String? title}) async {
     final fresh = Conversation(workMode: true, title: title ?? '新工作会话');
+    _freshComposerId(fresh.id);
     _set(_s.copyWith(conversations: [fresh, ..._s.conversations]));
     await _persistence.persistById(fresh.id);
     return fresh.id;

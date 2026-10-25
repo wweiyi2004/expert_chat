@@ -1581,7 +1581,13 @@ fn welcome_record(a: &App, w: usize, h: u16, hint: bool) -> Vec<Line<'static>> {
                 t.muted,
             ));
         } else {
-            let sessions = items(&a.snapshot, "sessions");
+            let sessions = items(&a.snapshot, "sessions")
+                .iter()
+                .filter(|x| {
+                    x["empty"] != true
+                        && (s["workspace_id"].is_null() || x["workspace_id"] == s["workspace_id"])
+                })
+                .collect::<Vec<_>>();
             if !sessions.is_empty() {
                 while pet_visible(a, w as u16, h) && out.len() < 7 {
                     out.push(Line::default());
@@ -1594,13 +1600,7 @@ fn welcome_record(a: &App, w: usize, h: u16, hint: bool) -> Vec<Line<'static>> {
                     t.muted,
                     t.accent,
                 ));
-                for session in sessions
-                    .iter()
-                    .filter(|x| {
-                        s["workspace_id"].is_null() || x["workspace_id"] == s["workspace_id"]
-                    })
-                    .take(3)
-                {
+                for session in sessions.into_iter().take(3) {
                     let status = text(session, "status");
                     let icon = if status == "running" {
                         glyph(a, "●", "*")

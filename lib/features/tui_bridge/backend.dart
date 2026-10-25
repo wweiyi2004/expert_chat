@@ -333,6 +333,7 @@ class ControllerBridgeBackend implements BridgeBackend {
         'id': c.id,
         'title': c.title,
         'status': _status(c),
+        'empty': c.messagesLoaded ? !c.hasUserActivity : null,
         'workspace_id': _policy(c.id).sshProfileId.isNotEmpty
             ? 'ssh:${_policy(c.id).sshProfileId}'
             : container.read(conversationWorkspaceBindingsProvider)[c.id],

@@ -209,3 +209,31 @@ fn bridge_off_is_explicit_and_does_not_issue_task_stop() {
         "wait for the server acknowledgement before exiting"
     );
 }
+
+#[test]
+fn resume_selects_recent_project_activity_instead_of_its_new_empty_session() {
+    use crossterm::event::{KeyCode, KeyEvent};
+    let mut a = app("welcome");
+    a.snapshot["session"]["id"] = json!("fresh");
+    a.snapshot["session"]["workspace_id"] = json!("project");
+    a.snapshot["sessions"] = json!([
+        {"id":"fresh", "workspace_id":"project", "empty":true},
+        {"id":"other-project", "workspace_id":"other", "empty":false},
+        {"id":"older-empty", "workspace_id":"project", "empty":true},
+        {"id":"running-work", "workspace_id":"project", "empty":false}
+    ]);
+    a.input = "/resume".into();
+    a.cursor = a.input.len();
+    let commands = a.key(
+        KeyEvent::from(KeyCode::Enter),
+        std::time::Instant::now(),
+        80,
+    );
+    assert_eq!(commands.len(), 1);
+    assert_eq!(commands[0].params["session_id"], "running-work");
+    a.snapshot["sessions"] = json!([
+        {"id":"fresh", "workspace_id":"project", "empty":true},
+        {"id":"other-project", "workspace_id":"other", "empty":false}
+    ]);
+    assert!(!render(&a, 80, 24).contains("最近会话"));
+}

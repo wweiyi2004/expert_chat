@@ -1,3 +1,10 @@
+import '../../state/model_service_routing.dart';
+import '../../state/model_route_groups.dart';
+import '../../state/tool_registry_settings.dart';
+import '../../state/supervisor_settings.dart';
+import '../../state/role_evolution.dart';
+import '../../state/role_validation_settings.dart';
+import '../../state/work_memory.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../shared/recovery_notice.dart';
@@ -71,6 +78,15 @@ class _BackupPageState extends ConsumerState<BackupPage> {
   });
 
   Future<void> _restore() async {
+    final runtime = ref.read(chatControllerProvider).value;
+    if (runtime != null &&
+        (runtime.runningConversationIds.isNotEmpty ||
+            runtime.sessionCheckpoints.values.any(
+              (c) => c.status == SessionExecutionStatus.waiting,
+            ))) {
+      setState(() => _error = '仍有工作任务执行或等待后台结果。请等待完成或由你手动停止后导入；导出备份不停止任务。');
+      return;
+    }
     final preview = _preview;
     if (preview == null) return;
     final confirmed = await showDialog<bool>(
@@ -100,11 +116,20 @@ class _BackupPageState extends ConsumerState<BackupPage> {
           .read(fullBackupServiceProvider)
           .restoreCopies(preview, restorePreferences: _preferences);
       ref.invalidate(chatControllerProvider);
+      ref.invalidate(workMemoryProvider);
       ref.invalidate(studyControllerProvider);
       ref.invalidate(learningPlanControllerProvider);
       ref.invalidate(characterCardsProvider);
       ref.invalidate(worldInfoProvider);
-      if (_preferences) ref.invalidate(settingsControllerProvider);
+      if (_preferences) {
+        ref.invalidate(settingsControllerProvider);
+        ref.invalidate(modelServiceRoutingProvider);
+        ref.invalidate(modelRouteGroupsProvider);
+        ref.invalidate(toolRegistrySettingsProvider);
+        ref.invalidate(supervisorSettingsProvider);
+        ref.invalidate(roleEvolutionProvider);
+        ref.invalidate(roleValidationSettingsProvider);
+      }
       if (mounted) {
         setState(() {
           _preview = null;

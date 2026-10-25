@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'package:dio/dio.dart' show CancelToken, DioException;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -44,7 +45,7 @@ Future<LlmReady?> requireLlmReady(WidgetRef ref, BuildContext context) async {
   final settings = await ref.read(settingsControllerProvider.future);
   if (!settings.config.isReady) {
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppToastMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('请先在设置中配置 API Key'),
           behavior: SnackBarBehavior.floating,
@@ -117,7 +118,7 @@ String humanizeAiError(Object e) {
 
 Future<void> showAiError(BuildContext context, Object e) async {
   if (!context.mounted) return;
-  ScaffoldMessenger.of(context).showSnackBar(
+  AppToastMessenger.of(context).showSnackBar(
     SnackBar(
       content: Text(humanizeAiError(e)),
       behavior: SnackBarBehavior.floating,

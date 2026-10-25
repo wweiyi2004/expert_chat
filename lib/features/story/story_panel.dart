@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -316,7 +317,7 @@ class _StoryPanelBodyState extends ConsumerState<StoryPanelBody> {
           );
     await ref.read(characterCardsProvider.notifier).save(target);
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
+    AppToastMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
           existing == null

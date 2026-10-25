@@ -50,14 +50,18 @@ class WorkQuestion {
   final bool multiple, required;
   static List<WorkQuestion> parse(Map<String, dynamic> args) {
     final values = args['questions'];
-    if (values is! List || values.isEmpty || values.length > 3)
+    if (values is! List || values.isEmpty || values.length > 3) {
       throw const FormatException('一次请提出 1–3 个问题');
+    }
     final ids = <String>{};
     return [
       for (final raw in values)
         (() {
-          if (raw is! Map || raw['id'] is! String || raw['question'] is! String)
+          if (raw is! Map ||
+              raw['id'] is! String ||
+              raw['question'] is! String) {
             throw const FormatException('问题缺少 id 或内容');
+          }
           final id = raw['id'] as String, question = raw['question'] as String;
           final options = (raw['options'] as List? ?? [])
               .cast<String>()
@@ -66,8 +70,9 @@ class WorkQuestion {
           if (id.trim().isEmpty ||
               question.trim().isEmpty ||
               !ids.add(id) ||
-              options.length > 8)
+              options.length > 8) {
             throw const FormatException('问题标识必须唯一，选项最多 8 个');
+          }
           return WorkQuestion(
             id: id,
             question: question,
@@ -138,10 +143,12 @@ class WorkQuestions extends Notifier<List<PendingWorkQuestion>> {
       final selected = (value['selected'] as List? ?? []).cast<String>();
       final text = value['text'] as String? ?? '';
       if (selected.any((v) => !q.options.contains(v)) ||
-          !q.multiple && selected.length > 1)
+          !q.multiple && selected.length > 1) {
         throw StateError('请选择有效选项');
-      if (q.required && selected.isEmpty && text.trim().isEmpty)
+      }
+      if (q.required && selected.isEmpty && text.trim().isEmpty) {
         throw StateError('请回答必答问题');
+      }
     }
     request.answer.complete({'answers': answers});
   }

@@ -1,22 +1,24 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'widgets/model_context_settings.dart';
+import 'widgets/tool_registry_panel.dart';
+import 'widgets/supervisor_settings_panel.dart';
 import 'model_services_panel.dart';
 import 'widgets/media_service_picker.dart';
 import 'widgets/media_capabilities_overview.dart';
-import '../../data/settings_storage_keys.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'model_setup_page.dart';
 import '../shared/recovery_notice.dart';
+import '../../core/prototype_widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:uuid/uuid.dart';
 
 import '../../core/providers.dart';
+import '../../core/settings_form_style.dart';
 import '../../data/custom_tts_voices.dart';
 import '../../data/agent_defaults.dart';
 import '../../data/gateway_config.dart';
-import '../../data/provider_profile.dart';
 import '../../data/media_api_config.dart';
 import '../../data/settings_bundle.dart';
 import '../../data/ui_prefs.dart';
@@ -27,16 +29,17 @@ import '../../state/chat_controller.dart';
 import '../../state/settings_controller.dart';
 import '../../state/deepseek_search.dart';
 import '../shell/shell_tab.dart';
-import 'widgets/debounced_secret_field.dart';
 import 'widgets/jev_settings_card.dart';
 import 'widgets/task_budget_editor.dart';
 import 'backup_page.dart';
 import 'support_page.dart';
 import '../../domain/support/diagnostic_report.dart';
-import '../library/resources_page.dart';
+import '../shell/tools_page.dart';
+import '../chat/widgets/model_pricing_dialog.dart';
+import '../../state/model_pricing.dart';
+import 'model_setup_page.dart';
 
 import 'widgets/mcp_settings_widgets.dart';
-import 'widgets/context_settings_card.dart';
 import 'widgets/media_api_settings_card.dart';
 import 'widgets/model_settings_widgets.dart';
 import 'widgets/appearance_settings_widgets.dart';
@@ -47,26 +50,20 @@ import 'widgets/about_update_tile.dart';
 import 'widgets/chat_skills_editor.dart';
 import 'widgets/memory_settings_card.dart';
 import 'widgets/settings_primitives.dart';
+import '../workbench/agents/work_agent_model_pool.dart';
+import '../workbench/agents/work_agents_panel.dart' show WorkAgentLimitsEditor;
 
-enum _SettingsCategory {
+enum SettingsCategory {
   model('模型', Icons.memory_outlined),
-  capabilities('能力', Icons.auto_awesome_outlined),
-  appearance('外观', Icons.palette_outlined),
-  data('数据', Icons.storage_outlined);
+  assistants('助手与技能', Icons.auto_awesome_outlined),
+  connections('连接', Icons.link_outlined),
+  media('多媒体', Icons.perm_media_outlined),
+  appearanceData('外观与数据', Icons.palette_outlined);
 
-  const _SettingsCategory(this.label, this.icon);
+  const SettingsCategory(this.label, this.icon);
 
   final String label;
   final IconData icon;
-}
-
-String _modelPickerLabel(String model) {
-  final tags = <String>[
-    if (KnownModels.isReasoner(model)) '深度思考',
-    if (KnownModels.supportsVision(model)) '视觉',
-  ];
-  if (tags.isEmpty) return model;
-  return '$model（${tags.join(' · ')}）';
 }
 
 String _gatewayCapabilityLabel(String id) => switch (id) {
@@ -81,8 +78,12 @@ class SettingsPage extends ConsumerStatefulWidget {
     super.key,
     this.asRootTab = false,
     this.onOpenNavigation,
+    this.initialCategory,
+    this.shellHeader = false,
   });
   final VoidCallback? onOpenNavigation;
+  final SettingsCategory? initialCategory;
+  final bool shellHeader;
 
   /// When true (bottom-nav「设置」), hide the back affordance.
   final bool asRootTab;
@@ -95,7 +96,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   final _searchKey = TextEditingController();
   final _gatewayUrl = TextEditingController();
   final _gatewayToken = TextEditingController();
-  bool _obscure = true;
   bool _obscureSearch = true;
   bool _obscureGatewayToken = true;
   bool _searchKeySynced = false;
@@ -108,12 +108,16 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   String? _discoveringCustomMcpId;
   String? _searchTestResult;
   String? _gatewayTestResult;
-  _SettingsCategory _category = _SettingsCategory.model;
+  SettingsCategory _category = SettingsCategory.model;
   bool _showOverview = true;
 
   @override
   void initState() {
     super.initState();
+    if (widget.initialCategory != null) {
+      _category = widget.initialCategory!;
+      _showOverview = false;
+    }
     // Sync text fields outside build: writing controllers during build can
     // assert or fight focus when the provider rebuilds mid-frame.
     ref.listenManual<AsyncValue<SettingsState>>(settingsControllerProvider, (
@@ -335,10 +339,11 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         s,
         (key) => ref.read(secureStorageProvider).read(key: key),
       );
-      if (!searchSettings.searchConfigured)
+      if (!searchSettings.searchConfigured) {
         throw StateError(
           '请填写 DeepSeek 官方搜索 Key，或在模型服务中配置 DeepSeek 官方账号的 API Key。',
         );
+      }
       final engine = ref.read(toolEngineFactoryProvider)(
         backend: SearchBackend.deepseek,
         apiKey: searchSettings.effectiveSearchApiKey,
@@ -378,25 +383,43 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         }
       },
       child: Scaffold(
-        appBar: AppBar(
-          title: Text(_showOverview ? '设置' : _category.label),
-          leading: !_showOverview
-              ? IconButton(
-                  tooltip: '返回设置',
-                  icon: const Icon(Icons.arrow_back),
-                  onPressed: () => setState(() => _showOverview = true),
-                )
-              : BackButton(
-                  onPressed: () {
-                    if (widget.asRootTab) {
-                      ref.read(shellTabProvider.notifier).set(ShellTab.chat);
-                    } else {
-                      Navigator.of(context).pop();
-                    }
-                  },
+        appBar: widget.shellHeader
+            ? null
+            : AppBar(
+                toolbarHeight: 52,
+                titleTextStyle: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                  color: Theme.of(context).colorScheme.onSurface,
                 ),
-          automaticallyImplyLeading: !widget.asRootTab,
-        ),
+                actions: [
+                  if (widget.onOpenNavigation != null)
+                    IconButton(
+                      tooltip: '打开侧边栏',
+                      onPressed: widget.onOpenNavigation,
+                      icon: const Icon(Icons.menu),
+                    ),
+                ],
+                title: Text(_showOverview ? '设置' : _category.label),
+                leading: !_showOverview
+                    ? IconButton(
+                        tooltip: '返回设置',
+                        icon: const Icon(Icons.arrow_back),
+                        onPressed: () => setState(() => _showOverview = true),
+                      )
+                    : BackButton(
+                        onPressed: () {
+                          if (widget.asRootTab) {
+                            ref
+                                .read(shellTabProvider.notifier)
+                                .set(ShellTab.chat);
+                          } else {
+                            Navigator.of(context).pop();
+                          }
+                        },
+                      ),
+                automaticallyImplyLeading: !widget.asRootTab,
+              ),
         body: asyncSettings.when(
           loading: () => const Center(child: CircularProgressIndicator()),
           error: (e, _) => Center(
@@ -414,7 +437,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           ),
           data: (s) {
             final active = s.active;
-            if (_showOverview) {
+            final wide = MediaQuery.sizeOf(context).width >= 840;
+            if (_showOverview && !wide) {
               return _SettingsOverview(
                 settings: s,
                 onCategory: (category) => setState(() {
@@ -423,9 +447,10 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                 }),
               );
             }
-            return SafeArea(
+            final details = SafeArea(
               child: Center(
                 child: ConstrainedBox(
+                  key: const ValueKey('prototype-settings-content'),
                   constraints: const BoxConstraints(maxWidth: 720),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -437,10 +462,32 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                           // value types (bool vs. double) and can otherwise write
                           // to the same PageStorage slot.
                           key: ValueKey<String>('settings-${_category.name}'),
-                          padding: const EdgeInsets.fromLTRB(20, 24, 20, 40),
-                          children: [
-                            if (_category == _SettingsCategory.model) ...[
-                              const ModelServicesPanel(),
+                          padding: EdgeInsets.fromLTRB(
+                            wide ? 24 : 14,
+                            wide ? 20 : 14,
+                            wide ? 24 : 14,
+                            wide ? 32 : 24,
+                          ),
+                          children: _prototypeSettingsGroups(context, _category, [
+                            if (_category == SettingsCategory.model) ...[
+                              const ModelServicesPanel(embedded: true),
+                              ListTile(
+                                title: const Text('首次模型设置向导'),
+                                trailing: const Icon(Icons.chevron_right),
+                                onTap: () => Navigator.of(context).push(
+                                  MaterialPageRoute<void>(
+                                    builder: (_) => const ModelSetupPage(),
+                                  ),
+                                ),
+                              ),
+                              ListTile(
+                                title: const Text('用量与单价'),
+                                subtitle: const Text('按模型设置实际计费单价'),
+                                trailing: const Icon(Icons.chevron_right),
+                                onTap: () => showModelPricing(context, ref, {
+                                  modelPricingKey(s.baseUrl, s.model),
+                                }),
+                              ),
                               const SizedBox(height: 24),
                               if (LlmConfig(
                                 baseUrl: s.baseUrl,
@@ -463,9 +510,32 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                               const ModelContextSettings(),
                               const SizedBox(height: 32),
                             ],
-                            if (_category ==
-                                _SettingsCategory.capabilities) ...[
+                            if (_category == SettingsCategory.connections) ...[
+                              const SettingsSectionTitle('执行位置'),
+                              const ToolsPage(
+                                embedded: true,
+                                showModules: false,
+                              ),
+                              ListTile(
+                                leading: const Icon(Icons.perm_media_outlined),
+                                title: const Text('多媒体设置'),
+                                subtitle: const Text('视觉理解、图片生成、语音识别与合成'),
+                                trailing: const Icon(Icons.chevron_right),
+                                onTap: () => setState(() {
+                                  _category = SettingsCategory.media;
+                                }),
+                              ),
+                            ],
+                            if (_category == SettingsCategory.media) ...[
                               MediaCapabilitiesOverview(settings: s),
+                              const SettingsSectionTitle('在聊天中使用'),
+                              const Text(
+                                '识图：在聊天输入框点「+」添加图片。\n'
+                                '生图：点「+」→「图片生成」。\n'
+                                '语音：点「+」→「语音对话」，或点麦克风输入。\n'
+                                '朗读：在回复的操作菜单中选择「朗读」。',
+                                style: TextStyle(height: 1.7),
+                              ),
                               const SizedBox(height: 18),
                               const SettingsSectionTitle('多媒体服务'),
                               MediaApiSettingsCard(
@@ -586,10 +656,13 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                     controller.selectTtsProvider,
                               ),
                               const SizedBox(height: 24),
+                            ],
+                            if (_category ==
+                                SettingsCategory.appearanceData) ...[
                               const SettingsSectionTitle('语音朗读'),
                               SettingsPrefRow(
                                 label: '朗读速度',
-                                child: SegmentedButton<TtsSpeedPref>(
+                                child: _PrototypeSettingsSegments<TtsSpeedPref>(
                                   segments: [
                                     for (final speed in TtsSpeedPref.values)
                                       ButtonSegment<TtsSpeedPref>(
@@ -605,7 +678,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                 ),
                               ),
                               const SizedBox(height: 12),
-                              SwitchListTile(
+                              _PrototypeSettingsSwitch(
                                 contentPadding: EdgeInsets.zero,
                                 title: const Text('自动语气'),
                                 value: s.ui.ttsAutoEmotion,
@@ -637,7 +710,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                     s.ui.copyWith(ttsVoicePackId: pack.id),
                                   );
                                   if (!context.mounted) return;
-                                  ScaffoldMessenger.of(context).showSnackBar(
+                                  AppToastMessenger.of(context).showSnackBar(
                                     SnackBar(
                                       content: Text(
                                         '已套用「${pack.name}」：${pack.tagline}',
@@ -653,7 +726,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                               ),
                               const SizedBox(height: 32),
                             ],
-                            if (_category == _SettingsCategory.model) ...[
+                            if (_category == SettingsCategory.assistants) ...[
+                              const SupervisorSettingsPanel(),
                               const SettingsSectionTitle('工作 Agent 系统指令'),
                               const Text(
                                 '主代理负责统筹，子代理按角色分工。两者不互相继承自定义指令；普通聊天不受影响。',
@@ -668,7 +742,26 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                 defaultValue: AgentDefaults.work,
                                 onSaved: controller.setWorkAgentInstructions,
                               ),
+                              const SettingsSectionTitle('子代理'),
+                              const WorkAgentModelPoolSettings(
+                                key: ValueKey('settings-subagent-model-pool'),
+                              ),
+                              const ExpansionTile(
+                                key: ValueKey('settings-subagent-limits'),
+                                title: Text('子代理限制'),
+                                subtitle: Text('全局默认，应用于新建子任务'),
+                                children: [WorkAgentLimitsEditor()],
+                              ),
                               const SubagentRolesEditor(),
+                              const SettingsSectionTitle('限制与预算'),
+                              const Text(
+                                '模型响应等待与任务执行预算同时适用于工作主代理和子代理；当前会话轮次仍在聊天轮次条与会话操作中设置。',
+                              ),
+                              TaskBudgetEditor(
+                                value: s.taskBudget,
+                                onChanged: controller.setTaskBudget,
+                              ),
+
                               const SizedBox(height: 24),
                               const SettingsSectionTitle('回答方式与技能路由'),
 
@@ -691,7 +784,13 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                               ),
                               const SizedBox(height: 32),
                             ],
-                            if (_category == _SettingsCategory.appearance) ...[
+                            if (_category ==
+                                SettingsCategory.appearanceData) ...[
+                              const SettingsSectionTitle('功能模块'),
+                              const ToolsPage(
+                                embedded: true,
+                                showConnections: false,
+                              ),
                               const SettingsSectionTitle('外观'),
                               Text(
                                 '明暗模式',
@@ -703,7 +802,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                     ),
                               ),
                               const SizedBox(height: 8),
-                              SegmentedButton<ThemeMode>(
+                              _PrototypeSettingsSegments<ThemeMode>(
                                 segments: const [
                                   ButtonSegment(
                                     value: ThemeMode.system,
@@ -750,20 +849,21 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                               const SizedBox(height: 22),
                               SettingsPrefRow(
                                 label: '文字大小',
-                                child: SegmentedButton<TextScalePref>(
-                                  segments: [
-                                    for (final v in TextScalePref.values)
-                                      ButtonSegment(
-                                        value: v,
-                                        label: Text(v.label),
-                                      ),
-                                  ],
-                                  selected: {s.ui.textScale},
-                                  onSelectionChanged: (set) =>
-                                      controller.setUiPrefs(
-                                        s.ui.copyWith(textScale: set.first),
-                                      ),
-                                ),
+                                child:
+                                    _PrototypeSettingsSegments<TextScalePref>(
+                                      segments: [
+                                        for (final v in TextScalePref.values)
+                                          ButtonSegment(
+                                            value: v,
+                                            label: Text(v.label),
+                                          ),
+                                      ],
+                                      selected: {s.ui.textScale},
+                                      onSelectionChanged: (set) =>
+                                          controller.setUiPrefs(
+                                            s.ui.copyWith(textScale: set.first),
+                                          ),
+                                    ),
                               ),
                               const SizedBox(height: 12),
                               ReadingAppearanceSettings(
@@ -778,43 +878,51 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                 children: [
                                   SettingsPrefRow(
                                     label: '圆角风格',
-                                    child: SegmentedButton<CornerStylePref>(
-                                      segments: [
-                                        for (final v in CornerStylePref.values)
-                                          ButtonSegment(
-                                            value: v,
-                                            label: Text(v.label),
-                                          ),
-                                      ],
-                                      selected: {s.ui.cornerStyle},
-                                      onSelectionChanged: (set) =>
-                                          controller.setUiPrefs(
-                                            s.ui.copyWith(
-                                              cornerStyle: set.first,
-                                            ),
-                                          ),
-                                    ),
+                                    child:
+                                        _PrototypeSettingsSegments<
+                                          CornerStylePref
+                                        >(
+                                          segments: [
+                                            for (final v
+                                                in CornerStylePref.values)
+                                              ButtonSegment(
+                                                value: v,
+                                                label: Text(v.label),
+                                              ),
+                                          ],
+                                          selected: {s.ui.cornerStyle},
+                                          onSelectionChanged: (set) =>
+                                              controller.setUiPrefs(
+                                                s.ui.copyWith(
+                                                  cornerStyle: set.first,
+                                                ),
+                                              ),
+                                        ),
                                   ),
                                   const SizedBox(height: 12),
                                   SettingsPrefRow(
                                     label: '聊天背景',
-                                    child: SegmentedButton<ChatSurfacePref>(
-                                      segments: [
-                                        for (final v in ChatSurfacePref.values)
-                                          ButtonSegment(
-                                            value: v,
-                                            label: Text(v.label),
-                                            tooltip: v.description,
-                                          ),
-                                      ],
-                                      selected: {s.ui.chatSurface},
-                                      onSelectionChanged: (set) =>
-                                          controller.setUiPrefs(
-                                            s.ui.copyWith(
-                                              chatSurface: set.first,
-                                            ),
-                                          ),
-                                    ),
+                                    child:
+                                        _PrototypeSettingsSegments<
+                                          ChatSurfacePref
+                                        >(
+                                          segments: [
+                                            for (final v
+                                                in ChatSurfacePref.values)
+                                              ButtonSegment(
+                                                value: v,
+                                                label: Text(v.label),
+                                                tooltip: v.description,
+                                              ),
+                                          ],
+                                          selected: {s.ui.chatSurface},
+                                          onSelectionChanged: (set) =>
+                                              controller.setUiPrefs(
+                                                s.ui.copyWith(
+                                                  chatSurface: set.first,
+                                                ),
+                                              ),
+                                        ),
                                   ),
                                   const SizedBox(height: 6),
                                   Text(
@@ -831,40 +939,47 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                   const SizedBox(height: 12),
                                   SettingsPrefRow(
                                     label: '界面密度',
-                                    child: SegmentedButton<DensityPref>(
-                                      segments: [
-                                        for (final v in DensityPref.values)
-                                          ButtonSegment(
-                                            value: v,
-                                            label: Text(v.label),
-                                          ),
-                                      ],
-                                      selected: {s.ui.density},
-                                      onSelectionChanged: (set) =>
-                                          controller.setUiPrefs(
-                                            s.ui.copyWith(density: set.first),
-                                          ),
-                                    ),
+                                    child:
+                                        _PrototypeSettingsSegments<DensityPref>(
+                                          segments: [
+                                            for (final v in DensityPref.values)
+                                              ButtonSegment(
+                                                value: v,
+                                                label: Text(v.label),
+                                              ),
+                                          ],
+                                          selected: {s.ui.density},
+                                          onSelectionChanged: (set) =>
+                                              controller.setUiPrefs(
+                                                s.ui.copyWith(
+                                                  density: set.first,
+                                                ),
+                                              ),
+                                        ),
                                   ),
                                   const SizedBox(height: 12),
                                   SettingsPrefRow(
                                     label: '聊天消息样式',
-                                    child: SegmentedButton<MessageStylePref>(
-                                      segments: [
-                                        for (final v in MessageStylePref.values)
-                                          ButtonSegment(
-                                            value: v,
-                                            label: Text(v.label),
-                                          ),
-                                      ],
-                                      selected: {s.ui.messageStyle},
-                                      onSelectionChanged: (set) =>
-                                          controller.setUiPrefs(
-                                            s.ui.copyWith(
-                                              messageStyle: set.first,
-                                            ),
-                                          ),
-                                    ),
+                                    child:
+                                        _PrototypeSettingsSegments<
+                                          MessageStylePref
+                                        >(
+                                          segments: [
+                                            for (final v
+                                                in MessageStylePref.values)
+                                              ButtonSegment(
+                                                value: v,
+                                                label: Text(v.label),
+                                              ),
+                                          ],
+                                          selected: {s.ui.messageStyle},
+                                          onSelectionChanged: (set) =>
+                                              controller.setUiPrefs(
+                                                s.ui.copyWith(
+                                                  messageStyle: set.first,
+                                                ),
+                                              ),
+                                        ),
                                   ),
                                   const SizedBox(height: 12),
                                   Text(
@@ -901,25 +1016,29 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                   const SizedBox(height: 12),
                                   SettingsPrefRow(
                                     label: '聊天内容宽度',
-                                    child: SegmentedButton<ContentWidthPref>(
-                                      segments: [
-                                        for (final v in ContentWidthPref.values)
-                                          ButtonSegment(
-                                            value: v,
-                                            label: Text(v.label),
-                                          ),
-                                      ],
-                                      selected: {s.ui.contentWidth},
-                                      onSelectionChanged: (set) =>
-                                          controller.setUiPrefs(
-                                            s.ui.copyWith(
-                                              contentWidth: set.first,
-                                            ),
-                                          ),
-                                    ),
+                                    child:
+                                        _PrototypeSettingsSegments<
+                                          ContentWidthPref
+                                        >(
+                                          segments: [
+                                            for (final v
+                                                in ContentWidthPref.values)
+                                              ButtonSegment(
+                                                value: v,
+                                                label: Text(v.label),
+                                              ),
+                                          ],
+                                          selected: {s.ui.contentWidth},
+                                          onSelectionChanged: (set) =>
+                                              controller.setUiPrefs(
+                                                s.ui.copyWith(
+                                                  contentWidth: set.first,
+                                                ),
+                                              ),
+                                        ),
                                   ),
                                   const SizedBox(height: 4),
-                                  SwitchListTile(
+                                  _PrototypeSettingsSwitch(
                                     contentPadding: EdgeInsets.zero,
                                     title: const Text('流式实时 Markdown'),
                                     value: s.ui.liveMarkdown,
@@ -931,8 +1050,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                               ),
                               const SizedBox(height: 32),
                             ],
-                            if (_category ==
-                                _SettingsCategory.capabilities) ...[
+                            if (_category == SettingsCategory.connections) ...[
                               const SettingsSectionTitle('联网搜索'),
                               const ListTile(
                                 contentPadding: EdgeInsets.zero,
@@ -1072,15 +1190,12 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                 trailing: Text('${s.searchMaxResults} 条'),
                               ),
                               const SizedBox(height: 32),
-                              TaskBudgetEditor(
-                                value: s.taskBudget,
-                                onChanged: controller.setTaskBudget,
-                              ),
+
                               const SizedBox(height: 24),
                               const SettingsSectionTitle(
                                 'Expert Chat MCP Server',
                               ),
-                              SwitchListTile(
+                              _PrototypeSettingsSwitch(
                                 contentPadding: EdgeInsets.zero,
                                 title: const Text('启用 MCP Server'),
                                 value: s.gateway.enabled,
@@ -1216,6 +1331,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                               ],
                               const SizedBox(height: 32),
                               const SettingsSectionTitle('自定义 MCP 服务器'),
+                              const ToolRegistryPanel(),
                               for (final server
                                   in s.gateway.customMcpServers) ...[
                                 CustomMcpServerCard(
@@ -1238,34 +1354,10 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                 label: const Text('添加 MCP 服务器'),
                               ),
                               const SizedBox(height: 32),
-                              Card(
-                                child: ListTile(
-                                  leading: const Icon(Icons.extension_outlined),
-                                  title: const Text('可选工具'),
-                                  trailing: const Icon(Icons.chevron_right),
-                                  onTap: () {
-                                    openShellTab(ref, ShellTab.tools);
-                                    Navigator.of(
-                                      context,
-                                    ).popUntil((route) => route.isFirst);
-                                  },
-                                ),
-                              ),
                               const SizedBox(height: 32),
                             ],
-                            if (_category == _SettingsCategory.data) ...[
-                              Card(
-                                child: ListTile(
-                                  leading: const Icon(Icons.folder_outlined),
-                                  title: const Text('资料'),
-                                  trailing: const Icon(Icons.chevron_right),
-                                  onTap: () => Navigator.of(context).push(
-                                    MaterialPageRoute<void>(
-                                      builder: (_) => const ResourcesPage(),
-                                    ),
-                                  ),
-                                ),
-                              ),
+                            if (_category ==
+                                SettingsCategory.appearanceData) ...[
                               Card(
                                 child: ListTile(
                                   leading: const Icon(Icons.save_outlined),
@@ -1384,13 +1476,45 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                               const SizedBox(height: 12),
                               const AboutUpdateTile(),
                             ],
-                          ],
+                          ]),
                         ),
                       ),
                     ],
                   ),
                 ),
               ),
+            );
+            if (!wide) return details;
+            return Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                SizedBox(
+                  key: const ValueKey('prototype-settings-nav'),
+                  width: 200,
+                  child: ListView(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 14,
+                    ),
+                    children: [
+                      for (final category in SettingsCategory.values)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 2),
+                          child: _SettingsCategoryRow(
+                            category: category,
+                            selected: _category == category,
+                            onTap: () => setState(() {
+                              _category = category;
+                              _showOverview = false;
+                            }),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                const VerticalDivider(width: 1),
+                Expanded(child: details),
+              ],
             );
           },
         ),
@@ -1431,63 +1555,11 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       );
       await controller.setMediaApiKey(kind, key);
     } catch (error) {
-      if (mounted)
-        ScaffoldMessenger.of(
+      if (mounted) {
+        AppToastMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text('$error')));
-    }
-  }
-
-  Future<void> _editProfile(
-    BuildContext context,
-    ProviderProfile? existing,
-  ) async {
-    final result = await Navigator.of(context).push<ProviderProfile>(
-      MaterialPageRoute(builder: (_) => ProfileEditPage(existing: existing)),
-    );
-    if (result == null) return;
-    final controller = ref.read(settingsControllerProvider.notifier);
-    if (existing == null) {
-      await controller.addProfile(result);
-    } else {
-      await controller.updateProfile(result);
-    }
-  }
-
-  Future<void> _confirmDeleteProfile(ProviderProfile profile) async {
-    final scheme = Theme.of(context).colorScheme;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        icon: Icon(Icons.delete_outline, color: scheme.error),
-        title: const Text('删除当前服务商？'),
-        content: Text('“${profile.name}”的配置和本机保存的 API Key 会被删除，且无法恢复。'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            style: FilledButton.styleFrom(
-              backgroundColor: scheme.error,
-              foregroundColor: scheme.onError,
-            ),
-            child: const Text('删除'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true || !mounted) return;
-    try {
-      await ref
-          .read(settingsControllerProvider.notifier)
-          .deleteProfile(profile.id);
-    } catch (_) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('删除服务商失败，请重试。')));
+      }
     }
   }
 
@@ -1502,7 +1574,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           .read(settingsBundleFileServiceProvider)
           .exportJson(json: json, fileName: SettingsBundle.fileName);
       if (!mounted || path == null) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppToastMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('已导出配置：$path'),
           behavior: SnackBarBehavior.floating,
@@ -1510,7 +1582,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppToastMessenger.of(context).showSnackBar(
         SnackBar(content: Text('导出失败：$e'), behavior: SnackBarBehavior.floating),
       );
     } finally {
@@ -1563,7 +1635,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
             );
       }
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppToastMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('已导入配置。'),
           behavior: SnackBarBehavior.floating,
@@ -1571,7 +1643,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppToastMessenger.of(context).showSnackBar(
         SnackBar(content: Text('导入失败：$e'), behavior: SnackBarBehavior.floating),
       );
     } finally {
@@ -1615,7 +1687,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       if (!mounted) return;
       final removed = _formatBytes(result.bytesRemoved);
       final failure = result.failures == 0 ? '' : '，${result.failures} 个文件清理失败';
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppToastMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
             '缓存已清除（临时文件 ${result.filesRemoved} 个，$removed$failure）',
@@ -1625,7 +1697,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppToastMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('清除缓存失败：$e'),
           behavior: SnackBarBehavior.floating,
@@ -1647,96 +1719,342 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   }
 }
 
+String _settingsDescription(SettingsCategory category) => switch (category) {
+  SettingsCategory.model => '服务、默认模型、路由、用量与单价',
+  SettingsCategory.assistants => '主代理、子代理角色、任务类型、监督',
+  SettingsCategory.connections => 'MCP、SSH、远程电脑、本机目录、手机控制',
+  SettingsCategory.media => '视觉理解、图片生成、语音识别、语音合成',
+  SettingsCategory.appearanceData => '主题、阅读、记忆、备份、更新',
+};
+
+class _SettingsCategoryRow extends StatelessWidget {
+  const _SettingsCategoryRow({
+    required this.category,
+    required this.selected,
+    required this.onTap,
+    this.overview = false,
+  });
+  final SettingsCategory category;
+  final bool selected, overview;
+  final VoidCallback onTap;
+  @override
+  Widget build(BuildContext context) {
+    final colors = PrototypeColors.of(context);
+    return Semantics(
+      button: true,
+      selected: selected,
+      child: Material(
+        color: selected ? colors.panel : Colors.transparent,
+        borderRadius: BorderRadius.circular(8),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: onTap,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(minHeight: 44),
+            child: Padding(
+              padding: EdgeInsets.symmetric(
+                horizontal: overview ? 14 : 10,
+                vertical: overview ? 10 : 8,
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          category.label,
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
+                            color: colors.ink,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          _settingsDescription(category),
+                          style: TextStyle(
+                            fontSize: overview ? 12 : 11.5,
+                            height: 1.4,
+                            color: colors.muted,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (overview) ...[
+                    const SizedBox(width: 12),
+                    Icon(Icons.chevron_right, size: 16, color: colors.muted),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _SettingsOverview extends StatelessWidget {
   const _SettingsOverview({required this.settings, required this.onCategory});
   final SettingsState settings;
-  final ValueChanged<_SettingsCategory> onCategory;
+  final ValueChanged<SettingsCategory> onCategory;
   @override
   Widget build(BuildContext context) {
-    Widget row(
-      IconData icon,
-      String title,
-      VoidCallback tap, [
-      String? subtitle,
-    ]) => ListTile(
-      minTileHeight: 64,
-      leading: Icon(icon),
-      title: Text(title),
-      subtitle: subtitle == null ? null : Text(subtitle),
-      trailing: const Icon(Icons.chevron_right),
-      onTap: tap,
-    );
-    Widget group(List<Widget> rows) => Card(
-      clipBehavior: Clip.antiAlias,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(24),
-        side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
-      ),
-      child: Column(
-        children: [
-          for (var i = 0; i < rows.length; i++) ...[
-            if (i > 0) const Divider(height: 1, indent: 16, endIndent: 16),
-            rows[i],
-          ],
-        ],
-      ),
-    );
+    final colors = PrototypeColors.of(context);
     return Center(
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 720),
         child: ListView(
           key: const ValueKey('settings-overview'),
-          padding: const EdgeInsets.all(20),
+          padding: const EdgeInsets.fromLTRB(14, 14, 14, 24),
           children: [
-            const CircleAvatar(
-              radius: 32,
-              child: Icon(Icons.person_outline_rounded, size: 36),
+            Container(
+              decoration: BoxDecoration(
+                color: colors.surface,
+                border: Border.all(color: colors.line),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: Column(
+                children: [
+                  for (final category in SettingsCategory.values) ...[
+                    if (category != SettingsCategory.values.first)
+                      Divider(height: 1, color: colors.line),
+                    _SettingsCategoryRow(
+                      category: category,
+                      selected: false,
+                      overview: true,
+                      onTap: () => onCategory(category),
+                    ),
+                  ],
+                ],
+              ),
             ),
-            const SizedBox(height: 12),
-            Text(
-              settings.gatewaySignedIn ? '已连接账户' : '本地工作空间',
-              textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
-            const SizedBox(height: 28),
-            const SettingsSectionTitle('个性化'),
-            group([
-              row(
-                Icons.palette_outlined,
-                '外观',
-                () => onCategory(_SettingsCategory.appearance),
-                '配色、字体与阅读体验',
-              ),
-
-              row(
-                Icons.auto_awesome_outlined,
-                '能力',
-                () => onCategory(_SettingsCategory.capabilities),
-                '记忆、搜索、语音与插件',
-              ),
-            ]),
-            const SizedBox(height: 24),
-            const SettingsSectionTitle('服务与数据'),
-            group([
-              row(
-                Icons.memory_outlined,
-                '模型',
-                () => onCategory(_SettingsCategory.model),
-                settings.active?.name ?? '配置模型服务',
-              ),
-              row(
-                Icons.storage_outlined,
-                '数据',
-                () => onCategory(_SettingsCategory.data),
-                '备份、导入导出与存储',
-              ),
-            ]),
-            const SizedBox(height: 24),
-            const SettingsSectionTitle('关于'),
-            const AboutUpdateTile(),
           ],
         ),
       ),
     );
   }
+}
+
+/// All existing editors/callbacks are retained; only their section geometry changes.
+List<Widget> _prototypeSettingsGroups(
+  BuildContext context,
+  SettingsCategory category,
+  List<Widget> original,
+) {
+  final groups = <(String, List<Widget>)>[];
+  var title = category == SettingsCategory.model ? '模型服务' : category.label;
+  var body = <Widget>[];
+  final palette = <Widget>[];
+  void flush() {
+    while (body.isNotEmpty && body.last is SizedBox) {
+      body.removeLast();
+    }
+    if (body.isNotEmpty) groups.add((title, body));
+    body = [];
+  }
+
+  for (final child in original) {
+    if (child is ModelServicesPanel) {
+      flush();
+      groups.add(('', [child]));
+      title = '用量与单价';
+      continue;
+    }
+    if (child is SettingsSectionTitle) {
+      flush();
+      title = child.text;
+      continue;
+    }
+    if (child is SizedBox && child.child == null && child.height != null) {
+      if (body.isNotEmpty) {
+        body.add(SizedBox(height: child.height!.clamp(8, 24).toDouble()));
+      }
+      continue;
+    }
+    if (category == SettingsCategory.appearanceData &&
+        (child is ColorThemePicker || child is ColorThemeLivePreview)) {
+      palette.add(child);
+      continue;
+    }
+    if (category == SettingsCategory.appearanceData &&
+        child is Text &&
+        child.data == '配色方案') {
+      continue;
+    }
+    body.add(child);
+  }
+  flush();
+  if (category == SettingsCategory.appearanceData) {
+    const rank = {
+      '外观': 0,
+      '语音朗读': 1,
+      '功能模块': 2,
+      '长期记忆': 3,
+      '配置迁移': 4,
+      '存储与缓存': 5,
+      '关于与更新': 6,
+    };
+    groups.sort((a, b) => (rank[a.$1] ?? 9).compareTo(rank[b.$1] ?? 9));
+    if (palette.isNotEmpty) {
+      palette.sort(
+        (a, b) => a is ColorThemePicker
+            ? -1
+            : b is ColorThemePicker
+            ? 1
+            : 0,
+      );
+      groups.insert(0, ('配色', palette));
+    }
+  }
+  if (category == SettingsCategory.model) {
+    final usage = groups.indexWhere((g) => g.$1 == '用量与单价');
+    final services = groups.indexWhere(
+      (g) => g.$1.isEmpty && g.$2.first is ModelServicesPanel,
+    );
+    if (usage >= 0 && services >= 0) {
+      final widgets = groups[usage].$2;
+      final content = PrototypePanel(
+        title: '用量与单价',
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            for (var i = 0; i < widgets.length; i++) ...[
+              if (i > 0) const SizedBox(height: 8),
+              widgets[i],
+            ],
+          ],
+        ),
+      );
+      groups[services] = (
+        '',
+        [ModelServicesPanel(embedded: true, beforeSubscriptions: content)],
+      );
+      groups.removeAt(usage);
+    }
+  }
+  final theme = Theme.of(context);
+  final comfortable = theme.copyWith(
+    listTileTheme: theme.listTileTheme.copyWith(
+      dense: false,
+      minTileHeight: 52,
+      minVerticalPadding: 10,
+      contentPadding: EdgeInsets.zero,
+      horizontalTitleGap: 8,
+      minLeadingWidth: 16,
+      titleTextStyle: theme.textTheme.bodyMedium?.copyWith(
+        fontSize: 14,
+        fontWeight: FontWeight.w400,
+        height: 1.45,
+      ),
+      subtitleTextStyle: theme.textTheme.bodySmall?.copyWith(
+        fontSize: 12,
+        height: 1.45,
+      ),
+    ),
+    expansionTileTheme: theme.expansionTileTheme.copyWith(
+      tilePadding: EdgeInsets.zero,
+      childrenPadding: EdgeInsets.zero,
+      shape: const Border(),
+      collapsedShape: const Border(),
+    ),
+  );
+  return [
+    for (final group in groups) ...[
+      if (group.$1.isEmpty)
+        for (final child in group.$2)
+          Theme(
+            data: comfortable,
+            child: SettingsFormStyle(child: child),
+          )
+      else
+        Theme(
+          data: comfortable,
+          child: SettingsFormStyle(
+            child: PrototypePanel(
+              title: group.$1,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (var i = 0; i < group.$2.length; i++) ...[
+                    if (i > 0) const SizedBox(height: 8),
+                    group.$2[i],
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ),
+      const SizedBox(height: 16),
+    ],
+  ];
+}
+
+class _PrototypeSettingsSegments<T> extends StatelessWidget {
+  const _PrototypeSettingsSegments({
+    required this.segments,
+    required this.selected,
+    required this.onSelectionChanged,
+  });
+  final List<ButtonSegment<T>> segments;
+  final Set<T> selected;
+  final ValueChanged<Set<T>>? onSelectionChanged;
+  @override
+  Widget build(BuildContext context) => Align(
+    alignment: Alignment.centerLeft,
+    child: SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: PrototypeSegmentedControl<T>(
+        value: selected.first,
+        segments: [
+          for (final segment in segments)
+            PrototypeSegment<T>(
+              value: segment.value,
+              label: segment.label is Text
+                  ? (segment.label as Text).data ?? segment.value.toString()
+                  : segment.value.toString(),
+              icon: segment.icon is Icon ? (segment.icon as Icon).icon : null,
+              enabled: segment.enabled,
+            ),
+        ],
+        onChanged: onSelectionChanged == null
+            ? null
+            : (value) => onSelectionChanged!({value}),
+      ),
+    ),
+  );
+}
+
+class _PrototypeSettingsSwitch extends StatelessWidget {
+  const _PrototypeSettingsSwitch({
+    this.contentPadding,
+    required this.title,
+    required this.value,
+    required this.onChanged,
+  });
+  final EdgeInsetsGeometry? contentPadding;
+  final Widget title;
+  final bool value;
+  final ValueChanged<bool>? onChanged;
+  @override
+  Widget build(BuildContext context) => Material(
+    color: Colors.transparent,
+    child: InkWell(
+      onTap: onChanged == null ? null : () => onChanged!(!value),
+      child: ConstrainedBox(
+        constraints: BoxConstraints(minHeight: 44),
+        child: Row(
+          children: [
+            Expanded(child: title),
+            const SizedBox(width: 10),
+            PrototypeSwitch(value: value, onChanged: onChanged),
+          ],
+        ),
+      ),
+    ),
+  );
 }

@@ -69,6 +69,7 @@ class SessionExecutionCheckpoint {
     this.taskId,
     this.phase = '',
     this.queuedEvents = 0,
+    this.taskState = const {},
   });
   final String conversationId;
   final String? taskId;
@@ -76,6 +77,13 @@ class SessionExecutionCheckpoint {
   final DateTime updatedAt;
   final String phase;
   final int queuedEvents;
+  final Map<String, dynamic> taskState;
+  bool get resumeRequired =>
+      taskState.isNotEmpty &&
+      status != SessionExecutionStatus.cancelled &&
+      (status == SessionExecutionStatus.interrupted ||
+          status == SessionExecutionStatus.failed ||
+          taskState['resumeRequired'] == true);
   Map<String, dynamic> toJson() => {
     'conversationId': conversationId,
     'taskId': taskId,
@@ -83,6 +91,7 @@ class SessionExecutionCheckpoint {
     'updatedAt': updatedAt.toIso8601String(),
     'phase': phase,
     'queuedEvents': queuedEvents,
+    'taskState': taskState,
   };
   factory SessionExecutionCheckpoint.fromJson(Map<String, dynamic> json) {
     final saved = SessionExecutionStatus.values.byName(
@@ -103,6 +112,7 @@ class SessionExecutionCheckpoint {
           ? '应用重启，执行已中断；请检查已有结果和远端状态后继续。未重放命令。'
           : json['phase'] as String? ?? '',
       queuedEvents: (json['queuedEvents'] as num?)?.toInt() ?? 0,
+      taskState: Map<String, dynamic>.from(json['taskState'] as Map? ?? {}),
     );
   }
 }
@@ -115,7 +125,7 @@ class ChatState {
     this.runningConversationIds = const {},
     this.pendingSessionConfigurations = const {},
     this.sessionCheckpoints = const {},
-    this.deepThink = false,
+    this.deepThink = true,
     this.reasoningEffort = ReasoningEffort.high,
     this.searchMode = SearchMode.auto,
     this.imageGenMode = ImageGenMode.auto,

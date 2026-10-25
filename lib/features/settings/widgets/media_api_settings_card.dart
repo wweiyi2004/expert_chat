@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'dart:async';
 import 'dart:io';
 
@@ -8,6 +9,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:path_provider/path_provider.dart';
 
 import '../../../data/custom_tts_voices.dart';
+import '../../../core/settings_form_style.dart';
 import '../../../data/provider_profile.dart';
 import '../../../data/media_api_config.dart';
 import '../../../domain/llm/gemini_endpoint.dart';
@@ -392,7 +394,7 @@ class _OptionalApiCardState extends State<MediaApiSettingsCard> {
       final source = File(sourcePath);
       if (!await source.exists()) {
         if (mounted) {
-          ScaffoldMessenger.of(
+          AppToastMessenger.of(
             context,
           ).showSnackBar(const SnackBar(content: Text('无法读取所选音频文件。')));
         }
@@ -401,7 +403,7 @@ class _OptionalApiCardState extends State<MediaApiSettingsCard> {
       final size = await source.length();
       if (size > 7 * 1024 * 1024) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
+          AppToastMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('样本过大，请选择不超过约 7 MB 的 mp3/wav。')),
           );
         }
@@ -422,13 +424,13 @@ class _OptionalApiCardState extends State<MediaApiSettingsCard> {
       _selectMimoTtsMode(MimoTtsMode.clone);
       _patch(voiceClonePath: dest.path, voice: '');
       if (mounted) {
-        ScaffoldMessenger.of(
+        AppToastMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text('已保存用户音色样本：${picked.name}')));
       }
     } catch (error) {
       if (mounted) {
-        ScaffoldMessenger.of(
+        AppToastMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text('导入音色样本失败：$error')));
       }
@@ -453,275 +455,282 @@ class _OptionalApiCardState extends State<MediaApiSettingsCard> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Card(
-      clipBehavior: Clip.antiAlias,
-      child: ExpansionTile(
-        leading: Icon(widget.icon, color: scheme.primary),
-        title: Text(widget.title),
-        subtitle: widget.description == null ? null : Text(widget.description!),
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-              decoration: BoxDecoration(
-                color: widget.configured
-                    ? scheme.primaryContainer
-                    : scheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(999),
-              ),
-              child: Text(
-                widget.configured ? '已启用' : '未配置',
-                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+    return SettingsFormStyle(
+      child: Card(
+        clipBehavior: Clip.antiAlias,
+        child: ExpansionTile(
+          leading: Icon(widget.icon, color: scheme.primary),
+          title: Text(widget.title),
+          subtitle: widget.description == null
+              ? null
+              : Text(widget.description!),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
                   color: widget.configured
-                      ? scheme.onPrimaryContainer
-                      : scheme.onSurfaceVariant,
+                      ? scheme.primaryContainer
+                      : scheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  widget.configured ? '已启用' : '未配置',
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: widget.configured
+                        ? scheme.onPrimaryContainer
+                        : scheme.onSurfaceVariant,
+                  ),
                 ),
               ),
+              const SizedBox(width: 4),
+              const Icon(Icons.expand_more),
+            ],
+          ),
+          childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
+          children: [
+            if (widget.onImportService != null) ...[
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: widget.onImportService,
+                  icon: const Icon(Icons.link, size: 17),
+                  label: const Text('从已配置模型服务导入'),
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
+            TextField(
+              controller: _baseUrl,
+              keyboardType: TextInputType.url,
+              autocorrect: false,
+              enableSuggestions: false,
+              decoration: const InputDecoration(
+                labelText: 'Base URL',
+                hintText: 'https://api.example.com/v1',
+              ),
+              onChanged: (value) => _patch(baseUrl: value),
             ),
-            const SizedBox(width: 4),
-            const Icon(Icons.expand_more),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _model,
+              autocorrect: false,
+              enableSuggestions: false,
+              decoration: const InputDecoration(
+                labelText: '模型',
+                hintText: '输入服务商提供的模型 ID',
+              ),
+              onChanged: (value) => _patch(model: value),
+            ),
+            if (widget.showApiFormat) ...[
+              const SizedBox(height: 12),
+              Builder(
+                builder: (context) {
+                  final autoResolved = GeminiEndpoint.resolveFormat(
+                    format: LlmApiFormat.auto,
+                    baseUrl: widget.config.baseUrl,
+                  );
+                  final effective = widget.config.effectiveApiFormat;
+                  final helper = effective == LlmApiFormat.geminiNative
+                      ? (widget.showImageSize
+                            ? '使用 Gemini 原生生图协议 (:generateContent / :predict)'
+                            : '使用 Gemini 原生多模态协议 (/v1beta/models)')
+                      : GeminiEndpoint.isGoogleGeminiHost(widget.config.baseUrl)
+                      ? '已自动映射到 Gemini OpenAI 兼容路径 (/v1beta/openai)'
+                      : null;
+                  return DropdownButtonFormField<LlmApiFormat>(
+                    key: ValueKey(
+                      'media-api-format-${widget.config.apiFormat.name}-${autoResolved.name}',
+                    ),
+                    initialValue: widget.config.apiFormat,
+                    isExpanded: true,
+                    decoration: InputDecoration(
+                      labelText: '接口格式',
+                      helperText: helper,
+                    ),
+                    items: [
+                      DropdownMenuItem(
+                        value: LlmApiFormat.auto,
+                        child: Text(
+                          '自动识别（当前：${autoResolved.shortLabel}）',
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      DropdownMenuItem(
+                        value: LlmApiFormat.openAiCompatible,
+                        child: Text(
+                          LlmApiFormat.openAiCompatible.label,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      DropdownMenuItem(
+                        value: LlmApiFormat.geminiNative,
+                        child: Text(
+                          LlmApiFormat.geminiNative.label,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                    onChanged: (value) {
+                      if (value != null) _patch(apiFormat: value);
+                    },
+                  );
+                },
+              ),
+            ],
+            if (widget.showSpeechProtocol) ...[
+              const SizedBox(height: 12),
+              // Keyed by protocol so auto-inference / MiMo preset remounts the
+              // field; FormField initialValue alone would keep a stale choice.
+              DropdownButtonFormField<SpeechApiProtocol>(
+                key: ValueKey(
+                  'speech-protocol-${widget.config.effectiveSpeechProtocol.name}',
+                ),
+                initialValue: widget.config.effectiveSpeechProtocol,
+                isExpanded: true,
+                decoration: InputDecoration(
+                  labelText: '语音 API 协议',
+                  helperText: widget.config.looksLikeMimoSpeechEndpoint
+                      ? '已根据 MiMo 地址/模型自动选用 /chat/completions'
+                      : widget.config.looksLikeAliyunSpeechEndpoint
+                      ? '已根据百炼地址/模型自动选用 Model Studio HTTP API'
+                      : null,
+                ),
+                items: const [
+                  DropdownMenuItem(
+                    value: SpeechApiProtocol.openAiAudio,
+                    child: Text(
+                      'OpenAI /audio/speech',
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  DropdownMenuItem(
+                    value: SpeechApiProtocol.mimoChatCompletions,
+                    child: Text(
+                      'MiMo /chat/completions（WAV）',
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  DropdownMenuItem(
+                    value: SpeechApiProtocol.aliyunModelStudio,
+                    child: Text(
+                      '阿里百炼 Model Studio TTS',
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+                onChanged: (value) {
+                  if (value != null) _switchSpeechProvider(value);
+                },
+              ),
+            ],
+            if (widget.showVoice &&
+                widget.config.effectiveSpeechProtocol ==
+                    SpeechApiProtocol.aliyunModelStudio) ...[
+              const SizedBox(height: 12),
+              _buildAliyunModelPresets(context),
+            ],
+            if (widget.showVoice) ...[
+              const SizedBox(height: 12),
+              _buildVoiceSection(context),
+            ],
+            if (widget.showImageSize) ...[
+              const SizedBox(height: 12),
+              DropdownButtonFormField<String>(
+                isExpanded: true,
+                initialValue:
+                    const [
+                      '1024x1024',
+                      '1536x1024',
+                      '1024x1536',
+                      'auto',
+                    ].contains(widget.config.imageSize)
+                    ? widget.config.imageSize
+                    : '1024x1024',
+                decoration: const InputDecoration(labelText: '图片尺寸'),
+                items: const [
+                  DropdownMenuItem(
+                    value: '1024x1024',
+                    child: Text('1024 × 1024'),
+                  ),
+                  DropdownMenuItem(
+                    value: '1536x1024',
+                    child: Text('1536 × 1024'),
+                  ),
+                  DropdownMenuItem(
+                    value: '1024x1536',
+                    child: Text('1024 × 1536'),
+                  ),
+                  DropdownMenuItem(value: 'auto', child: Text('自动')),
+                ],
+                onChanged: (value) {
+                  if (value != null) _patch(imageSize: value);
+                },
+              ),
+            ],
+            if (widget.mimoPreset != null ||
+                widget.aliyunTtsPreset != null) ...[
+              const SizedBox(height: 12),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    if (widget.aliyunTtsPreset != null)
+                      FilledButton.tonalIcon(
+                        onPressed: () => _switchSpeechProvider(
+                          SpeechApiProtocol.aliyunModelStudio,
+                          fallback: widget.aliyunTtsPreset!,
+                        ),
+                        icon: const Icon(Icons.graphic_eq_outlined),
+                        label: const Text('切换到百炼 TTS'),
+                      ),
+                    if (widget.mimoPreset != null)
+                      OutlinedButton.icon(
+                        onPressed: () => _switchSpeechProvider(
+                          SpeechApiProtocol.mimoChatCompletions,
+                          fallback: widget.mimoPreset!,
+                        ),
+                        icon: const Icon(Icons.auto_fix_high_outlined),
+                        label: const Text('切换到 MiMo TTS'),
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 6),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  '不同服务商的地址、模型、API Key 和音色会分别保存。',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ],
+            const SizedBox(height: 12),
+            TextField(
+              controller: _apiKey,
+              obscureText: _obscure,
+              autocorrect: false,
+              enableSuggestions: false,
+              decoration: InputDecoration(
+                labelText: 'API Key',
+                hintText: 'sk-...',
+                suffixIcon: IconButton(
+                  tooltip: _obscure ? '显示 API Key' : '隐藏 API Key',
+                  icon: Icon(
+                    _obscure ? Icons.visibility : Icons.visibility_off,
+                  ),
+                  onPressed: () => setState(() => _obscure = !_obscure),
+                ),
+              ),
+              onChanged: _onApiKeyChanged,
+            ),
           ],
         ),
-        childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
-        children: [
-          if (widget.onImportService != null) ...[
-            Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton.icon(
-                onPressed: widget.onImportService,
-                icon: const Icon(Icons.link, size: 17),
-                label: const Text('从已配置模型服务导入'),
-              ),
-            ),
-            const SizedBox(height: 8),
-          ],
-          TextField(
-            controller: _baseUrl,
-            keyboardType: TextInputType.url,
-            autocorrect: false,
-            enableSuggestions: false,
-            decoration: const InputDecoration(
-              labelText: 'Base URL',
-              hintText: 'https://api.example.com/v1',
-            ),
-            onChanged: (value) => _patch(baseUrl: value),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _model,
-            autocorrect: false,
-            enableSuggestions: false,
-            decoration: const InputDecoration(
-              labelText: '模型',
-              hintText: '输入服务商提供的模型 ID',
-            ),
-            onChanged: (value) => _patch(model: value),
-          ),
-          if (widget.showApiFormat) ...[
-            const SizedBox(height: 12),
-            Builder(
-              builder: (context) {
-                final autoResolved = GeminiEndpoint.resolveFormat(
-                  format: LlmApiFormat.auto,
-                  baseUrl: widget.config.baseUrl,
-                );
-                final effective = widget.config.effectiveApiFormat;
-                final helper = effective == LlmApiFormat.geminiNative
-                    ? (widget.showImageSize
-                          ? '使用 Gemini 原生生图协议 (:generateContent / :predict)'
-                          : '使用 Gemini 原生多模态协议 (/v1beta/models)')
-                    : GeminiEndpoint.isGoogleGeminiHost(widget.config.baseUrl)
-                    ? '已自动映射到 Gemini OpenAI 兼容路径 (/v1beta/openai)'
-                    : null;
-                return DropdownButtonFormField<LlmApiFormat>(
-                  key: ValueKey(
-                    'media-api-format-${widget.config.apiFormat.name}-${autoResolved.name}',
-                  ),
-                  initialValue: widget.config.apiFormat,
-                  isExpanded: true,
-                  decoration: InputDecoration(
-                    labelText: '接口格式',
-                    helperText: helper,
-                  ),
-                  items: [
-                    DropdownMenuItem(
-                      value: LlmApiFormat.auto,
-                      child: Text(
-                        '自动识别（当前：${autoResolved.shortLabel}）',
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                    DropdownMenuItem(
-                      value: LlmApiFormat.openAiCompatible,
-                      child: Text(
-                        LlmApiFormat.openAiCompatible.label,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                    DropdownMenuItem(
-                      value: LlmApiFormat.geminiNative,
-                      child: Text(
-                        LlmApiFormat.geminiNative.label,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                  ],
-                  onChanged: (value) {
-                    if (value != null) _patch(apiFormat: value);
-                  },
-                );
-              },
-            ),
-          ],
-          if (widget.showSpeechProtocol) ...[
-            const SizedBox(height: 12),
-            // Keyed by protocol so auto-inference / MiMo preset remounts the
-            // field; FormField initialValue alone would keep a stale choice.
-            DropdownButtonFormField<SpeechApiProtocol>(
-              key: ValueKey(
-                'speech-protocol-${widget.config.effectiveSpeechProtocol.name}',
-              ),
-              initialValue: widget.config.effectiveSpeechProtocol,
-              isExpanded: true,
-              decoration: InputDecoration(
-                labelText: '语音 API 协议',
-                helperText: widget.config.looksLikeMimoSpeechEndpoint
-                    ? '已根据 MiMo 地址/模型自动选用 /chat/completions'
-                    : widget.config.looksLikeAliyunSpeechEndpoint
-                    ? '已根据百炼地址/模型自动选用 Model Studio HTTP API'
-                    : null,
-              ),
-              items: const [
-                DropdownMenuItem(
-                  value: SpeechApiProtocol.openAiAudio,
-                  child: Text(
-                    'OpenAI /audio/speech',
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                DropdownMenuItem(
-                  value: SpeechApiProtocol.mimoChatCompletions,
-                  child: Text(
-                    'MiMo /chat/completions（WAV）',
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                DropdownMenuItem(
-                  value: SpeechApiProtocol.aliyunModelStudio,
-                  child: Text(
-                    '阿里百炼 Model Studio TTS',
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ],
-              onChanged: (value) {
-                if (value != null) _switchSpeechProvider(value);
-              },
-            ),
-          ],
-          if (widget.showVoice &&
-              widget.config.effectiveSpeechProtocol ==
-                  SpeechApiProtocol.aliyunModelStudio) ...[
-            const SizedBox(height: 12),
-            _buildAliyunModelPresets(context),
-          ],
-          if (widget.showVoice) ...[
-            const SizedBox(height: 12),
-            _buildVoiceSection(context),
-          ],
-          if (widget.showImageSize) ...[
-            const SizedBox(height: 12),
-            DropdownButtonFormField<String>(
-              isExpanded: true,
-              initialValue:
-                  const [
-                    '1024x1024',
-                    '1536x1024',
-                    '1024x1536',
-                    'auto',
-                  ].contains(widget.config.imageSize)
-                  ? widget.config.imageSize
-                  : '1024x1024',
-              decoration: const InputDecoration(labelText: '图片尺寸'),
-              items: const [
-                DropdownMenuItem(
-                  value: '1024x1024',
-                  child: Text('1024 × 1024'),
-                ),
-                DropdownMenuItem(
-                  value: '1536x1024',
-                  child: Text('1536 × 1024'),
-                ),
-                DropdownMenuItem(
-                  value: '1024x1536',
-                  child: Text('1024 × 1536'),
-                ),
-                DropdownMenuItem(value: 'auto', child: Text('自动')),
-              ],
-              onChanged: (value) {
-                if (value != null) _patch(imageSize: value);
-              },
-            ),
-          ],
-          if (widget.mimoPreset != null || widget.aliyunTtsPreset != null) ...[
-            const SizedBox(height: 12),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  if (widget.aliyunTtsPreset != null)
-                    FilledButton.tonalIcon(
-                      onPressed: () => _switchSpeechProvider(
-                        SpeechApiProtocol.aliyunModelStudio,
-                        fallback: widget.aliyunTtsPreset!,
-                      ),
-                      icon: const Icon(Icons.graphic_eq_outlined),
-                      label: const Text('切换到百炼 TTS'),
-                    ),
-                  if (widget.mimoPreset != null)
-                    OutlinedButton.icon(
-                      onPressed: () => _switchSpeechProvider(
-                        SpeechApiProtocol.mimoChatCompletions,
-                        fallback: widget.mimoPreset!,
-                      ),
-                      icon: const Icon(Icons.auto_fix_high_outlined),
-                      label: const Text('切换到 MiMo TTS'),
-                    ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 6),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: Text(
-                '不同服务商的地址、模型、API Key 和音色会分别保存。',
-                style: Theme.of(
-                  context,
-                ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
-              ),
-            ),
-          ],
-          const SizedBox(height: 12),
-          TextField(
-            controller: _apiKey,
-            obscureText: _obscure,
-            autocorrect: false,
-            enableSuggestions: false,
-            decoration: InputDecoration(
-              labelText: 'API Key',
-              hintText: 'sk-...',
-              suffixIcon: IconButton(
-                tooltip: _obscure ? '显示 API Key' : '隐藏 API Key',
-                icon: Icon(_obscure ? Icons.visibility : Icons.visibility_off),
-                onPressed: () => setState(() => _obscure = !_obscure),
-              ),
-            ),
-            onChanged: _onApiKeyChanged,
-          ),
-        ],
       ),
     );
   }

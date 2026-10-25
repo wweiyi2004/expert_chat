@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -157,7 +158,7 @@ class _RecoveryNoticeState extends State<RecoveryNotice> {
                           ClipboardData(text: failure.details),
                         );
                         if (context.mounted) {
-                          ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+                          AppToastMessenger.maybeOf(context)?.showSnackBar(
                             const SnackBar(content: Text('已复制技术信息')),
                           );
                         }

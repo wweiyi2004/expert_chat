@@ -67,7 +67,7 @@ class GeminiNativeProvider implements LlmProvider {
                 ...config.transportHeaders,
                 ...GeminiEndpoint.headers(
                   config.baseUrl,
-                  config.apiKey,
+                  config.authMode == 'none' ? '' : config.apiKey,
                   accept: 'text/event-stream',
                 ),
               },
@@ -388,9 +388,9 @@ class GeminiNativeProvider implements LlmProvider {
   }
 
   static int _thinkingBudgetFor(ReasoningEffort? effort) => switch (effort) {
-    ReasoningEffort.low => 2048,
-    ReasoningEffort.high || null => 8192,
-    ReasoningEffort.max => 24576,
+    ReasoningEffort.minimal || ReasoningEffort.low => 2048,
+    ReasoningEffort.medium || ReasoningEffort.high || null => 8192,
+    ReasoningEffort.xhigh || ReasoningEffort.max => 24576,
   };
 
   static void _appendContentParts(

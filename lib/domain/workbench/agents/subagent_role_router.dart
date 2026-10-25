@@ -15,17 +15,21 @@ class SubagentRoleRouter {
     required List<String> allowedModels,
     required CancelToken cancelToken,
     Map<String, String> modelPurposes = const {},
+    List<String> availableTools = const [],
     String? preferredModel,
     void Function(ChatChunk)? onChunk,
   }) async {
     final usable = roles
         .where(
           (r) =>
-              r.enabled && (r.model.isEmpty || allowedModels.contains(r.model)),
+              r.enabled &&
+              (r.model.isEmpty || allowedModels.contains(r.model)) &&
+              r.requiredTools.every(availableTools.contains),
         )
         .toList();
-    if (usable.isEmpty || allowedModels.isEmpty)
+    if (usable.isEmpty || allowedModels.isEmpty) {
       throw StateError('没有可用的子代理角色或模型，请检查角色开关和模型池');
+    }
     final fallback =
         usable.where((r) => r.id == 'general').firstOrNull ?? usable.first;
     final defaultModel = allowedModels.contains(preferredModel)
@@ -46,8 +50,9 @@ class SubagentRoleRouter {
           : defaultModel,
       reason: reason,
     );
-    if (usable.length == 1)
+    if (usable.length == 1) {
       return assign(usable.single, preferredModel, '仅一个可用角色');
+    }
     final request = CancelToken();
     unawaited(
       cancelToken.whenCancel.then((error) {

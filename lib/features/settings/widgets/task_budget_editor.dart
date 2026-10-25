@@ -53,7 +53,7 @@ class TaskBudgetEditor extends StatelessWidget {
       Padding(
         padding: const EdgeInsets.symmetric(vertical: 8),
         child: Text(
-          '规划与工具执行最多 ${value.workSeconds} 秒 · '
+          '同一任务累计规划与工具执行最多 ${value.workSeconds} 秒 · '
           '${value.maxSearches} 次搜索 · ${value.maxToolCalls} 次工具调用。'
           '\n达到限制后，将尝试根据已有结果整理回答。',
         ),
@@ -61,7 +61,11 @@ class TaskBudgetEditor extends StatelessWidget {
       const ExpansionTile(
         tilePadding: EdgeInsets.zero,
         title: Text('限制如何计算'),
-        children: [Text('正常回答输出不计入执行时间。部分服务无法统计搜索次数，仍会限制执行时间。')],
+        children: [
+          Text(
+            '后台续接与可控恢复保留已用额度。主代理和子代理共享计数，并行执行按实际经过时间计一次；暂停或等待人工批准时，没有其他代理在执行才停计时。正常回答输出不计入执行时间。部分服务无法统计搜索次数，仍会限制执行时间。增加轮次不会重置时间和工具次数额度。',
+          ),
+        ],
       ),
       if (value.preset == TaskBudgetPreset.custom) ...[
         _number(

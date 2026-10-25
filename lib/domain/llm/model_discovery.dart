@@ -42,7 +42,7 @@ class ModelDiscovery {
         ? config.geminiVersionBaseUrl
         : LlmEndpoint.base(config.baseUrl);
     final headers = <String, String>{
-      if (config.apiKey.isNotEmpty)
+      if (config.authMode != 'none' && config.apiKey.isNotEmpty)
         if (format == LlmApiFormat.geminiNative)
           'x-goog-api-key': config.apiKey
         else if (format == LlmApiFormat.anthropicMessages)
@@ -61,20 +61,21 @@ class ModelDiscovery {
         options: Options(headers: headers),
         cancelToken: token,
         queryParameters: {
-          if (cursor != null)
-            format == LlmApiFormat.geminiNative ? 'pageToken' : 'after_id':
-                cursor,
+          format == LlmApiFormat.geminiNative ? 'pageToken' : 'after_id':
+              ?cursor,
         },
       );
       final data = response.data;
       if (data is! Map) throw const FormatException('模型列表不是有效 JSON 对象');
       final values = data['data'] ?? data['models'];
-      if (values is! List)
+      if (values is! List) {
         throw const FormatException('服务未返回 models 或 data 模型列表');
+      }
       for (final entry in values) {
         if (entry is! Map) continue;
-        if (entry['visibility'] != null && entry['visibility'] != 'list')
+        if (entry['visibility'] != null && entry['visibility'] != 'list') {
           continue;
+        }
         final methods = entry['supportedGenerationMethods'];
         if (methods is List && !methods.contains('generateContent')) continue;
         final id = (entry['id'] ?? entry['slug'] ?? entry['name'])

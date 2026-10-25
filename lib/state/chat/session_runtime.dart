@@ -14,6 +14,8 @@ class _SessionConfiguration {
     required this.settings,
     required this.mcpServerIds,
     required this.servicePriorities,
+    this.credentialEpochs = const {},
+    this.routeSignature = '',
   });
   final SessionPolicy policy;
   final String? workspaceId;
@@ -23,6 +25,8 @@ class _SessionConfiguration {
   final SettingsState? settings;
   final List<String> mcpServerIds;
   final Map<String, List<String>> servicePriorities;
+  final Map<String, int> credentialEpochs;
+  final String routeSignature;
 
   List<String> changesFrom(_SessionConfiguration other) => [
     if (modelChoice != other.modelChoice ||
@@ -32,6 +36,13 @@ class _SessionConfiguration {
         settings?.profiles != other.settings?.profiles ||
         !identical(servicePriorities, other.servicePriorities))
       '模型',
+    if (jsonEncode(credentialEpochs) != jsonEncode(other.credentialEpochs) ||
+        ((settings?.active?.authMode ?? 'apiKey') == 'apiKey' &&
+            (other.settings?.active?.authMode ?? 'apiKey') == 'apiKey' &&
+            settings?.apiKey != other.settings?.apiKey))
+      '模型凭据',
+    if (routeSignature != other.routeSignature) '模型路由',
+
     if (thinking != other.thinking || effort != other.effort) '思考',
     if (workspaceId != other.workspaceId ||
         policy.sshProfileId != other.policy.sshProfileId ||
@@ -77,9 +88,14 @@ class _SessionRun {
   final execution = GenerationExecution();
   _SessionConfiguration? configuration;
   String? streamingId;
+  TaskCore? core;
   String? taskId;
   String? agentRootId;
   String? agentTaskId;
+  String originatingUserGoal = '';
+  CancelToken taskCancellation = CancelToken();
+  void Function(bool)? sharedExecution;
+  int activeChildren = 0;
   bool resumingAgentTree = false;
   bool searching = false;
   bool generatingImage = false;

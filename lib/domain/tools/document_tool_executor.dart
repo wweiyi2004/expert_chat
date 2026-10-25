@@ -139,10 +139,16 @@ class DocumentToolExecutor {
   }
 
   SearchActivity _beginCapabilityTrace({
+    required ToolCall call,
     required SearchActivityKind kind,
     required String query,
   }) {
-    final activity = SearchActivity(kind: kind, query: query);
+    final activity = SearchActivity(
+      kind: kind,
+      query: query,
+      toolName: call.name,
+      toolArguments: call.argumentsJson,
+    );
     onActivity(activity);
     return activity;
   }
@@ -165,6 +171,7 @@ class DocumentToolExecutor {
 
   String inspect(ToolCall call, {required List<Attachment> sources}) {
     final activity = _beginCapabilityTrace(
+      call: call,
       kind: SearchActivityKind.document,
       query: 'inspect_document',
     );
@@ -211,6 +218,7 @@ class DocumentToolExecutor {
     required CancelToken cancelToken,
   }) async {
     final activity = _beginCapabilityTrace(
+      call: call,
       kind: SearchActivityKind.document,
       query: 'edit_document',
     );
@@ -330,6 +338,7 @@ class DocumentToolExecutor {
     required CancelToken cancelToken,
   }) async {
     final activity = _beginCapabilityTrace(
+      call: call,
       kind: SearchActivityKind.document,
       query: 'convert_document',
     );

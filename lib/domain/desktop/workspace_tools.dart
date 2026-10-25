@@ -5,7 +5,6 @@ import '../llm/llm_provider.dart';
 import '../mcp/mcp_client.dart';
 import 'workspace_host.dart';
 import 'command_runner.dart';
-import 'command_runner_contract.dart';
 
 const workCommandTool = ToolSpec(
   name: 'work_run_command',
@@ -21,10 +20,26 @@ const workCommandTool = ToolSpec(
     'additionalProperties': false,
   },
 );
+const workIntegrationTool = ToolSpec(
+  name: 'work_integrate_agent_file',
+  description:
+      '主代理审阅独立工作树成果后逐文件整合。子任务必须已结束；源成果必须匹配已读 expected_sha256，父文件必须仍匹配隔离基线。用户编辑/冲突时不写入，不自动合并、提交或推送。支持文本、二进制；删除使用 expected_sha256=deleted。填写具体验收依据。',
+  parameters: {
+    'type': 'object',
+    'properties': {
+      'agent_id': {'type': 'string'},
+      'path': {'type': 'string'},
+      'expected_sha256': {'type': 'string'},
+      'acceptance': {'type': 'string'},
+    },
+    'required': ['agent_id', 'path', 'expected_sha256', 'acceptance'],
+    'additionalProperties': false,
+  },
+);
 const workDeliveryTool = ToolSpec(
   name: 'work_deliver_files',
   description:
-      '登记本轮最终成果文件到回答末尾，仅提交最终版本，不包含临时、调试、缓存或中间文件。文件必须已经存在，不写入文件。每次调用替换当前 scope 的交付清单；paths 为空可撤回清单。修改文件后需重新登记。',
+      '登记本轮最终成果文件、目录或归档到回答末尾，仅提交最终版本，不包含临时、调试、缓存或中间文件。文件必须已经存在，不写入文件。每次调用替换当前 scope 的交付清单；paths 为空可撤回清单。修改文件后需重新登记。',
   parameters: {
     'type': 'object',
     'properties': {
@@ -47,6 +62,7 @@ const workToolNames = {
   ...workspaceToolNames,
   'work_run_command',
   'work_deliver_files',
+  'work_integrate_agent_file',
 };
 
 abstract interface class WorkToolSession {
@@ -68,6 +84,7 @@ const workspaceToolNames = {
   'coding_workspace_info',
   'coding_list_directory',
   'coding_read_file',
+  'coding_artifact_manifest',
   'coding_write_file',
   'coding_create_directory',
 };
@@ -137,6 +154,7 @@ class WorkspaceToolSession implements WorkToolSession {
         ...tools,
         workCommandTool,
         workDeliveryTool,
+        workIntegrationTool,
       ], host);
     } catch (_) {
       await client.close();
@@ -191,7 +209,9 @@ class WorkspaceToolSession implements WorkToolSession {
         onComplete: onComplete,
       );
     }
-    if (!workspaceToolNames.contains(name)) {
+    if (!workspaceToolNames.contains(name) &&
+        name != 'coding_copy_file' &&
+        name != 'coding_delete_file_if_current') {
       throw const WorkspaceHostException('本工作区没有开放该工具。');
     }
     return (await client.callTool(

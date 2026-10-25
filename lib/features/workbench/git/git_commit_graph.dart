@@ -75,7 +75,7 @@ class GitCommitGraph extends StatelessWidget {
                       child: ListView.builder(
                         itemCount: rows.length + 1,
                         itemBuilder: (context, index) {
-                          if (index == rows.length)
+                          if (index == rows.length) {
                             return const Padding(
                               padding: EdgeInsets.all(16),
                               child: Text(
@@ -83,6 +83,7 @@ class GitCommitGraph extends StatelessWidget {
                                 style: TextStyle(fontSize: 11),
                               ),
                             );
+                          }
                           final row = rows[index];
                           return InkWell(
                             onTap: () => onSelect(row.commit),
@@ -209,8 +210,9 @@ class _GraphPainter extends CustomPainter {
       );
     }
     pen.color = lane(row.node);
-    if (row.incoming)
+    if (row.incoming) {
       canvas.drawLine(Offset(x(row.node), 0), Offset(x(row.node), y), pen);
+    }
     for (final parent in row.parents) {
       canvas.drawPath(
         Path()

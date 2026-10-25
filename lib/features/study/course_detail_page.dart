@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -100,7 +101,7 @@ class CourseDetailPage extends ConsumerWidget {
           );
     } catch (error) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(
+      AppToastMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('添加失败：$error')));
     }

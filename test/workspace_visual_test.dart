@@ -5,6 +5,7 @@ import 'package:expert_chat/core/providers.dart';
 import 'package:expert_chat/core/theme.dart';
 import 'package:expert_chat/data/db/app_database.dart';
 import 'package:expert_chat/features/shell/app_shell.dart';
+import 'package:expert_chat/features/shell/conversation_return_scope.dart';
 import 'package:expert_chat/state/chat_controller.dart';
 import 'package:expert_chat/state/settings_controller.dart';
 import 'package:flutter/material.dart';
@@ -70,14 +71,22 @@ void main() {
         ],
       );
       await container.read(chatControllerProvider.future);
+      final navigatorKey = GlobalKey<NavigatorState>();
+      final routeObserver = ConversationRouteObserver();
       await tester.pumpWidget(
         UncontrolledProviderScope(
           container: container,
           child: MaterialApp(
+            navigatorKey: navigatorKey,
+            navigatorObservers: [routeObserver],
             theme: AppTheme.light(),
             builder: (_, child) => RepaintBoundary(
               key: const ValueKey('workspace-render'),
-              child: child!,
+              child: ConversationReturnScope(
+                navigatorKey: navigatorKey,
+                observer: routeObserver,
+                child: child!,
+              ),
             ),
             home: const AppShell(),
           ),
@@ -102,17 +111,16 @@ void main() {
           of: find.byType(AppBar),
           matching: find.byIcon(Icons.more_horiz),
         ),
-        findsNothing,
+        findsOneWidget,
       );
       await tester.tap(find.byKey(const ValueKey('composer-plus-button')));
       await tester.pumpAndSettle();
       await tester.tap(find.text('会话操作'));
       await tester.pumpAndSettle();
       expect(find.text('导出 Markdown'), findsOneWidget);
-      await tester.tap(find.text('提示词预设'));
-      await tester.pumpAndSettle();
-      expect(find.text('新建预设'), findsOneWidget);
-      await tester.pageBack();
+      expect(find.text('允许联网检索'), findsOneWidget);
+      expect(find.text('工具权限'), findsOneWidget);
+      await tester.binding.handlePopRoute();
       await tester.pumpAndSettle();
       if (const bool.fromEnvironment('RENDER_WORKSPACE')) {
         await tester.tap(find.text('深度思考'));
@@ -135,20 +143,33 @@ void main() {
       );
       await tester.tap(find.byType(DrawerButton).first);
       await tester.pumpAndSettle();
+
       expect(find.text('资料库'), findsOneWidget);
-      expect(find.text('学习'), findsOneWidget);
+      expect(find.text('自动化'), findsOneWidget);
       await _capture(tester, 'sidebar');
-      await tester.tap(find.byTooltip('设置').first);
+      await tester.tap(find.text('设置'));
       await tester.pumpAndSettle();
       expect(find.byKey(const ValueKey('settings-overview')), findsOneWidget);
       await _capture(tester, 'settings');
-      await tester.tap(find.text('外观'));
+      await tester.tap(find.text('外观与数据'));
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('明暗模式'),
+        240,
+        scrollable: find
+            .descendant(
+              of: find.byKey(const ValueKey('settings-appearanceData')),
+              matching: find.byType(Scrollable),
+            )
+            .first,
+      );
+      await tester.ensureVisible(find.text('明暗模式'));
       await tester.pumpAndSettle();
       expect(find.text('明暗模式'), findsOneWidget);
       await tester.binding.handlePopRoute();
       await tester.pumpAndSettle();
       expect(find.byKey(const ValueKey('settings-overview')), findsOneWidget);
-      expect(find.byTooltip('打开侧边栏'), findsNothing);
+      expect(find.byTooltip('打开侧边栏'), findsOneWidget);
       await tester.tap(find.byType(BackButton));
       await tester.pumpAndSettle();
       expect(
@@ -163,12 +184,14 @@ void main() {
       tester.view.physicalSize = const Size(1280, 840);
       await tester.pumpAndSettle();
       expect(find.text('资料库').hitTestable(), findsOneWidget);
-      await tester.tap(find.byTooltip('设置').first);
+      await tester.tap(find.text('设置'));
       await tester.pumpAndSettle();
-      expect(find.byKey(const ValueKey('settings-overview')), findsOneWidget);
-      expect(find.text('资料库').hitTestable(), findsOneWidget);
+      expect(find.text('助手与技能'), findsOneWidget);
+      // The desktop destination is modal: sidebar state remains mounted below
+      // its barrier and becomes reachable again after closing.
+      expect(find.text('资料库').hitTestable(), findsNothing);
       await _capture(tester, 'desktop-settings');
-      await tester.tap(find.byType(BackButton));
+      await tester.tap(find.byTooltip('回到对话'));
       await tester.pumpAndSettle();
       expect(find.text('资料库').hitTestable(), findsOneWidget);
       expect(

@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'package:dio/dio.dart' show CancelToken;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -444,7 +445,7 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
       );
       if (!mounted) return;
       _applyDraft(draft);
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppToastMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('已填入 AI 生成内容，可再改后保存'),
           behavior: SnackBarBehavior.floating,
@@ -531,7 +532,7 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
       return;
     }
     if (!_canAdvanceFrom(_step)) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppToastMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('请先填写角色名称'),
           behavior: SnackBarBehavior.floating,

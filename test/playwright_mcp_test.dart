@@ -28,6 +28,28 @@ void main() {
       expect(restored.requiresSession, isTrue);
       expect(restored.isPlaywright, isTrue);
       expect(restored.arguments, containsAll(['--isolated', 'msedge']));
+      expect(
+        restored.arguments[restored.arguments.indexOf('--idle-timeout') + 1],
+        '0',
+      );
+      final legacy = McpProcessConfig(
+        command: restored.command,
+        preset: 'playwright',
+        sessionScoped: true,
+        arguments: [
+          ...restored.arguments,
+          '--idle-timeout=300000',
+          '--idle-timeout',
+          '300000',
+        ],
+      );
+      final effective = PlaywrightMcpPreset.runtimeArguments(legacy);
+      expect(
+        effective.where((argument) => argument == '--idle-timeout'),
+        hasLength(1),
+      );
+      expect(effective.last, '0');
+      expect(effective.any((argument) => argument.contains('300000')), false);
       expect(PlaywrightMcpPreset.validate(restored), isNull);
       for (final option in [
         '--extension',

@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'conversation_execution_indicator.dart';
+import 'sidebar_reorder_motion.dart';
+import '../../../core/prototype_widgets.dart';
 
 import '../../../core/mode_style.dart';
 import '../../../data/conversation_repository.dart';
@@ -11,6 +13,9 @@ class ConversationHistoryList extends StatelessWidget {
   const ConversationHistoryList({
     super.key,
     this.asSliver = false,
+    this.shrinkWrap = false,
+    this.prototypeRows = false,
+    this.currentSessionActive = true,
     this.compactRows = false,
     this.mobileStyle = false,
     this.onStartSelection,
@@ -33,6 +38,9 @@ class ConversationHistoryList extends StatelessWidget {
   });
 
   final bool asSliver;
+  final bool shrinkWrap;
+  final bool prototypeRows;
+  final bool currentSessionActive;
   final bool compactRows;
   final bool mobileStyle;
   final ValueChanged<Conversation>? onStartSelection;
@@ -56,7 +64,7 @@ class ConversationHistoryList extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final limited =
         query.isNotEmpty && searchHits.length >= conversationSearchLimit;
-    Widget row(BuildContext context, int index) {
+    Widget rowContent(BuildContext context, int index) {
       if (limited && index == 0) {
         return Padding(
           padding: const EdgeInsets.all(8),
@@ -106,13 +114,28 @@ class ConversationHistoryList extends StatelessWidget {
       final preview = hit.snippet.isNotEmpty
           ? hit.snippet
           : previews[c.id] ?? _conversationPreview(c);
-      return Padding(
+      final rowWidget = Padding(
         key: ValueKey('conversation-row-${c.id}'),
-        padding: EdgeInsets.symmetric(vertical: mobileStyle ? 3 : 4),
+        padding: EdgeInsets.symmetric(
+          vertical: prototypeRows
+              ? .5
+              : mobileStyle
+              ? 3
+              : 4,
+        ),
         child: Material(
-          color: mobileStyle
+          key: prototypeRows ? ValueKey('prototype-sidebar-row-${c.id}') : null,
+          color: prototypeRows
               ? (selected
-                    ? scheme.primary.withValues(alpha: .1)
+                    ? PrototypeColors.of(context).surface.withValues(
+                        alpha: currentSessionActive ? 1 : .55,
+                      )
+                    : Colors.transparent)
+              : mobileStyle
+              ? (selected
+                    ? scheme.primary.withValues(
+                        alpha: currentSessionActive ? .16 : .06,
+                      )
                     : Colors.transparent)
               : selected
               ? (compactRows
@@ -120,8 +143,8 @@ class ConversationHistoryList extends StatelessWidget {
                     : scheme.primaryContainer.withValues(alpha: 0.52))
               : scheme.surface.withValues(alpha: .42),
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(11),
-            side: mobileStyle
+            borderRadius: BorderRadius.circular(prototypeRows ? 8 : 11),
+            side: prototypeRows || mobileStyle
                 ? BorderSide.none
                 : BorderSide(
                     color: selected
@@ -130,7 +153,7 @@ class ConversationHistoryList extends StatelessWidget {
                   ),
           ),
           child: InkWell(
-            borderRadius: BorderRadius.circular(11),
+            borderRadius: BorderRadius.circular(prototypeRows ? 8 : 11),
             onTap: () =>
                 selecting ? onToggleSelection?.call(c) : onOpen(c, hit),
             onLongPress: onStartSelection == null
@@ -138,10 +161,18 @@ class ConversationHistoryList extends StatelessWidget {
                 : () => onStartSelection!(c),
             child: Padding(
               padding: EdgeInsets.fromLTRB(
-                12,
-                mobileStyle ? 12 : 8,
-                2,
-                mobileStyle ? 12 : 8,
+                prototypeRows ? 26 : 12,
+                prototypeRows
+                    ? (mobileStyle ? 0 : 6)
+                    : mobileStyle
+                    ? 12
+                    : 8,
+                prototypeRows ? 4 : 2,
+                prototypeRows
+                    ? (mobileStyle ? 0 : 6)
+                    : mobileStyle
+                    ? 12
+                    : 8,
               ),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.center,
@@ -176,14 +207,19 @@ class ConversationHistoryList extends StatelessWidget {
                           overflow: TextOverflow.ellipsis,
                           style: Theme.of(context).textTheme.bodyMedium
                               ?.copyWith(
+                                fontSize: prototypeRows ? 14 : null,
+                                height: prototypeRows ? 1.4 : null,
                                 fontWeight: selected
-                                    ? FontWeight.w600
+                                    ? (prototypeRows
+                                          ? FontWeight.w500
+                                          : FontWeight.w600)
                                     : compactRows
                                     ? FontWeight.w400
                                     : FontWeight.w600,
                               ),
                         ),
-                        if (preview.isNotEmpty) ...[
+                        if (preview.isNotEmpty &&
+                            (!prototypeRows || query.isNotEmpty)) ...[
                           SizedBox(height: mobileStyle ? 5 : 3),
                           Text(
                             hit.snippet.isNotEmpty ? '匹配：$preview' : preview,
@@ -210,14 +246,82 @@ class ConversationHistoryList extends StatelessWidget {
                   ConversationExecutionIndicator(conversation: c),
                   PopupMenuButton<String>(
                     tooltip: '会话操作',
-                    icon: const Icon(Icons.more_horiz, size: 19),
+                    style: prototypeRows
+                        ? ButtonStyle(
+                            minimumSize: WidgetStatePropertyAll(
+                              Size(
+                                mobileStyle ? 44 : 24,
+                                mobileStyle ? 44 : 24,
+                              ),
+                            ),
+                            padding: const WidgetStatePropertyAll(
+                              EdgeInsets.zero,
+                            ),
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          )
+                        : null,
+                    icon: Icon(
+                      Icons.more_horiz,
+                      size: prototypeRows ? 16 : 19,
+                      color: prototypeRows
+                          ? PrototypeColors.of(context).faint
+                          : null,
+                    ),
                     padding: EdgeInsets.zero,
                     onSelected: (v) {
+                      if (v == 'preview') {
+                        if (mobileStyle) {
+                          showModalBottomSheet<void>(
+                            context: context,
+                            builder: (_) => SafeArea(
+                              child: Padding(
+                                padding: const EdgeInsets.all(16),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.stretch,
+                                  children: [
+                                    Text(
+                                      c.title,
+                                      style: const TextStyle(
+                                        fontSize: 15,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 12),
+                                    SelectableText(preview),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          );
+                        } else {
+                          showDialog<void>(
+                            context: context,
+                            builder: (dialogContext) => AlertDialog(
+                              title: Text(c.title),
+                              content: SelectableText(preview),
+                              actions: [
+                                TextButton(
+                                  onPressed: () =>
+                                      Navigator.of(dialogContext).pop(),
+                                  child: const Text('关闭'),
+                                ),
+                              ],
+                            ),
+                          );
+                        }
+                      }
                       if (v == 'rename') onRename(c);
                       if (v == 'delete') onDelete(c);
                       if (v == 'archive') onArchive?.call(c);
                     },
                     itemBuilder: (_) => [
+                      if (prototypeRows)
+                        const PopupMenuItem(
+                          value: 'preview',
+                          child: Text('预览最近消息'),
+                        ),
                       if (onArchive != null)
                         PopupMenuItem(
                           value: 'archive',
@@ -239,11 +343,22 @@ class ConversationHistoryList extends StatelessWidget {
           ),
         ),
       );
+      return prototypeRows && !mobileStyle && query.isEmpty
+          ? Tooltip(message: preview, child: rowWidget)
+          : rowWidget;
     }
 
     final empty = Padding(
       padding: const EdgeInsets.all(16),
       child: Text('没有匹配的会话', style: Theme.of(context).textTheme.bodySmall),
+    );
+    Widget row(BuildContext context, int index) => SidebarReorderMotion(
+      key: ValueKey(
+        limited && index == 0
+            ? 'search-limit'
+            : 'motion-${visible[index - (limited ? 1 : 0)].id}',
+      ),
+      child: rowContent(context, index),
     );
     if (asSliver) {
       return visible.isEmpty
@@ -255,10 +370,16 @@ class ConversationHistoryList extends StatelessWidget {
     }
     return visible.isEmpty
         ? Center(child: empty)
-        : ListView.builder(
-            padding: const EdgeInsets.fromLTRB(8, 8, 8, 16),
-            itemCount: visible.length + (limited ? 1 : 0),
-            itemBuilder: row,
+        : ListView(
+            shrinkWrap: shrinkWrap,
+            physics: shrinkWrap ? const NeverScrollableScrollPhysics() : null,
+            padding: prototypeRows
+                ? EdgeInsets.zero
+                : const EdgeInsets.fromLTRB(8, 8, 8, 16),
+            children: [
+              for (var i = 0; i < visible.length + (limited ? 1 : 0); i++)
+                row(context, i),
+            ],
           );
   }
 }

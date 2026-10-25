@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'package:dio/dio.dart' show CancelToken;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -266,7 +267,7 @@ class _WorldInfoEditPageState extends ConsumerState<WorldInfoEditPage> {
       );
       if (!mounted) return;
       _applyDraft(draft);
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppToastMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('已填入 AI 生成内容，可再改后保存'),
           behavior: SnackBarBehavior.floating,

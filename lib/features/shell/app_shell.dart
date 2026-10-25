@@ -4,8 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/workspace_layout.dart';
-import '../../core/desktop_providers.dart';
-import '../../state/conversation_workspace_bindings.dart';
+import '../../core/application_surface.dart';
 import '../../domain/notify/generation_notify.dart';
 import '../../domain/share/shared_intake.dart';
 import '../../domain/update/shorebird_ui.dart';
@@ -22,7 +21,10 @@ import '../story/studio_page.dart';
 import '../study/study_hub_page.dart';
 import 'shell_tab.dart';
 import 'tools_page.dart';
-import 'desktop_navigation_rail.dart';
+import '../library/resources_page.dart';
+import 'automation_page.dart';
+import 'return_to_conversation.dart';
+import '../../core/prototype_widgets.dart';
 
 /// Root chrome: 会话 / 工具 / 设置.
 ///
@@ -41,6 +43,7 @@ class _AppShellState extends ConsumerState<AppShell>
     with WidgetsBindingObserver {
   final _shellKey = GlobalKey();
   final _pagesKey = GlobalKey();
+  final _chatPageKey = GlobalKey();
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   bool _desktopSidebarExpanded = true;
 
@@ -110,6 +113,8 @@ class _AppShellState extends ConsumerState<AppShell>
   /// or Settings/Studio state (e.g. 能力分类) is recreated and jumps to 模型.
   static const _stackOrder = <ShellTab>[
     ShellTab.chat,
+    ShellTab.automation,
+    ShellTab.resources,
     ShellTab.terminal,
     ShellTab.study,
     ShellTab.studio,
@@ -124,7 +129,24 @@ class _AppShellState extends ConsumerState<AppShell>
     required bool creationOn,
     required bool desktopShell,
   }) => switch (tab) {
-    ShellTab.chat => ChatPage(desktopShell: desktopShell),
+    ShellTab.chat => ChatPage(
+      desktopShell: desktopShell,
+      onExpandSidebar: desktopShell && !_desktopSidebarExpanded
+          ? () => setState(() => _desktopSidebarExpanded = true)
+          : null,
+    ),
+    ShellTab.automation => AutomationPage(
+      shellHeader: desktopShell,
+      onOpenNavigation: desktopShell
+          ? null
+          : () => _scaffoldKey.currentState?.openDrawer(),
+    ),
+    ShellTab.resources => ResourcesPage(
+      shellHeader: desktopShell,
+      onOpenNavigation: desktopShell
+          ? null
+          : () => _scaffoldKey.currentState?.openDrawer(),
+    ),
     ShellTab.tools => ToolsPage(
       onOpenNavigation: desktopShell
           ? null
@@ -141,14 +163,16 @@ class _AppShellState extends ConsumerState<AppShell>
       creationOn ? StudioPage(onBack: _backToTools) : const SizedBox.shrink(),
     ShellTab.settings => SettingsPage(
       asRootTab: true,
+      shellHeader: desktopShell,
       onOpenNavigation: desktopShell
           ? null
           : () => _scaffoldKey.currentState?.openDrawer(),
     ),
   };
 
-  void _backToTools() =>
-      ref.read(shellTabProvider.notifier).set(ShellTab.tools);
+  void _backToTools() => ref
+      .read(shellTabProvider.notifier)
+      .set(ref.read(shellTabProvider).navigationTab);
 
   @override
   Widget build(BuildContext context) {
@@ -156,11 +180,6 @@ class _AppShellState extends ConsumerState<AppShell>
     final researchOn = settings?.researchModeEnabled ?? false;
     final studyOn = settings?.studyModeEnabled ?? true;
     final creationOn = settings?.creationModeEnabled ?? true;
-    final visible = ShellTab.visible(
-      researchModeEnabled: researchOn,
-      studyModeEnabled: studyOn,
-      creationModeEnabled: creationOn,
-    );
     final selected = ref.watch(shellTabProvider);
 
     // Keep selection valid when mode flags hide the current tab.
@@ -202,129 +221,53 @@ class _AppShellState extends ConsumerState<AppShell>
           final useRail =
               MediaQuery.sizeOf(context).width >=
               WorkspaceBreakpoints.shellRail;
-          final stack = KeyedSubtree(
+          Widget page(ShellTab tab) => KeyedSubtree(
+            key: tab == ShellTab.chat ? _chatPageKey : ValueKey(tab),
+            child: ExcludeFocus(
+              excluding: tab != selected,
+              child: _pageFor(
+                tab,
+                researchOn: researchOn,
+                studyOn: studyOn,
+                creationOn: creationOn,
+                desktopShell: useRail,
+              ),
+            ),
+          );
+          final destinations = KeyedSubtree(
             key: _pagesKey,
             child: IndexedStack(
-              index: stackIndex,
+              index: useRail
+                  ? (stackIndex - 1).clamp(0, _stackOrder.length - 2)
+                  : stackIndex,
               children: [
                 for (final tab in _stackOrder)
-                  KeyedSubtree(
-                    key: ValueKey(tab),
-                    child: ExcludeFocus(
-                      excluding: tab != selected,
-                      child: _pageFor(
-                        tab,
-                        researchOn: researchOn,
-                        studyOn: studyOn,
-                        creationOn: creationOn,
-                        desktopShell: useRail,
-                      ),
-                    ),
-                  ),
+                  if (!useRail || tab != ShellTab.chat) page(tab),
               ],
             ),
           );
+          final stack = useRail ? page(ShellTab.chat) : destinations;
 
-          final desktopTheme = desktopWorkspaceTheme(Theme.of(context));
+          final colors = PrototypeColors.of(context);
           final scaffold = useRail
-              ? Theme(
-                  data: desktopTheme,
-                  child: Scaffold(
-                    backgroundColor: desktopTheme.colorScheme.surfaceContainer,
-                    body: Row(
-                      children: [
-                        DesktopNavigationRail(
-                          visible: visible,
-                          selected: selected,
-                          sidebarExpanded: _desktopSidebarExpanded,
-                          onExpand: () =>
-                              setState(() => _desktopSidebarExpanded = true),
-                          onSelect: (tab) =>
-                              ref.read(shellTabProvider.notifier).set(tab),
-                          onNewChat: () async {
-                            final controller = ref.read(
-                              chatControllerProvider.notifier,
-                            );
-                            controller.newConversation();
-                            final id = ref
-                                .read(chatControllerProvider)
-                                .value
-                                ?.currentId;
-                            try {
-                              if (id != null &&
-                                  ref
-                                      .read(desktopWorkspaceHostProvider)
-                                      .supported) {
-                                await ref
-                                    .read(
-                                      conversationWorkspaceBindingsProvider
-                                          .notifier,
-                                    )
-                                    .select(id, null);
-                              }
-                              if (!mounted ||
-                                  ref
-                                          .read(chatControllerProvider)
-                                          .value
-                                          ?.currentId !=
-                                      id) {
-                                return;
-                              }
-                              ref
-                                  .read(shellTabProvider.notifier)
-                                  .set(ShellTab.chat);
-                            } catch (error) {
-                              if (context.mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(content: Text('新会话未完成：$error')),
-                                );
-                              }
-                            }
-                          },
-                        ),
-                        Expanded(
-                          child: Padding(
-                            padding: const EdgeInsets.fromLTRB(0, 8, 10, 10),
-                            child: DecoratedBox(
-                              decoration: BoxDecoration(
-                                color: desktopTheme.colorScheme.surface,
-                                borderRadius: BorderRadius.circular(20),
-                                border: Border.all(
-                                  color:
-                                      desktopTheme.colorScheme.outlineVariant,
-                                ),
-                              ),
-                              child: ClipRRect(
-                                borderRadius: BorderRadius.circular(20),
-                                child: Row(
-                                  children: [
-                                    if (_desktopSidebarExpanded) ...[
-                                      SizedBox(
-                                        width: 264,
-                                        child: ChatWorkspaceSidebar(
-                                          desktopMode: true,
-                                          onCollapse: () => setState(
-                                            () =>
-                                                _desktopSidebarExpanded = false,
-                                          ),
-                                        ),
-                                      ),
-                                      VerticalDivider(
-                                        width: 1,
-                                        color: desktopTheme
-                                            .colorScheme
-                                            .outlineVariant,
-                                      ),
-                                    ],
-                                    Expanded(child: stack),
-                                  ],
-                                ),
-                              ),
-                            ),
+              ? Scaffold(
+                  backgroundColor: colors.surface,
+                  body: Row(
+                    children: [
+                      if (_desktopSidebarExpanded) ...[
+                        SizedBox(
+                          key: const ValueKey('prototype-sidebar'),
+                          width: 252,
+                          child: ChatWorkspaceSidebar(
+                            desktopMode: true,
+                            onCollapse: () =>
+                                setState(() => _desktopSidebarExpanded = false),
                           ),
                         ),
+                        VerticalDivider(width: 1, color: colors.line),
                       ],
-                    ),
+                      Expanded(child: stack),
+                    ],
                   ),
                 )
               // On the research terminal tab, do not shrink the body for the
@@ -332,9 +275,13 @@ class _AppShellState extends ConsumerState<AppShell>
               // terminal Expanded to 0 height (blank/white screen on dismiss).
               : Scaffold(
                   resizeToAvoidBottomInset: selected != ShellTab.terminal,
-                  body: stack,
+                  body: Column(children: [Expanded(child: stack)]),
                   key: _scaffoldKey,
-                  drawer: const Drawer(child: ChatWorkspaceSidebar()),
+                  drawer: Drawer(
+                    width: MediaQuery.sizeOf(context).width * .84,
+                    shape: const RoundedRectangleBorder(),
+                    child: const ChatWorkspaceSidebar(),
+                  ),
                 );
 
           return KeyedSubtree(
@@ -343,6 +290,32 @@ class _AppShellState extends ConsumerState<AppShell>
               fit: StackFit.expand,
               children: [
                 scaffold,
+                if (useRail)
+                  Offstage(
+                    offstage: selected == ShellTab.chat,
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        const ModalBarrier(
+                          dismissible: false,
+                          color: Colors.black38,
+                        ),
+                        ApplicationSurface(
+                          title: selected.label,
+                          active: selected != ShellTab.chat,
+                          protectRoot: false,
+                          header: ReturnToConversation(
+                            compact: true,
+                            onReturn: ApplicationSurface.closeActive,
+                          ),
+                          onClose: () => ref
+                              .read(shellTabProvider.notifier)
+                              .set(ShellTab.chat),
+                          child: destinations,
+                        ),
+                      ],
+                    ),
+                  ),
                 ResearchModeRippleOverlay(
                   playing: fx.playing,
                   origin: localOrigin,

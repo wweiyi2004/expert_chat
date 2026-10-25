@@ -4,6 +4,7 @@
 #include <shellapi.h>
 #include <flutter/standard_method_codec.h>
 #include "resource.h"
+#include "single_instance.h"
 
 namespace {
 constexpr UINT kTrayMessage = WM_APP + 42;
@@ -108,6 +109,10 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
+  if (message == SingleInstance::DefaultActivationMessage()) {
+    RestoreFromTray();
+    return 0;
+  }
   if (message == RegisterWindowMessageW(L"TaskbarCreated")) {
     AddTrayIcon();
     // If Explorer cannot restore the tray, keep the app reachable.

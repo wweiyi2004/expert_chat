@@ -4,63 +4,107 @@ import '../../data/task_budget_prefs.dart';
 
 /// A single instance survives model retries and every tool round in a turn.
 class TaskBudget {
-  TaskBudget(this.prefs, {required this.onExhausted}) {
+  TaskBudget(
+    this.prefs, {
+    required this.onExhausted,
+    Map<String, dynamic> snapshot = const {},
+  }) {
+    searches = (snapshot['searches'] as num?)?.toInt() ?? 0;
+    toolCalls = (snapshot['toolCalls'] as num?)?.toInt() ?? 0;
+    _priorElapsed = Duration(
+      milliseconds: (snapshot['elapsedMs'] as num?)?.toInt() ?? 0,
+    );
     resumeWork();
   }
 
   final TaskBudgetPrefs prefs;
   final void Function(String reason) onExhausted;
+  Duration _priorElapsed = Duration.zero;
+  Map<String, dynamic> toJson() => {
+    'workSeconds': prefs.workSeconds,
+    'maxSearches': prefs.maxSearches,
+    'maxToolCalls': prefs.maxToolCalls,
+    'elapsedMs': (_priorElapsed + _clock.elapsed).inMilliseconds,
+    'searches': searches,
+    'toolCalls': toolCalls,
+  };
   final Stopwatch _clock = Stopwatch();
   Timer? _timer;
+  Timer? _checkpointTimer;
+  void Function()? onChanged;
   bool _disposed = false;
   String? reason;
   int searches = 0;
   int toolCalls = 0;
   bool get finishing => reason != null;
+  int _children = 0;
+  bool _rootWorking = false;
+  bool get isWorking =>
+      !_disposed && !finishing && (_rootWorking || _children > 0);
+
+  void childExecution(bool active) {
+    _children = (_children + (active ? 1 : -1)).clamp(0, 100000);
+    _syncClock();
+  }
 
   void resumeWork() {
-    if (_disposed || finishing) return;
+    _rootWorking = true;
+    _syncClock();
+  }
+
+  void _syncClock() {
     _timer?.cancel();
-    final remaining = Duration(seconds: prefs.workSeconds) - _clock.elapsed;
+    if (!isWorking) {
+      _clock.stop();
+      _checkpointTimer?.cancel();
+      _checkpointTimer = null;
+      onChanged?.call();
+      return;
+    }
+    final remaining =
+        Duration(seconds: prefs.workSeconds) - _priorElapsed - _clock.elapsed;
     if (remaining <= Duration.zero) {
       requestFinish('任务执行时间已达上限');
       return;
     }
     _clock.start();
+    _checkpointTimer ??= Timer.periodic(
+      const Duration(seconds: 1),
+      (_) => onChanged?.call(),
+    );
     _timer = Timer(remaining, () => requestFinish('任务执行时间已达上限'));
   }
 
-  /// Do not cut a normal answer in half. A later tool call resumes the same
-  /// accumulated budget; no new budget is allocated for a model retry.
+  /// An answer/approval wait pauses only the main actor; active children still
+  /// consume the same wall clock once, never once per actor.
   void answerStarted() {
-    _clock.stop();
-    _timer?.cancel();
+    _rootWorking = false;
+    _syncClock();
   }
 
-  void waitForApproval() {
-    _clock.stop();
-    _timer?.cancel();
-  }
+  void waitForApproval() => answerStarted();
 
-  bool takeTool() {
+  bool takeTool({bool resumeRoot = true}) {
     if (finishing || _disposed) return false;
     if (toolCalls >= prefs.maxToolCalls) {
       requestFinish('工具调用次数已达上限');
       return false;
     }
     toolCalls++;
-    resumeWork();
+    onChanged?.call();
+    if (resumeRoot) resumeWork();
     return !finishing;
   }
 
-  bool takeSearch() {
+  bool takeSearch({bool resumeRoot = true}) {
     if (finishing || _disposed) return false;
     if (searches >= prefs.maxSearches) {
       requestFinish('搜索次数已达上限');
       return false;
     }
     searches++;
-    resumeWork();
+    onChanged?.call();
+    if (resumeRoot) resumeWork();
     return !finishing;
   }
 

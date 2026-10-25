@@ -327,3 +327,348 @@ next/
 - 实施检查完成：翻译后端 5 项、相关界面 10 项定向测试通过，Windows Release 暂存构建成功，常规 CMake 输出路径已恢复。检查使用模拟翻译模型，没有向用户的付费服务提交测试翻译请求。
 
 后续终端配色修正：PSReadLine 默认发送 ANSI 37/93/92 等明确颜色，单独把终端背景改成浅色会导致白字和亮黄色输入难以辨认。工作台及科研终端共享的调色板现按主题明暗选择；浅色使用深色语义高亮，深色保留亮色，搜索选区随主题调整。没有修改 PowerShell profile。已检查实际 PSReadLine 颜色码、输入颜色对比度和明暗预览。
+
+## 13. 2026-10-24 全部剩余需求实施与验收台账
+
+本轮用户授权完成全部剩余需求，沿用现有 Flutter/Dart 主执行链与 Rust 文件权限边界。主代理仅监督；三个实施代理负责代码、文档、测试和构建。运行中的用户程序、真实项目、密钥和会话不得作为验证夹具。
+
+| 里程碑 | 实施归属 | 具体交付与验收门槛 | 当前状态 |
+| --- | --- | --- | --- |
+| A1 长任务工作记忆 | context_execution | 模型可保存版本化约束/计划/压缩摘要，可检索并取回原始历史；压缩不删除持久历史，跨会话身份隔离，重启可恢复 | 已实现；完整客户端检查及定向隔离/恢复检查通过 |
+| A2 安全执行与审阅 | context_execution | 工具派发前持久记录，完成/未知结果可区分；未知副作用需明确续接，禁止盲目重放；按轮检查点、版本保护回退和块审阅 | 已实现；定向与本机权限夹具通过 |
+| A3 协作与交付 | context_execution | 子代理职责/文件归属冲突检测、适用时独立 worktree、集成验收；大文件/二进制清单不全量读入，目录与压缩包需明确最终登记 | 已实现；脏 Git 工程、回退/重建与大文件夹具通过 |
+| B1 模型服务与监督 | models_tools | 模型/渠道/账号/路由、发现与诊断、故障恢复与路由记录；监督意见绑定执行版本并在轮边界生效 | 已实现；模拟协议/路由与监督检查通过，账号激活另验 |
+| B2 工具与角色 | models_tools | 工具按需发现/加载、依赖安装诊断、数学计算验证；角色来源/范围/验证/版本与用户修改保护 | 已实现；数学/注册表/角色及真实 Playwright 夹具通过 |
+| C1 手机远程工作台 | mobile_remote | 远程配对/续传/工作台入口；真实设备能力单独验收 | 已实现；TLS/断线/宿主及前轮原生真链路通过；最终 Android 运行复验环境阻断（见末尾） |
+| C2 执行端与自动化 | mobile_remote | 脱离界面的持久任务状态、可复用环境、触发原因/去重/暂停/历史；明确进程实际生命周期 | 已实现；独立宿主/触发/权限/预算夹具通过 |
+| 集成验收 | 三实施代理，主代理监督 | 共享文件窄接口协调；Flutter 测试/构建串行；模拟模型与隔离本地工程验证正常、取消、迟到、损坏与重启序列；产物版本对应证据 | 实现、完整客户端/桌面检查及三正式包构建/验签/哈希完成；最终 Android 运行复验环境阻断 |
+
+状态使用“已实现 / 已验证 / 外部阻塞”分别记录，配置入口、设计或缺少真机证据不计作完成。账号登录、付费模型、Android 权限和设备等外部条件如不可用，保留可执行接口与明确阻塞记录，不虚报验证。
+
+### 长任务记忆调研与设计依据
+
+[MemGPT 原论文](https://arxiv.org/abs/2310.08560)提出通过显式工具在有限上下文与外部记忆间调页。本项目采用可调用的写入、检索与回读接口，而不是把本地截断称作长期记忆。[Anthropic 原始工程说明](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents)介绍压缩、结构化笔记与多代理上下文；本项目将约束、公开计划、摘要与原始历史分开保存。[官方可执行示例](https://platform.claude.com/cookbook/tool-use-context-engineering-context-engineering-tools)分别演示压缩、工具结果清理和持久记忆；据此，摘要用于当前请求，历史用于可追溯回读，不能让摘要覆盖原始证据。这些来源提供设计依据，不能代替本产品测试。
+
+
+### 逐功能验收补充（不得被里程碑总项覆盖）
+
+- A：主动模型摘要与本地摘录分别标识；约束和公开计划固定保留；历史关键词/消息 ID/片段偏移回读，主子代理交接不跨会话泄漏。
+- A：逐工具写前日志、重复调用抑制、未知结果用户确认；按轮文件检查点与逐块审阅，回退前验证当前版本且保护用户编辑。
+- A：多代理声明文件职责与冲突检测，独立 worktree 接线和集成验收证据；大型/二进制最终清单使用元数据哈希；目录/归档显式登记而非全部写入自动交付；侧栏活动持久化。
+- B：模型/渠道/账号/路由优先级、模型扫描、Auto/备用/额度与恢复记录；监督的执行版本与轮次边界；角色检索、试用、验证、版本及用户改写保护；默认提示仍可编辑和恢复。
+- B：工具发现/按需加载/安装更新/依赖诊断/权限；数学精确/符号/数值/统计/图形与结论验证；浏览器工作台关联、接手、元素反馈、截图和诊断实际回传。
+- C：手机远程目标任务而不止命令、配对、断线事件游标、审批/停止与结果；任务执行不依赖页面；项目环境复用；定时/文件/仓库/外部触发去重、暂停、历史。
+- C：Android 本机观察/动作/权限撤销/停止后不派发；APK 构建和真实设备任务证据分别记录，缺设备则明确外部阻塞。
+
+调研链接已打开核对：MemGPT v2 摘要与作者/发表信息、Anthropic 2025-09-29 工程正文、2026-03-20 官方 Cookbook 代码说明。当前新增 `work_memory_checkpoint` 由主模型写公开摘要，区别于旧 700-token 本地摘录；原始消息仍由会话存储负责，不能用新摘要覆盖原文。上下文窗口清理和自动触发策略仍须单独验收。
+
+### A 工作流阶段记录（历史，已由以下逐项验收表替代）
+
+早期检查点先完成记忆/操作日志，再接入按轮回退、独立树和交付。早期“待 Flutter 验证”“不支持删除新文件”“独立树仍在实施”等描述现已失效：后续已实现新文件安全删除与不覆盖重建、脏 Git 基线隔离、实际 UI 恢复回调和大型成果元数据操作；以下表格及末尾实际检查记录为当前状态。历史定向检查先后为 9 项、四文件 30 项，不作为最终全量验收替代。
+
+### 3.8.0+4112 逐项验收收敛记录
+
+下表覆盖本轮剩余功能，不把“已实现”“已验证”“外部条件未验证”合并为一句完成声明。最终客户端全量检查、Windows 暂存包和签名 APK 另在交付记录补记。
+
+| 功能 | 实现与实际验证 | 限制或外部条件 |
+| --- | --- | --- |
+| 主/子代理工作记忆 | 按会话及宿主确定的 agent ID 分开 CAS；子代理只读主任务交接与用户固定约束，不能改写主/兄弟笔记；主代理可指定 scope 回读。失败不发布版本，损坏时保护约束并经来源哈希核验、保留损坏副本后重建 | 笔记不是权限；不保存隐藏思维链。单字段有界，不能宣称无限全文记忆 |
+| 主动/自动压缩与原始回读 | 主/子循环在本地裁剪前按实际历史上限或约 72% token 压力请求公开检查点；每任务最多 2 次、间隔 4 轮、30 秒、输入不超过有效预算及 12k UTF-8 字节、输出最多 1000 tokens；来源/版本变更丢弃；固定原始用户目标及用户 pins 单独计入预算；存在模型可调用压缩/历史来源与片段偏移工具 | 使用既有自动上下文开关；原始目标超过辅助请求 4000 字节或辅助预算不足时不额外调用，保留手动压缩和本地预算；工具历史沿用有界 64k 字符记录，超长正文须从授权原目标补读。额外用量单列，未报告不伪装为零 |
+| 公开计划、补充方向、暂停/停止 | 日志页可查看计划、摘要、版本和用户专属固定约束。运行中“补充任务”产生持久回执与真实用户消息，下一个完整轮次准备后确认；保留原始目标、同一根任务/额度，子代理也接收；停止取消未生效队列。主/子完整轮次边界可暂停/继续，侧栏/底栏区分待暂停与已停止派发新轮次 | 不把工具完成事件提升为用户目标；已提交命令/服务继续，不声称冻结 OS 进程；任务结束后须显式新用户消息开始后续工作 |
+| 安全续接与执行记录 | 外部副作用派发前持久记录，绑定会话/代理/请求/调用 ID，区分已完成与未知；未知阻止新的外部变更但允许只读检查。用户只核验对话框展示的精确身份，新出现未知记录不被顺带解除；全局损坏须核验来源摘要 | 不自动重放旧命令；原 Flutter 任务重启后以中断/需核验对待，不冒充已迁入独立执行端。终态有界保留，未确认记录不淘汰，执行日志不备份为可运行队列 |
+| 按轮、文件、块审阅与回退 | 相同工具轮连续写入合并；跨轮保留独立基线；整轮倒序逐文件核验，冲突停止并报告部分完成。逐块回退保留未选择行的原始 CR/LF 字节。新文件经明确名单确认、当前哈希检查后删除，原快照可按 expected=new 重新创建，已有用户替换文件不覆盖 | 仅追踪有完整前后文本快照的文件工具；不承诺回滚任意 Shell、外部服务或未知二进制副作用。SSH 新文件回退使用远端 Python3；未用真实 SSH 账户做在线验收 |
+| 文件版本保护 | Rust 对替换/删除/复制的版本哈希加入稳定长度/时间/文件身份检查、可行的文件锁及提交前重验；确定性外部原子保存竞态测试保留用户新文件 | 属于写入前版本校验与乐观冲突保护，不宣称对任意不协作外部编辑器建立跨进程原子事务 |
+| 多代理职责与隔离 | 缺省只读；写任务需明确 false 与 owned_paths 或 isolated；重叠/非法声明在分配名额前拒绝，只读后代不可扩大权限，未知外部变更、文档编辑、页面提交/设备点击均不能绕过只读角色。独立树位于授权根内，保留脏文本/二进制及未忽略的未跟踪文件精确基线；不 stash/reset，不创建独立权限泄漏 | 基线最多 1000 路径；忽略的未跟踪内容不擅自复制。任意命令仍是账号权限、不是进程沙箱；独立树每次重新核验原父授权，父权限收紧则拒绝。托管目录不触发自身 Hooks/普通 Git 改动/父目录最终清单递归 |
+| 验收后整合 | 父代理拿到可在原授权根读取的前缀路径；显式逐文件整合要求结束的子任务、已读源哈希与原始父基线均匹配，冲突不写；不自动合并、提交或推送 | 当前安全整合工具为 UTF-8 文本；二进制/整个目录可作为最终成果登记而不自动覆盖父项目 |
+| 大型/二进制/目录/归档交付 | 最终清单与普通变更分离，只有显式登记进入交付；本机按 64KiB 分块哈希，不把大文件正文读入上下文；完整目录清单有数量/深度/权限/链接/变动检查。目录、9MiB 文件、隔离前缀的打开所在目录均走元数据而非 base64，打开时验证登记版本；别名/目录后代变更撤销旧选择 | 目录清单最多 1000 条、深度 32；过界/变化拒绝，不伪造文本增删行；外部实时文件监控不宣称存在，但再次打开/登记会核验 |
+| 侧栏与默认指令 | 活动排序时间本地有界持久化，保留五秒节流；启动不把已完成任务伪装成新活动。新版默认说明记忆、原始回读、按需工具、写职责、隔离/整合与最新用户补充，已保存自定义指令仍保留 | 排序/执行记录归属会话，不变成全局共享任务上限 |
+| 模型服务与路由 | 模型主要入口、同模型渠道优先级、Auto/备用路由组、账户凭据隔离与缺失失效处理、路由记录及配置备份；协议/缺失凭据/路由夹具与界面检查通过 | 真实订阅登录及供应商支持逐项依赖用户账号；Magpie 为可选外部组件，须明确配置路径/依赖并手动启动，不静默登录或发现 |
+| 监督与角色积累 | 监督只读公开目标/计划/工具结果/产物版本，轮次边界建议经程序鉴权，过时丢弃，用量/延迟/干预记录可见。角色先检索资料与库，再提案、真实受限试用、版本/工具证据核验；默认人工，模型验收和自动加入需分别明确启用；原用户角色不覆盖，支持修订/禁用/删除/回退 | 模拟测试不能证明真实模型质量提升；使用真实付费模型的质量/成本对照未执行，缺用量明确未知 |
+| 工具、数学、浏览器 | 配置内工具可检索/申请，在下一完整轮加载且撤销生效；依赖诊断与可信安装/更新入口；数学精确/符号/数值/统计/绘图/验证采用白名单后端。受控 Playwright 与人工网页明确分开，接手、反馈、截图/日志与传输队列撤销实际接线，子代理视觉按自身所选模型判断 | 可选 Python/SymPy/Node/浏览器依赖需实际安装启用；旧会话/当前工具轮不热切换。未知 MCP 读写提示不作为只读授权 |
+| 独立宿主、远程与自动化 | 独立 Dart 宿主可执行目标模型/工具循环与命令，持久记录/未知状态/事件游标、配对 TLS、断线续传、固定项目环境；定时/文件/Git/外部事件触发记录原因、去重、暂停、历史；远程三档授权与预算/加轮有实测夹具 | 旧 Flutter 本地任务不自动迁移；远程主机账号命令不是 Rust 子目录沙箱，不谎称继承本机拒绝/只读规则。真实网络/供应商账号仍需用户配置 |
+| Android 本机动作 | 独立新模拟器上两 App、观察版本/窗口/目标检查、停止/撤权、真实通知 STOP、持有者释放及下一任务、截图尺寸/缩放/全屏坐标元数据实际验证；主/子模型截图回传与不同视觉能力组合通过控制器检查 | 前轮独立模拟器验证已通过；最终原生重验在应用安装前受 AVD 系统镜像崩溃阻断，未加载测试，不计为最终重验通过。厂商真机/发行渠道仍需另验；权限与本次控制只能由用户开启，模型不能 arm 或打开权限设置 |
+| 配置与安全备份 | 新模型/监督/角色/工具用户配置进入设置备份，完整备份保留现有用户能力配置优先；工作记忆/pins 随复制会话重新映射 ID，原副本不覆盖。补充正文按用户消息归档；凭据、操作日志、可运行队列及设备/浏览器租约不导入为自动执行 | 导入前要求任务完成或由用户手动停止，避免重建控制器中断现有任务；未知/旧状态不会静默续跑 |
+
+验收证据：定向 21 文件共 101 项通过；交叉审查修正后 6 文件 40 项通过，包含真实 Windows Git/Rust 脏基线与 UI→恢复回调；原始执行日志在本轮 `output/` 验证目录。Rust 完整 17 项及 clippy `-D warnings` 通过。后续格式/全量静态检查/全量测试和最终包必须追加实际结果，不能以此前定向结果代替。
+
+
+### 最终源码检查（2026-10-24，冻结快照）
+
+- `python scripts/check.py --scope client`：通过；749 个 Dart 文件格式零改动，`flutter analyze --no-pub` 零问题，`flutter test --no-pub --coverage` 1692 项全部通过，总用时 127.84 秒。结果 `output/checks/client.json` / `output/client-required-final.log`。根分析排除独立 vendored `third_party`，未禁用本项目规则或删除有效回归。
+- `python scripts/check.py --scope desktop`：通过；Rust fmt、clippy `-D warnings`、17 项测试、构建及 5 项真实 MCP 黑盒检查；结果 `output/checks/desktop.json`。真实脏 Git 工程、9MiB 清单、变动拒绝和无覆盖恢复另有定向证据。
+- 全量收敛中发现并修正：原子凭据配对/失败回滚、辅助验收首 await 前及请求中停止、模型视觉切换、真实用户补充来源、物理路径职责别名、文档/搜索/视觉步骤身份、侧栏迟到导航、故事启动误停其他会话、未使用设备会话的多余原生清理、宿主关闭时等待已启动的自动化扫描。旧界面/持久设置夹具按实际入口更新，保留关键行为断言；没有恢复用户已删除的独立提示词预设。
+- 独立宿主最终生命周期修正后 32 项纯 Dart 检查、短 TLS 实测、编译 EXE 通过；Android 原生链路以前轮独立模拟器为证据，最终重验按末尾环境阻断记录。最终便携 ZIP/签名 APK 和哈希见下方实际产物记录，不以源码检查代替构建成功。
+- 本轮不创建新 commit、tag、push 或 main merge；源码保留在当前分支工作区。运行中的旧应用不停止、不替换，构建输出使用新的独立目录。
+
+
+### Android 最终运行验证边界
+
+最终源码复验期间，专用 `emulator-5580` 在应用安装/测试加载前出现 PackageManager/SystemServer 失败；对本轮创建的 AVD 清除数据冷启动后，仍出现系统镜像 CRC/GZIP/protobuf/libart 错误与 SIGSEGV。最后一次有依据的单核隔离冷启动同样在安装任何自有 APK 前失败，已停止该自有 AVD，不再同条件重复尝试。证据留在 `output/device-agent-evidence/final-verification.txt`，不放入交付包。
+
+因此必须区分：完整客户端 1692 项通过；前轮 fake LLM→真实 ChatController→Android 原生观察/动作/真实 PNG→下一模型请求已有通过证据（3 次模型请求，1080×2400→921×2048 坐标元数据，另含真实通知 STOP/撤权/租约验收）；**最终源码的原生重验和最终 APK 安装启动 smoke 属于外部环境阻断，不能冒称通过**。正常 main.dart Release 编译与签名核验独立记录，不以编译代替运行验证。程序源码与已核验 Windows/宿主包保持冻结。
+
+
+### 3.8.0+4112 最终交付
+
+三个正式包已冻结，目录 `output/delivery/3.8.0+4112/` 仅交付包、简明说明和校验清单，不放验证日志/截图、凭据、用户资料或测试夹具。
+
+| 产物 | 实际字节数 | SHA-256 |
+| --- | ---: | --- |
+| `expert-chat-windows-v3.8.0.zip` | 35151804 | `9E975D936CBA84AA80970C8D35D5072FE23B3B5C991C4E14422E98F4E4631EAE` |
+| `expert-chat-android-v3.8.0.apk` | 116152225 | `D9E2DA6EE53B97F8C7E38829EF198951E202057F49190E4381158566E6F26623` |
+| `expert-chat-remote-host-v3.8.0.zip` | 3685140 | `E5CA2EE6253EF5DC16F5598FB621712E9B0DF4D8EB89F6BA4EF92BA21727B3B6` |
+
+Windows Release 107.8 秒成功，EXE FileVersion/ProductVersion 均为 3.8.0+4112；相邻 `expert-desktop.exe --help` 正常。构建 target 为 `lib/main.dart`；`data/app.so` 与本次 `build/windows/app.so` SHA 相同，时间位于本次构建区间，确认正式 AOT。新暂存目录与两份旧版运行路径分离，旧运行程序二进制哈希未变；临时 CMake 输出路径原文恢复。最终 ZIP 的 65 个文件与内部 manifest 逐项 SHA/长度一致，未启动新版 UI。最终纯文件清点发现并排除共享 assets 遗留的 kernel_blob、vm/isolate snapshot、last_build_id 四个 debug 生成物；旧 74,944,649 字节/0C8C... ZIP 已移出交付目录并作废，正式 icudtl 和声明 assets 保留。
+
+Android 正常 `lib/main.dart` Release 250.3 秒成功；APK versionName=3.8.0、versionCode=4112，minSdk=24、targetSdk=36，MainActivity、三 ABI AOT。v2 签名有效，证书 SHA-256 `EB452EF00BA962A9A95152702600F28ACE043E0B229B4D99DE8198257BFA45D2` 与历史正式包一致；无 debuggable/testOnly/instrumentation、kernel_blob、integration_test 或 fixture 条目。Release 再生成时只去除 ignored 注册文件遗留的 integration_test 引用，没有加入生产测试依赖或清理共享 build。最终安装启动/原生重验仍按上节环境阻断记录，不冒称运行通过。
+
+独立宿主最后生命周期修正后，32 项纯 Dart 检查、EXE 编译、实际短 TLS 复验通过。正式 ZIP 仅宿主、可信数学 worker、版本 manifest 与说明。真实订阅账号/付费模型质量成本、实际 SSH 回退、managed SymPy 安装到用户 AppData、厂商 Android 真机与发行渠道仍由实际外部环境验收。
+
+统一说明为 `output/delivery/3.8.0+4112/START-HERE.md`，文件校验为 `SHA256SUMS.txt` / `release-manifest.json`。程序源码没有新提交/推送/main 合并；HEAD 仍 eb9c142。
+源码统计：含新增未跟踪源码，共 238 文件；已跟踪 138 文件 +7543/-1261，新增未跟踪 100 个文本文件 +17164 行，无新增二进制；合计 +24707/-1261 行。排除 ignored 构建/证据/交付文件。
+
+
+## 14. 3.8.1+4113 桌面数学工具记录补丁
+
+范围仅修复新调用的记录生命周期：数学、按需注册表、角色/记忆等内置能力原先返回结果但没有专属步骤记录，统一收尾误建“失败/未执行”占位项，运行日志随之误记 skipped。新增宿主创建的调用步骤与结果绑定，不修改数学计算后端、权限或原历史会话。
+
+验收门槛：实际 controller 经工具检索/申请/完整轮边界后执行本地可信 Python 数学；1/3+1/6 保存为已完成且结果 1/2，toolName、调用 ID、已脱敏参数与结束时间可从真实 SQLite 重新读取。验证不能判定（equal=null）仍是执行完成；后端错误、抛出、取消、未激活/拒绝、未知结果分别保留真实状态。复用 provider call ID、无 call ID、并发相同参数不得串写当前或旧步骤；宿主 activity ID 存在时只匹配精确新步骤。敏感参数脱敏后不得被原始参数回填。
+
+B 实施、A 只读交叉审查与集成/Windows 打包，root 只监督。当前版本 3.8.1+4113；不重建 Android/独立宿主、不操作坏 AVD、不改用户配置/报告/历史、不终止或替换运行中的 3.8.0、不自动打开修正版、不创建提交或推送。完整 client、独立 Windows 正式 main 构建与干净包核验已通过，实际结果如下。
+
+
+### 14.1 验收与 Windows 交付结果
+
+- B 定向回归 43/43 通过，其中新增 10 项真实 controller/SQLite 生命周期回归，包含可信本地 Python 成功值、equal=null、失败/抛出/取消/未激活/拒绝/未知结果、缺失 ID 与重复 ID，以及并发子代理相同参数倒序完成不串写。
+- `python scripts/check.py --scope client` 完整通过：750 个 Dart 文件格式零修改，`flutter analyze --no-pub` 零诊断，1702/1702 测试通过，149.47 秒。证据 `output/math-records-3.8.1/client-required.log`。
+- Windows `lib/main.dart` 正式 Release 104.2 秒成功；FileVersion/ProductVersion 均为 3.8.1+4113。新目录与当前 3.8.0 运行目录分离，旧运行二进制哈希不变，临时 CMake 输出设置原文恢复；没有启动新 UI。
+- 正式 AOT 与本次 `build/windows/app.so` SHA 相同、在构建区间生成且不同于 3.8.0；`icudtl.dat`、声明 assets 与原生 helper 保留。排除 kernel_blob、vm/isolate snapshot、last_build_id 四类 debug 生成物；ZIP CRC 与 65 个文件逐项 SHA/长度全部通过，共 66 entries。
+- 只交付 Windows 修正版，不重新构建 Android 或独立宿主；无 Rust 源码变更，不重复桌面大检查。既有 3.8.0 三包保持原样。
+- 旧历史、缺失工具参数、用户报告与配置没有回填或改写；本次只使新调用记录正确。源码不提交、不推送、不合并 main。
+
+最终 Windows 包：`output/delivery/3.8.1+4113/expert-chat-windows-v3.8.1.zip`，35154870 字节，SHA-256 `91796A16E56002B3F51AF4DA7AB6A4CE7A912AC52BDAF9FCF1878B2C7D693856`。
+
+说明与校验：同目录 `START-HERE.md`、`SHA256SUMS.txt`、`release-manifest.json`。
+
+## 15. 2026-10-25 P0 + P1 界面改版与交付验收
+
+状态：**完整P0视觉和P1布局导航已实现、全量检查及监督目视通过，Windows与签名Android包已独立交付。** 本轮基于开始时已包含大量未提交修改的工作树，未回退/覆盖原改动；每个既有目标文件改前副本保存在 `output/redesign-review/baseline/`。下表仅归因本轮UI变动，不把既有远程、数学、角色、模型等后端能力算作本轮新实现。
+
+### 规范与入口覆盖
+
+- §2、§4.4、§4.13–4.14：统一token和状态动效、子代理胶囊、交付文字按钮、审批样式、八套艺术配色及自适应图标。
+- §3、§4.1–4.12：四个一级入口；工作/聊天同时分组与固定底栏；顶栏/输入/用量/轮次；三类工作台；全层级回到对话；真实自动化汇总；五类资料库与四类设置。
+- 聊天/工作仍通过 `switchConversationMode` 新开独立会话，不给已有会话换类型，不转移工作区或工具授权。宽度仍默认560、范围340到clamp(可用宽度−430,340,900)，低于820不停靠；桌面主区不足820整页打开，手机窗口不足840才78%底部工作台。
+- 原入口→新入口逐项表：[导航/设置/资料库](../output/redesign-review/navigation-entry-map.md)、[对话/工作台](../output/redesign-review/chat-workbench-entry-map.md)。[覆盖核对](../output/redesign-review/mapping-coverage.md)按当前清单241行核对，181名称直匹配、60行组合映射均有归属；该数字不是全部后端在线实测数量。
+
+### 本轮逐文件改法
+
+| 文件 | 本轮变动 |
+|---|---|
+| `android/app/src/main/res/mipmap-anydpi-v26/ic_expert_chat.xml` | 为原有效ic_expert_chat资源增加自适应前景/背景声明。 |
+| `android/app/src/main/res/mipmap-hdpi/ic_expert_chat_foreground.png` | 同源生成透明安全区角色前景；旧有效legacy位图不变。 |
+| `android/app/src/main/res/mipmap-mdpi/ic_expert_chat_foreground.png` | 同源生成透明安全区角色前景；旧有效legacy位图不变。 |
+| `android/app/src/main/res/mipmap-xhdpi/ic_expert_chat_foreground.png` | 同源生成透明安全区角色前景；旧有效legacy位图不变。 |
+| `android/app/src/main/res/mipmap-xxhdpi/ic_expert_chat_foreground.png` | 同源生成透明安全区角色前景；旧有效legacy位图不变。 |
+| `android/app/src/main/res/mipmap-xxxhdpi/ic_expert_chat_foreground.png` | 同源生成透明安全区角色前景；旧有效legacy位图不变。 |
+| `android/app/src/main/res/values/expert_chat_icon.xml` | 为自适应启动图标提供独立青色背景。 |
+| `lib/core/theme.dart` | 集中间距/动效/触控与状态色 token，追加八套艺术色，统一正文和字体 fallback，冻结原十四套色值。 |
+| `lib/data/ui_prefs.dart` | 新增艺术色枚举、工作台宽度和分组折叠 JSON；校验非法宽度、隔离可变数组并兼容旧排版值。 |
+| `lib/domain/workbench/processes/work_hook_runtime.dart` | 为自动化页复用真实手动运行与原会话工作区授权，避免旧错误冒充新执行失败。 |
+| `lib/features/chat/chat_page.dart` | 重组顶栏、固定输入区、轮次/补充任务和手机审批；按窗口及可用宽度区分停靠、整页和底部工作台。 |
+| `lib/features/chat/chat_workspace_sidebar.dart` | 工作/聊天及启用的创作学习同屏分组，固定底部导航，持久折叠并冻结悬停重排。 |
+| `lib/features/chat/widgets/chat_composer.dart` | 将位置/资料集/权限/模型思考/用量收进固定输入区，保留托盘全部动作与语音发送语义。 |
+| `lib/features/chat/widgets/chat_dataset_control.dart` | 新增真实资料集引用芯片，复用项目仓库与assignProject。 |
+| `lib/features/chat/widgets/chat_work_mode_switch.dart` | 统一居中外观和44触控目标，继续使用独立新会话的切换回调。 |
+| `lib/features/chat/widgets/chat_workspace_options.dart` | 统一默认/本机/SSH选择器及管理入口，远程电脑和Android仍明确跳专页。 |
+| `lib/features/chat/widgets/composer_model_picker.dart` | 合并模型和思考强度弹层，保留Auto、路由组和模型搜索。 |
+| `lib/features/chat/widgets/composer_popover.dart` | 手机采用底部弹层、桌面有界popover，并保证标题留白和底部动作可达。 |
+| `lib/features/chat/widgets/composer_tool_tray.dart` | 保留附件与高级托盘项目，只删除未渲染的联网搜索死参数。 |
+| `lib/features/chat/widgets/conversation_execution_indicator.dart` | 复用统一状态动效及共享未读判定，不在非对话页误标已查看。 |
+| `lib/features/chat/widgets/conversation_history_list.dart` | 保留行菜单、归档、多选与搜索跳转，并适配浅层来源高亮。 |
+| `lib/features/chat/widgets/conversation_mode_filter.dart` | 按§6确认无引用后删除闲置组件。 |
+| `lib/features/chat/widgets/execution_ring.dart` | 保留旧构造接口，改用12像素/2像素/0.8秒的共享运行指示。 |
+| `lib/features/chat/widgets/execution_status_indicator.dart` | 新增共享圆环/呼吸/完成/失败及胶囊，真正停用和恢复动画控制器。 |
+| `lib/features/chat/widgets/message_bubble.dart` | 默认用户浅气泡、助手无外框阴影，正文14且保留文档样式和全部消息动作。 |
+| `lib/features/chat/widgets/session_policy_controls.dart` | 以带模式名的权限芯片和三张说明卡呈现既有会话权限，保留高级策略。 |
+| `lib/features/chat/widgets/sidebar_reorder_motion.dart` | 新增按key的280毫秒位移动画，并支持减少动效静态呈现。 |
+| `lib/features/chat/widgets/streaming_markdown.dart` | 正文统一14与1.7新默认，继续遵循文字缩放及Markdown风格偏好。 |
+| `lib/features/chat/widgets/thinking_panel.dart` | 减少动效时真正停止循环ticker，保留思考、翻译及步骤操作。 |
+| `lib/features/chat/widgets/work_approval_card.dart` | 确认色浅底/30%边框、完整等宽参数和中文fallback；手机审批双按钮等宽44。 |
+| `lib/features/chat/widgets/work_delivery_files.dart` | 每个交付文件提供预览及打开/复制位置文字按钮，原版本和权限检查不变。 |
+| `lib/features/chat/widgets/work_round_controls.dart` | 提供真实暂停/继续/加轮/补充/停止及终态续轮；手机状态完整、动作单行可横向滚动。 |
+| `lib/features/chat/widgets/work_session_footer.dart` | 将真实上下文、缓存、费用和快照合入用量环，并标记直达设置路由以保留返回入口。 |
+| `lib/features/library/generation_history_page.dart` | 支持资料库内嵌，去重复标题但保留记录、对比和再生成操作。 |
+| `lib/features/library/resources_page.dart` | 建立资料集/素材/生图记录/学习/创作五标签，并保留开关与真实二级页面。 |
+| `lib/features/projects/projects_page.dart` | 界面改称资料集，显示文件数并可强制新建引用聊天；内嵌时不重复AppBar。 |
+| `lib/features/remote/remote_automation_panel.dart` | 现有触发器改全宽卡和独立动作行，复用共享防重请求状态。 |
+| `lib/features/remote/remote_tasks_page.dart` | 保留配对/任务/审批/成果原页，并共享自动化幂等调用状态。 |
+| `lib/features/settings/settings_page.dart` | 重组四分类，迁入单价、功能开关等入口并保留原配置组件和一处关于。 |
+| `lib/features/settings/widgets/appearance_settings_widgets.dart` | 艺术/原有配色分组和来源色块；预览使用真实主题并继承字体。 |
+| `lib/features/settings/widgets/model_settings_widgets.dart` | 仅删除无引用ProfileSelector/ProfileEditPage及专属导入，保留预设、余额和用量组件。 |
+| `lib/features/settings/widgets/reading_appearance_settings.dart` | 明确恢复默认采用1.7，已保存阅读数值不被改写。 |
+| `lib/features/shell/app_shell.dart` | 移除64窄rail，统一侧栏四入口并保留页面状态、抽屉和桌面返回胶囊。 |
+| `lib/features/shell/automation_page.dart` | 汇总已有远程触发器和本地文件Hooks，保留配置/运行/重连并支持长命令可读卡片。 |
+| `lib/features/shell/automation_status.dart` | 展示真实已启用自动化数量，未连接远程不伪装成零。 |
+| `lib/features/shell/conversation_return_scope.dart` | 统一根页/辅助设置路由和深层返回入口，遵守模态/输入焦点/PopScope且同route重试有界。 |
+| `lib/features/shell/desktop_navigation_rail.dart` | 按P1确认无引用后删除旧窄导航组件。 |
+| `lib/features/shell/return_to_conversation.dart` | 呈现真实会话标题、状态和其他任务，稳定路由回调回到原会话。 |
+| `lib/features/shell/shell_tab.dart` | 一级入口改对话/自动化/资料库/设置，旧可选页面保留语义映射和开关。 |
+| `lib/features/shell/tools_page.dart` | 保留二级工具及模块功能，更新已迁移入口与草稿返回行为。 |
+| `lib/features/workbench/agents/agent_cluster_card.dart` | 真实状态显示运行/排队/完成胶囊，减少动效停止ticker且保留树折叠。 |
+| `lib/features/workbench/agents/work_agents_panel.dart` | 抽出限制编辑器；工作台隐藏重复配置头，独立调用默认仍显示，集群/取消/追加能力保留。 |
+| `lib/features/workbench/changes/work_changes_page.dart` | 窄屏详情整体滚动并惰性绘制diff，加入中文等宽字体fallback，回退保护不变。 |
+| `lib/features/workbench/files/workspace_file_tab.dart` | Consolas编辑器补中文fallback，原查看/编辑/预览/保存与冲突处理保持。 |
+| `lib/features/workbench/git/git_workspace_page.dart` | 支持新Git二级入口直接进入改动视图，保留提交图和worktree。 |
+| `lib/features/workbench/runtime/work_task_panel.dart` | 仅删除无引用WorkTaskStatusBar并保留原WorkTaskPanel；只读轮次在工作台容器呈现。 |
+| `lib/features/workbench/workspace_workbench_page.dart` | 八类能力归入改动/运行/助手，保留多实例文件/终端/浏览器和各类空态。 |
+| `lib/main.dart` | 在真实 MaterialApp 挂统一路由观察和返回对话 Scope，覆盖设置深层路由。 |
+| `lib/state/chat/generation.dart` | 仅接入用户显式续轮的一次性轮数预算，原模型和工具鉴权路径保持。 |
+| `lib/state/chat/streaming.dart` | 将一次性轮数预算传给WorkRounds.start；未传参数时沿用原会话策略。 |
+| `lib/state/chat/turns.dart` | 新增显式终态继续工作入口，绑定会话ID且不持久改写SessionPolicy。 |
+| `lib/state/conversation_attention.dart` | 共享UI未读签名，仅真实回到对话根页才标已查看。 |
+| `lib/state/conversation_workspace_bindings.dart` | 新增CAS条件回滚辅助，失败时只回滚仍匹配原写入的绑定；清SSH由UI选择器处理。 |
+| `scripts/render_redesign_icons.cjs` | 用既有sharp从同一SVG生成Android自适应前景和Windows多尺寸图标，不新增依赖。 |
+
+### 本轮逐测试文件变动
+
+以下19个既有测试依据改前副本比对，另有11个新测试；未把原用户已有且本轮未改的测试计入。
+
+| 测试文件 | 本轮类型 | 本轮改法/覆盖 |
+|---|---|---|
+| `test/appearance_palette_test.dart` | 新增 | 新增360宽明暗配色分组与艺术色选择回调测试。 |
+| `test/chat_responsive_layout_test.dart` | 基线差异修改 | 更新输入/用量与工作台入口布局断言，保留窄屏、缩放、语音和原业务开关验证。 |
+| `test/chat_session_concurrency_test.dart` | 基线差异修改 | 仅将固定等待改为有界真实流状态barrier，保留精确partial、暂停、原目标和root配额断言。 |
+| `test/chat_workspace_options_test.dart` | 基线差异修改 | 用新芯片tooltip/选择器核对真实路径，并验证SSH转本机、失败保存和CAS回滚。 |
+| `test/composer_controls_test.dart` | 基线差异修改 | 验证合并后的模型思考入口、语音/发送切换和有界思考弹层。 |
+| `test/conversation_sidebar_test.dart` | 基线差异修改 | 更新新分组入口并覆盖悬停/菜单排序冻结、折叠保存及原异步选择保护。 |
+| `test/desktop_layout_test.dart` | 基线差异修改 | 适配四入口/侧栏和模式位置，保留工作区绑定与真实桌面布局断言。 |
+| `test/execution_status_indicator_test.dart` | 新增 | 新增循环动画真正停止/恢复及完成勾/失败叉测试。 |
+| `test/full_backup_test.dart` | 基线差异修改 | 补新UI字段显式恢复及默认保留现有偏好，保留原数据库与文件恢复回归。 |
+| `test/harness_ui_regressions_test.dart` | 基线差异修改 | 更新已迁移的popover选择器，保留标题留白、内部滚动和底部动作可见性。 |
+| `test/redesign_chat_workbench_test.dart` | 新增 | 新增三类工作台/多实例/独立配置入口、轮次补充任务、指标和手柄规则验证。 |
+| `test/redesign_navigation_test.dart` | 新增 | 新增四入口、分组状态、深层任务菜单、返回拦截和自动化长卡/防重验证。 |
+| `test/redesign_return_drawer_test.dart` | 新增 | 新增抽屉LocalHistory先关闭、Esc和回到对话的真实导航验证。 |
+| `test/redesign_settings_route_test.dart` | 新增 | 新增用量环直达设置及子页的返回、普通工作台排除和有界willPop拒绝测试。 |
+| `test/redesign_visual_test.dart` | 新增 | 新增真实AppShell八组尺寸主题及键盘/设置/自动化/艺术/子代理渲染与可达边界测试。 |
+| `test/research_mode_test.dart` | 基线差异修改 | 按新语义导航映射验证科研/创作开关，保留原开启关闭和会话状态条件。 |
+| `test/settings_bundle_test.dart` | 基线差异修改 | 在真实配置迁移中补新配色/宽度/分组字段，保留密钥和网关原断言。 |
+| `test/settings_category_navigation_test.dart` | 基线差异修改 | 适配四分类和迁入的配置入口，保留返回与设置状态验证。 |
+| `test/study_mode_test.dart` | 基线差异修改 | 按新导航映射验证学习开关，继续检查学习入口显示/隐藏。 |
+| `test/theme_contrast_test.dart` | 新增 | 新增22配色×明暗×五对实测，新8严格达标，旧14冻结且逐对防退化。 |
+| `test/tools_navigation_test.dart` | 基线差异修改 | 验证工具移入设置后的模块入口与草稿保持。 |
+| `test/ui_prefs_test.dart` | 基线差异修改 | 覆盖新枚举/字段JSON、非法宽度、数组隔离及新1.7/旧1.85默认兼容。 |
+| `test/user_facing_copy_test.dart` | 基线差异修改 | 更新资料集与新入口文案选择器，保留说明简洁和文档限制可达断言。 |
+| `test/widget_test.dart` | 基线差异修改 | 更新模型思考/顶栏选择器，保留原消息、生成和持久化交互断言。 |
+| `test/work_approval_card_test.dart` | 新增 | 新增完整原始参数、手机审批按钮及真实批准/拒绝Future回调测试。 |
+| `test/work_continuation_test.dart` | 新增 | 新增显式终态续轮ID/预算/错误清理，确认原策略JSON和授权不变。 |
+| `test/work_delivery_files_test.dart` | 新增 | 新增360宽本地/SSH与Android/Windows文字动作、预览和Clipboard回调测试。 |
+| `test/work_stream_layout_test.dart` | 基线差异修改 | 按新固定输入/用量结构验证长流式任务及hover tooltip转场不溢出。 |
+| `test/workspace_browsing_test.dart` | 基线差异修改 | 验证资料库到资料集管理和会话往返，保留真实数据关联。 |
+| `test/workspace_visual_test.dart` | 基线差异修改 | 适配新侧栏/设置入口，继续核对草稿保留和回到对话。 |
+
+### 实际验收与来源
+
+| 项目 | 实际结果与证据 |
+|---|---|
+| 最终全量分析 | `flutter analyze --no-pub` 零问题，exit0；[日志](../output/redesign-review/integration-delivery-analyze.log) |
+| 最终全量测试 | `flutter test --no-pub` **1758项全部通过**，exit0；[日志](../output/redesign-review/integration-delivery-test.log) |
+| 冻结源 | 1011个源/资源/配置记录；前后变化为空，[源manifest](../output/redesign-review/integration-delivery-sources.json) SHA256 `CDFFA85A1EF9AFE7974D90AAC8A6B068A3EE89723D7752845C287EDED8428207`，与[最终exit](../output/redesign-review/integration-delivery-exit.json)绑定 |
+| 界面图 | 360/390/1280/1440×浅深8组，另含键盘300、审批/长路径、设置四类、资料库、自动化远程+本机、艺术色及子代理；[截图目录](../output/redesign-review/screenshots/)。真实Flutter widget夹具渲染，主代理逐图目视通过，不冒称真机或旧运行客户端截图 |
+| 数据与回归 | 新偏好JSON/旧缺字段/非法宽度/数组隔离、完整备份默认保留与显式恢复、配置迁移、精确审批/交付回调、动效停启、工作台键盘/拖动/整页与sheet、真实设置深层返回/模态/保存拦截均有测试 |
+| CLI | 同一Rust源release边界测试17项通过；最终Windows发布目录内CLI再跑5项真实MCP黑盒通过，仅临时工程，[记录](../output/redesign-review/final-packaged-cli-mcp.log) |
+| Windows | 独立副本Release成功；实际捆绑当前源CLI、DLL/data、数学worker，ZIP65文件逐项CRC/SHA验证；[包核对](../output/redesign-review/windows-package-verification.json) |
+| Android | 正常release生成注册器后签名APK成功；v2验证、包名/版本、min24/target36、三ABI、无debug/instrumentation/integration_test、数学worker和5密度自适应资源已核验；证书与旧发布APK一致，[核对](../output/redesign-review/android-package-verification.json) |
+
+新测试文件为 `appearance_palette_test.dart`、`execution_status_indicator_test.dart`、`work_approval_card_test.dart`、`work_delivery_files_test.dart`、`theme_contrast_test.dart`、`redesign_visual_test.dart`、`redesign_navigation_test.dart`、`redesign_return_drawer_test.dart`、`redesign_chat_workbench_test.dart`、`redesign_settings_route_test.dart`、`work_continuation_test.dart`。既有入口选择器随布局迁移更新，业务/授权/草稿/原始目标和配额断言保留；旧并发用例的固定等待改为真实流状态barrier，未修改生产运行时来过测。规范“221个测试文件”为历史数，本次实际 `test/` 230文件。11个 `integration_test/` 文件未作为真机安装测试执行；未调用真实付费账号、未将外部设备/服务条件冒充在线验收。
+
+构建源隔离于 `E:\wweiyi\tmp\expert-chat-ui-redesign-build-20261025-022630`，输出独立目录 `E:\wweiyi\Project\Software\expert_chat\output\releases\ui-redesign-20261025-022630`，未改全局Flutter build-dir或原CMake。最初NuGet缓存定位通过本轮子进程PATH复用已有 `.tools/nuget.exe`；APK使用正常pub-enabled release生成器过滤dev插件（`pub get`后`--no-pub`会跳过该步骤），未手改业务源、未把integration_test加入发行依赖。全程依赖锁hash不变，临时签名配置已定向删除，发布目录无私钥/配置密钥。
+
+### 真实差异与能力边界
+
+- 原14套配色色值和minimal默认不变。实测不足4.5的不止solar，共23个旧色对；[全部五对×明暗实测](../output/redesign-review/contrast.json)及[不足清单](../output/redesign-review/legacy-contrast-shortfalls.md)完整留存。新8套全部五对严格≥4.5；旧14冻结并按min(4.5,原比率)防退化，未擅改旧色。
+- 既有cornerStyle的8/14/20映射及用户保存的文字/排版偏好保留；新装和明确恢复默认用1.7行高，旧JSON缺lineHeight仍回落旧1.85。新增8/12/18设计token不迁移旧用户选择。
+- §4.13艺术色标P1与§5阶段表P0文字不一致；本次完整P0+P1已全部包含。Android/Windows旧有效猫耳图标本已正确，本轮新增Android adaptive层，未把重生成后未变的legacy位图/ICO说成新修复。
+- 按§6删除真正无引用的旧rail、模式筛选、页内历史死分支、死搜索参数、WorkTaskStatusBar和两个旧Profile组件。角色库/世界书现由资料库真实引用，保留可达页面；提示词预设存档及未接界面的网关OIDC保持原状。
+- UI沿既有能力边界：权限仍会话三模式；远程电脑/Android使用专页；未伪造工具例外、本机定时/Webhook、统一新执行位置、自定义配色或提示词迁移能力。
+
+### 交付与保护
+
+| 产物 | 字节数 | SHA256 |
+|---|---:|---|
+| [Windows完整ZIP](../output/releases/ui-redesign-20261025-022630/expert-chat-windows-3.8.1+4113-ui.zip) | 34459980 | `242A0452213648ACAB86A3B62555728A40F750F2D2B143ACA7AA54D1673D2998` |
+| [Android签名APK](../output/releases/ui-redesign-20261025-022630/expert-chat-android-3.8.1+4113-ui.apk) | 116623533 | `F72494065DE7283A6C12BD5F4A2E5308AEEA4281BA4BBEB5A86CD97067F612B1` |
+
+APK包名`com.wweiyi.expert_chat`，版本`3.8.1/4113`；新旧证书SHA256均为`EB452EF00BA962A9A95152702600F28ACE043E0B229B4D99DE8198257BFA45D2`。同目录提供README、SHA256SUMS、release-manifest和source-manifest。Windows必须整目录解压保留CLI/DLL/data，不能只复制exe。
+
+[最终保护检查](../output/redesign-review/final-safety-source-verification.json)：原PID56776仍运行，路径及二进制hash不变；没有自动启动/安装新客户端。当前UI交付已完成，无待实施的P0/P1项；真实账号/设备仍沿原授权条件。本轮未创建commit/tag/push或线上更新。
+
+## 16. 五项用户反馈修订（2026-10-25）
+
+在已交付HTML视觉版上仅修订五点：窄聊天输入区位置/权限移框外并增加文本留白；模型按实际配置来源分组且保留原同名模型优先级/思考行为；全局子代理模型池与限制/预算迁到设置→助手与技能；角色库说明采用自然高度并与模型分配留距；技能卡保留圆角裁剪与安全内缩，完整展示末项说明。
+
+[本轮报告与逐项说明](../output/ui-feedback-review/FINAL-REPORT.md)、[配置入口迁移表](../output/ui-feedback-review/agent-settings-migration.md)、[模型来源分组语义](../output/ui-feedback-review/model-sources-notes.md)。[完整验证](../output/ui-feedback-review/ui-feedback-pass1-exit.json)：analyze无问题、1796项全部通过，源快照前后变化为空。局部输入/角色/技能Flutter widget渲染及模型分组行为验收通过，没有扩展其它区域目视审查或声称真实用户窗口内容已检查。
+
+新独立发布目录`output/releases/ui-feedback-20261025-120638`：[Windows完整ZIP](../output/releases/ui-feedback-20261025-120638/expert-chat-windows-3.8.1+4113-ui-feedback.zip)、[Android原证书签名APK](../output/releases/ui-feedback-20261025-120638/expert-chat-android-3.8.1+4113-ui-feedback.apk)、[产物/源hash与验证manifest](../output/releases/ui-feedback-20261025-120638/release-manifest.json)。Windows65文件与包内CLI五项黑盒核验通过；Android签名v2及前版证书匹配。新修订版未启动、APK未安装；此前用户请求打开的HTML版PID58528、路径与二进制保持不动。无新依赖、无后端授权或会话模型ID语义变化，原14套配色及选色保留；未提交/推送。
+
+### 后续交付约定：修订后自动打开
+
+用户随后明确要求“每次修订完就自动打开”。本项目后续每次完成修订、验证和独立打包后，自动打开最新 Windows 客户端，不再等待重复的打开指令；若同一可执行文件已经运行，则不重复创建实例。继续遵守不覆盖或擅自停止正在运行版本的约束，Android 不自动安装。
+
+五项反馈修订版已按此要求启动：`ui-feedback-20261025-120638/ExpertChat-3.8.1+4113-Feedback/expert_chat.exe`，PID 32544，窗口标题 `Expert Chat`，窗口已出现且进程正常响应。
+
+
+## 17. 工作会话运行与桌面行为修订（2026-10-25）
+
+本轮按用户确认仅修六项：新会话默认开启High、仍可调Low/Max或关闭；工作消息左右留白；运行五入口居中换行；同root后台续接带入已保存工具证据；主代理prompt完整编辑移至设置；Windows GUI强制单实例。未新增依赖或后端授权能力。
+
+- 真正fresh聊天/工作以true/High初始化，旧会话cache/run手动值不每次发送重置；原effort字段与数据值保留，散文隐式降Low移除。显式模型和只有普通模型的Auto仍可用，不强发不支持字段；model-only picker不再伪显示关闭。
+- 工作消息仅增加按实际pane宽度的32/24自适应padding，原full/wide/narrow和固定留白值不变、正文仍左对齐。居中要求只用于运行任务/终端/浏览器/Services/日志五入口的Wrap；实例缓存、切换、新建和关闭不变。
+- 合法后台续接只摘录当前root已保存终态工具数据，保留done/failed和真实错误、明确缺失/截断，并进入原预算；允许输入变化后的验证，不合成用户再次发送、不盲目重放工具，也不保证真实模型永不重复。
+- 主代理指令在设置→助手与技能→工作主代理保留原完整保存/恢复字段；工作台保留“编辑主代理指令”真实跳转及设置回到会话保护。
+- Windows以跨release目录稳定Local身份防第二GUI，恢复隐藏/最小化窗口、等待有界、guard失败不无保护启动，次进程提示前释放句柄；不停止CLI/执行端。
+
+[最终报告与逐文件/域说明](../output/work-polish-review/FINAL-REPORT.md)。[最终集成](../output/work-polish-review/work-polish-delivery-exit.json)：analyze退出0、1829项全部通过、源快照前后无变化；manifest SHA256为`A4008A3C531A34E32FD87A489D4AF9D8BA2102A0BA80A113F75BEFC81CD44743`。分域覆盖真实参数/Low-Max-off/旧会话、留白与运行入口几何、同root证据和停止防迟到、主指令跳转；Windows native随机隔离身份10场景通过，含并发/跨目录/隐藏最小化/超时/崩溃恢复/类型冲突失败。widget浏览器短错误夹具只证明布局/导航，不当作真实native浏览器启动证据。
+
+用户最新“只允许一个软件打开”覆盖§16此前“不停止运行版本”的并存保护约定：此后更新启动不同版本前先退出旧版；同版重复启动只唤起已有窗口。此次启动前客户端进程为0，无需停止任何客户端。
+
+Windows已完成独立交付并自动打开：[最终完整ZIP](../output/releases/work-polish-20261025-130222/expert-chat-windows-3.8.1+4113-work-polish.zip)，34,502,597字节，SHA256 `6730DE2B5825AFA278A11ECBE54A46E92692421775EBBD47EC01D56621C75B27`。[包核验](../output/work-polish-review/windows-package-verification.json)65文件和随包CLI5项通过，包输入源与最终manifest一致。[真实启动核验](../output/work-polish-review/windows-launch-verification.json)：新PID60484、HWND4921808、Expert Chat响应正常；第二次启动PID54332退出0，全机客户端计数1。启动前计数0、此前两个PID已无进程，本轮未杀客户端；未截真实用户窗口或提交任务，运行的新目录已冻结。
+
+Android也已完成：[签名APK](../output/releases/work-polish-20261025-130222/expert-chat-android-3.8.1+4113-work-polish.apk)，116,868,309字节，SHA256 `9D58A8A536CC99C670FF975256FAA05C2191C9E138BC7434169ADF926F92CE38`；原证书一致、v2签名及三ABI/包内容核验通过，未自动安装。[交付清单](../output/releases/work-polish-20261025-130222/release-manifest.json)与校验和已生成。本轮六项修订及两平台交付全部完成，未提交/推送，未覆盖运行版构建目录。
+
+最终继续交付时此前客户端已退出，按约定自动打开最新包；[最终运行状态](../output/work-polish-review/windows-final-running-state.json)记录 PID 37936、响应正常、客户端计数 1。
+
+
+## 18. 集中反馈修订（2026-10-25）
+
+按用户连续截图清单一次完成：工具详情参数/结果分区、JSON缩进高亮/目录行与原始复制；模型按实际能力显示思考档位与独立开关；账号卡真实登录状态；可折叠且不同浅底的来源组及真实固定来源请求；工具轮次不再清空可见正文；原型风格紧凑执行列表、状态与收起同排；细线图标与侧栏对齐；SVG/HTML/浏览器适配及手动缩放；仅电脑端设置/资料库/自动化/执行位置应用内大弹窗；右下角可关闭、普通2秒通知且避开录音发送操作；手机紧凑层次和菜单入口；中文任务可见语言指导，保留原文/翻译。
+
+[完整原因与入口/文件映射](../output/refinement-review/FINAL-REPORT.md)记录每项实现、所有初轮失败及修复、逐域测试和渲染证据。原14套配色色值、权限/任务执行边界和数据字段兼容保留；新增模型能力随API服务配置导出导入，完整会话备份沿原安全排除规则。无新增依赖、提交或推送。
+
+[最终全量](../output/refinement-review/refinement-final-exit.json)：analyze无问题、1874项测试全部通过，1036源文件前后无变化。源SHA256 `40AD9BEB4CA0B6BAD10BE3307116C2983178FBBA8A12D14F8E0BD0226945F865`。正文修复含真实controller工具等待、最终持久化及冷重载；手机360/390、电脑1280/1440明暗widget渲染通过，模型控件另12图验证五档/开关/来源展开收起。预览脚本通过独立DOM模型，未伪称native WebView实机截图。中文指导不保证上游原始推理语言，保留显式翻译、不默认新增翻译请求。
+
+[Windows完整包](../output/releases/refinement-20261025-181356/expert-chat-windows-3.8.1+4113-refinement.zip)：34,546,763字节，SHA256 `91DAFF4094B18083AD9B2169F5419E1985F7D69EBA9DE400E813787F246F0A7B`；65文件及包内CLI5项核验通过。[Android签名包](../output/releases/refinement-20261025-181356/expert-chat-android-3.8.1+4113-refinement.apk)：117,212,549字节，SHA256 `528105D1E06C3C3DC3A0D82A58EFF0CC43229F9B3FCADB70BE9B37B4DC23DDDF`；v2原证书一致、三ABI及包内容验证通过，未自动安装。
+
+[实际打开与单实例核验](../output/refinement-review/windows-launch-verification.json)：先退出旧WorkPolish PID37936，随后新版PID34688、窗口9048630、正常响应；二次PID48084退出0，客户端计数1。切换时旧版Flutter退出异常及首启未稳定窗口如实保存在诊断记录，重启新包后完成上述验证。新包打开后目录和ZIP不再修改。产物均在新独立目录，[交付清单](../output/releases/refinement-20261025-181356/release-manifest.json)与源/校验和已完整生成；本轮代码、验收、两平台交付完成。
+
+
+## 19. 设置舒适度与多媒体入口（2026-10-25）
+
+按用户新截图修复：设置多行操作行由强制紧凑改为自然高度/留白，保留分组内有意义的间距；MCP程序路径、参数、工作目录及相似媒体/模型/角色编辑表单用局部统一内边距与字段间距，提示多行，非密钥路径可查看全文；新增独立“多媒体”分类，保留四项媒体服务原配置/保存/导入回调，连接页保留原入口跳转，增加聊天使用位置说明。仅按本轮新反馈将原四设置分类扩展为五类，所有原功能保留；无新增依赖或存档字段，不改全局聊天输入框与配色色值。
+
+[完整报告](../output/settings-comfort-review/FINAL-REPORT.md)。导航21项、MCP16组宽度/主题/字号/键盘及保存检查、实际AppShell8组渲染通过。[最终全量](../output/settings-comfort-review/settings-comfort-final-exit.json)：analyze0、1891项全部通过、1038源文件无变化；源SHA256 `6FE69BAB096A82B8E33116FE0C7F9C4C5A32743A74CB638BF09A3E1EC61F53AE`。初轮测试夹具问题与修正如实保留，不把widget渲染称为用户窗口截图。
+
+[Windows ZIP](../output/releases/settings-comfort-20261025-210534/expert-chat-windows-3.8.1+4113-settings-comfort.zip)：34,549,991字节，SHA256 `B1A922BDFD29C7FEE36BC439FB3CE751BDD3D433EF9ED7D57D645F31F4C604FF`，65文件与实际CLI5项核验通过。[Android APK](../output/releases/settings-comfort-20261025-210534/expert-chat-android-3.8.1+4113-settings-comfort.apk)：117,212,633字节，SHA256 `4093D2520B603498564CAF2EB34721B23501F0FB9570787B26FE1400B572563A`，原证书/v2签名/三ABI/资源一致性通过，未自动安装。
+
+旧客户端4500已退出；[新版实启/单实例](../output/settings-comfort-review/windows-launch-verification.json)：PID46112、HWND331322、响应正常，二次PID40760退出0，客户端计数1。[交付清单](../output/releases/settings-comfort-20261025-210534/release-manifest.json)与源/校验和已完整生成，运行后的Windows包不再修改。本轮三项修订和两平台交付完成，未提交推送。用户随后问“任务记忆与计划”仅只读解释，该功能未改动。
+
+
+## 20. Agent 任务核心可靠性修订（2026-10-25至26）
+
+用户确认六项实施范围后完成：框架无关任务身份与持久收件箱、保存上下文后ACK、原目标/权限核验后的显式恢复；同root累计预算和轮次/子任务共享时间并集；冻结验收条件、真实退出码和当前产物hash、过期证据失效与人工重核；本机/SSH宿主授权读取仓库规则和显式技能、来源可查；子模型名额与工具等待分离、公开恢复快照与持久化失败阻断、二进制/删除安全整合；Windows原生阶段发布与并发目标保护、SSH保留恢复副本不覆盖发布。普通聊天不新增工作区/验收依赖。任务笔记移至会话高级选项，运行页显示恢复与验收，新状态进兼容备份但导入不转移执行授权。
+
+[完整报告](../output/task-core-review/FINAL-REPORT.md)记录域映射、入口、旧数据兼容及所有限制。[最终全量](../output/task-core-review/task-core-final-exit.json)：analyze0、1928全部通过，1055源文件无变化；SHA256 `B6D11FEE57FCA8FFF0B877BDDCE070E203F1FB121135CC4238C8D4A5E3704D43`。另22原生测试、28子代理/SSH/实际隔离CLI回归、28备份/规则回归通过。[真实隔离代码流程](../output/task-core-review/e2e-code-task-evidence.json)验证Python先失败→SHA修复→通过→真实产物验收→外部修改后拒绝，假模型仅调度步骤、付费调用0。
+
+[Windows包](../output/releases/task-core-20261025-233905/expert-chat-windows-3.8.1+4113-task-core.zip) 34,656,050字节，SHA256 `60D61D633CBF03FA4F0B2C571A22FE336A0F11E204038498CD271C2BD9BFCF9F`，65文件和CLI5项核验通过；[Android原证书签名包](../output/releases/task-core-20261025-233905/expert-chat-android-3.8.1+4113-task-core.apk) 117,884,509字节，SHA256 `80CDC0EC003C84B52B1F77B07CC16D19510FCDB588C03D7A1251B38220E5911A`，v2/证书/三ABI/资源核验通过，未自动安装。[启动核验](../output/task-core-review/windows-launch-verification.json)：旧46112退出，新42644响应正常，二次49020退出0，全机客户端1。[交付清单](../output/releases/task-core-20261025-233905/release-manifest.json)与校验和完整生成，运行Windows包保持封存。
+
+边界如实保留：旧记录缺安全信息拒绝恢复；导入备份清机器绑定和执行权限；本地模型编排仍由ChatController协调而非改成独立daemon；不支持独占硬链接的文件系统安全拒绝；二进制/删除不冒充可文本回退；SSH仅协议竞争夹具验证，保留恢复副本并返回路径，未使用用户真实SSH测试。未新增依赖、提交或推送。本轮六项全部实施并交付。

@@ -4,6 +4,7 @@ import 'package:expert_chat/data/media_api_config.dart';
 import 'package:expert_chat/data/provider_profile.dart';
 import 'package:expert_chat/data/gateway_config.dart';
 import 'package:expert_chat/features/settings/settings_page.dart';
+import 'package:expert_chat/features/settings/widgets/media_api_settings_card.dart';
 import 'package:expert_chat/domain/llm/llm_provider.dart';
 import 'package:expert_chat/domain/llm/model_usage_store.dart';
 import 'package:expert_chat/state/settings_controller.dart';
@@ -141,6 +142,9 @@ Future<ProviderContainer> pumpSettingsPage(
 }) async {
   final container = ProviderContainer(
     overrides: [
+      sharedPrefsProvider.overrideWithValue(
+        await SharedPreferences.getInstance(),
+      ),
       settingsControllerProvider.overrideWith(_FakeSettingsController.new),
       modelUsageStoreProvider.overrideWith((ref) => _usageStore),
     ],
@@ -171,12 +175,12 @@ Future<ProviderContainer> pumpSettingsPage(
 
 /// Expands the 云端语音合成 (TTS) card so its fields are available.
 Future<void> openTtsCard(WidgetTester tester) async {
-  await openCategory(tester, '能力');
+  await openCategory(tester, '多媒体');
   await tester.pumpAndSettle();
   await tester.scrollUntilVisible(
     find.text('云端语音合成'),
     200,
-    scrollable: find.byType(Scrollable).last,
+    scrollable: settingsPageScroll(),
   );
   await tester.pumpAndSettle();
   await tester.tap(find.text('云端语音合成'));
@@ -185,7 +189,7 @@ Future<void> openTtsCard(WidgetTester tester) async {
   await tester.scrollUntilVisible(
     find.text('API Key'),
     120,
-    scrollable: find.byType(Scrollable).last,
+    scrollable: settingsPageScroll(),
   );
   await tester.pumpAndSettle();
 }
@@ -194,7 +198,7 @@ Future<void> tapVisible(WidgetTester tester, Finder finder) async {
   await tester.scrollUntilVisible(
     finder,
     120,
-    scrollable: find.byType(Scrollable).last,
+    scrollable: settingsPageScroll(),
   );
   await tester.pumpAndSettle();
   await tester.ensureVisible(finder);
@@ -210,11 +214,23 @@ Future<void> openCategory(WidgetTester tester, String label) async {
   await tester.scrollUntilVisible(
     find.text(label),
     120,
-    scrollable: find.byType(Scrollable).last,
+    scrollable: settingsPageScroll(),
   );
   await tester.tap(find.text(label));
   await tester.pumpAndSettle();
 }
+
+Finder settingsPageScroll() => find
+    .descendant(
+      of: find.byWidgetPredicate(
+        (widget) =>
+            widget is ListView &&
+            widget.key is ValueKey<String> &&
+            (widget.key! as ValueKey<String>).value.startsWith('settings-'),
+      ),
+      matching: find.byType(Scrollable),
+    )
+    .first;
 
 Finder fieldWithLabel(String label) => find.byWidgetPredicate(
   (widget) => widget is TextField && widget.decoration?.labelText == label,
@@ -231,7 +247,7 @@ void main() {
     (tester) async {
       await pumpSettingsPage(tester, size: const Size(320, 720), scale: 1.24);
       expect(find.byKey(const ValueKey('settings-overview')), findsOneWidget);
-      for (final label in ['模型', '能力', '外观', '数据']) {
+      for (final label in ['模型', '助手与技能', '连接', '多媒体', '外观与数据']) {
         await openCategory(tester, label);
         expect(tester.takeException(), isNull);
         expect(find.byTooltip('返回设置'), findsOneWidget);
@@ -239,6 +255,51 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets('dedicated media category retains all service save bindings', (
+    tester,
+  ) async {
+    final container = await pumpSettingsPage(tester);
+    await openCategory(tester, '多媒体');
+    for (final entry in [
+      (MediaApiKind.vision, '视觉理解'),
+      (MediaApiKind.imageGeneration, '图片生成'),
+      (MediaApiKind.asr, '云端语音识别（MiMo ASR）'),
+      (MediaApiKind.tts, '云端语音合成'),
+    ]) {
+      await tester.scrollUntilVisible(
+        find.text(entry.$2),
+        180,
+        scrollable: settingsPageScroll(),
+      );
+      final card = tester.widget<MediaApiSettingsCard>(
+        find.byWidgetPredicate(
+          (w) => w is MediaApiSettingsCard && w.title == entry.$2,
+        ),
+      );
+      final config = MediaApiConfig(
+        baseUrl: 'https://${entry.$1.name}.example/v1',
+        model: '${entry.$1.name}-model',
+      );
+      card.onConfigChanged(config);
+      card.onApiKeyChanged('key-${entry.$1.name}');
+      await tester.pumpAndSettle();
+      final state = container.read(settingsControllerProvider).requireValue;
+      final saved = switch (entry.$1) {
+        MediaApiKind.vision => (state.visionApi, state.visionApiKey),
+        MediaApiKind.imageGeneration => (
+          state.imageGenerationApi,
+          state.imageGenerationApiKey,
+        ),
+        MediaApiKind.asr => (state.asrApi, state.asrApiKey),
+        MediaApiKind.tts => (state.ttsApi, state.ttsApiKey),
+      };
+      expect(saved.$1.baseUrl, config.baseUrl);
+      expect(saved.$1.model, config.model);
+      expect(saved.$2, 'key-${entry.$1.name}');
+    }
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets('settings categories replace the long single-page list', (
     tester,
@@ -251,6 +312,9 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          sharedPrefsProvider.overrideWithValue(
+            await SharedPreferences.getInstance(),
+          ),
           settingsControllerProvider.overrideWith(_FakeSettingsController.new),
           modelUsageStoreProvider.overrideWith((ref) => _usageStore),
         ],
@@ -267,9 +331,9 @@ void main() {
     expect(find.text('设置'), findsOneWidget);
     await openCategory(tester, '模型');
     expect(find.text('模型服务'), findsOneWidget);
-    expect(find.text('多媒体能力（可选）'), findsNothing);
+    expect(find.text('多媒体服务'), findsNothing);
 
-    await openCategory(tester, '能力');
+    await openCategory(tester, '连接');
     await tester.pumpAndSettle();
     expect(
       tester.takeException(),
@@ -278,15 +342,24 @@ void main() {
     );
 
     expect(find.text('模型服务'), findsNothing);
-    expect(find.text('多媒体能力（可选）'), findsOneWidget);
+    await tester.tap(find.text('多媒体设置'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('生图：'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('多媒体服务'),
+      200,
+      scrollable: settingsPageScroll(),
+    );
+    expect(find.text('多媒体服务'), findsOneWidget);
+    await openCategory(tester, '连接');
     await tester.scrollUntilVisible(
       find.text('联网搜索'),
       240,
-      scrollable: find.byType(Scrollable).last,
+      scrollable: settingsPageScroll(),
     );
     expect(find.text('联网搜索'), findsOneWidget);
 
-    await openCategory(tester, '外观');
+    await openCategory(tester, '外观与数据');
     await tester.pumpAndSettle();
     expect(
       tester.takeException(),
@@ -294,20 +367,36 @@ void main() {
       reason: 'appearance category must not overflow',
     );
 
-    expect(find.text('多媒体能力（可选）'), findsNothing);
+    expect(find.text('多媒体服务'), findsNothing);
+    await tester.scrollUntilVisible(
+      find.text('明暗模式'),
+      200,
+      scrollable: settingsPageScroll(),
+    );
     expect(find.text('明暗模式'), findsOneWidget);
 
-    await openCategory(tester, '数据');
+    await openCategory(tester, '外观与数据');
     await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('导出 API 配置'),
+      200,
+      scrollable: settingsPageScroll(),
+    );
     expect(find.text('导出 API 配置'), findsOneWidget);
     expect(find.textContaining('文件含密钥，请勿分享或公开'), findsOneWidget);
     expect(find.textContaining('不要提交到 Git'), findsNothing);
     expect(find.text('导入 API 配置'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('完整备份与恢复'),
+      -200,
+      scrollable: settingsPageScroll(),
+    );
+    await tester.pumpAndSettle();
     expect(find.text('完整备份与恢复'), findsOneWidget);
     await tester.scrollUntilVisible(
       find.text('管理记忆'),
       180,
-      scrollable: find.byType(Scrollable).last,
+      scrollable: settingsPageScroll(),
     );
     await tester.pumpAndSettle();
     expect(find.text('启用长期记忆'), findsOneWidget);
@@ -325,6 +414,9 @@ void main() {
 
     final container = ProviderContainer(
       overrides: [
+        sharedPrefsProvider.overrideWithValue(
+          await SharedPreferences.getInstance(),
+        ),
         settingsControllerProvider.overrideWith(
           _LongModelSettingsController.new,
         ),
@@ -345,27 +437,44 @@ void main() {
       reason: 'long model ids must ellipsize instead of overflowing',
     );
     await openCategory(tester, '模型');
-    expect(find.textContaining('deepseek-flash'), findsWidgets);
+    expect(find.textContaining(KnownModels.vision), findsWidgets);
   });
 
   testWidgets('markdown preview keeps table header cells on one row', (
     tester,
   ) async {
     await pumpSettingsPage(tester, tall: true);
-    await openCategory(tester, '外观');
+    await openCategory(tester, '外观与数据');
     await tester.pumpAndSettle();
     expect(find.text('圆角风格'), findsNothing);
     await tester.scrollUntilVisible(
       find.text('更多外观设置'),
       200,
-      scrollable: find.byType(Scrollable).last,
+      scrollable: find
+          .descendant(
+            of: find.byKey(const ValueKey('settings-appearanceData')),
+            matching: find.byWidgetPredicate(
+              (w) => w is Scrollable && w.axisDirection == AxisDirection.down,
+            ),
+          )
+          .first,
     );
-    await tester.tap(find.text('更多外观设置'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('更多外观设置'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('更多外观设置').hitTestable());
     await tester.pumpAndSettle();
     await tester.scrollUntilVisible(
       find.text('列 A'),
       200,
-      scrollable: find.byType(Scrollable).last,
+      scrollable: find
+          .descendant(
+            of: find.byKey(const ValueKey('settings-appearanceData')),
+            matching: find.byWidgetPredicate(
+              (w) => w is Scrollable && w.axisDirection == AxisDirection.down,
+            ),
+          )
+          .first,
     );
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
@@ -378,7 +487,7 @@ void main() {
 
   testWidgets('capabilities tab can add a custom MCP server', (tester) async {
     final container = await pumpSettingsPage(tester, tall: true);
-    await openCategory(tester, '能力');
+    await openCategory(tester, '连接');
     tester.view.physicalSize = const Size(480, 4000);
     await tester.pumpAndSettle();
 
@@ -386,7 +495,7 @@ void main() {
     await tester.scrollUntilVisible(
       addButton,
       400,
-      scrollable: find.byType(Scrollable).last,
+      scrollable: settingsPageScroll(),
     );
     await tester.tap(addButton);
     await tester.pumpAndSettle();
@@ -416,13 +525,13 @@ void main() {
     'local MCP editor saves program arguments and background-only default',
     (tester) async {
       final container = await pumpSettingsPage(tester, tall: true);
-      await openCategory(tester, '能力');
+      await openCategory(tester, '连接');
       tester.view.physicalSize = const Size(480, 4000);
       await tester.pumpAndSettle();
       await tester.scrollUntilVisible(
         find.text('添加 MCP 服务器', skipOffstage: false),
         400,
-        scrollable: find.byType(Scrollable).last,
+        scrollable: settingsPageScroll(),
       );
       await tester.tap(find.text('添加 MCP 服务器'));
       await tester.pumpAndSettle();
@@ -459,6 +568,9 @@ void main() {
       await tester.pumpWidget(
         ProviderScope(
           overrides: [
+            sharedPrefsProvider.overrideWithValue(
+              await SharedPreferences.getInstance(),
+            ),
             settingsControllerProvider.overrideWith(
               _FakeSettingsController.new,
             ),
@@ -469,7 +581,14 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      await openCategory(tester, '能力');
+      await openCategory(tester, '多媒体');
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('视觉理解'),
+        200,
+        scrollable: settingsPageScroll(),
+      );
+      await tester.ensureVisible(find.text('视觉理解'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('视觉理解'));
       await tester.pumpAndSettle();
@@ -533,7 +652,7 @@ void main() {
     tester,
   ) async {
     final container = await pumpSettingsPage(tester, tall: true);
-    await openCategory(tester, '能力');
+    await openCategory(tester, '连接');
     tester.view.physicalSize = const Size(480, 4000);
     await tester.pumpAndSettle();
 
@@ -692,7 +811,7 @@ void main() {
 
     // "模型" also appears as a field label inside the card, so use a
     // category name that only exists on the segmented control.
-    await openCategory(tester, '外观');
+    await openCategory(tester, '外观与数据');
     // Flush is scheduled on a microtask after dispose.
     await tester.pump();
     await tester.pumpAndSettle();
@@ -926,15 +1045,21 @@ void main() {
     expect(find.text('上传录音'), findsOneWidget);
   });
 
-  testWidgets('preset prompt section lists factory skill names', (
+  testWidgets('model skill routing section lists factory skill names', (
     tester,
   ) async {
     await pumpSettingsPage(tester, tall: true);
-    await openCategory(tester, '模型');
+    await openCategory(tester, '助手与技能');
     await tester.scrollUntilVisible(
       find.text('回答方式与技能路由'),
-      200,
-      scrollable: find.byType(Scrollable).last,
+      700,
+      maxScrolls: 150,
+      scrollable: find
+          .descendant(
+            of: find.byKey(const ValueKey('settings-assistants')),
+            matching: find.byType(Scrollable),
+          )
+          .first,
     );
     await tester.pumpAndSettle();
     expect(find.text('写作'), findsWidgets);
@@ -958,6 +1083,18 @@ void main() {
     await pumpSettingsPage(tester, tall: true);
 
     await openCategory(tester, '模型');
+    await tester.scrollUntilVisible(
+      find.text('模型用量'),
+      700,
+      maxScrolls: 150,
+      scrollable: find
+          .descendant(
+            of: find.byKey(const ValueKey('settings-model')),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    await tester.pumpAndSettle();
     expect(find.text('模型用量'), findsOneWidget);
     expect(find.text('1.2K'), findsOneWidget);
     expect(find.text('300'), findsOneWidget);

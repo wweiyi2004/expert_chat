@@ -64,8 +64,9 @@ String proxyDirective(String value) {
       uri.scheme != 'http' ||
       uri.host.isEmpty ||
       uri.userInfo.isNotEmpty ||
-      !uri.hasPort)
+      !uri.hasPort) {
     return 'DIRECT';
+  }
   return 'PROXY ${uri.host.contains(':') ? '[${uri.host}]' : uri.host}:${uri.port}';
 }
 
@@ -76,8 +77,9 @@ Future<String> _systemProxy() async {
       env['https_proxy'] ??
       env['HTTP_PROXY'] ??
       env['http_proxy'];
-  if (configured != null && configured.isNotEmpty)
+  if (configured != null && configured.isNotEmpty) {
     return proxyDirective(configured);
+  }
   if (!Platform.isWindows) return 'DIRECT';
   const path =
       r'HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings';
@@ -92,8 +94,9 @@ Future<String> _systemProxy() async {
   }
 
   try {
-    if (!RegExp(r'REG_DWORD\s+0x1\b').hasMatch(await read('ProxyEnable')))
+    if (!RegExp(r'REG_DWORD\s+0x1\b').hasMatch(await read('ProxyEnable'))) {
       return 'DIRECT';
+    }
     final server =
         RegExp(
           r'REG_SZ\s+([^\r\n]+)',

@@ -120,7 +120,7 @@ enum ContentWidthPref {
   /// Max width of the message column (phone ignores — full width).
   double get maxWidth => switch (this) {
     ContentWidthPref.narrow => 640,
-    ContentWidthPref.regular => 800,
+    ContentWidthPref.regular => 700,
     ContentWidthPref.wide => 1100,
     ContentWidthPref.full => 10000,
   };
@@ -150,7 +150,15 @@ enum ColorThemePref {
   stripe,
   graphite,
   clay,
-  solar;
+  solar,
+  dailan,
+  yanzhi,
+  zhuqing,
+  jiangzi,
+  wadaSienna,
+  wadaSulphur,
+  wadaCossack,
+  wadaViolet;
 
   String get label => switch (this) {
     ColorThemePref.minimal => '极简',
@@ -167,6 +175,14 @@ enum ColorThemePref {
     ColorThemePref.graphite => '石墨',
     ColorThemePref.clay => '陶土',
     ColorThemePref.solar => '日辉',
+    ColorThemePref.dailan => '黛蓝·月白',
+    ColorThemePref.yanzhi => '胭脂·象牙',
+    ColorThemePref.zhuqing => '竹青·缟素',
+    ColorThemePref.jiangzi => '绛紫·藕荷',
+    ColorThemePref.wadaSienna => '赭石·石板',
+    ColorThemePref.wadaSulphur => '深海·硫黄',
+    ColorThemePref.wadaCossack => '哥萨克绿',
+    ColorThemePref.wadaViolet => '紫罗兰·尼罗蓝',
   };
 
   String get description => switch (this) {
@@ -184,6 +200,14 @@ enum ColorThemePref {
     ColorThemePref.graphite => '系统石墨蓝',
     ColorThemePref.clay => '人文陶土',
     ColorThemePref.solar => '护眼日辉',
+    ColorThemePref.dailan => '靛青墨蓝',
+    ColorThemePref.yanzhi => '胭脂象牙',
+    ColorThemePref.zhuqing => '竹青素纸',
+    ColorThemePref.jiangzi => '绛紫藕荷',
+    ColorThemePref.wadaSienna => '赭石石板',
+    ColorThemePref.wadaSulphur => '深海硫黄',
+    ColorThemePref.wadaCossack => '橄榄苔绿',
+    ColorThemePref.wadaViolet => '紫罗兰青',
   };
 
   /// Preview swatch for settings chips (light-mode primary-ish).
@@ -202,6 +226,14 @@ enum ColorThemePref {
     ColorThemePref.graphite => 0xFF007AFF,
     ColorThemePref.clay => 0xFFC15F3C,
     ColorThemePref.solar => 0xFF268BD2,
+    ColorThemePref.dailan => 0xFF1179AD,
+    ColorThemePref.yanzhi => 0xFF9C2A33,
+    ColorThemePref.zhuqing => 0xFF627B4C,
+    ColorThemePref.jiangzi => 0xFF8C4356,
+    ColorThemePref.wadaSienna => 0xFFAE5224,
+    ColorThemePref.wadaSulphur => 0xFF064F6E,
+    ColorThemePref.wadaCossack => 0xFF437742,
+    ColorThemePref.wadaViolet => 0xFF6450A1,
   };
 
   /// Secondary preview (accent) for dual-tone swatches.
@@ -220,6 +252,48 @@ enum ColorThemePref {
     ColorThemePref.graphite => 0xFF5856D6,
     ColorThemePref.clay => 0xFF5C4033,
     ColorThemePref.solar => 0xFFB58900,
+    ColorThemePref.dailan => 0xFF617581,
+    ColorThemePref.yanzhi => 0xFF876C75,
+    ColorThemePref.zhuqing => 0xFF61776E,
+    ColorThemePref.jiangzi => 0xFF88639D,
+    ColorThemePref.wadaSienna => 0xFF9C6734,
+    ColorThemePref.wadaSulphur => 0xFFA2640C,
+    ColorThemePref.wadaCossack => 0xFF60738D,
+    ColorThemePref.wadaViolet => 0xFF00807A,
+  };
+
+  bool get isArt => index >= ColorThemePref.dailan.index;
+  String get source => switch (this) {
+    ColorThemePref.dailan ||
+    ColorThemePref.yanzhi ||
+    ColorThemePref.zhuqing ||
+    ColorThemePref.jiangzi => '中国传统色',
+    ColorThemePref.wadaSienna => '和田三造 · 组合 263',
+    ColorThemePref.wadaSulphur => '和田三造 · 组合 151',
+    ColorThemePref.wadaCossack => '和田三造 · 组合 135',
+    ColorThemePref.wadaViolet => '和田三造 · 组合 345',
+    _ => '原有配色',
+  };
+  List<int> get sourceColors => switch (this) {
+    ColorThemePref.dailan => const [0xFF177CB0, 0xFFD6ECF0, 0xFF425066],
+    ColorThemePref.yanzhi => const [0xFF9D2933, 0xFFFFFBF0, 0xFF4C221B],
+    ColorThemePref.zhuqing => const [0xFF789262, 0xFFF2ECDE, 0xFF424C50],
+    ColorThemePref.jiangzi => const [0xFF8C4356, 0xFFE4C6D0, 0xFF4A4266],
+    ColorThemePref.wadaSienna => const [
+      0xFFAE5224,
+      0xFFB5DECC,
+      0xFF34454C,
+      0xFFEEB480,
+    ],
+    ColorThemePref.wadaSulphur => const [0xFF064F6E, 0xFFF5ECC2, 0xFFF99D1B],
+    ColorThemePref.wadaCossack => const [0xFF437742, 0xFFF5ECC2, 0xFF97ACC8],
+    ColorThemePref.wadaViolet => const [
+      0xFF6450A1,
+      0xFFBCE4E5,
+      0xFF793327,
+      0xFF62C6BF,
+    ],
+    _ => [previewArgb, 0xFFF7F7F8, accentPreviewArgb],
   };
 
   String get wire => name;
@@ -321,18 +395,20 @@ enum TtsSpeedPref {
 
 class UiPrefs {
   const UiPrefs({
+    this.workbenchWidth = 560,
+    this.sidebarCollapsedGroups = const [],
     this.textScale = TextScalePref.medium,
     this.density = DensityPref.comfortable,
     this.messageStyle = MessageStylePref.bubble,
     this.markdownStyle = MarkdownStylePref.standard,
     this.contentWidth = ContentWidthPref.regular,
-    this.workContentWidth = ContentWidthPref.full,
+    this.workContentWidth = ContentWidthPref.regular,
     this.workMessageStyle = MessageStylePref.document,
-    this.lineHeight = 1.85,
+    this.lineHeight = 1.7,
     this.paragraphSpacing = 8,
-    this.messageSpacing = 24,
+    this.messageSpacing = 14,
     this.adaptiveMessagePadding = true,
-    this.messagePadding = 32,
+    this.messagePadding = 20,
     this.popoverMaxHeight = 420,
     this.popoverTopMargin = 40,
     this.colorTheme = ColorThemePref.minimal,
@@ -344,6 +420,8 @@ class UiPrefs {
     this.ttsVoicePackId = '',
   });
 
+  final double workbenchWidth;
+  final List<String> sidebarCollapsedGroups;
   final TextScalePref textScale;
   final DensityPref density;
   final MessageStylePref messageStyle;
@@ -355,8 +433,9 @@ class UiPrefs {
   final double popoverMaxHeight, popoverTopMargin;
   final bool adaptiveMessagePadding;
 
-  double horizontalMessagePadding(double width) => adaptiveMessagePadding
-      ? (width < 480 ? 16 : (width * .04).clamp(24.0, 48.0))
+  double horizontalMessagePadding(double width, {bool? compact}) =>
+      adaptiveMessagePadding
+      ? ((compact ?? width < 480) ? 14 : 20)
       : messagePadding.clamp(12.0, width < 480 ? 24.0 : 72.0);
   final ColorThemePref colorTheme;
   final CornerStylePref cornerStyle;
@@ -376,6 +455,8 @@ class UiPrefs {
   final String ttsVoicePackId;
 
   UiPrefs copyWith({
+    double? workbenchWidth,
+    List<String>? sidebarCollapsedGroups,
     TextScalePref? textScale,
     DensityPref? density,
     MessageStylePref? messageStyle,
@@ -398,6 +479,12 @@ class UiPrefs {
     bool? ttsAutoEmotion,
     String? ttsVoicePackId,
   }) => UiPrefs(
+    workbenchWidth: workbenchWidth == null
+        ? this.workbenchWidth
+        : (workbenchWidth.isFinite ? workbenchWidth.clamp(340.0, 900.0) : 560),
+    sidebarCollapsedGroups: sidebarCollapsedGroups == null
+        ? this.sidebarCollapsedGroups
+        : List<String>.unmodifiable(sidebarCollapsedGroups.toSet().take(1000)),
     textScale: textScale ?? this.textScale,
     density: density ?? this.density,
     messageStyle: messageStyle ?? this.messageStyle,
@@ -423,6 +510,8 @@ class UiPrefs {
   );
 
   Map<String, dynamic> toJson() => {
+    'workbenchWidth': workbenchWidth,
+    'sidebarCollapsedGroups': List<String>.of(sidebarCollapsedGroups),
     'textScale': textScale.wire,
     'density': density.wire,
     'messageStyle': messageStyle.wire,
@@ -477,6 +566,15 @@ class UiPrefs {
     }
 
     return UiPrefs(
+      workbenchWidth: number('workbenchWidth', 560, 340, 900),
+      sidebarCollapsedGroups: json['sidebarCollapsedGroups'] is List
+          ? List<String>.unmodifiable(
+              (json['sidebarCollapsedGroups'] as List)
+                  .whereType<String>()
+                  .toSet()
+                  .take(1000),
+            )
+          : const [],
       textScale: TextScalePref.fromWire(str('textScale')),
       density: DensityPref.fromWire(str('density')),
       messageStyle: MessageStylePref.fromWire(str('messageStyle')),

@@ -8,6 +8,23 @@ Future<T?> showComposerPopover<T>(
   required WidgetBuilder builder,
   double width = 380,
 }) {
+  if (MediaQuery.sizeOf(context).width < 840) {
+    return showModalBottomSheet<T>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      useSafeArea: true,
+      builder: (sheet) => Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(sheet).bottom),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.sizeOf(sheet).height * .78,
+          ),
+          child: builder(sheet),
+        ),
+      ),
+    );
+  }
   final render = context.findRenderObject();
   final box = render is RenderBox ? render : null;
   final origin = box?.localToGlobal(Offset.zero) ?? Offset.zero;

@@ -131,8 +131,23 @@ void main() {
       expect(find.byKey(const ValueKey('chat-workspace-bar')), findsNothing);
       expect(find.byType(ComposerPermissionControl), findsNothing);
       expect(find.text('项目 / 执行位置'), findsNothing);
-      expect(find.text('文件'), findsOneWidget);
-      expect(find.text('deepseek-v4.1-flash'), findsOneWidget);
+      expect(find.byKey(const ValueKey('composer-dataset')), findsWidgets);
+      final modelControl = find.byKey(
+        const ValueKey('composer-model-thinking'),
+      );
+      expect(modelControl.hitTestable(), findsOneWidget);
+      expect(
+        find.ancestor(
+          of: modelControl,
+          matching: find.byWidgetPredicate(
+            (widget) =>
+                widget is Tooltip &&
+                (widget.message?.contains('当前会话模型：deepseek-v4.1-flash · 思考：') ??
+                    false),
+          ),
+        ),
+        findsOneWidget,
+      );
       expect(tester.takeException(), isNull);
     },
   );
@@ -176,9 +191,7 @@ void main() {
       );
       await tester.tap(find.text('打开'));
       await tester.pumpAndSettle();
-      final surface = tester.getRect(
-        find.byKey(const ValueKey('composer-popover-surface')),
-      );
+      final surface = tester.getRect(find.byType(BottomSheet));
       final title = tester.getRect(find.text('项目与执行位置'));
       expect(surface.top, greaterThanOrEqualTo(40));
       expect(title.top - surface.top, greaterThanOrEqualTo(14));
@@ -323,13 +336,13 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.byKey(const ValueKey('chat-workspace-bar')), findsOneWidget);
+    expect(find.byKey(const ValueKey('chat-workspace-bar')), findsWidgets);
     expect(find.byType(ComposerPermissionControl), findsOneWidget);
     expect(tester.takeException(), isNull);
     await _capture(tester, 'work');
-    await tester.tap(find.text('项目 / 执行位置'));
+    await tester.tap(find.byKey(const ValueKey('chat-workspace-bar')).last);
     await tester.pumpAndSettle();
-    expect(find.text('项目与执行位置').hitTestable(), findsOneWidget);
+    expect(find.text('执行位置').hitTestable(), findsOneWidget);
     expect(tester.takeException(), isNull);
     await _capture(tester, 'project-popup');
   });
@@ -370,7 +383,9 @@ void main() {
       await tester.pump();
       controller.activity('b');
       await tester.pump();
-      await tester.tap(find.text('正在进行'));
+      await tester.tap(find.byTooltip('工作筛选'));
+      await tester.pump();
+      await tester.tap(find.text('只看进行中'));
       await tester.pump();
       List<String> order() => tester
           .widget<ConversationHistoryList>(
@@ -380,16 +395,23 @@ void main() {
           .map((c) => c.id)
           .toList();
       expect(order(), ['b', 'a']);
+      final mouse = await tester.createGesture(
+        kind: ui.PointerDeviceKind.mouse,
+      );
+      await mouse.addPointer(location: const Offset(100, 400));
+      await tester.pump();
       controller.activity('a');
       await tester.pump(const Duration(milliseconds: 100));
       expect(order(), ['b', 'a']);
-      await tester.pump(const Duration(seconds: 5));
+      await mouse.moveTo(const Offset(900, 400));
+      await tester.pump(const Duration(milliseconds: 300));
       expect(order(), ['a', 'b']);
       controller.activity('a', complete: true);
       await tester.pump(const Duration(seconds: 5));
       expect(order(), contains('a'));
       expect(find.byTooltip('已完成'), findsOneWidget);
       expect(tester.takeException(), isNull);
+      await mouse.removePointer();
       await tester.pumpWidget(const SizedBox.shrink());
     },
   );

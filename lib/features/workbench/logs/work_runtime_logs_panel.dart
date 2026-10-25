@@ -1,3 +1,5 @@
+import 'package:expert_chat/core/app_toast.dart';
+import '../../../state/work_operation_journal.dart';
 import 'dart:convert';
 import 'dart:io';
 
@@ -59,7 +61,7 @@ class _WorkRuntimeLogsPanelState extends ConsumerState<WorkRuntimeLogsPanel> {
 
   void _notice(String text) {
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+      AppToastMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
     }
   }
 
@@ -140,6 +142,74 @@ class _WorkRuntimeLogsPanelState extends ConsumerState<WorkRuntimeLogsPanel> {
       key: const ValueKey('work-runtime-logs-panel'),
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        if (ref.read(workOperationJournalProvider).corrupt ||
+            ref
+                .read(workOperationJournalProvider)
+                .unresolved(widget.conversationId)
+                .isNotEmpty)
+          MaterialBanner(
+            content: const Text(
+              '上次操作结果未确认，已阻止自动派发。核验目标文件、进程或外部服务后可明确续接；不会重放旧调用。',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () async {
+                  final journal = ref.read(workOperationJournalProvider);
+                  final reviewed = journal.unresolved(widget.conversationId);
+                  final corruption = journal.corruptionDigest;
+                  final accepted = await showDialog<bool>(
+                    context: context,
+                    builder: (context) => AlertDialog(
+                      title: Text(
+                        corruption == null ? '确认已核验以下操作' : '确认全局损坏日志保护',
+                      ),
+                      content: SizedBox(
+                        width: 560,
+                        child: SingleChildScrollView(
+                          child: SelectableText(
+                            [
+                              if (corruption != null)
+                                '原日志损坏，无法确定影响了哪些会话。确认前必须核验所有外部副作用；原始损坏字节将保留。来源 SHA-256：$corruption',
+                              ...reviewed.map(
+                                (entry) =>
+                                    '${entry['tool']} · ${entry['call_id']} · ${entry['review_identity']}',
+                              ),
+                              '仅解除本次列出的记录；之后新出现的未知操作仍会阻止派发。',
+                            ].join('\n\n'),
+                          ),
+                        ),
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(context, false),
+                          child: const Text('取消'),
+                        ),
+                        FilledButton(
+                          onPressed: () => Navigator.pop(context, true),
+                          child: const Text('已核验以上范围'),
+                        ),
+                      ],
+                    ),
+                  );
+                  if (accepted == true) {
+                    try {
+                      await journal.acknowledge(
+                        widget.conversationId,
+                        reviewedIdentities: reviewed
+                            .map((e) => e['review_identity'] as String)
+                            .toSet(),
+                        reviewedCorruptionDigest: corruption,
+                      );
+                      if (mounted) setState(() {});
+                    } catch (_) {
+                      if (mounted) _notice('核验记录已经改变，请刷新后重新核验');
+                    }
+                  }
+                },
+                child: const Text('核验并续接'),
+              ),
+            ],
+          ),
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
           child: Wrap(

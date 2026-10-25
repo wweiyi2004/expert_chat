@@ -1,0 +1,3 @@
+<resources>
+    <string name="device_agent_description">Expert Chat 自有设备控制：读取界面、点击、输入、滚动与截图。仅在应用内明确开启后执行；可随时停止或在系统设置撤销。受保护画面可能无法截图。</string>
+</resources>

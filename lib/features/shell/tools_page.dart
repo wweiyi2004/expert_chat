@@ -1,17 +1,28 @@
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart'
+    show kIsWeb, defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/desktop_providers.dart';
+import '../../core/prototype_widgets.dart';
 import '../../state/settings_controller.dart';
 import '../../state/research_mode_fx.dart';
 import '../../state/research_terminal_controller.dart';
 import '../shared/recovery_notice.dart';
 import '../workspaces/desktop_workspaces_page.dart';
+import '../remote/remote_tasks_page.dart';
+import '../remote/device_agent_page.dart';
 import 'shell_tab.dart';
 
 class ToolsPage extends ConsumerStatefulWidget {
-  const ToolsPage({super.key, this.onOpenNavigation});
+  const ToolsPage({
+    super.key,
+    this.onOpenNavigation,
+    this.embedded = false,
+    this.showConnections = true,
+    this.showModules = true,
+  });
+  final bool embedded, showConnections, showModules;
   final VoidCallback? onOpenNavigation;
   @override
   ConsumerState<ToolsPage> createState() => _ToolsPageState();
@@ -113,7 +124,7 @@ class _ToolsPageState extends ConsumerState<ToolsPage> {
   @override
   Widget build(BuildContext context) {
     final settings = ref.watch(settingsControllerProvider);
-    return Scaffold(
+    final page = Scaffold(
       appBar: AppBar(
         title: const Text('工具'),
         automaticallyImplyLeading: false,
@@ -141,10 +152,41 @@ class _ToolsPageState extends ConsumerState<ToolsPage> {
         data: (s) => Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 760),
-            child: ListView(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+            child: _ToolsBodyList(
+              embedded: widget.embedded,
               children: [
-                if (ref.watch(desktopWorkspaceHostProvider).supported) ...[
+                if (widget.showConnections)
+                  Card(
+                    child: ListTile(
+                      leading: const Icon(Icons.devices),
+                      title: const Text('远程电脑任务'),
+                      subtitle: const Text('配对电脑、离线执行、事件续传与逐步审批'),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => const RemoteTasksPage(),
+                        ),
+                      ),
+                    ),
+                  ),
+                if (widget.showConnections &&
+                    !kIsWeb &&
+                    defaultTargetPlatform == TargetPlatform.android)
+                  Card(
+                    child: ListTile(
+                      leading: const Icon(Icons.touch_app),
+                      title: const Text('Android 本机控制'),
+                      subtitle: const Text('系统授权、观察、动作、截图与停止'),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => const DeviceAgentPage(),
+                        ),
+                      ),
+                    ),
+                  ),
+                if (widget.showConnections &&
+                    ref.watch(desktopWorkspaceHostProvider).supported) ...[
                   Card(
                     child: ListTile(
                       leading: const Icon(Icons.folder_copy_outlined),
@@ -160,58 +202,68 @@ class _ToolsPageState extends ConsumerState<ToolsPage> {
                   ),
                   const SizedBox(height: 12),
                 ],
+                if (widget.showConnections && s.researchModeEnabled)
+                  Card(
+                    child: ListTile(
+                      leading: const Icon(Icons.terminal),
+                      title: const Text('SSH 主机与科研终端'),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () => openShellTab(ref, ShellTab.terminal),
+                    ),
+                  ),
                 if (_error != null)
                   RecoveryNotice(error: _error!, title: '功能设置未完成'),
-                AbsorbPointer(
-                  absorbing: _changing,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      _StudyModeCard(
-                        enabled: s.studyModeEnabled,
-                        onChanged: (enabled) =>
-                            _change(() => _setStudyModeEnabled(enabled)),
-                        onOpenStudy: s.studyModeEnabled
-                            ? () => openShellTab(ref, ShellTab.study)
-                            : null,
-                      ),
-                      const SizedBox(height: 12),
-                      _CreationModeCard(
-                        enabled: s.creationModeEnabled,
-                        onChanged: (enabled) =>
-                            _change(() => _setCreationModeEnabled(enabled)),
-                        onOpenStudio: s.creationModeEnabled
-                            ? () => openShellTab(ref, ShellTab.studio)
-                            : null,
-                      ),
-                      const SizedBox(height: 20),
-                      Padding(
-                        padding: const EdgeInsets.only(left: 4, bottom: 8),
-                        child: Text(
-                          '实验功能',
-                          style: Theme.of(context).textTheme.labelMedium
-                              ?.copyWith(
-                                color: Theme.of(
-                                  context,
-                                ).colorScheme.onSurfaceVariant,
-                              ),
+                if (widget.showModules)
+                  AbsorbPointer(
+                    absorbing: _changing,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        _StudyModeCard(
+                          enabled: s.studyModeEnabled,
+                          onChanged: (enabled) =>
+                              _change(() => _setStudyModeEnabled(enabled)),
+                          onOpenStudy: s.studyModeEnabled
+                              ? () => openShellTab(ref, ShellTab.study)
+                              : null,
                         ),
-                      ),
-                      _ResearchModeCard(
-                        enabled: s.researchModeEnabled,
-                        onChanged: (enabled, origin) => _change(
-                          () => _setResearchModeEnabled(
-                            enabled,
-                            originGlobal: origin,
+                        const SizedBox(height: 12),
+                        _CreationModeCard(
+                          enabled: s.creationModeEnabled,
+                          onChanged: (enabled) =>
+                              _change(() => _setCreationModeEnabled(enabled)),
+                          onOpenStudio: s.creationModeEnabled
+                              ? () => openShellTab(ref, ShellTab.studio)
+                              : null,
+                        ),
+                        const SizedBox(height: 20),
+                        Padding(
+                          padding: const EdgeInsets.only(left: 4, bottom: 8),
+                          child: Text(
+                            '实验功能',
+                            style: Theme.of(context).textTheme.labelMedium
+                                ?.copyWith(
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.onSurfaceVariant,
+                                ),
                           ),
                         ),
-                        onOpenTerminal: s.researchModeEnabled
-                            ? () => openShellTab(ref, ShellTab.terminal)
-                            : null,
-                      ),
-                    ],
+                        _ResearchModeCard(
+                          enabled: s.researchModeEnabled,
+                          onChanged: (enabled, origin) => _change(
+                            () => _setResearchModeEnabled(
+                              enabled,
+                              originGlobal: origin,
+                            ),
+                          ),
+                          onOpenTerminal: s.researchModeEnabled
+                              ? () => openShellTab(ref, ShellTab.terminal)
+                              : null,
+                        ),
+                      ],
+                    ),
                   ),
-                ),
                 if (_changing)
                   const Padding(
                     padding: EdgeInsets.only(top: 12),
@@ -223,6 +275,7 @@ class _ToolsPageState extends ConsumerState<ToolsPage> {
         ),
       ),
     );
+    return widget.embedded ? page.body! : page;
   }
 }
 
@@ -249,64 +302,51 @@ class _FeatureCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final text = Theme.of(context).textTheme;
-    return Card(
-      clipBehavior: Clip.antiAlias,
+    final c = PrototypeColors.of(context);
+    return Container(
+      key: ValueKey('feature-module-$title'),
+      padding: const EdgeInsets.symmetric(vertical: 6),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 6, 8, 6),
-            child: Row(
-              children: [
-                Icon(icon, color: scheme.onSurfaceVariant),
-                const SizedBox(width: 14),
-                Text(
+          Row(
+            children: [
+              Icon(icon, size: 16, color: c.muted),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
                   title,
-                  style: text.titleMedium?.copyWith(
+                  style: TextStyle(
+                    fontSize: 13,
                     fontWeight: FontWeight.w500,
+                    color: c.ink,
                   ),
                 ),
-                if (badge != null) ...[
-                  const SizedBox(width: 8),
-                  Text(
-                    badge!,
-                    style: text.labelSmall?.copyWith(
-                      color: scheme.onSurfaceVariant,
-                    ),
-                  ),
-                ],
-                const Spacer(),
-                toggle,
-              ],
-            ),
+              ),
+              if (badge != null)
+                Text(badge!, style: TextStyle(fontSize: 11, color: c.muted)),
+              const SizedBox(width: 8),
+              toggle,
+            ],
           ),
           if (note != null)
             Padding(
-              padding: const EdgeInsets.fromLTRB(54, 0, 16, 12),
+              padding: const EdgeInsets.only(left: 24, bottom: 4),
               child: Text(
                 note!,
-                style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+                style: TextStyle(fontSize: 12, color: c.muted),
               ),
             ),
           if (onOpen != null)
-            InkWell(
-              onTap: onOpen,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(54, 12, 16, 14),
-                child: Row(
-                  children: [
-                    Text(
-                      openLabel,
-                      style: text.bodyMedium?.copyWith(color: scheme.primary),
-                    ),
-                    const Spacer(),
-                    Icon(
-                      Icons.chevron_right_rounded,
-                      color: scheme.onSurfaceVariant,
-                    ),
-                  ],
+            Padding(
+              padding: const EdgeInsets.only(left: 24),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: PrototypeButton(
+                  label: openLabel,
+                  small: true,
+                  variant: PrototypeButtonVariant.ghost,
+                  onPressed: onOpen,
                 ),
               ),
             ),
@@ -331,7 +371,11 @@ class _StudyModeCard extends StatelessWidget {
   Widget build(BuildContext context) => _FeatureCard(
     icon: Icons.school_outlined,
     title: '学习模式',
-    toggle: Switch.adaptive(value: enabled, onChanged: onChanged),
+    toggle: PrototypeSwitch(
+      value: enabled,
+      onChanged: onChanged,
+      semanticLabel: '功能模块开关',
+    ),
     openLabel: '进入学习中心',
     onOpen: enabled ? onOpenStudy : null,
   );
@@ -352,7 +396,11 @@ class _CreationModeCard extends StatelessWidget {
   Widget build(BuildContext context) => _FeatureCard(
     icon: Icons.menu_book_outlined,
     title: '创作模式',
-    toggle: Switch.adaptive(value: enabled, onChanged: onChanged),
+    toggle: PrototypeSwitch(
+      value: enabled,
+      onChanged: onChanged,
+      semanticLabel: '功能模块开关',
+    ),
     openLabel: '进入创作中心',
     onOpen: enabled ? onOpenStudio : null,
   );
@@ -395,7 +443,7 @@ class _ResearchModeCardState extends State<_ResearchModeCard> {
       note: webBlocked ? '浏览器不支持 SSH' : null,
       toggle: KeyedSubtree(
         key: _switchKey,
-        child: Switch.adaptive(
+        child: PrototypeSwitch(
           value: widget.enabled && !webBlocked,
           onChanged: webBlocked
               ? null
@@ -404,6 +452,57 @@ class _ResearchModeCardState extends State<_ResearchModeCard> {
       ),
       openLabel: '进入科研终端',
       onOpen: widget.enabled && !webBlocked ? widget.onOpenTerminal : null,
+    );
+  }
+}
+
+class _ToolsBodyList extends StatelessWidget {
+  const _ToolsBodyList({required this.embedded, required this.children});
+  final bool embedded;
+  final List<Widget> children;
+  @override
+  Widget build(BuildContext context) {
+    final base = Theme.of(context);
+    final c = PrototypeColors.of(context);
+    final content = embedded
+        ? Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: children,
+            ),
+          )
+        : ListView(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+            children: children,
+          );
+    return Theme(
+      data: base.copyWith(
+        cardTheme: const CardThemeData(
+          color: Colors.transparent,
+          surfaceTintColor: Colors.transparent,
+          elevation: 0,
+          margin: EdgeInsets.zero,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.all(Radius.circular(8)),
+          ),
+        ),
+        listTileTheme: ListTileThemeData(
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 0,
+            vertical: 2,
+          ),
+          dense: true,
+          minTileHeight: 44,
+          minLeadingWidth: 16,
+          horizontalTitleGap: 8,
+          iconColor: c.muted,
+          titleTextStyle: TextStyle(fontSize: 13, color: c.ink),
+          subtitleTextStyle: TextStyle(fontSize: 12, color: c.muted),
+        ),
+      ),
+      child: content,
     );
   }
 }

@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -91,7 +92,7 @@ class ImagePickConfirmBar extends StatelessWidget {
                           }
                         } else {
                           if (!item.selected && selected >= maxSelectable) {
-                            ScaffoldMessenger.of(context).showSnackBar(
+                            AppToastMessenger.of(context).showSnackBar(
                               SnackBar(
                                 content: Text('最多只能选 $maxSelectable 张'),
                                 behavior: SnackBarBehavior.floating,

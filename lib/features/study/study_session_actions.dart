@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -82,7 +83,7 @@ class _StudySessionActionsState extends ConsumerState<StudySessionActions> {
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
+      AppToastMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('小结失败：$e')));
     } finally {
@@ -98,14 +99,14 @@ class _StudySessionActionsState extends ConsumerState<StudySessionActions> {
           .generateCards(topic: _topic, context: _transcript(), count: 5);
       if (cards.isEmpty) {
         if (!mounted) return;
-        ScaffoldMessenger.of(
+        AppToastMessenger.of(
           context,
         ).showSnackBar(const SnackBar(content: Text('未能解析卡片，请重试')));
         return;
       }
       await ref.read(studyControllerProvider.notifier).addCards(cards);
       if (!mounted) return;
-      ScaffoldMessenger.of(
+      AppToastMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('已加入 ${cards.length} 张复习卡')));
     } catch (e) {

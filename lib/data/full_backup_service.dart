@@ -1,3 +1,5 @@
+import 'task_data_backup.dart';
+import 'capability_settings_bundle.dart';
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
@@ -45,6 +47,7 @@ class FullBackupService {
   /// Explicit allowlist: never read secure storage, endpoints, profiles,
   /// terminal credentials, gateway config, tokens or usage/cache records.
   static const preferenceKeys = {
+    ...CapabilitySettingsBundle.keys,
     'themeMode',
     'uiPrefs',
     'contextPrefs',
@@ -72,7 +75,13 @@ class FullBackupService {
   // Retain the v17 wire location for compatibility with existing backups.
   // Learning plans are business data, not optional/replaceable preferences.
   static const _learningPlansKey = 'learningPlansV1';
-  static const _storedKeys = {...preferenceKeys, _learningPlansKey};
+  static const _workMemoryKey = 'workMemory.v1';
+  static const _storedKeys = {
+    ...preferenceKeys,
+    _learningPlansKey,
+    _workMemoryKey,
+    ...TaskDataBackup.keys,
+  };
 
   Future<Uint8List> exportBackup() => _exclusive(() async {
     if (await journal.read() != null) throw StateError('请先重启应用完成恢复检查。');
@@ -107,6 +116,19 @@ class FullBackupService {
       }
       blobs[row['id'] as String] = base64Encode(bytes);
     }
+    final workMemory = _workMemoryRows(prefs.getString(_workMemoryKey));
+    final capabilityValues =
+        CapabilitySettingsBundle.read(prefs)['values'] as Map;
+    final conversationIds = (tables['conversations'] as List)
+        .map((row) => row['id'])
+        .toSet();
+    final taskPreferences = TaskDataBackup.exportValues({
+      for (final key in TaskDataBackup.keys) key: prefs.get(key),
+    }, conversationIds);
+    _checkRecordCount(
+      tables.values.fold<int>(0, (sum, rows) => sum + (rows as List).length) +
+          TaskDataBackup.recordCount(taskPreferences),
+    );
     return compute(BackupCodec.encode, {
       'version': BackupCodec.version,
       'schemaVersion': db.schemaVersion,
@@ -115,8 +137,20 @@ class FullBackupService {
       'files': blobs,
       'memory': await memory.read() ?? '',
       'preferences': {
+        ...taskPreferences,
         for (final key in _storedKeys)
-          if (prefs.containsKey(key)) key: prefs.get(key),
+          if (prefs.containsKey(key) &&
+              key != _workMemoryKey &&
+              !TaskDataBackup.keys.contains(key) &&
+              !CapabilitySettingsBundle.keys.contains(key))
+            key: prefs.get(key),
+        for (final entry in capabilityValues.entries)
+          entry.key as String: jsonEncode(entry.value),
+        if (prefs.containsKey(_workMemoryKey))
+          _workMemoryKey: jsonEncode({
+            for (final entry in workMemory.entries)
+              if (conversationIds.contains(entry.key)) entry.key: entry.value,
+          }),
       },
     });
   });
@@ -262,6 +296,83 @@ class FullBackupService {
       }
     }
     _learningPlanRows(preferences[_learningPlansKey]);
+    CapabilitySettingsBundle.validate({
+      'version': 1,
+      'values': {
+        for (final key in CapabilitySettingsBundle.keys)
+          if (preferences.containsKey(key))
+            key: jsonDecode(preferences[key] as String),
+      },
+    });
+
+    final workMemory = _workMemoryRows(preferences[_workMemoryKey]);
+    final conversationIds = (tables['conversations'] as List)
+        .map((row) => row['id'])
+        .toSet();
+    TaskDataBackup.validateAssociations(preferences, conversationIds);
+    _checkRecordCount(rowCount + TaskDataBackup.recordCount(preferences));
+    if (!workMemory.keys.every(conversationIds.contains)) {
+      throw const FormatException('工作记忆引用了备份中不存在的会话');
+    }
+  }
+
+  static Map<String, Map<String, dynamic>> _workMemoryRows(
+    Object? raw, {
+    bool allowAgents = true,
+  }) {
+    if (raw == null) return {};
+    try {
+      final decoded = jsonDecode(raw as String) as Map;
+      _checkRecordCount(decoded.length);
+      final result = <String, Map<String, dynamic>>{};
+      for (final entry in decoded.entries) {
+        if (entry.key is! String || entry.value is! Map) {
+          throw const FormatException();
+        }
+        final value = Map<String, dynamic>.from(entry.value as Map);
+        const textKeys = {
+          'constraints',
+          'plan',
+          'summary',
+          'user_pins',
+          'updated_at',
+        };
+        if (!value.keys.every(
+          {
+            ...textKeys,
+            'revision',
+            'compact_revision',
+            if (allowAgents) 'agents',
+          }.contains,
+        )) {
+          throw const FormatException();
+        }
+        for (final key in textKeys) {
+          if (value[key] != null &&
+              (value[key] is! String ||
+                  (value[key] as String).length > 24000)) {
+            throw const FormatException();
+          }
+        }
+        if (value['revision'] != null &&
+            (value['revision'] is! int || (value['revision'] as int) < 0)) {
+          throw const FormatException();
+        }
+        // Export only public notes/pins; active compaction/replay state is local.
+        result[entry.key as String] = {
+          if (allowAgents && value['agents'] != null)
+            'agents': _workMemoryRows(
+              jsonEncode(value['agents']),
+              allowAgents: false,
+            ),
+          for (final key in {...textKeys, 'revision'})
+            if (value.containsKey(key)) key: value[key],
+        };
+      }
+      return result;
+    } catch (_) {
+      throw const FormatException('工作记忆格式错误；未覆盖现有用户约束');
+    }
   }
 
   static List<Map<String, dynamic>> _learningPlanRows(Object? raw) {
@@ -401,7 +512,35 @@ class FullBackupService {
     final preferences = restorePreferences
         ? Map<String, dynamic>.from(payload['preferences'] as Map)
         : <String, dynamic>{};
+    // Full imports preserve any existing capability/user-library configuration.
+    // The dedicated settings importer provides reviewed additive merges.
+    for (final key in CapabilitySettingsBundle.keys) {
+      if (prefs.containsKey(key)) preferences.remove(key);
+    }
     preferences.remove(_learningPlansKey);
+    preferences.remove(_workMemoryKey);
+    for (final key in TaskDataBackup.keys) {
+      preferences.remove(key);
+    }
+    preferences.addAll(
+      TaskDataBackup.restoreValues(
+        {for (final key in TaskDataBackup.keys) key: prefs.get(key)},
+        Map<String, dynamic>.from(payload['preferences'] as Map),
+        remap,
+      ),
+    );
+    final importedMemory = _workMemoryRows(
+      payload['preferences'][_workMemoryKey],
+    );
+    if (importedMemory.isNotEmpty) {
+      final currentMemory = _workMemoryRows(prefs.getString(_workMemoryKey));
+      preferences[_workMemoryKey] = jsonEncode({
+        ...currentMemory,
+        for (final entry in importedMemory.entries)
+          remap(entry.key): entry.value,
+      });
+    }
+
     final importedPlans = _learningPlanRows(
       payload['preferences'][_learningPlansKey],
     );

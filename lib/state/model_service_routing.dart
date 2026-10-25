@@ -25,8 +25,9 @@ class ModelServiceRouting extends Notifier<Map<String, List<String>>> {
       final next = {...state, model: List<String>.of(ids)};
       if (!await ref
           .read(sharedPrefsProvider)
-          .setString(storageKey, jsonEncode(next)))
+          .setString(storageKey, jsonEncode(next))) {
         throw StateError('优先级保存失败');
+      }
       if (ref.mounted) state = next;
     });
     _pending = operation.catchError((Object _) {});

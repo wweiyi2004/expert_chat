@@ -1,14 +1,21 @@
+import '../domain/workbench/agents/repository_context_reader.dart';
+import 'task_acceptance_provider.dart';
+import 'package:crypto/crypto.dart';
 import 'dart:async';
 import 'dart:convert';
+import '../domain/task_core/task_core.dart';
+import '../data/task_budget_prefs.dart';
 import 'package:uuid/uuid.dart';
 
 import 'package:dio/dio.dart' show CancelToken, DioException;
-import 'package:flutter/foundation.dart' show kIsWeb, debugPrint;
+import 'package:flutter/foundation.dart'
+    show kIsWeb, debugPrint, defaultTargetPlatform, TargetPlatform;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/providers.dart';
 import '../core/desktop_providers.dart';
 import '../domain/desktop/workspace_tools.dart';
+import '../domain/desktop/agent_workspace_isolation.dart';
 import 'conversation_workspace_bindings.dart';
 import 'conversation_model_choice.dart';
 import '../data/chat_skill.dart';
@@ -21,6 +28,9 @@ import '../data/story_models.dart';
 import '../data/study_models.dart';
 import '../domain/chat/chat_skill_router.dart';
 import '../domain/chat/request_context_builder.dart';
+import '../domain/chat/request_transport_adaptation.dart';
+import 'model_service_credentials.dart';
+import 'model_route_groups.dart';
 import '../domain/chat/client_tool_prompt.dart';
 import '../domain/chat/study_request_context.dart';
 import '../domain/chat/conversation_persistence.dart';
@@ -40,6 +50,7 @@ import '../domain/chat/stream_answer_presenter.dart';
 import '../domain/mcp/mcp_host_tools.dart';
 import '../domain/mcp/computer_use_policy.dart';
 import '../domain/context/context_window_manager.dart';
+import '../domain/context/public_context_compactor.dart';
 import '../domain/workbench/changes/delivery_snapshot.dart';
 import '../domain/llm/llm_provider.dart';
 import '../domain/llm/llm_request_policy.dart';
@@ -76,6 +87,19 @@ import 'work_questions.dart';
 import 'work_task_runtime.dart';
 import 'work_rounds.dart';
 import 'work_changes.dart';
+import 'work_memory.dart';
+import 'work_task_steering.dart';
+import 'controlled_browser.dart';
+import 'tool_registry_settings.dart';
+import 'supervisor_settings.dart';
+import 'role_evolution.dart';
+import 'role_validation_settings.dart';
+import '../domain/tools/math/math_toolkit.dart';
+import '../domain/tools/task_tool_registry.dart';
+import '../domain/workbench/agents/task_supervisor.dart';
+import '../domain/remote/device_agent.dart';
+import 'dart:typed_data';
+import 'work_operation_journal.dart';
 import 'work_agents.dart';
 import 'work_processes.dart';
 import 'model_context.dart';
@@ -96,6 +120,8 @@ part 'chat/media.dart';
 part 'chat/generation.dart';
 part 'chat/streaming.dart';
 part 'chat/tools.dart';
+part 'chat/capability_extensions.dart';
+part 'chat/context_management.dart';
 part 'chat/mutations.dart';
 part 'chat/task_recovery.dart';
 part 'chat/session_runtime.dart';
@@ -157,8 +183,9 @@ abstract class _ChatControllerBase extends AsyncNotifier<ChatState> {
       _sessionRuns[id]?.execution.isActive ?? false;
   SessionPendingConfiguration? pendingSessionConfigFor(String id) {
     final run = _sessionRuns[id];
-    if (run == null || !run.execution.isActive || run.configuration == null)
+    if (run == null || !run.execution.isActive || run.configuration == null) {
       return null;
+    }
     final changes = _desiredConfiguration(id).changesFrom(run.configuration!);
     return changes.isEmpty ? null : SessionPendingConfiguration(changes);
   }
@@ -199,7 +226,87 @@ abstract class _ChatControllerBase extends AsyncNotifier<ChatState> {
                 ?.customMcpServerIds ??
             const [],
         servicePriorities: ref.read(modelServiceRoutingProvider),
+        credentialEpochs: ref.read(explicitCredentialEpochProvider),
+        routeSignature: _selectedRouteSignature(
+          ref.read(conversationModelChoiceProvider)[id],
+        ),
       );
+  String _selectedRouteSignature(String? choice) {
+    if (choice == null ||
+        (!choice.startsWith(modelGroupPrefix) && choice != autoModelChoice)) {
+      return '';
+    }
+    final policy = ref.read(modelRouteGroupsProvider);
+    final id = choice == autoModelChoice
+        ? policy.autoGroup
+        : choice.substring(modelGroupPrefix.length);
+    final group = policy.groups.where((g) => g.id == id).firstOrNull;
+    return jsonEncode({
+      'id': id,
+      'models': group?.models,
+      'failover': group?.failover,
+    });
+  }
+
+  Future<LlmConfig> _refreshAcceptedTransport(
+    LlmConfig current,
+    _SessionConfiguration previous,
+    _SessionConfiguration desired,
+  ) async {
+    final settings = desired.settings;
+    if (settings == null) return current;
+    final id = current.profileId;
+    if (id == null) {
+      return current.authMode == 'apiKey' &&
+              previous.settings?.apiKey != settings.apiKey
+          ? current.copyWith(apiKey: settings.apiKey)
+          : current;
+    }
+    // A descriptor+key save is a single settings transaction. Wait before
+    // reusing a frozen descriptor, then refresh only this accepted channel.
+    await ref
+        .read(settingsControllerProvider.notifier)
+        .waitForProfileMutations();
+    if (!ref.mounted) throw StateError('模型设置已释放');
+    final live = ref.read(settingsControllerProvider).value ?? settings;
+    var profile = live.profiles.where((p) => p.id == id).firstOrNull;
+    if (profile == null) throw StateError('已接受任务的模型渠道已被删除，请重新选择后继续；不会静默切换账户');
+    final epoch = ref.read(explicitCredentialEpochProvider)[id] ?? 0;
+    final epochChanged = (previous.credentialEpochs[id] ?? 0) != epoch;
+    final activeKeyChanged =
+        id == live.activeProfileId && previous.settings?.apiKey != live.apiKey;
+    final transportChanged =
+        profile.baseUrl != current.baseUrl ||
+        profile.authMode != current.authMode ||
+        (profile.apiFormat != LlmApiFormat.auto &&
+            profile.apiFormat != current.apiFormat);
+    var key = current.apiKey;
+    if (epochChanged || activeKeyChanged || transportChanged) {
+      final coherent = await readCoherentModelService(ref, id);
+      profile = coherent.profile;
+      if (!profile.models.contains(current.model) &&
+          profile.chatModel != current.model &&
+          profile.reasonerModel != current.model) {
+        throw StateError('已接受任务的模型已从该渠道移除，请重新选择；未切换其他模型');
+      }
+      key = profile.authMode == 'apiKey' ? coherent.apiKey : '';
+      if (profile.authMode == 'apiKey' && key.trim().isEmpty) {
+        throw StateError('已选择渠道的 API 密钥为空，请重新配置；未切换其他账户');
+      }
+    }
+    return current.copyWith(
+      baseUrl: profile.baseUrl,
+      apiFormat:
+          profile.apiFormat == LlmApiFormat.auto &&
+              profile.baseUrl == current.baseUrl &&
+              profile.authMode == current.authMode
+          ? current.apiFormat
+          : profile.apiFormat,
+      authMode: profile.authMode,
+      apiKey: key,
+    );
+  }
+
   final _sessionFailures = <String, _SessionFailure>{};
   final _composerThinking = <String, bool>{};
   final _composerEffort = <String, ReasoningEffort>{};
@@ -223,8 +330,7 @@ abstract class _ChatControllerBase extends AsyncNotifier<ChatState> {
         sessionCheckpoints: Map.unmodifiable(_sessionCheckpoints),
         pendingSessionConfigurations: {
           for (final run in _sessionRuns.values)
-            if (pendingSessionConfigFor(run.conversationId) case final pending?)
-              run.conversationId: pending,
+            run.conversationId: ?pendingSessionConfigFor(run.conversationId),
         },
         error: failure?.message ?? (hasGlobalError ? raw.error : null),
         errorConvoId: failure == null ? null : raw.currentId,
@@ -249,8 +355,9 @@ abstract class _ChatControllerBase extends AsyncNotifier<ChatState> {
   }) {
     if (!ref.mounted ||
         _deletedWhileStartingIds.contains(conversationId) ||
-        !_rawState.conversations.any((c) => c.id == conversationId))
+        !_rawState.conversations.any((c) => c.id == conversationId)) {
       return;
+    }
     final run = _sessionRuns.putIfAbsent(
       conversationId,
       () => _SessionRun(conversationId),
@@ -265,12 +372,16 @@ abstract class _ChatControllerBase extends AsyncNotifier<ChatState> {
       run.awaitingEvents = true;
     }
     if (run.userCancelled ||
-        (!run.execution.isActive && !run.awaitingEvents) ||
+        (!run.execution.isActive &&
+            !run.awaitingEvents &&
+            run.core?.resumeRequired != true) ||
         (taskId != null &&
             (run.cancelledTaskIds.contains(taskId) ||
                 !run.acceptedTaskIds.contains(taskId))) ||
-        !run.receivedEventIds.add(eventId))
+        !run.receivedEventIds.add(eventId)) {
       return;
+    }
+    run.core?.receive(eventId, content, taskId);
     run.inbox.add(_SessionEvent(eventId, content, taskId));
     while (run.receivedEventIds.length > 2048) {
       run.receivedEventIds.remove(run.receivedEventIds.first);
@@ -282,7 +393,7 @@ abstract class _ChatControllerBase extends AsyncNotifier<ChatState> {
           : SessionExecutionStatus.waiting,
       '后台完成事件已进入会话收件箱',
     );
-    _scheduleSessionWake(run);
+    unawaited(_journalWrite.then((_) => _scheduleSessionWake(run)));
   }
 
   List<_SessionEvent> _takeSessionEvents(_SessionRun run) {
@@ -296,7 +407,6 @@ abstract class _ChatControllerBase extends AsyncNotifier<ChatState> {
                   run.acceptedTaskIds.contains(event.taskId)),
         )
         .toList();
-    run.inbox.clear();
     return events;
   }
 
@@ -305,8 +415,11 @@ abstract class _ChatControllerBase extends AsyncNotifier<ChatState> {
         !run.awaitingEvents ||
         run.userCancelled ||
         run.wakeScheduled ||
-        run.inbox.isEmpty)
+        run.inbox.isEmpty ||
+        run.core?.resumeRequired == true ||
+        _journalError != null) {
       return;
+    }
     run.wakeScheduled = true;
     unawaited(
       Future<void>.delayed(Duration.zero, () async {
@@ -315,22 +428,173 @@ abstract class _ChatControllerBase extends AsyncNotifier<ChatState> {
             run.execution.isActive ||
             !run.awaitingEvents ||
             run.userCancelled ||
-            _deletedWhileStartingIds.contains(run.conversationId))
+            _deletedWhileStartingIds.contains(run.conversationId)) {
           return;
+        }
         try {
           await _inSession(
             () => _dispatchSessionEvents(run),
             conversationId: run.conversationId,
           );
         } catch (error) {
-          if (ref.mounted)
+          if (ref.mounted) {
             _setScopedError('后台事件处理失败：$error', convoId: run.conversationId);
+          }
         }
       }),
     );
   }
 
   Future<void> _dispatchSessionEvents(_SessionRun run);
+
+  Future<Map<String, dynamic>> _taskTarget(String conversationId) async {
+    final desired = _desiredConfiguration(conversationId);
+    final policy = desired.policy;
+    String? root;
+    Map<String, dynamic>? sshTarget;
+    if (policy.sshProfileId.isNotEmpty) {
+      final terminal = ref.read(researchTerminalProvider);
+      final profile = terminal.profiles
+          .where((p) => p.id == policy.sshProfileId)
+          .firstOrNull;
+      if (profile == null) throw StateError('原 SSH 配置不可用');
+      sshTarget = {
+        'host': profile.host,
+        'port': profile.port,
+        'username': profile.username,
+        'hostKey': profile.trustedHostKeyFingerprint,
+      };
+      final session = await ref
+          .read(researchTerminalProvider.notifier)
+          .openWorkSession(policy.sshProfileId, policy.remoteRoot);
+      root = session.root;
+    }
+    List<Map<String, String>> scopes = const [];
+    String? workspaceId = desired.workspaceId;
+    if (policy.sshProfileId.isEmpty &&
+        ref.read(desktopWorkspaceHostProvider).supported) {
+      final host = ref.read(desktopWorkspaceHostProvider);
+      final workspace = workspaceId == null
+          ? await host.defaultWorkspace()
+          : (await host.list()).where((w) => w.id == workspaceId).firstOrNull;
+      if (workspace == null) throw StateError('原任务工作区不可用');
+      root = workspace.root;
+      scopes = [
+        for (final scope in workspace.scopes)
+          {'name': scope.name, 'path': scope.path, 'access': scope.access.name},
+      ];
+      workspaceId = workspace.id;
+    }
+    return {
+      'workspaceId': workspaceId,
+      'scopes': scopes,
+      'sshTarget': sshTarget,
+      'root': root,
+      'sshProfileId': policy.sshProfileId,
+      'remoteRoot': policy.remoteRoot,
+      'approval': policy.approval.name,
+      'network': policy.network,
+    };
+  }
+
+  Future<bool> _verifyTaskTarget(_SessionRun run) async {
+    final prior = run.core?.target;
+    if (prior == null || prior.isEmpty) return false;
+    final current = await _taskTarget(run.conversationId);
+    for (final key in ['workspaceId', 'root', 'sshProfileId', 'remoteRoot']) {
+      if (prior[key] != current[key]) return false;
+    }
+    if (jsonEncode(prior['scopes']) != jsonEncode(current['scopes']) ||
+        jsonEncode(prior['sshTarget']) != jsonEncode(current['sshTarget'])) {
+      return false;
+    }
+    // Recovery cannot increase authorization; require the same or stricter policy.
+    final oldApproval = WorkApprovalMode.values
+        .where((m) => m.name == prior['approval'])
+        .firstOrNull;
+    final newApproval = WorkApprovalMode.values
+        .where((m) => m.name == current['approval'])
+        .firstOrNull;
+    return oldApproval != null &&
+        newApproval != null &&
+        newApproval.index <= oldApproval.index &&
+        (prior['network'] == true || current['network'] != true);
+  }
+
+  Map<String, dynamic>? taskSnapshotFor(String conversationId) =>
+      _sessionRuns[conversationId]?.core?.toJson();
+
+  Future<void> _ackSessionEvents(
+    _SessionRun run,
+    List<_SessionEvent> events,
+  ) async {
+    final ids = events.map((e) => e.id).toSet();
+    run.inbox.removeWhere((e) => ids.contains(e.id));
+    run.core?.acknowledge(ids);
+    _checkpointSession(run, SessionExecutionStatus.running, '事件上下文已保存');
+    await _journalWrite;
+    if (_journalError != null) {
+      for (final event in events) {
+        run.core?.acknowledged.remove(event.id);
+        run.core?.receive(event.id, event.content, event.taskId);
+        if (!run.inbox.any((e) => e.id == event.id)) run.inbox.add(event);
+      }
+      run.core?.resumeRequired = true;
+      throw StateError('事件确认未保存，已保留以供显式恢复');
+    }
+  }
+
+  /// Explicit recovery only; inspect real state before any further side effect.
+  Future<bool> resumeSessionTask(String conversationId) => _inSession(() async {
+    final run = _run;
+    if (run == null ||
+        run.core == null ||
+        run.userCancelled ||
+        run.execution.isActive) {
+      return false;
+    }
+    await _ensureConversationLoaded(conversationId);
+    if (!_requireLoadedConversation(
+      _s.conversations.firstWhere((c) => c.id == conversationId),
+    )) {
+      return false;
+    }
+    try {
+      ref.read(taskAcceptanceProvider.notifier).requireFrozen(run.core!.rootId);
+    } catch (error) {
+      _setScopedError('原任务验收标准不可用，恢复被阻止：$error', convoId: conversationId);
+      return false;
+    }
+    var targetVerified = false;
+    try {
+      targetVerified = await _verifyTaskTarget(run);
+    } catch (_) {
+      /* Target unavailable: fail closed. */
+    }
+    if (!targetVerified) {
+      _setScopedError(
+        '原任务目标或权限无法核验，恢复已阻止。请核对原工作区、远端目录和权限。',
+        convoId: conversationId,
+      );
+      return false;
+    }
+    run.core!.resumeRequired = false;
+    run.awaitingEvents = true;
+    _sessionFailures.remove(conversationId);
+    if (run.inbox.isEmpty) {
+      final id = const Uuid().v4();
+      const content =
+          '用户显式恢复原任务。先读取已保存结果并检查工作区、后台进程及远端真实状态；状态未知的写入、发送、部署等副作用禁止盲目重放。以当前权限和工作区为准，变化或无法核实时停止并说明。';
+      run.core!.receive(id, content, null);
+      run.inbox.add(_SessionEvent(id, content, null));
+    }
+    _checkpointSession(run, SessionExecutionStatus.waiting, '用户显式恢复，先检查真实状态');
+    await _journalWrite;
+    if (_journalError != null) return false;
+    await _dispatchSessionEvents(run);
+    _publishRuntimeState();
+    return true;
+  }, conversationId: conversationId);
 
   /// Services intentionally outlive a turn. Only finite commands and children
   /// owned by the current lineage keep an otherwise idle task waiting.
@@ -343,8 +607,9 @@ abstract class _ChatControllerBase extends AsyncNotifier<ChatState> {
           run.acceptedTaskIds.contains(agent.taskId) &&
           !agent.external &&
           !agent.terminal,
-    ))
+    )) {
       return true;
+    }
     return ref
         .read(workProcessesProvider)
         .records
@@ -369,13 +634,29 @@ abstract class _ChatControllerBase extends AsyncNotifier<ChatState> {
   final _activeWorkTaskIds = <String, String>{};
   final _sessionCheckpoints = <String, SessionExecutionCheckpoint>{};
   Future<void> _journalWrite = Future.value();
+  Object? _journalError;
   void _checkpointSession(
     _SessionRun run,
     SessionExecutionStatus status,
     String phase,
   ) {
-    if (!ref.mounted || _deletedWhileStartingIds.contains(run.conversationId))
+    if (!ref.mounted || _deletedWhileStartingIds.contains(run.conversationId)) {
       return;
+    }
+    final core = run.core;
+    if (core != null) {
+      core.goal = run.originatingUserGoal;
+      core.agentTaskId = run.agentTaskId;
+      core.agentRootId = run.agentRootId;
+      core.lineage.addAll(run.acceptedTaskIds);
+      if (run.execution.budget != null) {
+        core.budget = run.execution.budget!.toJson();
+      }
+      final rounds = ref.read(workRoundsProvider)[run.conversationId];
+      if (rounds != null && run.acceptedTaskIds.contains(rounds.runId)) {
+        core.rounds = {'used': rounds.used, 'limit': rounds.limit};
+      }
+    }
     _sessionCheckpoints[run.conversationId] = SessionExecutionCheckpoint(
       conversationId: run.conversationId,
       taskId: run.taskId,
@@ -383,20 +664,23 @@ abstract class _ChatControllerBase extends AsyncNotifier<ChatState> {
       updatedAt: DateTime.now(),
       phase: phase,
       queuedEvents: run.inbox.length,
+      taskState: core?.toJson() ?? const {},
     );
-    _runtimeLog(
-      conversationId: run.conversationId,
-      taskId: run.taskId,
-      phase: 'session',
-      status: status.name,
-      detail: phase,
-      level: status == SessionExecutionStatus.failed
-          ? WorkRuntimeLogLevel.error
-          : status == SessionExecutionStatus.cancelled ||
-                status == SessionExecutionStatus.interrupted
-          ? WorkRuntimeLogLevel.warning
-          : WorkRuntimeLogLevel.info,
-    );
+    if (phase != '任务累计预算已保存') {
+      _runtimeLog(
+        conversationId: run.conversationId,
+        taskId: run.taskId,
+        phase: 'session',
+        status: status.name,
+        detail: phase,
+        level: status == SessionExecutionStatus.failed
+            ? WorkRuntimeLogLevel.error
+            : status == SessionExecutionStatus.cancelled ||
+                  status == SessionExecutionStatus.interrupted
+            ? WorkRuntimeLogLevel.warning
+            : WorkRuntimeLogLevel.info,
+      );
+    }
     final saved = jsonEncode(
       _sessionCheckpoints.values.map((entry) => entry.toJson()).toList(),
     );
@@ -404,16 +688,87 @@ abstract class _ChatControllerBase extends AsyncNotifier<ChatState> {
     _journalWrite = _journalWrite
         .catchError((Object _) {})
         .then((_) async {
+          _journalError = null;
           if (!await prefs.setString('chatSessionJournal.v1', saved)) {
             throw StateError('会话执行检查点未保存');
           }
         })
         .catchError((Object error) {
+          _journalError = error;
+          run.core?.resumeRequired = true;
           debugPrint('Session checkpoint: $error');
         });
   }
 
+  final _rootModelRequestTails = <String, Future<void>>{};
+  Future<T> _serializeRootModelRequest<T>(
+    String? root,
+    CancelToken token,
+    Future<T> Function() action,
+  ) {
+    if (root == null) return action();
+    final previous = _rootModelRequestTails[root] ?? Future<void>.value();
+    final scheduled = previous.catchError((Object _) {}).then((_) async {
+      if (token.isCancelled) throw token.cancelError!;
+      if (!ref.mounted) throw StateError('会话控制器已释放');
+      return action();
+    });
+    final tail = scheduled.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    _rootModelRequestTails[root] = tail;
+    unawaited(
+      tail.then((_) {
+        if (identical(_rootModelRequestTails[root], tail)) {
+          _rootModelRequestTails.remove(root);
+        }
+      }),
+    );
+    return Future.any<T>([
+      scheduled,
+      token.whenCancel.then<T>((_) => throw token.cancelError!),
+    ]);
+  }
+
+  Future<T> _withAuxiliaryRootCapacity<T>({
+    required String? rootId,
+    required CancelToken token,
+    required Future<T> Function() action,
+  }) => _serializeRootModelRequest(rootId, token, () async {
+    if (rootId == null) return action();
+    final runtime = ref.read(workAgentsProvider);
+    final root = runtime.record(rootId);
+    final oldStatus = root?.status, oldActivity = root?.activity;
+    await runtime.acquireRootSlot(rootId, token, auxiliary: true);
+    try {
+      return await action();
+    } finally {
+      runtime.releaseRootSlot(rootId);
+      if (oldStatus != null && oldActivity != null) {
+        runtime.restoreRootIdleStatus(rootId, oldStatus, oldActivity);
+      }
+    }
+  });
   Future<GenerationStreamResult> _consumeSessionStream<T>(
+    Stream<T> source, {
+    required CancelToken cancelToken,
+    required void Function(T) onData,
+    required LlmConfig config,
+    required String requestId,
+  }) => _serializeRootModelRequest(
+    _run?.agentRootId,
+    cancelToken,
+    () => _consumeSessionStreamUnlocked(
+      source,
+      cancelToken: cancelToken,
+      onData: onData,
+      config: config,
+      requestId: requestId,
+    ),
+  );
+
+  Future<GenerationStreamResult> _consumeSessionStreamUnlocked<T>(
     Stream<T> source, {
     required CancelToken cancelToken,
     required void Function(T) onData,
@@ -568,8 +923,7 @@ abstract class _ChatControllerBase extends AsyncNotifier<ChatState> {
             timeoutSeconds: selected?.responseHeaderTimeout?.inSeconds,
             secrets: [
               if (selected != null) selected.apiKey,
-              if (_run?.configuration?.settings?.searchApiKey case final key?)
-                key,
+              ?_run?.configuration?.settings?.searchApiKey,
             ],
           );
     } catch (_) {
@@ -578,12 +932,53 @@ abstract class _ChatControllerBase extends AsyncNotifier<ChatState> {
   }
 
   void _beginTaskBudget(SettingsState settings) {
+    final owner = _run;
+    final saved = _run?.core?.budget ?? const <String, dynamic>{};
     _execution.beginBudget(
-      settings.taskBudget,
+      TaskBudgetPrefs(
+        workSeconds:
+            (saved['workSeconds'] as num?)?.toInt() ??
+            settings.taskBudget.workSeconds,
+        maxSearches:
+            (saved['maxSearches'] as num?)?.toInt() ??
+            settings.taskBudget.maxSearches,
+        maxToolCalls:
+            (saved['maxToolCalls'] as num?)?.toInt() ??
+            settings.taskBudget.maxToolCalls,
+        workResponseTimeoutSeconds:
+            settings.taskBudget.workResponseTimeoutSeconds,
+      ),
+      snapshot: _run?.core?.budget ?? const {},
       beforeCancel: () {
-        if (ref.mounted) _flushActiveStream?.call();
+        if (!ref.mounted) return;
+        _flushActiveStream?.call();
+        if (owner != null) {
+          final agents = ref.read(workAgentsProvider);
+          for (final child
+              in agents.records
+                  .where(
+                    (record) =>
+                        !record.external &&
+                        !record.terminal &&
+                        record.conversationId == owner.conversationId &&
+                        owner.acceptedTaskIds.contains(record.taskId),
+                  )
+                  .toList()) {
+            agents.cancel(child.id);
+          }
+        }
       },
     );
+    _execution.budget?.onChanged = () {
+      if (owner != null && ref.mounted && !owner.userCancelled) {
+        _checkpointSession(
+          owner,
+          _sessionCheckpoints[owner.conversationId]?.status ??
+              SessionExecutionStatus.running,
+          '任务累计预算已保存',
+        );
+      }
+    };
   }
 
   /// Invoked by [stop] before it snapshots the conversation, so a scheduled UI
@@ -637,8 +1032,9 @@ abstract class _ChatControllerBase extends AsyncNotifier<ChatState> {
     _appInBackground = background;
     for (final run in _sessionRuns.values) {
       run.flush?.call();
-      if (background && run.execution.isActive)
+      if (background && run.execution.isActive) {
         _persistence.checkpointSoon(run.conversationId);
+      }
     }
   }
 
@@ -792,9 +1188,11 @@ abstract class _ChatControllerBase extends AsyncNotifier<ChatState> {
           .then((settings) async {
             await future;
             if (!ref.mounted) return;
-            final effort = _editedComposerPrefs.contains('effort')
-                ? _s.reasoningEffort
-                : settings.reasoningEffort;
+            final effort =
+                _composerEffort[_s.currentId] ??
+                (_editedComposerPrefs.contains('effort')
+                    ? _s.reasoningEffort
+                    : settings.reasoningEffort);
             final search = _editedComposerPrefs.contains('search')
                 ? _s.searchMode
                 : settings.searchMode;
@@ -828,6 +1226,7 @@ abstract class _ChatControllerBase extends AsyncNotifier<ChatState> {
         // Dispose-time state write is not allowed; keep tearing down.
       }
       for (final run in _sessionRuns.values) {
+        run.taskCancellation.cancel('会话控制器已释放');
         run.execution.dispose();
       }
       _unselectedExecution.dispose();
@@ -855,6 +1254,37 @@ abstract class _ChatControllerBase extends AsyncNotifier<ChatState> {
               Map<String, dynamic>.from(value as Map),
             );
             _sessionCheckpoints[checkpoint.conversationId] = checkpoint;
+            if (checkpoint.taskState.isNotEmpty) {
+              final core = TaskCore.fromJson(
+                checkpoint.taskState,
+                interrupted:
+                    checkpoint.status == SessionExecutionStatus.interrupted ||
+                    checkpoint.status == SessionExecutionStatus.failed,
+              );
+              final run = _sessionRuns.putIfAbsent(
+                checkpoint.conversationId,
+                () => _SessionRun(checkpoint.conversationId),
+              );
+              run.core = core;
+              run.agentTaskId = core.agentTaskId;
+              run.agentRootId = core.agentRootId;
+              run.originatingUserGoal = core.goal;
+              run.acceptedTaskIds.addAll(core.lineage);
+              run.userCancelled = core.cancelled;
+              run.inbox.addAll(
+                core.inbox.values.map(
+                  (e) => _SessionEvent(
+                    e['id'] as String,
+                    e['content'] as String,
+                    e['taskId'] as String?,
+                  ),
+                ),
+              );
+              run.receivedEventIds.addAll([
+                ...core.acknowledged,
+                ...core.inbox.keys,
+              ]);
+            }
           } catch (_) {
             /* Skip an invalid checkpoint without replaying work. */
           }
@@ -871,11 +1301,13 @@ abstract class _ChatControllerBase extends AsyncNotifier<ChatState> {
     final imageGenMode = settings?.imageGenMode ?? ImageGenMode.auto;
     if (summaries.isEmpty) {
       final fresh = Conversation();
+      _composerThinking[fresh.id] = true;
+      _composerEffort[fresh.id] = ReasoningEffort.high;
       return ChatState(
         sessionCheckpoints: Map.unmodifiable(_sessionCheckpoints),
         conversations: [fresh],
         currentId: fresh.id,
-        reasoningEffort: effort,
+        reasoningEffort: ReasoningEffort.high,
         searchMode: searchMode,
         imageGenMode: imageGenMode,
       );
@@ -962,9 +1394,25 @@ abstract class _ChatControllerBase extends AsyncNotifier<ChatState> {
     if (run != null) {
       run.userCancelled = false;
       run.awaitingEvents = false;
+      final workMode =
+          _rawState.conversations
+              .where((c) => c.id == run.conversationId)
+              .firstOrNull
+              ?.workMode ==
+          true;
+      if (!workMode) {
+        run.core = null;
+        _execution.endBudget();
+      }
       if (!run.resumingAgentTree) {
+        _execution.endBudget();
+        run.core = workMode ? TaskCore(rootId: const Uuid().v4()) : null;
+        run.taskId = null;
         run.agentRootId = null;
+        run.taskCancellation.cancel('新的用户任务替代旧任务辅助请求');
+        run.taskCancellation = CancelToken();
         run.agentTaskId = null;
+        run.originatingUserGoal = '';
         run.acceptedTaskIds.clear();
         run.inbox.clear();
       }
@@ -1029,9 +1477,9 @@ abstract class _ChatControllerBase extends AsyncNotifier<ChatState> {
           !_execution.isCancelled &&
           !_sessionFailures.containsKey(finalRun.conversationId) &&
           _hasPendingSessionWork(finalRun);
-      if (!finalRun.awaitingEvents) {
-        finalRun.acceptedTaskIds.clear();
-        finalRun.inbox.clear();
+      if (_sessionFailures.containsKey(finalRun.conversationId) ||
+          finalRun.inbox.isNotEmpty) {
+        finalRun.core?.resumeRequired = true;
       }
       _checkpointSession(
         finalRun,
@@ -1103,8 +1551,7 @@ abstract class _ChatControllerBase extends AsyncNotifier<ChatState> {
             : raw.conversations,
         contextReports: {
           ...raw.contextReports,
-          if (next.contextReports[run.conversationId] case final report?)
-            run.conversationId: report,
+          run.conversationId: ?next.contextReports[run.conversationId],
         },
       );
     }
@@ -1217,12 +1664,18 @@ abstract class _ChatControllerBase extends AsyncNotifier<ChatState> {
   /// Image turns stay on a vision-capable chat model when deep-think's
   /// reasoner cannot accept pixels and no separate vision API is configured.
   LlmConfig _configForTurn(SettingsState settings, {required bool hasImages}) {
+    final choice =
+        _run?.configuration?.modelChoice ??
+        ref.read(conversationModelChoiceProvider)[_s.currentId];
     return LlmRequestPolicy.selectModel(
       selected: settings.config,
       reasonerModel: settings.reasonerModel,
       thinking: _s.deepThink,
       hasImages: hasImages,
       hasVisionFallback: settings.visionConfigured,
+      selectedExplicitly:
+          settings.selectedModel != null ||
+          choice != null && choice != autoModelChoice,
     ).copyWith(routingSessionId: const Uuid().v4());
   }
 
@@ -1302,10 +1755,15 @@ abstract class _ChatControllerBase extends AsyncNotifier<ChatState> {
     }
     if (!_s.conversations.any((c) => c.id == id)) return;
     final desired = _sessionRuns[id]?.configuration;
-    if (!_composerThinking.containsKey(id))
-      _composerThinking[id] = desired?.thinking ?? _s.deepThink;
-    if (!_composerEffort.containsKey(id))
-      _composerEffort[id] = desired?.effort ?? _s.reasoningEffort;
+    if (!_composerThinking.containsKey(id)) {
+      _composerThinking[id] = desired?.thinking ?? true;
+    }
+    if (!_composerEffort.containsKey(id)) {
+      _composerEffort[id] =
+          desired?.effort ??
+          ref.read(settingsControllerProvider).value?.reasoningEffort ??
+          ReasoningEffort.high;
+    }
     // A failure that belongs to another conversation stays parked until the
     // user returns to it. Clearing it here made background failures impossible
     // to discover: hidden on B, then erased while selecting A.

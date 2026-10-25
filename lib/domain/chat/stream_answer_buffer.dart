@@ -7,6 +7,7 @@ class StreamAnswerBuffer {
   final _reasoning = StringBuffer();
   final Stopwatch _thinkingClock;
   int _thinkingMillis = 0;
+  bool _contentRoundBoundary = false;
 
   String get content => _content.toString();
   String get reasoning => _reasoning.toString();
@@ -23,7 +24,14 @@ class StreamAnswerBuffer {
   void addContent(String text) {
     if (text.isEmpty) return;
     stopThinking();
+    if (_contentRoundBoundary && _content.isNotEmpty) _content.write("\n\n");
+    _contentRoundBoundary = false;
     _content.write(text);
+  }
+
+  /// Keep published model prose when tools run; separate the next response.
+  void finishToolRound() {
+    _contentRoundBoundary = _content.isNotEmpty;
   }
 
   /// Local status notes do not start the model's thinking clock.

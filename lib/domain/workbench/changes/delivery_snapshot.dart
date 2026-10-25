@@ -34,8 +34,9 @@ String? deliverySnapshotText(Map file, String path) {
     'db',
     'sqlite',
   };
-  if (binaryExtensions.contains(path.split('.').last.toLowerCase()))
+  if (binaryExtensions.contains(path.split('.').last.toLowerCase())) {
     return null;
+  }
   final bytes = base64Decode(file['content'] as String);
   if (bytes.length > 1024 * 1024 || bytes.contains(0)) return null;
   try {

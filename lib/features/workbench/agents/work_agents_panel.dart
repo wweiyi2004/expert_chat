@@ -1,4 +1,8 @@
+import 'package:expert_chat/core/app_toast.dart';
+import 'package:flutter/services.dart';
+import '../../../state/chat_controller.dart';
 import 'agent_cluster_card.dart';
+import '../../chat/widgets/execution_status_indicator.dart';
 import '../workbench_split_view.dart';
 import 'work_agent_model_pool.dart';
 import 'package:flutter/material.dart';
@@ -6,8 +10,15 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../state/work_agents.dart';
 
 class WorkAgentsPanel extends ConsumerStatefulWidget {
-  const WorkAgentsPanel({super.key, required this.conversationId});
+  const WorkAgentsPanel({
+    super.key,
+    required this.conversationId,
+    this.initiallyExpandLimits = false,
+    this.showConfiguration = true,
+  });
   final String conversationId;
+  final bool initiallyExpandLimits;
+  final bool showConfiguration;
   @override
   ConsumerState<WorkAgentsPanel> createState() => _WorkAgentsPanelState();
 }
@@ -16,6 +27,7 @@ class _WorkAgentsPanelState extends ConsumerState<WorkAgentsPanel> {
   String? _selected;
   final Set<String> _collapsed = {};
   final _message = TextEditingController();
+  bool _sending = false;
   @override
   void dispose() {
     _message.dispose();
@@ -50,115 +62,18 @@ class _WorkAgentsPanelState extends ConsumerState<WorkAgentsPanel> {
         }
         return Column(
           children: [
-            ExpansionTile(
-              title: const Text('子代理限制'),
-              subtitle: Text(
-                '深度 ${limits.maxDepth} · 直属 ${limits.maxChildren} · 同时 ${limits.maxConcurrent}',
-              ),
-              children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Wrap(
-                        spacing: 16,
-                        runSpacing: 8,
-                        children: [
-                          _limit(
-                            '最大深度',
-                            limits.maxDepth,
-                            0,
-                            8,
-                            (v) => _save(
-                              WorkAgentLimits(
-                                maxDepth: v,
-                                maxChildren: limits.maxChildren,
-                                maxConcurrent: limits.maxConcurrent,
-                                maxRounds: limits.maxRounds,
-                              ),
-                            ),
-                          ),
-                          _limit(
-                            '直属子任务',
-                            limits.maxChildren,
-                            0,
-                            16,
-                            (v) => _save(
-                              WorkAgentLimits(
-                                maxDepth: limits.maxDepth,
-                                maxChildren: v,
-                                maxConcurrent: limits.maxConcurrent,
-                                maxRounds: limits.maxRounds,
-                              ),
-                            ),
-                          ),
-                          _limit(
-                            '单个工作并发',
-                            limits.maxConcurrent,
-                            1,
-                            16,
-                            (v) => _save(
-                              WorkAgentLimits(
-                                maxDepth: limits.maxDepth,
-                                maxChildren: limits.maxChildren,
-                                maxConcurrent: v,
-                                maxRounds: limits.maxRounds,
-                              ),
-                            ),
-                          ),
-                          Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              const Text('子代理工具轮数'),
-                              const SizedBox(width: 8),
-                              DropdownButton<int>(
-                                value: limits.maxRounds,
-                                items:
-                                    ([
-                                          8,
-                                          12,
-                                          24,
-                                          48,
-                                          96,
-                                          192,
-                                          limits.maxRounds,
-                                        ].toSet().toList()..sort())
-                                        .map(
-                                          (v) => DropdownMenuItem(
-                                            value: v,
-                                            child: Text('$v'),
-                                          ),
-                                        )
-                                        .toList(),
-                                onChanged: (v) {
-                                  if (v != null)
-                                    _save(
-                                      WorkAgentLimits(
-                                        maxDepth: limits.maxDepth,
-                                        maxChildren: limits.maxChildren,
-                                        maxConcurrent: limits.maxConcurrent,
-                                        maxRounds: v,
-                                      ),
-                                    );
-                                },
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 6),
-                      Text(
-                        '根任务深度为 0；直属数量按累计创建计算，结束后不释放名额。设置用于新任务。深度 2、直属 3 时最多为 1 + 3 + 9 = 13 个节点。',
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    ],
-                  ),
+            if (widget.showConfiguration) ...[
+              ExpansionTile(
+                initiallyExpanded: widget.initiallyExpandLimits,
+                title: const Text('子代理限制'),
+                subtitle: Text(
+                  '深度 ${limits.maxDepth} · 直属 ${limits.maxChildren} · 同时 ${limits.maxConcurrent}',
                 ),
-              ],
-            ),
-            WorkAgentModelPoolSettings(conversationId: widget.conversationId),
-            const Divider(height: 1),
+                children: [const WorkAgentLimitsEditor()],
+              ),
+              WorkAgentModelPoolSettings(conversationId: widget.conversationId),
+              const Divider(height: 1),
+            ],
             if (all.isEmpty)
               const Expanded(child: _EmptyAgents())
             else
@@ -166,6 +81,7 @@ class _WorkAgentsPanelState extends ConsumerState<WorkAgentsPanel> {
                 child: LayoutBuilder(
                   builder: (context, size) {
                     final tree = ListView.builder(
+                      key: const ValueKey('work-agent-tree'),
                       itemCount: ordered.length,
                       itemBuilder: (context, i) {
                         final r = ordered[i];
@@ -252,40 +168,6 @@ class _WorkAgentsPanelState extends ConsumerState<WorkAgentsPanel> {
     );
   }
 
-  Widget _limit(
-    String label,
-    int value,
-    int min,
-    int max,
-    ValueChanged<int> changed,
-  ) => Row(
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      Text(label),
-      const SizedBox(width: 8),
-      DropdownButton<int>(
-        value: value,
-        items: [
-          for (var i = min; i <= max; i++)
-            DropdownMenuItem(value: i, child: Text('$i')),
-        ],
-        onChanged: (v) {
-          if (v != null) changed(v);
-        },
-      ),
-    ],
-  );
-  Future<void> _save(WorkAgentLimits limits) async {
-    try {
-      await ref.read(workAgentLimitsProvider.notifier).save(limits);
-    } catch (error) {
-      if (mounted)
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('$error')));
-    }
-  }
-
   Widget _detail(
     BuildContext context,
     WorkAgentRuntime runtime,
@@ -300,9 +182,22 @@ class _WorkAgentsPanelState extends ConsumerState<WorkAgentsPanel> {
           child: Row(
             children: [
               Expanded(
-                child: Text(r.activity, style: theme.textTheme.titleSmall),
+                child: Text(
+                  '${r.activity}${r.auxiliaryActivity.isEmpty ? '' : ' · 辅助验收：${r.auxiliaryActivity}'}',
+                  style: theme.textTheme.titleSmall,
+                ),
               ),
-              if (!r.terminal)
+              ExecutionStatusCapsule(
+                status: switch (r.status) {
+                  WorkAgentStatus.running ||
+                  WorkAgentStatus.waiting => ExecutionVisualStatus.running,
+                  WorkAgentStatus.queued => ExecutionVisualStatus.queued,
+                  WorkAgentStatus.completed => ExecutionVisualStatus.completed,
+                  WorkAgentStatus.failed => ExecutionVisualStatus.failed,
+                  _ => ExecutionVisualStatus.paused,
+                },
+              ),
+              if (!r.terminal || r.auxiliaryActivity.isNotEmpty)
                 PopupMenuButton<bool>(
                   tooltip: '取消代理',
                   icon: const Icon(Icons.stop_circle_outlined, size: 20),
@@ -351,10 +246,44 @@ class _WorkAgentsPanelState extends ConsumerState<WorkAgentsPanel> {
                   Padding(
                     padding: const EdgeInsets.only(top: 8),
                     child: Text(
-                      '历史记录：上下文和执行连接未恢复。',
+                      '历史记录：尚未恢复执行。请先核验并恢复主任务，再检查此子任务；旧调用不会自动重放。',
                       style: TextStyle(
                         color: theme.colorScheme.onSurfaceVariant,
                       ),
+                    ),
+                  ),
+                if (r.restored &&
+                    !r.external &&
+                    r.status == WorkAgentStatus.interrupted)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: OutlinedButton.icon(
+                      icon: const Icon(Icons.play_arrow, size: 18),
+                      label: const Text('核验并恢复子任务'),
+                      onPressed: _sending
+                          ? null
+                          : () async {
+                              setState(() => _sending = true);
+                              try {
+                                await ref
+                                    .read(chatControllerProvider.notifier)
+                                    .resumeChildTask(
+                                      widget.conversationId,
+                                      r.id,
+                                    );
+                              } catch (error) {
+                                if (context.mounted) {
+                                  AppToastMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text('$error'),
+                                      duration: const Duration(seconds: 6),
+                                    ),
+                                  );
+                                }
+                              } finally {
+                                if (mounted) setState(() => _sending = false);
+                              }
+                            },
                     ),
                   ),
                 if (r.files.isNotEmpty) ...[
@@ -397,7 +326,25 @@ class _WorkAgentsPanelState extends ConsumerState<WorkAgentsPanel> {
             ),
           ),
         ),
-        if (!r.restored && r.status != WorkAgentStatus.cancelled)
+        if (r.external && r.terminal && !r.restored)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            child: Row(
+              children: [
+                const Expanded(
+                  child: Text('任务已结束或停止。草稿会保留；请在会话发送新的用户消息开始后续任务。'),
+                ),
+                IconButton(
+                  tooltip: '复制保留的草稿',
+                  onPressed: () =>
+                      Clipboard.setData(ClipboardData(text: _message.text)),
+                  icon: const Icon(Icons.copy_outlined),
+                ),
+              ],
+            ),
+          ),
+        if (!r.restored &&
+            (r.external || r.status != WorkAgentStatus.cancelled))
           Padding(
             padding: const EdgeInsets.all(8),
             child: Row(
@@ -418,7 +365,7 @@ class _WorkAgentsPanelState extends ConsumerState<WorkAgentsPanel> {
                 ),
                 IconButton(
                   tooltip: '发送后续任务',
-                  onPressed: () => _send(runtime, r),
+                  onPressed: _sending ? null : () => _send(runtime, r),
                   icon: const Icon(Icons.send_outlined),
                 ),
               ],
@@ -428,14 +375,32 @@ class _WorkAgentsPanelState extends ConsumerState<WorkAgentsPanel> {
     );
   }
 
-  void _send(WorkAgentRuntime runtime, WorkAgentRecord r) {
+  Future<void> _send(WorkAgentRuntime runtime, WorkAgentRecord r) async {
+    if (_sending || _message.text.trim().isEmpty) return;
+    final text = _message.text;
+    setState(() => _sending = true);
     try {
-      runtime.followup(r.id, _message.text);
-      _message.clear();
+      if (r.external) {
+        await ref
+            .read(chatControllerProvider.notifier)
+            .addWorkRequirement(r.conversationId, text);
+      } else {
+        runtime.followup(r.id, text);
+      }
+      if (mounted &&
+          widget.conversationId == r.conversationId &&
+          (_selected == null || _selected == r.id) &&
+          _message.text == text) {
+        _message.clear();
+      }
     } catch (error) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('$error')));
+      if (mounted) {
+        AppToastMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('$error')));
+      }
+    } finally {
+      if (mounted) setState(() => _sending = false);
     }
   }
 }
@@ -465,4 +430,151 @@ class _EmptyAgents extends StatelessWidget {
       ),
     ),
   );
+}
+
+/// Reusable limits form for the workbench and the assistants settings page.
+class WorkAgentLimitsEditor extends ConsumerWidget {
+  const WorkAgentLimitsEditor({super.key});
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final limits = ref.watch(workAgentLimitsProvider);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Wrap(
+            spacing: 16,
+            runSpacing: 8,
+            children: [
+              _limit(
+                '最大深度',
+                limits.maxDepth,
+                0,
+                8,
+                (v) => _save(
+                  ref,
+                  context,
+                  WorkAgentLimits(
+                    maxDepth: v,
+                    maxChildren: limits.maxChildren,
+                    maxConcurrent: limits.maxConcurrent,
+                    maxRounds: limits.maxRounds,
+                  ),
+                ),
+              ),
+              _limit(
+                '直属子任务',
+                limits.maxChildren,
+                0,
+                16,
+                (v) => _save(
+                  ref,
+                  context,
+                  WorkAgentLimits(
+                    maxDepth: limits.maxDepth,
+                    maxChildren: v,
+                    maxConcurrent: limits.maxConcurrent,
+                    maxRounds: limits.maxRounds,
+                  ),
+                ),
+              ),
+              _limit(
+                '单个工作并发',
+                limits.maxConcurrent,
+                1,
+                16,
+                (v) => _save(
+                  ref,
+                  context,
+                  WorkAgentLimits(
+                    maxDepth: limits.maxDepth,
+                    maxChildren: limits.maxChildren,
+                    maxConcurrent: v,
+                    maxRounds: limits.maxRounds,
+                  ),
+                ),
+              ),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text('子代理工具轮数'),
+                  const SizedBox(width: 8),
+                  DropdownButton<int>(
+                    value: limits.maxRounds,
+                    items:
+                        ({8, 12, 24, 48, 96, 192, limits.maxRounds}.toList()
+                              ..sort())
+                            .map(
+                              (v) =>
+                                  DropdownMenuItem(value: v, child: Text('$v')),
+                            )
+                            .toList(),
+                    onChanged: (v) {
+                      if (v != null) {
+                        _save(
+                          ref,
+                          context,
+                          WorkAgentLimits(
+                            maxDepth: limits.maxDepth,
+                            maxChildren: limits.maxChildren,
+                            maxConcurrent: limits.maxConcurrent,
+                            maxRounds: v,
+                          ),
+                        );
+                      }
+                    },
+                  ),
+                ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            '根任务深度为 0；直属数量按累计创建计算，结束后不释放名额。设置用于新任务。深度 2、直属 3 时最多为 1 + 3 + 9 = 13 个节点。',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _limit(
+    String label,
+    int value,
+    int min,
+    int max,
+    ValueChanged<int> changed,
+  ) => Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Text(label),
+      const SizedBox(width: 8),
+      DropdownButton<int>(
+        value: value,
+        items: [
+          for (var i = min; i <= max; i++)
+            DropdownMenuItem(value: i, child: Text('$i')),
+        ],
+        onChanged: (v) {
+          if (v != null) changed(v);
+        },
+      ),
+    ],
+  );
+  Future<void> _save(
+    WidgetRef ref,
+    BuildContext context,
+    WorkAgentLimits limits,
+  ) async {
+    try {
+      await ref.read(workAgentLimitsProvider.notifier).save(limits);
+    } catch (error) {
+      if (context.mounted) {
+        AppToastMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('$error')));
+      }
+    }
+  }
 }

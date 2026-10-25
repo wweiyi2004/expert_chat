@@ -56,8 +56,9 @@ final workHooksProvider = Provider<WorkHookRuntime>((ref) {
       if (!await prefs.setString(
         'workHooks.v1',
         jsonEncode(definitions.map((d) => d.toJson()).toList()),
-      ))
+      )) {
         throw StateError('Hook 配置保存失败');
+      }
     },
   );
   ref.onDispose(runtime.dispose);

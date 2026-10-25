@@ -166,6 +166,11 @@ class RequestContextBuilder {
     }
     if (notes.project.isNotEmpty) history.insert(0, _system(notes.project));
     if (notes.recovery.isNotEmpty) history.add(_system(notes.recovery));
+    final latestUser = path.where((m) => m.role == MessageRole.user).lastOrNull;
+    if (latestUser != null &&
+        RegExp(r'[\u3400-\u9fff]').hasMatch(latestUser.content)) {
+      history.insert(0, _system(chineseTaskLanguageHint));
+    }
     final context = contextWindow.manage(history, contextPrefs);
     return PreparedRequestContext(
       messages: context.messages,
@@ -177,6 +182,10 @@ class RequestContextBuilder {
       worldInfoHits: hits,
     );
   }
+
+  static const chineseTaskLanguageHint =
+      '语言偏好：本轮用户使用中文。除非用户明确要求其他语言，回复、进度说明及可见的推理摘要优先使用中文；'
+      '代码、命令、标识符、引文保留原文。不要求披露隐藏推理，也不改写模型已经返回的原始推理。';
 
   static LlmRequestMessage _system(String text) =>
       LlmRequestMessage(role: MessageRole.system, content: text);

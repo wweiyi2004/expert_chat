@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -63,7 +64,7 @@ class _CourseListPageState extends ConsumerState<CourseListPage> {
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
+      AppToastMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('创建失败：$e')));
     } finally {

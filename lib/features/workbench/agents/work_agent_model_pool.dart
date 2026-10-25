@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../state/work_agents.dart';
@@ -7,13 +8,15 @@ import '../../../state/conversation_model_choice.dart';
 import '../../../domain/llm/llm_provider.dart';
 
 class WorkAgentModelPoolSettings extends ConsumerWidget {
-  const WorkAgentModelPoolSettings({super.key, required this.conversationId});
-  final String conversationId;
+  const WorkAgentModelPoolSettings({super.key, this.conversationId});
+  final String? conversationId;
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final settings = ref.watch(settingsControllerProvider).value;
     if (settings == null) return const SizedBox.shrink();
-    final choice = ref.watch(conversationModelChoiceProvider)[conversationId];
+    final choice = conversationId == null
+        ? null
+        : ref.watch(conversationModelChoiceProvider)[conversationId];
     final defaultModel = choice == null || choice == autoModelChoice
         ? settings.model
         : choice;
@@ -29,10 +32,12 @@ class WorkAgentModelPoolSettings extends ConsumerWidget {
     return ListTile(
       dense: true,
       leading: const Icon(Icons.model_training_outlined, size: 19),
-      title: const Text('子代理模型池'),
+      title: const Text('子代理可用模型'),
       subtitle: Text(
         configured == null
-            ? '默认使用当前会话模型 · 可添加其他模型'
+            ? conversationId == null
+                  ? '默认跟随各主任务的模型 · 可单独选择全局模型池'
+                  : '默认使用当前会话模型 · 可添加其他模型'
             : selected.isEmpty
             ? '未选择模型，暂不创建子代理'
             : selected.map((m) => m.model).join(' · '),
@@ -43,16 +48,21 @@ class WorkAgentModelPoolSettings extends ConsumerWidget {
       onTap: () async {
         final result = await showDialog<List<WorkAgentModelOption>>(
           context: context,
-          builder: (_) => _PoolDialog(models: catalog, selected: selected),
+          builder: (_) => _PoolDialog(
+            models: catalog,
+            selected: selected,
+            followsTask: configured == null && conversationId == null,
+          ),
         );
         if (result == null) return;
         try {
           await ref.read(workAgentModelPoolProvider.notifier).save(result);
         } catch (error) {
-          if (context.mounted)
-            ScaffoldMessenger.of(
+          if (context.mounted) {
+            AppToastMessenger.of(
               context,
             ).showSnackBar(SnackBar(content: Text('$error')));
+          }
         }
       },
     );
@@ -60,7 +70,12 @@ class WorkAgentModelPoolSettings extends ConsumerWidget {
 }
 
 class _PoolDialog extends StatefulWidget {
-  const _PoolDialog({required this.models, required this.selected});
+  const _PoolDialog({
+    required this.models,
+    required this.selected,
+    this.followsTask = false,
+  });
+  final bool followsTask;
   final List<String> models;
   final List<WorkAgentModelOption> selected;
   @override
@@ -100,10 +115,11 @@ class _PoolDialogState extends State<_PoolDialog> {
         ],
       ),
     );
-    if (result != null && mounted)
+    if (result != null && mounted) {
       setState(
         () => _selected[model] = WorkAgentModelOption(model, purpose: result),
       );
+    }
   }
 
   @override
@@ -119,6 +135,14 @@ class _PoolDialogState extends State<_PoolDialog> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            if (widget.followsTask)
+              const Padding(
+                padding: EdgeInsets.only(bottom: 8),
+                child: Text(
+                  '当前未单独配置：子代理跟随各自主任务的模型。下方勾选展示全局默认模型；保存后才成为固定的全局模型池。',
+                  style: TextStyle(fontSize: 12),
+                ),
+              ),
             const Text(
               '主模型会看到这些模型及用途，并按任务选择。未加入池中的模型不可用于新子代理。',
               style: TextStyle(fontSize: 12),

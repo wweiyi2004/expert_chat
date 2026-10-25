@@ -221,15 +221,18 @@ void main() {
     await tester.tap(find.text('生图记录'));
     await settle(tester);
     expect(find.byType(GenerationHistoryPage), findsOneWidget);
-    await tester.pageBack();
+    await tester.tap(find.text('素材'));
     await settle(tester);
-    await tester.tap(find.text('素材库'));
-    await settle(tester);
-    expect(find.byType(LibraryPage), findsOneWidget);
+    expect(find.byType(LibraryBrowser), findsOneWidget);
     expect(find.text('选用'), findsNothing);
-    await tester.pageBack();
+    await tester.tap(find.text('资料集'));
     await settle(tester);
-    await tester.tap(find.text('项目'));
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(ValueKey('resource-set-$firstProject')),
+        matching: find.text('管理'),
+      ),
+    );
     await settle(tester);
     await tester.tap(find.byKey(const ValueKey('project-continue')));
     await settle(tester);
@@ -239,6 +242,117 @@ void main() {
       container.read(chatControllerProvider).requireValue.current?.id,
       'latest',
     );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('资料集卡片引用新建聊天且不修改原工作会话', (tester) async {
+    container
+        .read(chatControllerProvider.notifier)
+        .newConversation(workMode: true, forceNew: true);
+    final previous = container
+        .read(chatControllerProvider)
+        .requireValue
+        .currentId;
+    await pump(tester, const ResourcesPage(), width: 390);
+    await tester.tap(find.byKey(ValueKey('resource-use-$firstProject')));
+    await settle(tester);
+    final state = container.read(chatControllerProvider).requireValue;
+    expect(state.currentId, isNot(previous));
+    expect(state.current!.projectId, firstProject);
+    expect(state.current!.workMode, isFalse);
+    expect(
+      state.conversations.firstWhere((c) => c.id == previous).workMode,
+      isTrue,
+    );
+    expect(find.byType(ResourcesPage), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('资料集网格新建复用原编辑器并更新真实资料集', (tester) async {
+    await pump(tester, const ResourcesPage(), width: 390);
+    await tester.tap(find.text('＋ 新建资料集'));
+    await settle(tester);
+    expect(find.text('新建资料集'), findsOneWidget);
+    final name = find.byWidgetPredicate(
+      (w) => w is TextField && w.decoration?.labelText == '资料集名称',
+    );
+    await tester.enterText(name, '新增的真实资料集');
+    await tester.tap(find.text('保存'));
+    await settle(tester);
+    expect(
+      (await projects.list()).any((project) => project.name == '新增的真实资料集'),
+      isTrue,
+    );
+    await tester.pageBack();
+    await settle(tester);
+    expect(find.text('新增的真实资料集'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('资料库素材网格保留真实文件名预览和跨类型选中', (tester) async {
+    await pump(tester, const ResourcesPage(), width: 390);
+    await tester.tap(find.text('素材'));
+    await settle(tester);
+    expect(find.text('海边.png'), findsOneWidget);
+    await tester.tap(find.text('海边.png'));
+    await settle(tester);
+    expect(find.byType(LibraryImagePreview), findsOneWidget);
+    await tester.pageBack();
+    await settle(tester);
+    await tester.tap(find.byTooltip('选择 海边.png'));
+    await settle(tester);
+    expect(find.text('已选 1 项'), findsOneWidget);
+    await tester.tap(find.text('文件'));
+    await settle(tester);
+    expect(find.text('方案甲.txt'), findsOneWidget);
+    expect(find.text('方案乙.txt'), findsOneWidget);
+    expect(find.text('已选 1 项'), findsOneWidget);
+    await tester.tap(find.text('方案甲.txt'));
+    await settle(tester);
+    expect(find.textContaining('甲项目资料正文'), findsWidgets);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('资料库生图标签保留两版选择比较和参数操作', (tester) async {
+    await pump(tester, const ResourcesPage(), width: 390);
+    await tester.tap(find.text('生图记录'));
+    await settle(tester);
+    expect(find.text('找到图片，继续创作'), findsNothing);
+    expect(find.byKey(const ValueKey('generation-search')), findsOneWidget);
+    expect(find.byTooltip('刷新'), findsOneWidget);
+    final scroll = find
+        .descendant(
+          of: find.byKey(const ValueKey('generation-grid')),
+          matching: find.byType(Scrollable),
+        )
+        .first;
+    for (final id in ['root', 'child']) {
+      final choice = find.byKey(ValueKey('generation-select-$id'));
+      await tester.scrollUntilVisible(
+        choice,
+        id == 'root' ? 180 : -180,
+        scrollable: scroll,
+      );
+      await tester.ensureVisible(choice);
+      await tester.pumpAndSettle();
+      await tester.tap(choice);
+      await settle(tester);
+    }
+    final other = find.byKey(const ValueKey('generation-select-other'));
+    await tester.scrollUntilVisible(other, -180, scrollable: scroll);
+    await tester.ensureVisible(other);
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<Checkbox>(other).onChanged,
+      isNull,
+      reason: '最多两版的约束保留',
+    );
+    await tester.tap(find.text('对比选中的两个版本'));
+    await settle(tester);
+    expect(find.text('版本对比'), findsOneWidget);
+    expect(find.text('仅显示变化参数'), findsOneWidget);
+    expect(find.text('复制提示词'), findsWidgets);
+    expect(find.text('按原参数生成新版本'), findsWidgets);
     expect(tester.takeException(), isNull);
   });
 

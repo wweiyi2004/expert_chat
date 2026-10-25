@@ -11,7 +11,9 @@ class ReasoningEffortControl extends StatelessWidget {
     required this.onToggle,
     this.onChanged,
     this.compact = false,
+    this.config,
   });
+  final LlmConfig? config;
   final bool compact;
   final bool enabled, thinking, supportsEffort;
   final ReasoningEffort effort;
@@ -34,6 +36,7 @@ class ReasoningEffortControl extends StatelessWidget {
       ),
       menuChildren: [
         ReasoningEffortSlider(
+          config: config,
           thinking: thinking,
           effort: effort,
           supportsEffort: supportsEffort,
@@ -97,7 +100,9 @@ class ReasoningEffortSlider extends StatefulWidget {
     required this.supportsEffort,
     required this.onToggle,
     this.onChanged,
+    this.config,
   });
+  final LlmConfig? config;
   final bool thinking, supportsEffort;
   final ReasoningEffort effort;
   final VoidCallback onToggle;
@@ -107,21 +112,59 @@ class ReasoningEffortSlider extends StatefulWidget {
 }
 
 class _ReasoningEffortSliderState extends State<ReasoningEffortSlider> {
-  late double _value = widget.thinking
-      ? (widget.supportsEffort ? widget.effort.index + 1.0 : 1.0)
-      : 0;
+  List<ReasoningEffort> get _efforts => widget.config == null
+      ? const [ReasoningEffort.low, ReasoningEffort.high, ReasoningEffort.max]
+      : reasoningEffortsFor(widget.config!);
+  bool get _canDisable =>
+      widget.config == null ||
+      widget.config!.capabilities.reasoningCanBeDisabled ||
+      widget.config!.capabilities.sendThinkingField ||
+      !widget.config!.capabilities.isReasoner;
+  bool get _separateToggle => widget.config != null && widget.supportsEffort;
+  int get _offset => _canDisable && !_separateToggle ? 1 : 0;
+  double _initialValue() {
+    if (!widget.thinking && _canDisable && !_separateToggle) return 0;
+    if (!widget.supportsEffort) return _canDisable ? 1 : 0;
+    final index = _efforts.indexOf(widget.effort);
+    return ((index < 0
+                ? _efforts
+                      .indexOf(ReasoningEffort.high)
+                      .clamp(0, _efforts.length - 1)
+                : index) +
+            _offset)
+        .toDouble();
+  }
+
+  late double _value = _initialValue();
+  @override
+  void didUpdateWidget(covariant ReasoningEffortSlider oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.config?.model != widget.config?.model ||
+        oldWidget.effort != widget.effort ||
+        oldWidget.thinking != widget.thinking ||
+        oldWidget.supportsEffort != widget.supportsEffort) {
+      _value = _initialValue();
+      _committedThinking = null;
+    }
+  }
+
   List<String> get _labels => widget.supportsEffort
-      ? ['标准', ...ReasoningEffort.values.map((e) => e.label)]
+      ? [
+          if (_canDisable && !_separateToggle) '关闭',
+          ..._efforts.map((e) => e.label),
+        ]
       : ['标准', '深度思考'];
   bool? _committedThinking;
   void _commit(double value) {
     final index = value.round();
-    if ((index > 0) != (_committedThinking ?? widget.thinking)) {
-      _committedThinking = index > 0;
+    final thinking = _separateToggle || !_canDisable || index > 0;
+    if (thinking != (_committedThinking ?? widget.thinking)) {
+      _committedThinking = thinking;
       widget.onToggle();
     }
-    if (index > 0 && widget.supportsEffort)
-      widget.onChanged?.call(ReasoningEffort.values[index - 1]);
+    if (thinking && widget.supportsEffort) {
+      widget.onChanged?.call(_efforts[index - _offset]);
+    }
   }
 
   @override
@@ -134,6 +177,19 @@ class _ReasoningEffortSliderState extends State<ReasoningEffortSlider> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (_separateToggle && _canDisable)
+              SwitchListTile.adaptive(
+                key: const ValueKey('reasoning-thinking-toggle'),
+                contentPadding: EdgeInsets.zero,
+                title: const Text('深度思考'),
+                value: _committedThinking ?? widget.thinking,
+                onChanged: (value) {
+                  if (value != (_committedThinking ?? widget.thinking)) {
+                    setState(() => _committedThinking = value);
+                    widget.onToggle();
+                  }
+                },
+              ),
             Text(
               _labels[_value.round()],
               style: Theme.of(
@@ -141,33 +197,36 @@ class _ReasoningEffortSliderState extends State<ReasoningEffortSlider> {
               ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
             ),
             const SizedBox(height: 8),
-            SliderTheme(
-              data: SliderTheme.of(context).copyWith(
-                trackHeight: 26,
-                activeTrackColor: colors.primary,
-                inactiveTrackColor: colors.surfaceContainerHighest,
-                thumbColor: colors.surface,
-                thumbShape: const RoundSliderThumbShape(
-                  enabledThumbRadius: 14,
-                  elevation: 2,
+            if (_labels.length > 1)
+              SliderTheme(
+                data: SliderTheme.of(context).copyWith(
+                  trackHeight: 26,
+                  activeTrackColor: colors.primary,
+                  inactiveTrackColor: colors.surfaceContainerHighest,
+                  thumbColor: colors.surface,
+                  thumbShape: const RoundSliderThumbShape(
+                    enabledThumbRadius: 14,
+                    elevation: 2,
+                  ),
+                  overlayShape: const RoundSliderOverlayShape(
+                    overlayRadius: 19,
+                  ),
+                  activeTickMarkColor: colors.onPrimary.withValues(alpha: .45),
+                  inactiveTickMarkColor: colors.onSurfaceVariant.withValues(
+                    alpha: .35,
+                  ),
                 ),
-                overlayShape: const RoundSliderOverlayShape(overlayRadius: 19),
-                activeTickMarkColor: colors.onPrimary.withValues(alpha: .45),
-                inactiveTickMarkColor: colors.onSurfaceVariant.withValues(
-                  alpha: .35,
+                child: Slider(
+                  key: const ValueKey('reasoning-effort-slider'),
+                  min: 0,
+                  max: (_labels.length - 1).toDouble(),
+                  divisions: _labels.length - 1,
+                  value: _value,
+                  label: _labels[_value.round()],
+                  onChanged: (value) => setState(() => _value = value),
+                  onChangeEnd: _commit,
                 ),
               ),
-              child: Slider(
-                key: const ValueKey('reasoning-effort-slider'),
-                min: 0,
-                max: (_labels.length - 1).toDouble(),
-                divisions: _labels.length - 1,
-                value: _value,
-                label: _labels[_value.round()],
-                onChanged: (value) => setState(() => _value = value),
-                onChangeEnd: _commit,
-              ),
-            ),
           ],
         ),
       ),

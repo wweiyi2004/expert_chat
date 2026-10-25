@@ -124,11 +124,36 @@ class WorkspaceIntegration(unittest.TestCase):
         client = self.client()
         names = {t["name"] for t in client.request("tools/list", {})["tools"]}
         self.assertEqual(names, {"coding_workspace_info", "coding_list_directory", "coding_read_file",
-                                 "coding_write_file", "coding_create_directory"})
+                                 "coding_write_file", "coding_create_directory", "coding_artifact_manifest",
+                                 "coding_copy_file", "coding_delete_file_if_current"})
         info = text_result(client.tool("coding_workspace_info"))
         self.assertEqual(info["workspace"]["id"], "example")
-        self.assertEqual(info["commands"], "disabled")
+        self.assertEqual(info["commands"], "not_provided_by_file_service")
         self.assertEqual(info["policy_changes"], "local_cli_only")
+
+    def test_streamed_artifact_and_internal_rollback_reject_stale_versions(self):
+        client = self.client()
+        data = b"artifact" * (9 * 1024 * 1024 // 8)
+        (self.project / "large.bin").write_bytes(data)
+        artifact = text_result(client.tool("coding_artifact_manifest", scope="root", path="large.bin"))
+        self.assertEqual(artifact["bytes"], len(data))
+        self.assertFalse(artifact["content_loaded"])
+        self.assertNotIn("content", artifact)
+        denied = client.tool("coding_copy_file", scope="root", source="large.bin",
+                             destination="copied.bin", expected_sha256=artifact["sha256"])
+        self.assertTrue(denied["isError"])
+        self.assertFalse((self.project / "copied.bin").exists())
+        self.cli("scope", "set", "example", "root", "--path", str(self.project), "--access", "read-write")
+        copied = text_result(client.tool("coding_copy_file", scope="root", source="large.bin",
+                                         destination="copied.bin", expected_sha256=artifact["sha256"]))
+        self.assertEqual(copied["sha256"], artifact["sha256"])
+        self.assertTrue(client.tool("coding_delete_file_if_current", scope="root", path="copied.bin",
+                                    expected_sha256="0" * 64)["isError"])
+        self.assertEqual((self.project / "copied.bin").stat().st_size, len(data))
+        deleted = text_result(client.tool("coding_delete_file_if_current", scope="root", path="copied.bin",
+                                          expected_sha256=copied["sha256"]))
+        self.assertTrue(deleted["deleted"])
+        self.assertFalse((self.project / "copied.bin").exists())
 
     def test_rpc_traversal_and_denied_child_cannot_read_external_content(self):
         client = self.client()

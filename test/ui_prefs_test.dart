@@ -3,6 +3,76 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   test(
+    'new reading defaults adopt design while old JSON preserves line height',
+    () {
+      expect(const UiPrefs().lineHeight, 1.7);
+      expect(UiPrefs.fromJson(null).lineHeight, 1.7);
+      expect(UiPrefs.fromJson({}).lineHeight, 1.85);
+      expect(UiPrefs.fromJson({'lineHeight': 2.1}).lineHeight, 2.1);
+    },
+  );
+
+  test(
+    'redesign dimensions reject non-finite values and group copies are isolated',
+    () {
+      for (final value in [double.nan, double.infinity, '600', null]) {
+        expect(UiPrefs.fromJson({'workbenchWidth': value}).workbenchWidth, 560);
+      }
+      expect(
+        const UiPrefs()
+            .copyWith(workbenchWidth: double.infinity)
+            .workbenchWidth,
+        560,
+      );
+      final groups = ['work:a', 'work:a'];
+      final copied = const UiPrefs().copyWith(sidebarCollapsedGroups: groups);
+      groups.add('chat:b');
+      expect(copied.sidebarCollapsedGroups, ['work:a']);
+      expect(
+        () => copied.sidebarCollapsedGroups.add('mutate'),
+        throwsUnsupportedError,
+      );
+      final encoded = copied.toJson();
+      (encoded['sidebarCollapsedGroups'] as List).add('export-only');
+      expect(copied.sidebarCollapsedGroups, ['work:a']);
+    },
+  );
+
+  test(
+    'redesign preferences preserve palettes, widths and collapsed groups',
+    () {
+      for (final palette in ColorThemePref.values) {
+        final prefs = UiPrefs(
+          colorTheme: palette,
+          workbenchWidth: 720,
+          sidebarCollapsedGroups: const ['work:local', 'chat:collection'],
+        );
+        final restored = UiPrefs.fromJson(prefs.toJson());
+        expect(restored.colorTheme, palette);
+        expect(restored.workbenchWidth, 720);
+        expect(restored.sidebarCollapsedGroups, prefs.sidebarCollapsedGroups);
+      }
+      expect(UiPrefs.fromJson({}).workbenchWidth, 560);
+      expect(
+        UiPrefs.fromJson({'workbenchWidth': double.nan}).workbenchWidth,
+        560,
+      );
+      expect(UiPrefs.fromJson({'workbenchWidth': 9999}).workbenchWidth, 900);
+      expect(UiPrefs.fromJson({'workbenchWidth': 1}).workbenchWidth, 340);
+      expect(
+        UiPrefs.fromJson({
+          'sidebarCollapsedGroups': [1, 'work:a', 'work:a'],
+        }).sidebarCollapsedGroups,
+        ['work:a'],
+      );
+      expect(
+        UiPrefs.fromJson({'colorTheme': 'future-art'}).colorTheme,
+        ColorThemePref.minimal,
+      );
+    },
+  );
+
+  test(
     'reading settings survive serialization with separate chat/work layouts',
     () {
       final chosen = const UiPrefs().copyWith(

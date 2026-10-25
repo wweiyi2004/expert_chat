@@ -600,7 +600,7 @@ void main() {
     );
   });
 
-  testWidgets('starting the story stops a stream running in another chat', (
+  testWidgets('starting a story preserves the independently running chat', (
     tester,
   ) async {
     llm = _ScriptedLlmProvider(const [
@@ -630,6 +630,10 @@ void main() {
       imageGenMode: ImageGenMode.off,
       reasoningEffort: ReasoningEffort.high,
     );
+    final oldChat = container
+        .read(chatControllerProvider)
+        .requireValue
+        .currentId!;
     unawaited(ctrl.sendMessage('随便聊聊'));
     // isStreaming becomes true before the provider is subscribed. Wait for
     // the intended background request to claim the hanging scripted response.
@@ -654,7 +658,9 @@ void main() {
     final story = container.read(chatControllerProvider).requireValue.current!;
     expect(story.isStory, isTrue);
     // hang chat (1) + generate draft (1) + first section (1); no strict review.
-    expect(llm.calls, hasLength(3), reason: '旧流应被停止，首节生成照常发起');
+    expect(llm.calls, hasLength(3), reason: '旧会话继续运行，故事首节独立生成');
+    expect(ctrl.isConversationRunning(oldChat), isTrue);
+    ctrl.stop(conversationId: oldChat);
     expect(story.activePath, isNotEmpty);
     expect(tester.takeException(), isNull);
   });

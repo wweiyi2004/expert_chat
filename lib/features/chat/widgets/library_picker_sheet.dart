@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../../core/prototype_widgets.dart';
 
 import '../../../data/library_models.dart';
 import '../../../data/library_repository.dart';
@@ -32,12 +33,14 @@ class LibraryBrowser extends StatefulWidget {
   const LibraryBrowser({
     super.key,
     this.manageOnly = false,
+    this.prototypeLibrary = false,
     required this.repository,
     required this.maxCount,
     this.initialKind,
   });
 
   final bool manageOnly;
+  final bool prototypeLibrary;
   final LibraryRepository repository;
   final int maxCount;
   final LibraryItemKind? initialKind;
@@ -184,54 +187,59 @@ class _LibraryBrowserState extends State<LibraryBrowser> {
       height: widget.manageOnly ? double.infinity : height,
       child: Column(
         children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
-            child: Row(
-              children: [
-                Text(
-                  widget.manageOnly ? '预览与管理' : '素材库',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w700,
+          if (!widget.prototypeLibrary)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+              child: Row(
+                children: [
+                  Text(
+                    widget.manageOnly ? '预览与管理' : '素材库',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
-                ),
-                const Spacer(),
-                if (widget.manageOnly && _selected.isNotEmpty)
-                  TextButton(
-                    onPressed: _deleting || _confirming
-                        ? null
-                        : _deleteSelected,
-                    child: Text('删除 ${_selected.length}'),
-                  ),
-              ],
+                  const Spacer(),
+                  if (widget.manageOnly && _selected.isNotEmpty)
+                    TextButton(
+                      onPressed: _deleting || _confirming
+                          ? null
+                          : _deleteSelected,
+                      child: Text('删除 ${_selected.length}'),
+                    ),
+                ],
+              ),
             ),
-          ),
           if (widget.initialKind == null)
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-              child: SegmentedButton<LibraryItemKind>(
+              padding: widget.prototypeLibrary
+                  ? const EdgeInsets.only(bottom: 8)
+                  : const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: PrototypeSegmentedControl<LibraryItemKind>(
                 segments: const [
-                  ButtonSegment(
+                  PrototypeSegment(
                     value: LibraryItemKind.image,
-                    label: Text('图片'),
-                    icon: Icon(Icons.image_outlined, size: 16),
+                    label: '图片',
+                    icon: Icons.image_outlined,
                   ),
-                  ButtonSegment(
+                  PrototypeSegment(
                     value: LibraryItemKind.file,
-                    label: Text('文件'),
-                    icon: Icon(Icons.insert_drive_file_outlined, size: 16),
+                    label: '文件',
+                    icon: Icons.insert_drive_file_outlined,
                   ),
                 ],
-                selected: {_kind},
-                onSelectionChanged: _deleting || _confirming
+                value: _kind,
+                onChanged: _deleting || _confirming
                     ? null
                     : (next) {
-                        setState(() => _kind = next.first);
+                        setState(() => _kind = next);
                         _reload();
                       },
               ),
             ),
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
+            padding: widget.prototypeLibrary
+                ? const EdgeInsets.only(bottom: 12)
+                : const EdgeInsets.fromLTRB(16, 4, 16, 10),
             child: TextField(
               key: const ValueKey('library-search'),
               controller: _search,
@@ -286,6 +294,14 @@ class _LibraryBrowserState extends State<LibraryBrowser> {
                                 textAlign: TextAlign.center,
                               ),
                             )
+                          : widget.prototypeLibrary
+                          ? _PrototypeAssetGrid(
+                              items: visible,
+                              selected: _selected,
+                              repository: widget.repository,
+                              onToggle: _toggle,
+                              onPreview: widget.manageOnly ? _preview : null,
+                            )
                           : _kind == LibraryItemKind.image
                           ? _ImageGrid(
                               items: visible,
@@ -308,7 +324,9 @@ class _LibraryBrowserState extends State<LibraryBrowser> {
           SafeArea(
             top: false,
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+              padding: widget.prototypeLibrary
+                  ? const EdgeInsets.only(top: 8)
+                  : const EdgeInsets.fromLTRB(16, 8, 16, 12),
               child: Row(
                 children: [
                   Text(
@@ -320,6 +338,15 @@ class _LibraryBrowserState extends State<LibraryBrowser> {
                     ),
                   ),
                   const Spacer(),
+                  if (widget.prototypeLibrary && _selected.isNotEmpty)
+                    PrototypeButton(
+                      label: '删除 ${_selected.length}',
+                      small: true,
+                      variant: PrototypeButtonVariant.danger,
+                      onPressed: _deleting || _confirming
+                          ? null
+                          : _deleteSelected,
+                    ),
                   if (widget.manageOnly)
                     TextButton(
                       onPressed: _selected.isEmpty || _deleting
@@ -387,6 +414,127 @@ class _LibraryBrowserState extends State<LibraryBrowser> {
         _selection[id] = _items.firstWhere((item) => item.id == id);
       }
     });
+  }
+}
+
+class _PrototypeAssetGrid extends StatelessWidget {
+  const _PrototypeAssetGrid({
+    required this.items,
+    required this.selected,
+    required this.repository,
+    required this.onToggle,
+    this.onPreview,
+  });
+  final List<LibraryItem> items;
+  final Set<String> selected;
+  final LibraryRepository repository;
+  final ValueChanged<String> onToggle;
+  final ValueChanged<LibraryItem>? onPreview;
+  @override
+  Widget build(BuildContext context) {
+    final c = PrototypeColors.of(context);
+    return LayoutBuilder(
+      builder: (context, size) {
+        final columns = ((size.maxWidth + 12) / 232).floor().clamp(1, 4);
+        final scale = MediaQuery.textScalerOf(context).scale(14) / 14;
+        return GridView.builder(
+          key: const ValueKey('prototype-assets-grid'),
+          padding: EdgeInsets.zero,
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: columns,
+            crossAxisSpacing: 12,
+            mainAxisSpacing: 12,
+            mainAxisExtent: 108 + 45 * scale,
+          ),
+          itemCount: items.length,
+          itemBuilder: (context, index) {
+            final item = items[index];
+            final on = selected.contains(item.id);
+            return Material(
+              key: ValueKey('resource-asset-${item.id}'),
+              color: c.panel,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+                side: BorderSide(color: on ? c.accent : Colors.transparent),
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: InkWell(
+                onTap: () =>
+                    onPreview == null ? onToggle(item.id) : onPreview!(item),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 12,
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      SizedBox(
+                        height: 72,
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(8),
+                              child: item.kind == LibraryItemKind.image
+                                  ? _LibraryThumb(
+                                      repository: repository,
+                                      item: item,
+                                    )
+                                  : ColoredBox(
+                                      color: c.surface,
+                                      child: Center(
+                                        child: Text(
+                                          item.name
+                                              .split('.')
+                                              .last
+                                              .toUpperCase(),
+                                          style: TextStyle(
+                                            fontSize: 12,
+                                            fontFamily: 'monospace',
+                                            color: c.faint,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                            ),
+                            Positioned(
+                              top: 0,
+                              right: 0,
+                              child: PrototypeIconButton(
+                                icon: on
+                                    ? Icons.check_circle
+                                    : Icons.circle_outlined,
+                                onPressed: () => onToggle(item.id),
+                                tooltip: on
+                                    ? '取消选择 ${item.name}'
+                                    : '选择 ${item.name}',
+                                selected: on,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        item.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 14, color: c.ink),
+                      ),
+                      Text(
+                        '${(item.sizeBytes / 1024).round()} KB',
+                        style: TextStyle(fontSize: 12, color: c.muted),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
   }
 }
 

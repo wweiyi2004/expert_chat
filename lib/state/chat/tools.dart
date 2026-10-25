@@ -1,6 +1,562 @@
 part of '../chat_controller.dart';
 
 mixin ChatTools on ChatMutations {
+  Future<String> _repositoryGuidance(
+    WorkToolSession? session,
+    String task, {
+    String actor = 'main',
+    List<String> scopedPaths = const [],
+    CancelToken? token,
+  }) async {
+    final core = _sessionRuns[_run?.conversationId]?.core ?? _run?.core;
+    final warnings = <String>[];
+    if (session == null) {
+      warnings.add('仓库规则/技能未加载：当前没有已授权工作区。');
+      core?.repositorySources[actor] = {
+        'sources': [],
+        'warnings': warnings,
+        'skills': [],
+      };
+      return warnings.join('\n');
+    }
+    try {
+      final readToken = token ?? CancelToken();
+      final named = RegExp(
+        r'\$([A-Za-z0-9_.-]+)',
+      ).allMatches(task).map((m) => m.group(1)!).toSet();
+      final target = jsonDecode(session.changeTarget) as Map;
+      final context = await const RepositoryContextReaderLoader().load(
+        rootLabel: target['root'] as String? ?? session.target,
+        namedSkills: named,
+        scopedPaths: scopedPaths,
+        readFile: (path) async {
+          if (readToken.isCancelled) {
+            throw StateError('读取已取消');
+          }
+          final result = jsonDecode(
+            await session.call('coding_read_file', {
+              'scope': 'root',
+              'path': path,
+              'encoding': 'utf8',
+            }, readToken),
+          );
+          return result is Map ? result['content'] as String? : null;
+        },
+        listDirectory: (path) async {
+          if (readToken.isCancelled) {
+            throw StateError('读取已取消');
+          }
+          final result = jsonDecode(
+            await session.call('coding_list_directory', {
+              'scope': 'root',
+              'path': path,
+            }, readToken),
+          );
+          if (result is Map && result['truncated'] == true) {
+            throw StateError('目录结果被截断，未推断缺失规则');
+          }
+          final entries = result is List
+              ? result
+              : result is Map
+              ? result['entries']
+              : null;
+          if (entries is! List) {
+            throw StateError('目录结果格式错误');
+          }
+          return [
+            for (final entry in entries)
+              if (entry is Map &&
+                  entry['name'] is String &&
+                  entry['kind'] != 'link-unavailable')
+                RepositoryEntry(
+                  entry['name'] as String,
+                  directory:
+                      entry['directory'] == true ||
+                      entry['kind'] == 'directory',
+                  bytes: (entry['size'] as num?)?.toInt(),
+                ),
+          ];
+        },
+      );
+      core?.repositorySources[actor] = {
+        'sources': context.sources.map((s) => s.toJson()).toList(),
+        'warnings': context.warnings,
+        'skills': [
+          for (final skill in context.skills)
+            {
+              'name': skill.name,
+              'description': skill.description,
+              'path': skill.path,
+              'scope': skill.scope,
+            },
+        ],
+      };
+      final catalog = context.skills
+          .map((s) => '${s.name}: ${s.description}')
+          .join('\n');
+      return '${context.contextText}\n仓库技能目录（用户以 \$名称 选择后加载正文）：\n$catalog\n${context.warnings.join('\n')}';
+    } catch (error) {
+      warnings.add('仓库规则/技能加载失败：$error');
+      core?.repositorySources[actor] = {
+        'sources': [],
+        'warnings': warnings,
+        'skills': [],
+      };
+      return warnings.join('\n');
+    }
+  }
+
+  Future<void> _invalidateTaskEvidence(String conversationId) async {
+    final id = _sessionRuns[conversationId]?.core?.rootId;
+    if (id != null && ref.read(taskAcceptanceProvider).containsKey(id)) {
+      await ref
+          .read(taskAcceptanceProvider.notifier)
+          .update(id, (t) => t.invalidateAfterMutation());
+    }
+  }
+
+  Future<bool> _refreshAcceptanceArtifacts(
+    WorkToolSession session,
+    String taskId,
+    CancelToken token,
+  ) async {
+    final task = ref.read(taskAcceptanceProvider)[taskId];
+    if (task == null) {
+      return false;
+    }
+    final observations = <String, Map<String, dynamic>>{};
+    var changed = false;
+    for (final path in task.criteria.artifactPaths) {
+      try {
+        final file =
+            jsonDecode(
+                  await session.call(
+                    session.tools.any(
+                          (tool) => tool.name == 'coding_artifact_manifest',
+                        )
+                        ? 'coding_artifact_manifest'
+                        : 'coding_read_file',
+                    {
+                      'scope': 'root',
+                      'path': path,
+                      if (!session.tools.any(
+                        (tool) => tool.name == 'coding_artifact_manifest',
+                      ))
+                        'encoding': 'base64',
+                    },
+                    token,
+                  ),
+                )
+                as Map;
+        final hash = file['sha256'] as String? ?? '';
+        if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(hash)) {
+          throw StateError('Missing artifact SHA-256');
+        }
+        observations[path] = {'present': true, 'sha256': hash};
+        final prior = task.artifacts[path];
+        if (prior != null &&
+            (prior['present'] != true || prior['sha256'] != hash)) {
+          changed = true;
+        }
+      } catch (_) {
+        observations[path] = {'present': false, 'sha256': ''};
+        changed = true;
+      }
+    }
+    await ref.read(taskAcceptanceProvider.notifier).update(taskId, (next) {
+      if (changed) {
+        next.invalidateAfterMutation();
+      }
+      for (final entry in observations.entries) {
+        next.recordArtifact(
+          path: entry.key,
+          present: entry.value['present'] as bool,
+          sha256: entry.value['sha256'] as String,
+          provenance:
+              'host:authorized-artifact-manifest:${session.changeTarget}',
+        );
+      }
+    });
+    return !changed;
+  }
+
+  /// User-only entry point: current authorized target and artifact versions are rechecked.
+  Future<bool> verifyAndAcceptTask(String conversationId) => _inSession(
+    () async {
+      final run = _run;
+      if (run == null ||
+          run.core == null ||
+          run.execution.isActive ||
+          _hasPendingSessionWork(run)) {
+        throw StateError('任务尚未完成');
+      }
+      if (!await _verifyTaskTarget(run)) {
+        throw StateError('原工作区或权限无法核验');
+      }
+      final id = run.core!.rootId;
+      final task = ref.read(taskAcceptanceProvider)[id];
+      if (task == null) {
+        throw StateError('验收条件尚未固化');
+      }
+      if (task.criteria.artifactPaths.isNotEmpty) {
+        final session = await _openRunWorkspace(
+          run.configuration ?? _desiredConfiguration(conversationId),
+          CancelToken(),
+        );
+        try {
+          if (!await _refreshAcceptanceArtifacts(session, id, CancelToken())) {
+            throw StateError('产物已变化或缺失，旧验证已失效，请重新检查');
+          }
+        } finally {
+          await session.close();
+        }
+      }
+      await ref
+          .read(taskAcceptanceProvider.notifier)
+          .update(id, (next) => next.acceptByUser('user'));
+      return true;
+    },
+    conversationId: conversationId,
+  );
+
+  final _deviceLeaseSessions = <String>{};
+  final _agentIsolations = <String, AgentWorkspaceIsolation>{};
+  final _publicCompactor = PublicContextCompactor();
+  Ref get _capabilityRef => ref;
+  Future<String> addWorkRequirement(String conversation, String text) =>
+      _inSession(() async {
+        final run = _run;
+        if (run == null ||
+            run.userCancelled ||
+            (!run.execution.isActive && !run.awaitingEvents) ||
+            run.agentTaskId == null) {
+          throw StateError('任务已结束；请发送新的用户消息开始后续任务');
+        }
+        final task = run.agentTaskId!;
+        final entry = await ref
+            .read(workTaskSteeringProvider)
+            .enqueue(conversation, task, text);
+        if (run.userCancelled || run.agentTaskId != task) {
+          await ref
+              .read(workTaskSteeringProvider)
+              .cancelPending(conversation, task);
+          throw StateError('任务已停止，补充要求已取消');
+        }
+        final current = _s.conversations
+            .where((c) => c.id == conversation)
+            .firstOrNull;
+        if (current != null) {
+          final parent = current.activePath.lastOrNull?.id;
+          final message = ChatMessage(
+            role: MessageRole.user,
+            parentId: parent,
+            content: '【运行中补充 #${entry['id']}】\n${entry['text']}',
+          );
+          final updated = current.copyWith(
+            messages: [...current.messages, message],
+            activeChildren: {
+              ...current.activeChildren,
+              parent ?? kRootKey: message.id,
+            },
+          );
+          _set(_s.copyWith(conversations: _replace(updated)));
+          await _persistence.persistSafely(conversation);
+        }
+        enqueueSessionEvent(
+          conversationId: conversation,
+          eventId: 'steering:${entry['id']}',
+          taskId: task,
+          content: '有新的用户运行中补充要求，需从用户补充队列在完整轮次边界读取。',
+          explicitFollowup: true,
+        );
+        return entry['id'] as String;
+      }, conversationId: conversation);
+  String _supervisorSourceFingerprint(String conversation, String taskId) {
+    final desired = _desiredConfiguration(conversation);
+    final rounds = ref.read(workRoundsProvider)[conversation];
+    final browser = ref.read(controlledBrowserProvider);
+    final input = {
+      'root_task': _run?.agentTaskId,
+      'task': taskId,
+      'memory': ref.read(workMemoryProvider).snapshot(conversation),
+      'steering': ref.read(workTaskSteeringProvider).snapshot(conversation),
+      'inbox': [
+        for (final event in _run?.inbox ?? <_SessionEvent>[])
+          {'id': event.id, 'task': event.taskId, 'text': event.content},
+      ],
+      'artifacts': [
+        for (final entry
+            in ref
+                .read(workChangesProvider)
+                .where((e) => e.conversationId == conversation))
+          {
+            'target': entry.target,
+            'scope': entry.scope,
+            'path': entry.path,
+            'hash': entry.afterHash,
+            'delivery': entry.deliveryHash,
+            'reverted': entry.reverted,
+          },
+      ],
+      'agents': [
+        for (final agent
+            in ref
+                .read(workAgentsProvider)
+                .records
+                .where((a) => a.conversationId == conversation && !a.external))
+          {
+            'id': agent.id,
+            'status': agent.status.name,
+            'round': agent.rounds,
+            'output_hash': sha256.convert(utf8.encode(agent.output)).toString(),
+            'files': agent.files,
+          },
+      ],
+      'settings_identity': desired.settings.hashCode,
+      'policy': desired.policy.toJson(),
+      'workspace': desired.workspaceId,
+      'model': desired.modelChoice,
+      'mcp': desired.mcpServerIds,
+      'channels': desired.servicePriorities,
+      'credential_epochs': desired.credentialEpochs,
+      'route_group': desired.routeSignature,
+      'tool_settings_identity': ref.read(toolRegistrySettingsProvider).hashCode,
+      'supervisor_settings_identity': ref
+          .read(supervisorSettingsProvider)
+          .hashCode,
+      'browser': {
+        'takeover': browser.takeovers.contains(conversation),
+        'feedback': browser.feedback[conversation],
+        'pages': [
+          for (final page in browser.observations.values.where(
+            (o) => o.conversation == conversation,
+          ))
+            {
+              'key': page.key,
+              'at': page.at.toUtc().toIso8601String(),
+              'text_hash': sha256.convert(utf8.encode(page.text)).toString(),
+            },
+        ],
+      },
+      'round_control': {
+        'id': rounds?.runId,
+        'revision': rounds?.revision,
+        'limit': rounds?.limit,
+        'pause': rounds?.pauseRequested,
+      },
+    };
+    return sha256.convert(utf8.encode(jsonEncode(input))).toString();
+  }
+
+  Future<void> _releaseDeviceLease(String conversation, String? task) async {
+    if (task == null ||
+        kIsWeb ||
+        defaultTargetPlatform != TargetPlatform.android) {
+      return;
+    }
+    final session = '$conversation:$task';
+    if (!_deviceLeaseSessions.remove(session)) return;
+    try {
+      await DeviceAgent().releaseSession(session);
+    } catch (_) {}
+  }
+
+  Future<bool> _deviceToolsAvailable() async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return false;
+    try {
+      return await DeviceAgent().isArmed;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  bool _readOnlyCapabilityAllowed(
+    String? name,
+    Map<String, dynamic>? arguments,
+    SettingsState? settings,
+  ) {
+    const trusted = {
+      'coding_workspace_info',
+      'coding_list_directory',
+      'coding_read_file',
+      'coding_artifact_manifest',
+      'work_memory_checkpoint',
+      'work_memory_recall',
+      'work_history',
+      'work_ask_user',
+      'tool_registry_search',
+      'tool_registry_request',
+      'role_library_search',
+      'math_calculate',
+      'web_search',
+      'fetch_url',
+      'analyze_image',
+      'inspect_document',
+      'device_observe',
+      'work_list_processes',
+      'work_process_status',
+      ...WorkAgentRuntime.toolNames,
+    };
+    if (trusted.contains(name)) return true;
+    if (name == 'device_action') {
+      return arguments == null || arguments['action'] == 'screenshot';
+    }
+    final routed = settings?.routedMcpTool(name ?? '');
+    if (routed != null &&
+        settings!.connectionForRouted(routed).localProcess?.isPlaywright ==
+            true) {
+      return {
+        'browser_snapshot',
+        'browser_take_screenshot',
+        'browser_console_messages',
+        'browser_network_requests',
+      }.contains(routed.originalName);
+    }
+    return false;
+  }
+
+  Future<String> _runJournaledTool(
+    ToolCall call, {
+    required String convoId,
+    required String assistantId,
+    required String requestIdentity,
+    required CancelToken token,
+    required Future<String> Function() operation,
+  }) async {
+    await _journalWrite;
+    if (_journalError != null) {
+      return jsonEncode({
+        'ok': false,
+        'execution_outcome': 'failed',
+        'error': '任务预算/事件状态未保存，工具未执行',
+      });
+    }
+
+    final owner = _sourceAgentId == null
+        ? null
+        : ref.read(workAgentsProvider).record(_sourceAgentId!);
+    if (owner?.readOnly == true) {
+      Map<String, dynamic> arguments;
+      try {
+        arguments = Map<String, dynamic>.from(
+          jsonDecode(call.argumentsJson) as Map,
+        );
+      } catch (_) {
+        return jsonEncode({
+          'ok': false,
+          'execution_outcome': 'failed',
+          'error': '工具参数不是有效对象，未执行',
+        });
+      }
+      final settings =
+          _run?.configuration?.settings ??
+          ref.read(settingsControllerProvider).value;
+      if (!_readOnlyCapabilityAllowed(call.name, arguments, settings)) {
+        return jsonEncode({
+          'ok': false,
+          'execution_outcome': 'failed',
+          'error':
+              '当前子代理为只读职责，此能力可能修改文件、页面、设备或外部服务，未执行。请由主代理明确安排写入职责；不能改用其他工具绕过。',
+        });
+      }
+    }
+    // Inspection must remain available while an unrelated side effect is
+    // uncertain. Only host-known read contracts qualify, never MCP hints.
+    final snapshotSettings =
+        _run?.configuration?.settings ??
+        ref.read(settingsControllerProvider).value;
+    if (call.name == 'device_action') {
+      try {
+        if ((jsonDecode(call.argumentsJson) as Map)['action'] == 'screenshot') {
+          return operation();
+        }
+      } catch (_) {}
+    }
+    final routed = snapshotSettings?.routedMcpTool(call.name ?? '');
+    if (routed != null &&
+        snapshotSettings!
+                .connectionForRouted(routed)
+                .localProcess
+                ?.isPlaywright ==
+            true &&
+        {
+          'browser_snapshot',
+          'browser_take_screenshot',
+          'browser_console_messages',
+          'browser_network_requests',
+        }.contains(routed.originalName)) {
+      return operation();
+    }
+    final work =
+        _s.conversations.where((c) => c.id == convoId).firstOrNull?.workMode ==
+        true;
+    const inspections = {
+      'work_memory_checkpoint',
+      'work_memory_recall',
+      'work_history',
+      'coding_read_file',
+      'coding_list_directory',
+      'coding_file_info',
+      'coding_artifact_manifest',
+      'work_list_processes',
+      'work_process_status',
+      'math_calculate',
+      'device_observe',
+      'tool_registry_search',
+      'tool_registry_request',
+      'role_library_search',
+      'role_propose',
+      'work_deliver_files',
+      'work_ask_user',
+      ...WorkAgentRuntime.toolNames,
+    };
+    if (!work || inspections.contains(call.name)) return operation();
+    return ref
+        .read(workOperationJournalProvider)
+        .run(
+          conversation: convoId,
+          task: assistantId,
+          agent: _run?.agentRootId ?? 'root',
+          request: requestIdentity,
+          callId: call.id ?? const Uuid().v4(),
+          tool: call.name ?? 'unknown',
+          arguments: call.argumentsJson,
+          operation: operation,
+          classify: (result) {
+            if (result.startsWith('用户未批准') ||
+                result.startsWith('当前完整工具轮未开放') ||
+                result.startsWith('本会话已禁止联网')) {
+              return WorkOperationOutcome.failed;
+            }
+            if (token.isCancelled || _execution.isCancelled) {
+              return WorkOperationOutcome.unknown;
+            }
+            try {
+              final json = jsonDecode(result);
+              if (json is Map && json['execution_outcome'] == 'failed') {
+                return WorkOperationOutcome.failed;
+              }
+              if (json is Map &&
+                  (json['ok'] == false || json['error'] != null)) {
+                return WorkOperationOutcome.unknown;
+              }
+            } catch (_) {}
+            if (call.name == 'work_run_command' &&
+                (result.startsWith('命令超时') || result.contains('远端状态未确认'))) {
+              return WorkOperationOutcome.unknown;
+            }
+            final activity = _messageById(convoId, assistantId)
+                ?.searchActivities
+                .where((a) => a.toolName == call.name)
+                .lastOrNull;
+            if (activity?.status == SearchActivityStatus.failed) {
+              return WorkOperationOutcome.unknown;
+            }
+            return WorkOperationOutcome.completed;
+          },
+        );
+  }
+
   void _bindWorkspaceHooks({
     required WorkToolSession session,
     required String convoId,
@@ -100,7 +656,46 @@ mixin ChatTools on ChatMutations {
           token,
         );
 
-  void _registerAgentRoot({
+  Future<bool> resumeChildTask(
+    String conversationId,
+    String agentId,
+  ) => _inSession(() async {
+    final run = _run;
+    try {
+      if (run == null ||
+          run.core == null ||
+          run.userCancelled ||
+          run.core!.resumeRequired ||
+          run.agentRootId == null ||
+          !await _verifyTaskTarget(run)) {
+        throw StateError('请先核验并恢复原主任务，再恢复子任务');
+      }
+      await ref
+          .read(workAgentsProvider)
+          .resumeRestoredChildUsingRoot(
+            agentId: agentId,
+            rootId: run.agentRootId!,
+            reconciliation:
+                '用户显式恢复此子任务。先检查保存结果、隔离工作树和远端真实状态；禁止盲目重放状态未知的副作用。沿用原根任务剩余额度和当前更严权限。',
+            validate: (record) async {
+              if (record.conversationId != conversationId ||
+                  !run.acceptedTaskIds.contains(record.taskId) ||
+                  !await _verifyTaskTarget(run)) {
+                throw StateError('子任务不属于原任务或工作区授权已变化');
+              }
+            },
+          );
+      run.awaitingEvents = true;
+      _checkpointSession(run, SessionExecutionStatus.waiting, '已显式恢复原子任务');
+      _publishRuntimeState();
+      return true;
+    } catch (error) {
+      _setScopedError('子任务恢复被阻止：$error', convoId: conversationId);
+      return false;
+    }
+  }, conversationId: conversationId);
+
+  Future<void> _registerAgentRoot({
     required String convoId,
     required String assistantId,
     required String goal,
@@ -113,10 +708,16 @@ mixin ChatTools on ChatMutations {
     required Set<String> allowedFetchUrls,
     required _TurnImageBudget imageBudget,
     required SearchBackend clientSearchBackend,
-  }) {
+  }) async {
     final runtime = ref.read(workAgentsProvider);
     final rootRun = _run;
+    final taskCancellation = rootRun?.taskCancellation ?? CancelToken();
     final agentConfigurations = <String, _SessionConfiguration>{};
+    final agentCapabilities = <String, _CapabilityRound>{};
+    final isolations = <String, AgentWorkspaceIsolation>{};
+    final childToolRegistries = <String, TaskToolRegistry>{};
+    final compactRevisions = <String, int>{};
+    final toolObservations = <String, List<LlmRequestMessage>>{};
     _SessionConfiguration childConfiguration() {
       final desired = _desiredConfiguration(convoId);
       if (desired.workspaceId != configuration.workspaceId ||
@@ -141,7 +742,9 @@ mixin ChatTools on ChatMutations {
         mcpServerIds: configuration.mcpServerIds
             .where(desired.mcpServerIds.contains)
             .toList(),
-        servicePriorities: configuration.servicePriorities,
+        servicePriorities: desired.servicePriorities,
+        credentialEpochs: desired.credentialEpochs,
+        routeSignature: desired.routeSignature,
       );
     }
 
@@ -158,7 +761,46 @@ mixin ChatTools on ChatMutations {
         )
         .toList();
     final rootTaskId = _run?.agentTaskId ?? assistantId;
+    final ownerRun = _run;
     final environment = WorkAgentEnvironment(
+      takeTaskTool: () {
+        final allowed =
+            ownerRun?.execution.budget?.takeTool(resumeRoot: false) ?? false;
+        if (ownerRun != null) {
+          _checkpointSession(
+            ownerRun,
+            SessionExecutionStatus.running,
+            '子代理工具预算已扣除',
+          );
+        }
+        return allowed;
+      },
+      takeTaskSearch: () {
+        final allowed =
+            ownerRun?.execution.budget?.takeSearch(resumeRoot: false) ?? false;
+        if (ownerRun != null) {
+          _checkpointSession(
+            ownerRun,
+            SessionExecutionStatus.running,
+            '子代理检索预算已扣除',
+          );
+        }
+        return allowed;
+      },
+      onChildExecution: (active) {
+        if (ownerRun == null || ownerRun.userCancelled) return;
+        ownerRun.activeChildren = (ownerRun.activeChildren + (active ? 1 : -1))
+            .clamp(0, 100000);
+        ownerRun.execution.budget?.childExecution(active);
+        if (ownerRun.execution.isActive) {
+          ownerRun.execution.budget?.resumeWork();
+        }
+        _checkpointSession(
+          ownerRun,
+          SessionExecutionStatus.waiting,
+          '子代理执行状态变更',
+        );
+      },
       onRuntimeLog: (agentId, phase, status, selected, error, durationMs) {
         _runtimeLog(
           conversationId: convoId,
@@ -195,8 +837,9 @@ mixin ChatTools on ChatMutations {
             settingsOverride: selectionSettings,
             servicePrioritiesOverride: configuration.servicePriorities,
           );
-          if (selector.model != selectionSettings.subagentRouterModel)
+          if (selector.model != selectionSettings.subagentRouterModel) {
             throw StateError('指定的角色分配模型不可用，请在设置中重新选择');
+          }
         }
         final selectionId = 'role:${const Uuid().v4()}';
         ref
@@ -207,6 +850,7 @@ mixin ChatTools on ChatMutations {
           config: selector,
           task: task,
           roles: selectionSettings.effectiveSubagentRoles,
+          availableTools: tools.map((t) => t.name).toList(),
           allowedModels: agentPool.map((m) => m.model).toList(),
           modelPurposes: {for (final m in agentPool) m.model: m.purpose},
           preferredModel: preferredModel,
@@ -214,16 +858,354 @@ mixin ChatTools on ChatMutations {
           onChunk: (chunk) {
             if (!ref.mounted) return;
             final insights = ref.read(workSessionInsightsProvider.notifier);
-            if (chunk.actualConfig != null)
+            if (chunk.actualConfig != null) {
               insights.auxiliaryRequest(
                 convoId,
                 selectionId,
                 chunk.actualConfig!,
               );
-            if (chunk.usage != null)
+            }
+            if (chunk.usage != null) {
               insights.usage(convoId, selectionId, chunk.usage!);
+            }
           },
         );
+      },
+      beforeRound: (record) async {
+        final childConfig =
+            agentConfigurations[record.id] ?? childConfiguration();
+        final childIsolation =
+            isolations[record.id] ?? _agentIsolations[record.id];
+        WorkToolSession? guidanceSession;
+        try {
+          guidanceSession = childIsolation == null
+              ? await _openRunWorkspace(childConfig, record.token)
+              : await childIsolation.open(record.token);
+          final guidance = await _repositoryGuidance(
+            guidanceSession,
+            record.task,
+            actor: record.id,
+            scopedPaths: record.ownedPaths,
+            token: record.token,
+          );
+          record.context.removeWhere(
+            (m) =>
+                m.role == MessageRole.user &&
+                m.content.startsWith('<repository_context>'),
+          );
+          record.context.add(
+            LlmRequestMessage(
+              role: MessageRole.user,
+              content: '<repository_context>\n$guidance\n</repository_context>',
+            ),
+          );
+        } catch (error) {
+          final warning = '仓库规则/技能未加载：工作区不可用（$error）。';
+          rootRun?.core?.repositorySources[record.id] = {
+            'sources': [],
+            'warnings': [warning],
+            'skills': [],
+          };
+          record.context.removeWhere(
+            (m) =>
+                m.role == MessageRole.user &&
+                m.content.startsWith('<repository_context>'),
+          );
+          record.context.add(
+            LlmRequestMessage(
+              role: MessageRole.user,
+              content: '<repository_context>\n$warning\n</repository_context>',
+            ),
+          );
+        } finally {
+          await guidanceSession?.close();
+        }
+        final pausing =
+            ref.read(workRoundsProvider)[convoId]?.pauseRequested == true;
+        if (pausing) runtime.setBoundaryPaused(record.id, true);
+        await ref
+            .read(workRoundsProvider.notifier)
+            .waitAtBoundary(
+              convoId,
+              record.token,
+              markPaused: rootRun?.execution.isActive != true,
+            );
+        if (pausing && !record.token.isCancelled) {
+          runtime.setBoundaryPaused(record.id, false);
+        }
+        await ref
+            .read(workTaskSteeringProvider)
+            .prepare(convoId, rootTaskId, record.rounds + 1);
+        final inherited = childConfiguration();
+        final previous = agentConfigurations[record.id];
+        final current = record.resolvedConfig;
+        if (previous != null &&
+            current != null &&
+            inherited.changesFrom(previous).isNotEmpty) {
+          final priorityChanged =
+              jsonEncode(previous.servicePriorities[current.model]) !=
+              jsonEncode(inherited.servicePriorities[current.model]);
+          final next = priorityChanged
+              ? await record.environment.resolveModel(current.model, current)
+              : await _refreshAcceptedTransport(current, previous, inherited);
+          if (record.token.isCancelled || !ref.mounted) return;
+          final source = inherited.settings ?? settings;
+          record.resolvedConfig =
+              applyContextConfig(
+                next,
+                effectiveContextPrefs(source, next),
+              ).copyWith(
+                responseHeaderTimeout: Duration(
+                  seconds: source.taskBudget.workResponseTimeoutSeconds,
+                ),
+              );
+        }
+        agentConfigurations[record.id] = inherited;
+        await _maybeCompactPublicContext(
+          conversation: convoId,
+          taskId: rootTaskId,
+          agentId: record.id,
+          round: record.rounds + 1,
+          config: record.resolvedConfig ?? config,
+          settings: inherited.settings ?? settings,
+          goal: record.task,
+          token: record.token,
+          activeMessages: record.context,
+          publicHistoryCount: record.context.length,
+          readPublicSources: () => record.context.reversed
+              .map(
+                (m) => jsonEncode({
+                  'role': m.role.name,
+                  'content': m.content,
+                  'tool_call_id': m.toolCallId,
+                  'calls': [
+                    for (final c in m.toolCalls) {'id': c.id, 'name': c.name},
+                  ],
+                }),
+              )
+              .toList(),
+        );
+      },
+
+      prepareTools: (full, agentId) {
+        final snapshot = agentCapabilities[agentId] ?? _captureCapabilities();
+        final fullCatalog = [
+          ...full.where(
+            (t) => !{
+              'math_calculate',
+              'role_library_search',
+              'role_propose',
+            }.contains(t.name),
+          ),
+          ..._capabilityTools(snapshot, workMode: true),
+        ];
+        final readOnly = runtime.record(agentId)?.readOnly == true;
+        final childSettings =
+            agentConfigurations[agentId]?.settings ?? settings;
+        final catalog = <ToolSpec>[
+          for (final tool in fullCatalog)
+            if (!{
+                  'work_deliver_files',
+                  'work_integrate_agent_file',
+                  'work_start_process',
+                  'work_restart_process',
+                }.contains(tool.name) &&
+                (!readOnly ||
+                    _readOnlyCapabilityAllowed(tool.name, null, childSettings)))
+              if (readOnly && tool.name == 'device_action')
+                ToolSpec(
+                  name: tool.name,
+                  description: '只读职责：仅允许截图观察；不能点击、输入或改变设备状态。',
+                  parameters: {
+                    ...tool.parameters,
+                    'properties': {
+                      ...Map<String, dynamic>.from(
+                        tool.parameters['properties'] as Map,
+                      ),
+                      'action': {
+                        'type': 'string',
+                        'enum': ['screenshot'],
+                      },
+                    },
+                  },
+                )
+              else
+                tool,
+        ];
+        final registry = childToolRegistries.putIfAbsent(
+          agentId,
+          () => TaskToolRegistry(
+            catalog: catalog,
+            initiallyActive: catalog
+                .where(
+                  (t) =>
+                      settings.routedMcpTool(t.name) == null &&
+                      t.name != 'math_calculate',
+                )
+                .map((t) => t.name)
+                .toSet(),
+          ),
+        );
+        registry.updateCatalog(catalog);
+        registry.applyBoundary();
+        return registry.visibleTools;
+      },
+      prepareIsolation: (record) async {
+        final inherited = childConfiguration();
+        final run = _SessionRun(convoId)
+          ..configuration = inherited
+          ..taskId = assistantId
+          ..agentRootId = record.id;
+        run.execution.tryStart();
+        run.execution.attachRequest(record.token);
+        try {
+          return await runZoned(() async {
+            final parent = await _openRunWorkspace(inherited, record.token);
+            try {
+              if (parent is! WorkspaceToolSession) {
+                throw StateError('当前宿主仅支持本机 Git 独立工作树；SSH 请使用共享文件职责');
+              }
+              final isolation = await AgentWorkspaceIsolation.create(
+                parent: parent,
+                host: ref.read(desktopWorkspaceHostProvider),
+                id: const Uuid().v4(),
+                token: record.token,
+                approve: (command) => _approveWorkTool(
+                  ToolCall(
+                    index: 0,
+                    id: const Uuid().v4(),
+                    name: 'work_run_command',
+                    argumentsJson: jsonEncode({'command': command}),
+                  ),
+                  convoId: convoId,
+                  goal: record.task,
+                  target: parent.target,
+                  settings: inherited.settings ?? settings,
+                  token: record.token,
+                ),
+              );
+              isolations[record.id] = isolation;
+              _agentIsolations[record.id] = isolation;
+              final guidanceSession = await isolation.open(record.token);
+              try {
+                final guidance = await _repositoryGuidance(
+                  guidanceSession,
+                  record.task,
+                  actor: record.id,
+                  scopedPaths: record.ownedPaths,
+                  token: record.token,
+                );
+                record.context.removeWhere(
+                  (m) =>
+                      m.role == MessageRole.user &&
+                      m.content.startsWith('<repository_context>'),
+                );
+                record.context.add(
+                  LlmRequestMessage(
+                    role: MessageRole.user,
+                    content:
+                        '<repository_context>\n$guidance\n</repository_context>',
+                  ),
+                );
+              } finally {
+                await guidanceSession.close();
+              }
+
+              return WorkAgentIsolation(
+                isolation.workspace.root,
+                isolation.prefix,
+                recoveryMetadata: isolation.recoveryMetadata,
+              );
+            } finally {
+              await parent.close();
+            }
+          }, zoneValues: {_sessionZoneKey: run});
+        } finally {
+          run.execution.finish();
+        }
+      },
+      restoreIsolation: (record) async {
+        final inherited = childConfiguration();
+        final parent = await _openRunWorkspace(inherited, record.token);
+        try {
+          if (parent is! WorkspaceToolSession || record.isolation == null) {
+            throw StateError('当前宿主不能恢复此隔离树');
+          }
+          final isolation = await AgentWorkspaceIsolation.restore(
+            parent: parent,
+            host: ref.read(desktopWorkspaceHostProvider),
+            metadata: record.isolation!.recoveryMetadata,
+            token: record.token,
+          );
+          isolations[record.id] = isolation;
+          _agentIsolations[record.id] = isolation;
+          return WorkAgentIsolation(
+            isolation.workspace.root,
+            isolation.prefix,
+            recoveryMetadata: isolation.recoveryMetadata,
+          );
+        } finally {
+          await parent.close();
+        }
+      },
+      resolveRoleTrial: (id) {
+        final candidate = ref
+            .read(roleEvolutionProvider)
+            .firstWhere((c) => c.role.id == id);
+        final role = ref
+            .read(roleEvolutionProvider.notifier)
+            .trialRole(
+              id,
+              availableTools: tools.map((t) => t.name).toList(),
+              allowedModels: agentPool.map((m) => m.model).toList(),
+            );
+        return WorkAgentRoleTrial(id, candidate.version, role);
+      },
+      onRoleTrialCompleted: (record, trial) {
+        unawaited(() async {
+          try {
+            await ref
+                .read(roleEvolutionProvider.notifier)
+                .recordEvidence(
+                  id: trial.candidateId,
+                  version: trial.version,
+                  taskId: record.id,
+                  artifactVersions: const {},
+                  success: record.status == WorkAgentStatus.completed,
+                  summary: record.output,
+                  resultHash: record.output.isEmpty
+                      ? ''
+                      : sha256.convert(utf8.encode(record.output)).toString(),
+                  acceptance: '',
+                );
+            if (!ref.mounted) return;
+            if (taskCancellation.isCancelled ||
+                rootRun?.userCancelled == true ||
+                rootRun?.agentTaskId != rootTaskId) {
+              return;
+            }
+            await _reviewCompletedRoleTrial(
+              record,
+              trial,
+              convoId: convoId,
+              config: config,
+              settings: settings,
+              availableTools: tools.map((t) => t.name).toList(),
+              allowedModels: agentPool.map((m) => m.model).toList(),
+              token: taskCancellation,
+            );
+          } catch (error) {
+            if (ref.mounted) {
+              _runtimeLog(
+                conversationId: convoId,
+                taskId: record.id,
+                phase: 'role_validation',
+                status: 'failed',
+                error: error,
+              );
+            }
+          }
+        }());
       },
       maxRounds: ref.read(workAgentLimitsProvider).maxRounds,
       provider: ref.read(llmProvider),
@@ -232,6 +1214,7 @@ mixin ChatTools on ChatMutations {
       thinking: configuration.thinking,
       reasoningEffort: configuration.effort,
       onCancelRoot: () {
+        taskCancellation.cancel('根任务或其辅助验收已停止');
         rootRun?.cancelledTaskIds.add(rootTaskId);
         rootRun?.inbox.removeWhere((event) => event.taskId == rootTaskId);
         if (rootRun != null && rootRun.agentTaskId == rootTaskId) {
@@ -240,7 +1223,23 @@ mixin ChatTools on ChatMutations {
           rootRun.execution.cancel();
         }
       },
+      takeToolObservations: (agentId, callId) => [
+        for (final observation
+            in toolObservations.remove(agentId) ?? <LlmRequestMessage>[])
+          LlmRequestMessage(
+            role: MessageRole.user,
+            content: observation.content,
+            imageDataUrls: observation.imageDataUrls,
+            isToolImageObservation: true,
+            toolImageCallId: callId,
+          ),
+      ],
       prepareMessages: (messages, selected, agentId) {
+        agentCapabilities[agentId] = _captureCapabilities();
+        messages.removeWhere(
+          (m) =>
+              m.role == MessageRole.system && m.content.startsWith('【固定任务上下文】'),
+        );
         // Descendants resample their inherited authority once per full round.
         // A downgrade can narrow the grant; it can never widen the original.
         final inherited = childConfiguration();
@@ -261,9 +1260,25 @@ mixin ChatTools on ChatMutations {
           inherited.settings ?? settings,
           selected,
         );
-        final bounded = ref
-            .read(contextWindowManagerProvider)
-            .manage(messages, prefs);
+        final memory = ref.read(workMemoryProvider);
+        final compactRevision =
+            (memory.snapshot(convoId, agentId: agentId)['compact_revision']
+                    as num?)
+                ?.toInt() ??
+            0;
+        final compact = compactRevision > (compactRevisions[agentId] ?? 0);
+        final bounded = memory.manage(
+          convoId,
+          messages,
+          prefs,
+          compact: compact,
+          agentId: agentId,
+          goal: runtime.record(agentId)?.task ?? goal,
+          userUpdates: ref
+              .read(workTaskSteeringProvider)
+              .instructions(convoId, rootTaskId),
+        );
+        if (compact) compactRevisions[agentId] = compactRevision;
         if (prefs.enabled &&
             bounded.report.sentTokens > bounded.report.inputBudgetTokens) {
           throw StateError('子代理上下文超过所选模型输入预算，未继续请求');
@@ -279,8 +1294,10 @@ mixin ChatTools on ChatMutations {
             (agentPool.any((m) => m.model == parent.model)
                 ? parent.model
                 : agentPool.first.model);
-        if (!agentPool.any((m) => m.model == selected))
+        if (!agentPool.any((m) => m.model == selected)) {
           throw StateError('模型不在子代理模型池中');
+        }
+        final inherited = childConfiguration();
         final resolved = await resolveConversationModel(
           ref,
           convoId,
@@ -290,12 +1307,13 @@ mixin ChatTools on ChatMutations {
           thinking: configuration.thinking,
           choiceOverride: selected,
           useChoiceOverride: true,
-          settingsOverride: configuration.settings ?? settings,
-          servicePrioritiesOverride: configuration.servicePriorities,
+          settingsOverride: inherited.settings ?? settings,
+          servicePrioritiesOverride: inherited.servicePriorities,
         );
-        if (resolved.model != selected)
+        if (resolved.model != selected) {
           throw StateError('所选子代理模型 $selected 没有可用服务，未改用池外模型');
-        final source = configuration.settings ?? settings;
+        }
+        final source = inherited.settings ?? settings;
         return applyContextConfig(
           resolved,
           effectiveContextPrefs(source, resolved),
@@ -310,8 +1328,9 @@ mixin ChatTools on ChatMutations {
         // parent's model stream never transfers ownership of this tool call.
         final inherited = agentConfigurations[agentId] ?? childConfiguration();
         final childSettings = inherited.settings ?? settings;
+        final visible = childToolRegistries[agentId]?.visibleTools ?? tools;
         final allowedNames = {
-          for (final tool in tools)
+          for (final tool in visible)
             if ((inherited.policy.network ||
                     (tool.name != ToolEngine.webSearchTool.name &&
                         tool.name != ToolEngine.fetchUrlTool.name)) &&
@@ -322,9 +1341,12 @@ mixin ChatTools on ChatMutations {
               tool.name,
         };
         final childRun = _SessionRun(convoId)
+          ..sharedExecution = ((active) =>
+              ownerRun?.execution.budget?.childExecution(active))
           ..configuration = inherited
           ..taskId = assistantId
           ..agentRootId = agentId
+          ..agentTaskId = rootTaskId
           ..streamingId = convoId;
         childRun.execution.tryStart();
         childRun.execution.attachRequest(token);
@@ -332,14 +1354,28 @@ mixin ChatTools on ChatMutations {
           childSettings.taskBudget,
           beforeCancel: () => token.cancel('子代理工具预算已用完'),
         );
+        childRun.sharedExecution?.call(true);
         return runZoned(() async {
           WorkToolSession? session;
           try {
             final needsWorkspace =
                 workToolNames.contains(name) ||
                 WorkProcessRuntime.toolNames.contains(name);
-            if (needsWorkspace)
-              session = await _openRunWorkspace(inherited, token);
+            if (needsWorkspace) {
+              var cursor = runtime.record(agentId);
+              AgentWorkspaceIsolation? isolation;
+              while (cursor != null) {
+                isolation =
+                    isolations[cursor.id] ?? _agentIsolations[cursor.id];
+                if (isolation != null) break;
+                cursor = cursor.parentId == null
+                    ? null
+                    : runtime.record(cursor.parentId!);
+              }
+              session = isolation == null
+                  ? await _openRunWorkspace(inherited, token)
+                  : await isolation.open(token);
+            }
             final replies = await _executeToolCalls(
               toolCalls: [
                 ToolCall(
@@ -350,6 +1386,11 @@ mixin ChatTools on ChatMutations {
                 ),
               ],
               settings: childSettings,
+              requestIdentity:
+                  '$agentId:${runtime.record(agentId)?.rounds ?? 0}',
+              capabilitySnapshot: agentCapabilities[agentId],
+              availableTools: tools,
+              taskToolRegistry: childToolRegistries[agentId],
               allowedToolNames: allowedNames,
               fallbackSearchQuery: goal,
               convoId: convoId,
@@ -359,17 +1400,46 @@ mixin ChatTools on ChatMutations {
               cancelToken: token,
               imageBudget: imageBudget,
               clientSearchBackend: clientSearchBackend,
-              canSeeToolImages: canSeeToolImages,
+              canSeeToolImages:
+                  runtime
+                      .record(agentId)
+                      ?.resolvedConfig
+                      ?.capabilities
+                      .supportsVision ??
+                  false,
               workspaceSession: session,
             );
-            return replies.map((message) => message.content).join('\n');
+            toolObservations[agentId] = replies
+                .where((message) => message.isToolImageObservation)
+                .toList();
+            return replies
+                .where((message) => !message.isToolImageObservation)
+                .map((message) => message.content)
+                .join('\n');
           } finally {
             await session?.close();
             childRun.execution.finish();
+            childRun.sharedExecution?.call(false);
           }
         }, zoneValues: {_sessionZoneKey: childRun});
       },
     );
+    final priorRootId = rootRun?.agentRootId;
+    final priorRoot = priorRootId == null ? null : runtime.record(priorRootId);
+    if (priorRoot?.restored == true && rootRun != null) {
+      await runtime.activateRestoredRoot(
+        rootId: priorRootId!,
+        environment: environment,
+        validate: (record) async {
+          if (record.conversationId != convoId ||
+              record.taskId != rootTaskId ||
+              !await _verifyTaskTarget(rootRun)) {
+            throw StateError('原根任务或目标核验失败，未恢复子任务环境');
+          }
+        },
+      );
+      return;
+    }
     final rootId = runtime.registerRoot(
       conversationId: convoId,
       taskId: rootTaskId,
@@ -378,6 +1448,11 @@ mixin ChatTools on ChatMutations {
       limits: ref.read(workAgentLimitsProvider),
     );
     _run?.agentRootId = rootId;
+    if (_run case final run?) {
+      _checkpointSession(run, SessionExecutionStatus.running, '根任务运行身份已保存');
+      await _journalWrite;
+      if (_journalError != null) throw StateError('根任务运行身份未保存');
+    }
   }
 
   Future<String> _startBackgroundProcess({
@@ -460,11 +1535,12 @@ mixin ChatTools on ChatMutations {
                   settings: processConfiguration.settings ?? settings,
                   token: processToken,
                 );
-                if (!approved)
+                if (!approved) {
                   return const WorkProcessResult(
                     cancelled: true,
                     output: '重启未获批准，未执行',
                   );
+                }
               }
               firstExecution = false;
               WorkToolSession? session;
@@ -473,8 +1549,9 @@ mixin ChatTools on ChatMutations {
                   processConfiguration,
                   processToken,
                 );
-                if (session.target != target)
+                if (session.target != target) {
                   throw StateError('工作区目标已改变，未执行后台命令');
+                }
                 await ref
                     .read(workChangesProvider.notifier)
                     .commandStarted(convoId, assistantId, session.changeTarget);
@@ -519,11 +1596,16 @@ mixin ChatTools on ChatMutations {
     bool canSeeToolImages = false,
     WorkToolSession? workspaceSession,
     Set<String>? allowedToolNames,
+    String requestIdentity = 'default',
+    _CapabilityRound? capabilitySnapshot,
+    List<ToolSpec> availableTools = const [],
+    TaskToolRegistry? taskToolRegistry,
   }) async {
     var priorActivities = <String>{};
     Attachment? latestToolImage;
     String? latestToolImageCallId;
     ToolCall? pendingLogCall;
+    SearchActivity? directTrace;
     final toolElapsed = Stopwatch();
     try {
       final replies = await ToolCallRunner(_execution).run(
@@ -550,6 +1632,18 @@ mixin ChatTools on ChatMutations {
                 assistantId,
               )?.searchActivities.map((a) => a.id).toSet() ??
               <String>{};
+          directTrace = null;
+          if (ChatCapabilityExtensions._directTraceNames.contains(call.name)) {
+            directTrace = SearchActivity(
+              kind: SearchActivityKind.mcp,
+              query: call.name!,
+              toolName: call.name,
+              toolCallId: call.id,
+              toolArguments: _safeCapabilityArguments(call, settings),
+              startedAt: DateTime.now(),
+            );
+            _upsertSearchActivity(convoId, assistantId, directTrace!);
+          }
           // Per-tool composer hints — never reuse "正在联网搜索" for image/docs.
           if (_s.isStreaming) {
             final searching =
@@ -572,140 +1666,217 @@ mixin ChatTools on ChatMutations {
             );
           }
         },
-        execute: (call) async {
-          if (allowedToolNames != null &&
-              !allowedToolNames.contains(call.name)) {
-            return '当前完整工具轮未开放此工具，未执行。请使用本轮列出的能力。';
-          }
-          final currentWork =
-              _s.conversations
-                  .where((c) => c.id == convoId)
-                  .firstOrNull
-                  ?.workMode ==
-              true;
-          final policy = _policyFor(convoId);
-          if (!policy.network &&
-              (call.name == ToolEngine.webSearchTool.name ||
-                  call.name == ToolEngine.fetchUrlTool.name)) {
-            return '本会话已禁止联网检索，未执行。';
-          }
-          if ((currentWork ||
-                  settings.routedMcpTool(call.name ?? '') != null) &&
-              !await _approveWorkTool(
-                call,
-                convoId: convoId,
-                goal: fallbackSearchQuery,
-                target: workspaceSession?.target ?? '会话连接的外部工具',
-                settings: settings,
-                token: cancelToken,
-              )) {
-            return '用户未批准此操作，未执行。不要改写参数或换用其他工具绕过此决定。';
-          }
-          if (_execution.isCancelled || cancelToken.isCancelled) {
-            return '操作已取消，未执行。';
-          }
-          if (WorkAgentRuntime.toolNames.contains(call.name) ||
-              WorkProcessRuntime.toolNames.contains(call.name)) {
-            final activity = _beginCapabilityTrace(
-              convoId: convoId,
-              assistantId: assistantId,
-              kind: SearchActivityKind.mcp,
-              query: '工作调度：${call.name}',
-              toolName: call.name,
-              toolArguments: call.argumentsJson,
-            );
-            try {
-              final arguments = Map<String, dynamic>.from(
-                jsonDecode(call.argumentsJson) as Map,
-              );
-              final String result;
-              if (WorkAgentRuntime.toolNames.contains(call.name)) {
-                final root = _run?.agentRootId;
-                if (root == null) throw StateError('当前会话没有代理运行上下文');
-                result = await ref
-                    .read(workAgentsProvider)
-                    .safeCallTool(root, call.name!, arguments);
-              } else if (call.name == 'work_start_process') {
-                result = await _startBackgroundProcess(
-                  arguments: arguments,
+        execute: (call) => _runJournaledTool(
+          call,
+          convoId: convoId,
+          assistantId: assistantId,
+          requestIdentity: requestIdentity,
+          token: cancelToken,
+          operation: () async {
+            if (allowedToolNames != null &&
+                !allowedToolNames.contains(call.name)) {
+              return '当前完整工具轮未开放此工具，未执行。请使用本轮列出的能力。';
+            }
+            if (WorkMemory.names.contains(call.name)) {
+              try {
+                final args = Map<String, dynamic>.from(
+                  jsonDecode(call.argumentsJson) as Map,
+                );
+                final memory = ref.read(workMemoryProvider);
+                final ownAgent = _sourceAgentId;
+                if (call.name == 'work_memory_checkpoint') {
+                  return jsonEncode(
+                    await memory.checkpoint(convoId, args, agentId: ownAgent),
+                  );
+                }
+                if (call.name == 'work_memory_recall') {
+                  final requested = args['agent_id'] as String?;
+                  if (ownAgent != null &&
+                      requested != null &&
+                      requested != ownAgent) {
+                    throw StateError('子代理只能读取自身记忆和主任务只读交接');
+                  }
+                  return jsonEncode({
+                    'revision': 0,
+                    ...memory.snapshot(convoId, agentId: ownAgent ?? requested),
+                    if (ownAgent == null)
+                      'agent_scopes': memory.agentScopes(convoId),
+                    if (ownAgent != null)
+                      'read_only_root_handoff': memory.snapshot(convoId),
+                  });
+                }
+                final messages =
+                    _s.conversations
+                        .where((c) => c.id == convoId)
+                        .firstOrNull
+                        ?.messages ??
+                    <ChatMessage>[];
+                return jsonEncode(WorkMemory.history(messages, args));
+              } catch (error) {
+                return jsonEncode({'ok': false, 'error': '$error'});
+              }
+            }
+            final currentWork =
+                _s.conversations
+                    .where((c) => c.id == convoId)
+                    .firstOrNull
+                    ?.workMode ==
+                true;
+            final policy = _policyFor(convoId);
+            if (!policy.network &&
+                (call.name == ToolEngine.webSearchTool.name ||
+                    call.name == ToolEngine.fetchUrlTool.name)) {
+              return '本会话已禁止联网检索，未执行。';
+            }
+            if ((currentWork ||
+                    settings.routedMcpTool(call.name ?? '') != null) &&
+                !await _approveWorkTool(
+                  call,
                   convoId: convoId,
-                  assistantId: assistantId,
                   goal: fallbackSearchQuery,
+                  target: workspaceSession?.target ?? '会话连接的外部工具',
                   settings: settings,
                   token: cancelToken,
-                  currentSession: workspaceSession,
-                );
-              } else {
-                result = ref
-                    .read(workProcessesProvider)
-                    .callTool(convoId, call.name!, arguments);
-              }
-              String? error;
-              try {
-                final decoded = jsonDecode(result);
-                if (decoded is Map && decoded['ok'] == false)
-                  error = '${decoded['error']}';
-              } catch (_) {}
-              _finishCapabilityTrace(
-                activity,
-                convoId: convoId,
-                assistantId: assistantId,
-                ok: error == null,
-                error: error,
-                resultText: result,
-              );
-              return result;
-            } catch (error) {
-              _finishCapabilityTrace(
-                activity,
-                convoId: convoId,
-                assistantId: assistantId,
-                ok: false,
-                error: '$error',
-              );
-              return jsonEncode({'ok': false, 'error': '$error'});
+                )) {
+              return '用户未批准此操作，未执行。不要改写参数或换用其他工具绕过此决定。';
             }
-          }
-          if (call.name == workQuestionTool.name && currentWork) {
-            final activity = _beginCapabilityTrace(
-              convoId: convoId,
-              assistantId: assistantId,
-              kind: SearchActivityKind.mcp,
-              query: _sourceAgentId == null
-                  ? '向你提问'
-                  : '子代理 $_sourceAgentId 向你提问',
-              toolName: call.name,
-              toolArguments: call.argumentsJson,
+            if (_execution.isCancelled || cancelToken.isCancelled) {
+              return '操作已取消，未执行。';
+            }
+            final capabilityResult = await _executeCapabilityTool(
+              call,
+              snapshot: capabilitySnapshot ?? _captureCapabilities(),
+              token: cancelToken,
+              availableTools: availableTools,
+              registry: taskToolRegistry,
+              authorizeTool: (spec) => _approveWorkTool(
+                ToolCall(
+                  index: 0,
+                  id: const Uuid().v4(),
+                  name: spec.name,
+                  argumentsJson: '{}',
+                ),
+                convoId: convoId,
+                goal: fallbackSearchQuery,
+                target: workspaceSession?.target ?? '当前已配置工具',
+                settings: settings,
+                token: cancelToken,
+              ),
+              settings: settings,
+              allowedModels:
+                  (ref.read(workAgentModelPoolProvider) ??
+                          [WorkAgentModelOption(settings.model)])
+                      .map((m) => m.model)
+                      .toList(),
             );
-            _execution.budget?.waitForApproval();
-            try {
-              final questions = WorkQuestion.parse(
-                jsonDecode(call.argumentsJson) as Map<String, dynamic>,
-              );
-              final result = await ref
-                  .read(workQuestionsProvider.notifier)
-                  .ask(
-                    PendingWorkQuestion(
-                      id: activity.id,
-                      conversationId: convoId,
-                      sourceAgentId: _sourceAgentId,
-                      assistantId: assistantId,
-                      questions: questions,
-                    ),
-                    cancelToken,
+            if (capabilityResult != null) return capabilityResult;
+            if ({'device_observe', 'device_action'}.contains(call.name)) {
+              try {
+                final args = Map<String, dynamic>.from(
+                  jsonDecode(call.argumentsJson) as Map,
+                );
+                _deviceLeaseSessions.add(
+                  '$convoId:${_run?.agentTaskId ?? assistantId}',
+                );
+                final result = await DeviceAgent().executeTool(
+                  call.name!,
+                  args,
+                  sessionId: '$convoId:${_run?.agentTaskId ?? assistantId}',
+                );
+                if (result is Uint8List) {
+                  final image = Attachment(
+                    name: 'device-screenshot.png',
+                    mimeType: 'image/png',
+                    sizeBytes: result.length,
+                    imageBase64: base64Encode(result),
                   );
-              final text = jsonEncode(result);
-              if (ref.mounted)
+                  _appendAssistantAttachment(convoId, assistantId, image);
+                  latestToolImage = image;
+                  latestToolImageCallId = call.id;
+                  Map<String, dynamic>? screenshotInfo;
+                  try {
+                    screenshotInfo = await DeviceAgent().screenshotMetadata(
+                      '$convoId:${_run?.agentTaskId ?? assistantId}',
+                    );
+                  } catch (_) {}
+                  return jsonEncode({
+                    'ok': true,
+                    'image_observation': canSeeToolImages,
+                    'bytes': result.length,
+                    'screenshot': ?screenshotInfo,
+                    'coordinate_note':
+                        '截图像素可能已缩放；坐标按 physicalPerImageX/Y 转换，优先使用最新观察节点 target。',
+                  });
+                }
+                return result as String;
+              } catch (error) {
+                return jsonEncode({'ok': false, 'error': '$error'});
+              }
+            }
+            if (_sourceAgentId != null &&
+                {
+                  'work_start_process',
+                  'work_restart_process',
+                }.contains(call.name)) {
+              return jsonEncode({
+                'ok': false,
+                'execution_outcome': 'failed',
+                'error': '子代理请在独立工作树使用 work_run_command；后台进程只能由主代理在明确目标启动。',
+              });
+            }
+            if (WorkAgentRuntime.toolNames.contains(call.name) ||
+                WorkProcessRuntime.toolNames.contains(call.name)) {
+              final activity = _beginCapabilityTrace(
+                convoId: convoId,
+                assistantId: assistantId,
+                kind: SearchActivityKind.mcp,
+                query: '工作调度：${call.name}',
+                toolName: call.name,
+                toolArguments: call.argumentsJson,
+              );
+              try {
+                final arguments = Map<String, dynamic>.from(
+                  jsonDecode(call.argumentsJson) as Map,
+                );
+                final String result;
+                if (WorkAgentRuntime.toolNames.contains(call.name)) {
+                  final root = _run?.agentRootId;
+                  if (root == null) throw StateError('当前会话没有代理运行上下文');
+                  result = await ref
+                      .read(workAgentsProvider)
+                      .safeCallTool(root, call.name!, arguments);
+                } else if (call.name == 'work_start_process') {
+                  result = await _startBackgroundProcess(
+                    arguments: arguments,
+                    convoId: convoId,
+                    assistantId: assistantId,
+                    goal: fallbackSearchQuery,
+                    settings: settings,
+                    token: cancelToken,
+                    currentSession: workspaceSession,
+                  );
+                } else {
+                  result = ref
+                      .read(workProcessesProvider)
+                      .callTool(convoId, call.name!, arguments);
+                }
+                String? error;
+                try {
+                  final decoded = jsonDecode(result);
+                  if (decoded is Map && decoded['ok'] == false) {
+                    error = '${decoded['error']}';
+                  }
+                } catch (_) {}
                 _finishCapabilityTrace(
                   activity,
                   convoId: convoId,
                   assistantId: assistantId,
-                  ok: result['cancelled'] != true,
-                  resultText: text,
+                  ok: error == null,
+                  error: error,
+                  resultText: result,
                 );
-              return text;
-            } catch (error) {
-              if (ref.mounted)
+                return result;
+              } catch (error) {
                 _finishCapabilityTrace(
                   activity,
                   convoId: convoId,
@@ -713,111 +1884,184 @@ mixin ChatTools on ChatMutations {
                   ok: false,
                   error: '$error',
                 );
-              return '提问未完成：$error';
-            } finally {
-              if (!cancelToken.isCancelled) _execution.budget?.resumeWork();
+                return jsonEncode({'ok': false, 'error': '$error'});
+              }
             }
-          }
-          if (workToolNames.contains(call.name)) {
-            return _runWorkspaceTool(
-              call,
-              workspaceSession,
-              convoId,
-              assistantId,
-              cancelToken,
-            );
-          } else if (call.name == ToolEngine.webSearchTool.name ||
-              call.name == ToolEngine.fetchUrlTool.name) {
-            return await _runSearchTool(
-              call,
-              settings: settings,
-              fallbackSearchQuery: fallbackSearchQuery,
-              convoId: convoId,
-              assistantId: assistantId,
-              citations: citations,
-              allowedFetchUrls: allowedFetchUrls,
-              cancelToken: cancelToken,
-              backend: clientSearchBackend,
-            );
-          } else if (call.name == ToolEngine.generateImageTool.name) {
-            return await _runGenerateImageTool(
-              call,
-              settings: settings,
-              convoId: convoId,
-              assistantId: assistantId,
-              imageBudget: imageBudget,
-              imageCharacter: imageCharacter,
-              userText: fallbackSearchQuery,
-              cancelToken: cancelToken,
-            );
-          } else if (call.name == VisionTools.analyzeImageToolName) {
-            return await _runAnalyzeImageTool(
-              call,
-              settings: settings,
-              convoId: convoId,
-              assistantId: assistantId,
-              sources: VisionTools.attachmentsFor(
-                _s.conversations.firstWhere(
-                  (c) => c.id == convoId,
-                  orElse: () => Conversation(id: convoId),
+            if (call.name == workQuestionTool.name && currentWork) {
+              final activity = _beginCapabilityTrace(
+                convoId: convoId,
+                assistantId: assistantId,
+                kind: SearchActivityKind.mcp,
+                query: _sourceAgentId == null
+                    ? '向你提问'
+                    : '子代理 $_sourceAgentId 向你提问',
+                toolName: call.name,
+                toolArguments: call.argumentsJson,
+              );
+              _execution.budget?.waitForApproval();
+              try {
+                final questions = WorkQuestion.parse(
+                  jsonDecode(call.argumentsJson) as Map<String, dynamic>,
+                );
+                final result = await ref
+                    .read(workQuestionsProvider.notifier)
+                    .ask(
+                      PendingWorkQuestion(
+                        id: activity.id,
+                        conversationId: convoId,
+                        sourceAgentId: _sourceAgentId,
+                        assistantId: assistantId,
+                        questions: questions,
+                      ),
+                      cancelToken,
+                    );
+                final text = jsonEncode(result);
+                if (ref.mounted) {
+                  _finishCapabilityTrace(
+                    activity,
+                    convoId: convoId,
+                    assistantId: assistantId,
+                    ok: result['cancelled'] != true,
+                    resultText: text,
+                  );
+                }
+                return text;
+              } catch (error) {
+                if (ref.mounted) {
+                  _finishCapabilityTrace(
+                    activity,
+                    convoId: convoId,
+                    assistantId: assistantId,
+                    ok: false,
+                    error: '$error',
+                  );
+                }
+                return '提问未完成：$error';
+              } finally {
+                if (!cancelToken.isCancelled) _execution.budget?.resumeWork();
+              }
+            }
+            if (workToolNames.contains(call.name)) {
+              return _runWorkspaceTool(
+                call,
+                workspaceSession,
+                convoId,
+                assistantId,
+                cancelToken,
+                requestIdentity,
+              );
+            } else if (call.name == ToolEngine.webSearchTool.name ||
+                call.name == ToolEngine.fetchUrlTool.name) {
+              return await _runSearchTool(
+                call,
+                settings: settings,
+                fallbackSearchQuery: fallbackSearchQuery,
+                convoId: convoId,
+                assistantId: assistantId,
+                citations: citations,
+                allowedFetchUrls: allowedFetchUrls,
+                cancelToken: cancelToken,
+                backend: clientSearchBackend,
+              );
+            } else if (call.name == ToolEngine.generateImageTool.name) {
+              return await _runGenerateImageTool(
+                call,
+                settings: settings,
+                convoId: convoId,
+                assistantId: assistantId,
+                imageBudget: imageBudget,
+                imageCharacter: imageCharacter,
+                userText: fallbackSearchQuery,
+                cancelToken: cancelToken,
+              );
+            } else if (call.name == VisionTools.analyzeImageToolName) {
+              return await _runAnalyzeImageTool(
+                call,
+                settings: settings,
+                convoId: convoId,
+                assistantId: assistantId,
+                sources: VisionTools.attachmentsFor(
+                  _s.conversations.firstWhere(
+                    (c) => c.id == convoId,
+                    orElse: () => Conversation(id: convoId),
+                  ),
                 ),
-              ),
-              cancelToken: cancelToken,
-            );
-          } else if (call.name == DocumentEditTools.inspectDocumentToolName) {
-            return _runInspectDocumentTool(
-              call,
-              sources: editableAttachments,
-              convoId: convoId,
-              assistantId: assistantId,
-            );
-          } else if (call.name == DocumentEditTools.editDocumentToolName) {
-            return await _runEditDocumentTool(
-              call,
-              settings: settings,
-              convoId: convoId,
-              assistantId: assistantId,
-              sources: editableAttachments,
-              cancelToken: cancelToken,
-            );
-          } else if (call.name == DocumentEditTools.convertDocumentToolName) {
-            return await _runConvertDocumentTool(
-              call,
-              settings: settings,
-              convoId: convoId,
-              assistantId: assistantId,
-              sources: editableAttachments,
-              cancelToken: cancelToken,
-            );
-          } else if (call.name != null &&
-              settings.routedMcpTool(call.name!) != null) {
-            final result = await _runMcpPassthroughTool(
-              call,
-              settings: settings,
-              convoId: convoId,
-              assistantId: assistantId,
-              cancelToken: cancelToken,
-              onImage: (image) {
-                latestToolImage = image;
-                latestToolImageCallId = call.id;
-              },
-            );
-            if (latestToolImage != null && !canSeeToolImages) {
-              return '$result\n当前聊天模型不支持读取截图。请使用支持视觉的模型，或使用控件树等文本观察。';
+                cancelToken: cancelToken,
+              );
+            } else if (call.name == DocumentEditTools.inspectDocumentToolName) {
+              return _runInspectDocumentTool(
+                call,
+                sources: editableAttachments,
+                convoId: convoId,
+                assistantId: assistantId,
+              );
+            } else if (call.name == DocumentEditTools.editDocumentToolName) {
+              return await _runEditDocumentTool(
+                call,
+                settings: settings,
+                convoId: convoId,
+                assistantId: assistantId,
+                sources: editableAttachments,
+                cancelToken: cancelToken,
+              );
+            } else if (call.name == DocumentEditTools.convertDocumentToolName) {
+              return await _runConvertDocumentTool(
+                call,
+                settings: settings,
+                convoId: convoId,
+                assistantId: assistantId,
+                sources: editableAttachments,
+                cancelToken: cancelToken,
+              );
+            } else if (call.name != null &&
+                settings.routedMcpTool(call.name!) != null) {
+              final result = await _runMcpPassthroughTool(
+                call,
+                settings: settings,
+                convoId: convoId,
+                assistantId: assistantId,
+                cancelToken: cancelToken,
+                onImage: (image) {
+                  latestToolImage = image;
+                  latestToolImageCallId = call.id;
+                },
+              );
+              if (latestToolImage != null && !canSeeToolImages) {
+                return '$result\n当前聊天模型不支持读取截图。请使用支持视觉的模型，或使用控件树等文本观察。';
+              }
+              return result;
+            } else {
+              return '不支持的工具：${call.name ?? 'unknown'}';
             }
-            return result;
-          } else {
-            return '不支持的工具：${call.name ?? 'unknown'}';
-          }
-        },
+          },
+        ),
         onResult: (call, content) {
           if (!ref.mounted) return;
+          if (directTrace case final trace?) {
+            final outcome = _directToolOutcome(
+              content,
+              cancelled: cancelToken.isCancelled || _execution.isCancelled,
+            );
+            _finishCapabilityTrace(
+              trace,
+              convoId: convoId,
+              assistantId: assistantId,
+              ok: outcome == 'completed',
+              error: outcome == 'completed'
+                  ? null
+                  : outcome == 'cancelled'
+                  ? '操作已取消'
+                  : content,
+              resultText: content,
+            );
+          }
           _recordToolResult(
             convoId,
             assistantId,
             call,
             content,
             priorActivities,
+            createdActivityId: directTrace?.id,
           );
           final activity = _messageById(convoId, assistantId)?.searchActivities
               .where(
@@ -827,6 +2071,8 @@ mixin ChatTools on ChatMutations {
               .lastOrNull;
           final status = cancelToken.isCancelled || _execution.isCancelled
               ? 'cancelled'
+              : directTrace != null
+              ? _directToolOutcome(content, cancelled: false)
               : activity == null
               ? 'skipped'
               : activity.status == SearchActivityStatus.failed
@@ -847,6 +2093,7 @@ mixin ChatTools on ChatMutations {
                 : WorkRuntimeLogLevel.warning,
           );
           pendingLogCall = null;
+          directTrace = null;
         },
       );
       if (latestToolImage != null &&
@@ -862,6 +2109,19 @@ mixin ChatTools on ChatMutations {
       }
       return replies;
     } catch (error) {
+      if (directTrace case final trace?) {
+        if (ref.mounted) {
+          _finishCapabilityTrace(
+            trace,
+            convoId: convoId,
+            assistantId: assistantId,
+            ok: false,
+            error: cancelToken.isCancelled || _execution.isCancelled
+                ? '操作已取消'
+                : '操作失败：${error.runtimeType}',
+          );
+        }
+      }
       if (pendingLogCall case final call?) {
         _runtimeLog(
           conversationId: convoId,
@@ -910,6 +2170,13 @@ mixin ChatTools on ChatMutations {
       'coding_workspace_info',
       'coding_list_directory',
       'coding_read_file',
+      'coding_artifact_manifest',
+      'math_calculate',
+      'device_observe',
+      'role_library_search',
+      'role_propose',
+      'tool_registry_search',
+      'tool_registry_request',
       'web_search',
       'fetch_url',
       'inspect_document',
@@ -961,10 +2228,11 @@ mixin ChatTools on ChatMutations {
                   ],
                 )
                 .timeout(const Duration(seconds: 30))) {
-          if (chunk.actualConfig != null)
+          if (chunk.actualConfig != null) {
             ref
                 .read(workSessionInsightsProvider.notifier)
                 .route(convoId, reviewId, chunk.actualConfig!);
+          }
           if (chunk.usage != null) {
             ref
                 .read(workSessionInsightsProvider.notifier)
@@ -991,17 +2259,20 @@ mixin ChatTools on ChatMutations {
     }
     if (!ref.mounted || token.isCancelled) return false;
     _execution.budget?.waitForApproval();
+    final approvalRun = _run;
+    approvalRun?.sharedExecution?.call(false);
     final taskId = _activeWorkTaskIds[convoId];
-    if (taskId != null)
+    if (taskId != null) {
       ref
           .read(workTaskRuntimeProvider.notifier)
           .waitingForApproval(taskId, detail: '等待批准：${call.name}');
+    }
     try {
       return await ref
           .read(workApprovalsProvider.notifier)
           .ask(
             PendingWorkApproval(
-              id: '${convoId}:${call.id}:${DateTime.now().microsecondsSinceEpoch}',
+              id: '$convoId:${call.id}:${DateTime.now().microsecondsSinceEpoch}',
               conversationId: convoId,
               sourceAgentId: _sourceAgentId,
               tool: call.name ?? '工具',
@@ -1012,9 +2283,11 @@ mixin ChatTools on ChatMutations {
             token,
           );
     } finally {
+      approvalRun?.sharedExecution?.call(true);
       if (!token.isCancelled) _execution.budget?.resumeWork();
-      if (taskId != null && ref.mounted && !token.isCancelled)
+      if (taskId != null && ref.mounted && !token.isCancelled) {
         ref.read(workTaskRuntimeProvider.notifier).running(taskId);
+      }
     }
   }
 
@@ -1024,6 +2297,7 @@ mixin ChatTools on ChatMutations {
     String convoId,
     String assistantId,
     CancelToken token,
+    String roundId,
   ) async {
     final activity = _beginCapabilityTrace(
       convoId: convoId,
@@ -1050,6 +2324,103 @@ mixin ChatTools on ChatMutations {
       );
       if (decoded is! Map) throw const FormatException('工具参数必须是对象');
       final args = Map<String, dynamic>.from(decoded);
+      if (call.name == 'coding_write_file' ||
+          call.name == 'coding_create_directory' ||
+          call.name == 'coding_copy_file' ||
+          call.name == workIntegrationTool.name) {
+        final owner = _run?.agentRootId;
+        if (owner != null) {
+          ref
+              .read(workAgentsProvider)
+              .authorizeScopedFileWrite(
+                owner,
+                session.changeTarget,
+                args['scope'] as String? ?? 'root',
+                (call.name == 'coding_copy_file'
+                        ? args['destination']
+                        : args['path'])
+                    as String,
+              );
+        }
+      }
+      if (call.name == 'work_run_command' &&
+          _sourceAgentId != null &&
+          ref.read(workAgentsProvider).record(_sourceAgentId!)?.isolated !=
+              true) {
+        throw StateError('共享项目子代理不可运行任意命令，请向主代理提交测试命令或使用独立工作树');
+      }
+      if ({
+        'coding_write_file',
+        'coding_create_directory',
+        'coding_copy_file',
+        'coding_delete_file',
+        workIntegrationTool.name,
+      }.contains(call.name)) {
+        await _invalidateTaskEvidence(convoId);
+      }
+      if (call.name == workIntegrationTool.name) {
+        if (_sourceAgentId != null) throw StateError('只有主代理可整合已验收成果');
+        final id = args['agent_id'] as String;
+        final child = ref.read(workAgentsProvider).record(id);
+        final isolation = _agentIsolations[id];
+        if (child == null ||
+            child.conversationId != convoId ||
+            !child.terminal ||
+            isolation == null) {
+          throw StateError('子任务未结束或不属于当前会话，未整合');
+        }
+        if (session is! WorkspaceToolSession ||
+            session.workspace.id != isolation.parent.workspace.id ||
+            session.workspace.root != isolation.parent.workspace.root) {
+          throw StateError('当前工作区与隔离基线不一致，未整合');
+        }
+        if ((args['acceptance'] as String? ?? '').trim().isEmpty) {
+          throw StateError('请先提供具体验收依据');
+        }
+        final path = args['path'] as String;
+        final result = await isolation.integrateFile(
+          path,
+          args['expected_sha256'] as String,
+          token,
+        );
+        await ref
+            .read(workChangesProvider.notifier)
+            .record(
+              conversationId: convoId,
+              assistantId: assistantId,
+              roundId: roundId,
+              target: session.changeTarget,
+              scope: 'root',
+              path: path,
+              before: (isolation.baseline[path] ?? 'new') == 'new'
+                  ? null
+                  : result.before,
+              beforeHash: (isolation.baseline[path] ?? 'new') == 'new'
+                  ? null
+                  : isolation.baseline[path],
+              after: result.after,
+              textSnapshot: !result.binary && !result.deleted,
+              deleted: result.deleted,
+              artifactManifest: result.binary || result.deleted
+                  ? {
+                      'kind': result.deleted ? 'deleted' : 'file',
+                      'sha256': result.receipt['sha256'],
+                      'bytes': result.receipt['bytes'],
+                      'integration': true,
+                    }
+                  : null,
+              afterHash: result.deleted
+                  ? 'deleted'
+                  : result.receipt['sha256'] as String,
+            );
+        return jsonEncode({
+          ...result.receipt,
+          'integrated_from_agent': id,
+          'baseline_sha256': isolation.baseline[path] ?? 'new',
+          'acceptance': args['acceptance'],
+          'automatic_merge': false,
+        });
+      }
       if (call.name == workDeliveryTool.name) {
         if (_sourceAgentId != null) {
           throw StateError('子代理请向主代理报告最终成果路径，由主代理统一登记交付。');
@@ -1071,16 +2442,32 @@ mixin ChatTools on ChatMutations {
         final failures = <String>[];
         for (final path in paths.cast<String>().toSet()) {
           try {
+            final manifestSupported = session.tools.any(
+              (tool) => tool.name == 'coding_artifact_manifest',
+            );
             final file =
                 jsonDecode(
-                      await session.call('coding_read_file', {
-                        'scope': scope,
-                        'path': path,
-                        'encoding': 'base64',
-                      }, token),
+                      await session.call(
+                        manifestSupported
+                            ? 'coding_artifact_manifest'
+                            : 'coding_read_file',
+                        {
+                          'scope': scope,
+                          'path': path,
+                          if (!manifestSupported) 'encoding': 'base64',
+                        },
+                        token,
+                      ),
                     )
                     as Map;
-            final snapshotText = deliverySnapshotText(file, path);
+            final manifest = manifestSupported
+                ? Map<String, dynamic>.from(file)
+                : null;
+            // Registration hashes bytes incrementally. Existing text snapshots
+            // remain reviewable, but large/binary bodies never enter context.
+            final snapshotText = manifestSupported
+                ? null
+                : deliverySnapshotText(file, path);
             final previous = ref
                 .read(workChangesProvider)
                 .where(
@@ -1105,6 +2492,7 @@ mixin ChatTools on ChatMutations {
               await store.record(
                 conversationId: convoId,
                 assistantId: assistantId,
+                artifactManifest: manifest,
                 target: session.changeTarget,
                 scope: scope,
                 path: path,
@@ -1153,7 +2541,7 @@ mixin ChatTools on ChatMutations {
           'errors': failures,
           'note': '当前 scope 的最终交付清单已替换。其他文件改动仅在工作台展示。',
         });
-        if (ref.mounted)
+        if (ref.mounted) {
           _finishCapabilityTrace(
             activity,
             convoId: convoId,
@@ -1161,6 +2549,7 @@ mixin ChatTools on ChatMutations {
             ok: failures.isEmpty,
             resultText: result,
           );
+        }
         return result;
       }
       final runtimeId = _activeWorkTaskIds[convoId];
@@ -1168,10 +2557,11 @@ mixin ChatTools on ChatMutations {
         ref
             .read(workTaskRuntimeProvider.notifier)
             .running(runtimeId, detail: session.target);
-        if (call.name == 'work_run_command')
+        if (call.name == 'work_run_command') {
           ref
               .read(workTaskRuntimeProvider.notifier)
               .appendOutput(runtimeId, '\n命令：${args['command']}\n');
+        }
       }
       String? before, beforeHash;
       if (call.name == 'coding_write_file' &&
@@ -1187,10 +2577,29 @@ mixin ChatTools on ChatMutations {
         before = prior['content'] as String;
         beforeHash = prior['sha256'] as String;
       }
-      if (call.name == 'work_run_command')
+      if (call.name == 'work_run_command') {
+        final frozen = ref.read(
+          taskAcceptanceProvider,
+        )[_sessionRuns[convoId]?.core?.rootId];
+        if (frozen == null ||
+            !frozen.criteria.checkIds.contains(args['command'])) {
+          await _invalidateTaskEvidence(convoId);
+        } else if (_sourceAgentId == null) {
+          await ref
+              .read(taskAcceptanceProvider.notifier)
+              .update(
+                frozen.taskId,
+                (t) => t.invalidateCheck(args['command'] as String),
+              );
+        }
         await ref
             .read(workChangesProvider.notifier)
             .commandStarted(convoId, assistantId, session.changeTarget);
+      }
+      final evidenceRevision = ref
+          .read(taskAcceptanceProvider)[_sessionRuns[convoId]?.core?.rootId]
+          ?.mutationRevision;
+      int? observedExitCode;
       var result = await session.call(
         call.name!,
         args,
@@ -1198,15 +2607,19 @@ mixin ChatTools on ChatMutations {
         onOutput: runtimeId == null
             ? null
             : (text, isStderr) {
-                if (ref.mounted)
+                if (ref.mounted) {
                   ref
                       .read(workTaskRuntimeProvider.notifier)
                       .appendOutput(runtimeId, text, isStderr: isStderr);
+                }
               },
         onComplete: runtimeId == null
             ? null
             : (outcome) {
-                if (ref.mounted)
+                if (!outcome.cancelled && !outcome.timedOut) {
+                  observedExitCode = outcome.exitCode;
+                }
+                if (ref.mounted) {
                   ref
                       .read(workTaskRuntimeProvider.notifier)
                       .appendOutput(
@@ -1221,8 +2634,32 @@ mixin ChatTools on ChatMutations {
                             outcome.timedOut ||
                             outcome.exitCode != 0,
                       );
+                }
               },
       );
+      if (call.name == 'work_run_command' &&
+          observedExitCode != null &&
+          _sourceAgentId == null) {
+        final id = _sessionRuns[convoId]?.core?.rootId;
+        final frozen = ref.read(taskAcceptanceProvider)[id];
+        final command = args['command'];
+        if (id != null &&
+            command is String &&
+            frozen?.criteria.checkIds.contains(command) == true) {
+          await ref.read(taskAcceptanceProvider.notifier).update(id, (t) {
+            if (t.mutationRevision != evidenceRevision) {
+              return;
+            }
+            t.recordCheck(
+              id: command,
+              exitCode: observedExitCode!,
+              invocationId: call.id ?? roundId,
+              provenance:
+                  'host:WorkspaceCommandCompletion:${session.changeTarget}',
+            );
+          });
+        }
+      }
       if (call.name == 'coding_list_directory' && ref.mounted) {
         final listing = jsonDecode(result);
         if (listing is List || listing is Map && listing['truncated'] != true) {
@@ -1261,6 +2698,7 @@ mixin ChatTools on ChatMutations {
               .record(
                 conversationId: convoId,
                 assistantId: assistantId,
+                roundId: roundId,
                 target: session.changeTarget,
                 scope: args['scope'] as String? ?? 'root',
                 path: args['path'] as String,
@@ -1294,9 +2732,31 @@ mixin ChatTools on ChatMutations {
           error: '$error',
         );
       }
-      return token.isCancelled
-          ? '工作区操作已停止；已提交操作的结果可能未确认，请核对文件后继续。'
-          : '工作区工具 ${call.name} 失败：$error';
+      final detail = '$error';
+      const confirmedRejections = [
+        'File changed since it was read',
+        'Access denied by workspace directory policy',
+        'Directory is read-only',
+        'File already exists; read it',
+        'File no longer exists; refusing',
+        'Unknown or revoked access scope',
+        '本轮没有开放电脑工作区工具',
+        'command 必须是非空字符串',
+        '父项目已被用户或其他代理修改',
+        '子代理成果版本已改变',
+        '文件不在子代理声明职责中',
+        '当前子代理为只读职责',
+        '文件由代理',
+        '共享项目子代理不可运行任意命令',
+      ];
+      final known = confirmedRejections.any(detail.contains);
+      return jsonEncode({
+        'ok': false,
+        'execution_outcome': known ? 'failed' : 'unknown',
+        'error': token.isCancelled
+            ? '工作区操作已停止；已提交操作的结果可能未确认，请核对后继续。'
+            : '工作区工具 ${call.name} 失败：$error',
+      });
     }
   }
 
@@ -1642,6 +3102,20 @@ mixin ChatTools on ChatMutations {
     var connection = routed == null
         ? settings.gatewayConnection
         : settings.connectionForRouted(routed);
+    final isControlledBrowser =
+        connection.localProcess?.isPlaywright == true &&
+        (routed?.originalName ?? exposedName).startsWith('browser_');
+    if (isControlledBrowser &&
+        ref.read(controlledBrowserProvider.notifier).takenOver(convoId)) {
+      return Future.value('用户已接手此会话的受控浏览器，本次模型浏览器操作未执行。等待用户结束接手后再观察页面。');
+    }
+    final browserAgent =
+        _run?.agentRootId != null &&
+            ref.read(workAgentsProvider).record(_run!.agentRootId!)?.external ==
+                false
+        ? _run!.agentRootId
+        : null;
+    String? browserImage;
     if (routed?.serverId != null) {
       final latest = ref.read(settingsControllerProvider).value;
       final currentServer = latest?.gateway.customMcpServers
@@ -1675,26 +3149,34 @@ mixin ChatTools on ChatMutations {
       }
     }
     return _documentToolExecutor(
-      convoId,
-      assistantId,
-      onMcpImage: onImage,
-    ).callMcp(
-      call,
-      name: routed?.originalName ?? exposedName,
-      connection: connection.forSession(
-        convoId,
-        agentId:
-            _run?.agentRootId != null &&
-                ref
-                        .read(workAgentsProvider)
-                        .record(_run!.agentRootId!)
-                        ?.external ==
-                    false
-            ? _run!.agentRootId
-            : null,
-      ),
-      cancelToken: cancelToken,
-    );
+          convoId,
+          assistantId,
+          onMcpImage: (image) {
+            browserImage = image.imageBase64;
+            onImage?.call(image);
+          },
+        )
+        .callMcp(
+          call,
+          name: routed?.originalName ?? exposedName,
+          connection: connection.forSession(convoId, agentId: browserAgent),
+          cancelToken: cancelToken,
+        )
+        .then((result) {
+          if (isControlledBrowser && ref.mounted && routed?.serverId != null) {
+            ref
+                .read(controlledBrowserProvider.notifier)
+                .observe(
+                  conversation: convoId,
+                  server: routed!.serverId!,
+                  agent: browserAgent ?? '',
+                  tool: routed.originalName,
+                  text: result,
+                  image: browserImage,
+                );
+          }
+          return result;
+        });
   }
 
   String _runInspectDocumentTool(

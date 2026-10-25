@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/prototype_widgets.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -1049,6 +1050,8 @@ void main() {
     test('hides terminal unless research on', () {
       expect(ShellTab.visible(researchModeEnabled: false), [
         ShellTab.chat,
+        ShellTab.automation,
+        ShellTab.resources,
         ShellTab.tools,
         ShellTab.study,
         ShellTab.studio,
@@ -1056,6 +1059,8 @@ void main() {
       ]);
       expect(ShellTab.visible(researchModeEnabled: true), [
         ShellTab.chat,
+        ShellTab.automation,
+        ShellTab.resources,
         ShellTab.tools,
         ShellTab.terminal,
         ShellTab.study,
@@ -1071,7 +1076,13 @@ void main() {
           studyModeEnabled: false,
           creationModeEnabled: false,
         ),
-        [ShellTab.chat, ShellTab.tools, ShellTab.settings],
+        [
+          ShellTab.chat,
+          ShellTab.automation,
+          ShellTab.resources,
+          ShellTab.tools,
+          ShellTab.settings,
+        ],
       );
       expect(
         ShellTab.visible(
@@ -1079,7 +1090,14 @@ void main() {
           studyModeEnabled: false,
           creationModeEnabled: false,
         ),
-        [ShellTab.chat, ShellTab.tools, ShellTab.terminal, ShellTab.settings],
+        [
+          ShellTab.chat,
+          ShellTab.automation,
+          ShellTab.resources,
+          ShellTab.tools,
+          ShellTab.terminal,
+          ShellTab.settings,
+        ],
       );
       expect(
         ShellTab.visible(
@@ -1089,6 +1107,8 @@ void main() {
         ),
         [
           ShellTab.chat,
+          ShellTab.automation,
+          ShellTab.resources,
           ShellTab.tools,
           ShellTab.terminal,
           ShellTab.study,
@@ -1218,6 +1238,7 @@ void main() {
           onTrust: (_) async => true,
           onMismatch: (_, _) async => false,
         );
+        await ctrl.setBlockCtrlC(true);
         await ctrl.connect(profile);
         final st = container.read(researchTerminalProvider);
         expect(st.isConnected, isTrue);
@@ -1233,7 +1254,7 @@ void main() {
         ctrl.sendShortcut('pwd\n');
         expect(fake.writes.any((w) => w.contains('pwd')), isTrue);
 
-        // Default blockCtrlC should strip ETX.
+        // Explicit training-job protection should strip ETX.
         fake.writes.clear();
         expect(container.read(researchTerminalProvider).blockCtrlC, isTrue);
         final blocked = ctrl.writeUserInput(TerminalInputGuard.ctrlC);
@@ -1444,6 +1465,7 @@ void main() {
         onTrust: (_) async => true,
         onMismatch: (_, _) async => false,
       );
+      await ctrl.setBlockCtrlC(true);
       await ctrl.connect(profile);
       fake.writes.clear();
 
@@ -1469,6 +1491,7 @@ void main() {
         onTrust: (_) async => true,
         onMismatch: (_, _) async => false,
       );
+      await ctrl.setBlockCtrlC(true);
       await ctrl.connect(profile);
       fake.writes.clear();
 
@@ -2300,11 +2323,15 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      final card = find.widgetWithText(Card, '科研模式');
+      final card = find.byKey(const ValueKey('feature-module-科研模式'));
       await tester.ensureVisible(card);
+      await tester.pumpAndSettle();
       expect(fake.connected, isTrue);
       expect(fake.disconnectCount, initialDisconnects);
-      final toggle = find.descendant(of: card, matching: find.byType(Switch));
+      final toggle = find.descendant(
+        of: card,
+        matching: find.byType(PrototypeSwitch),
+      );
       await tester.tap(toggle);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));

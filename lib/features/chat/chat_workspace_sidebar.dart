@@ -1,16 +1,22 @@
-import 'dart:async';
+import 'package:expert_chat/core/app_toast.dart';
+import '../../core/line_icon.dart';
+import '../../core/application_surface.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/providers.dart';
+import '../../core/prototype_widgets.dart';
 import '../../core/desktop_providers.dart';
 import '../../data/db/app_database.dart' show Project;
 import '../../domain/desktop/workspace_host.dart';
 import '../../state/conversation_workspace_bindings.dart';
 import '../../state/conversation_previews.dart';
 import '../../state/session_policy.dart';
-import '../../state/work_agents.dart';
 import '../../state/work_processes.dart';
+import '../../state/work_agents.dart';
+import '../../state/conversation_activity.dart';
+import '../../state/research_terminal_controller.dart';
+import '../shell/automation_status.dart';
 import '../../state/work_questions.dart';
 import '../../state/work_approvals.dart';
 import '../../data/conversation_repository.dart';
@@ -19,67 +25,15 @@ import '../../data/story_models.dart';
 import '../../state/chat_controller.dart';
 import '../../state/settings_controller.dart';
 import '../shell/shell_tab.dart';
-import '../library/resources_page.dart';
 import '../workspaces/desktop_workspaces_page.dart';
 import 'controllers/conversation_sidebar_controller.dart';
 import 'jump_to_message.dart';
 import 'widgets/conversation_history_list.dart';
+import 'widgets/sidebar_reorder_motion.dart';
 
 final _desktopProjectsProvider = FutureProvider.autoDispose<List<Project>>(
-  (ref) => ref.read(projectRepositoryProvider).list(),
+  (ref) => ref.watch(projectRepositoryProvider).list(),
 );
-
-@immutable
-class _HistoryListSlice {
-  const _HistoryListSlice({required this.currentId, required this.items});
-
-  final String? currentId;
-  final List<_HistoryItemSlice> items;
-
-  @override
-  bool operator ==(Object other) {
-    if (other is! _HistoryListSlice) return false;
-    if (currentId != other.currentId || items.length != other.items.length) {
-      return false;
-    }
-    for (var i = 0; i < items.length; i++) {
-      if (items[i] != other.items[i]) return false;
-    }
-    return true;
-  }
-
-  @override
-  int get hashCode => Object.hash(currentId, Object.hashAll(items));
-}
-
-@immutable
-class _HistoryItemSlice {
-  const _HistoryItemSlice({
-    required this.id,
-    required this.title,
-    required this.mode,
-    this.projectId,
-    required this.workMode,
-  });
-
-  final String id;
-  final String title;
-  final ConversationMode mode;
-  final String? projectId;
-  final bool workMode;
-
-  @override
-  bool operator ==(Object other) =>
-      other is _HistoryItemSlice &&
-      id == other.id &&
-      title == other.title &&
-      mode == other.mode &&
-      projectId == other.projectId &&
-      workMode == other.workMode;
-
-  @override
-  int get hashCode => Object.hash(id, title, mode, projectId, workMode);
-}
 
 /// Shared workspace navigation and conversation history for shell and drawer.
 class ChatWorkspaceSidebar extends ConsumerStatefulWidget {
@@ -99,137 +53,16 @@ class ChatWorkspaceSidebar extends ConsumerStatefulWidget {
 
 class _ChatWorkspaceSidebarState extends ConsumerState<ChatWorkspaceSidebar> {
   late final ConversationSidebarController _history;
+  late final Listenable _activityEvents;
   int _navigationEpoch = 0;
   String? _renamingId; // id of the conversation being renamed inline
   final _renameCtrl = TextEditingController();
-  final _collapsedGroups = <String>{};
-  bool _desktopSearchOpen = false;
-  bool _workFilter = false, _showArchived = false, _selectingSessions = false;
-  String? _filterConversationId;
+  bool _desktopSearchOpen = false,
+      _showArchived = false,
+      _selectingSessions = false;
   final _selectedSessions = <String>{};
   bool _runningView = false;
-  final _activitySignatures = <String, int>{};
-  final _activityAt = <String, DateTime>{};
-  final _activityOrder = <String>[];
-  Timer? _activityRefresh;
-  late final Listenable _agentEvents, _processEvents;
-
-  // Capture activity as it happens, but reorder at most once per five seconds.
-  // Completed tasks remain in this view for the current app session.
-  void _captureActivity() {
-    final state = ref.read(chatControllerProvider).value;
-    if (state == null) return;
-    final agents = ref.read(workAgentsProvider).records;
-    final processes = ref.read(workProcessesProvider).records;
-    final questions = ref.read(workQuestionsProvider);
-    final approvals = ref.read(workApprovalsProvider);
-    var changed = false;
-    for (final c in state.conversations.where((c) => c.workMode)) {
-      final checkpoint = state.sessionCheckpoints[c.id];
-      final children = agents.where(
-        (a) => a.conversationId == c.id && !a.external,
-      );
-      final commands = processes.where(
-        (p) => p.conversationId == c.id && !p.service,
-      );
-      final waiting =
-          questions.any((q) => q.conversationId == c.id) ||
-          approvals.any((q) => q.conversationId == c.id);
-      final active =
-          state.isConversationRunning(c.id) ||
-          waiting ||
-          checkpoint?.status == SessionExecutionStatus.waiting ||
-          children.any((a) => !a.terminal) ||
-          commands.any((p) => p.active);
-      final last = c.activePath.lastOrNull;
-      final signature = Object.hash(
-        checkpoint?.updatedAt,
-        checkpoint?.status,
-        active,
-        waiting,
-        last?.content.length,
-        last?.reasoning.length,
-        last?.searchActivities.length,
-        Object.hashAll(
-          children.map(
-            (a) => Object.hash(
-              a.id,
-              a.status,
-              a.rounds,
-              a.output.length,
-              a.activity,
-            ),
-          ),
-        ),
-        Object.hashAll(
-          commands.map((p) => Object.hash(p.id, p.status, p.log.length)),
-        ),
-      );
-      final previous = _activitySignatures[c.id];
-      _activitySignatures[c.id] = signature;
-      if (previous == signature ||
-          (!active && !_activityAt.containsKey(c.id))) {
-        continue;
-      }
-      _activityAt[c.id] = DateTime.now();
-      changed = true;
-    }
-    if (changed && _activityRefresh == null) {
-      _activityRefresh = Timer(const Duration(seconds: 5), () {
-        _activityRefresh = null;
-        if (!mounted) return;
-        setState(_refreshActivityOrder);
-      });
-    }
-  }
-
-  void _refreshActivityOrder() {
-    final currentIds =
-        ref
-            .read(chatControllerProvider)
-            .value
-            ?.conversations
-            .map((c) => c.id)
-            .toSet() ??
-        <String>{};
-    _activityAt.removeWhere((id, _) => !currentIds.contains(id));
-    final previous = {
-      for (var i = 0; i < _activityOrder.length; i++) _activityOrder[i]: i,
-    };
-    _activityOrder
-      ..clear()
-      ..addAll(_activityAt.keys)
-      ..sort((a, b) {
-        final recent = _activityAt[b]!.compareTo(_activityAt[a]!);
-        return recent != 0
-            ? recent
-            : (previous[a] ?? 0).compareTo(previous[b] ?? 0);
-      });
-  }
-
-  Widget _workViewControl() => Padding(
-    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-    child: SegmentedButton<bool>(
-      showSelectedIcon: false,
-      style: SegmentedButton.styleFrom(visualDensity: VisualDensity.compact),
-      segments: const [
-        ButtonSegment(value: false, label: Text('全部工作')),
-        ButtonSegment(
-          value: true,
-          label: Text('正在进行'),
-          icon: Icon(Icons.work_history_outlined, size: 15),
-        ),
-      ],
-      selected: {_runningView},
-      onSelectionChanged: (value) {
-        _captureActivity();
-        setState(() {
-          _runningView = value.first;
-          _refreshActivityOrder();
-        });
-      },
-    ),
-  );
+  final _workActivitySeen = <String>{};
 
   void _toggleSession(Conversation c) => setState(() {
     if (!_selectedSessions.add(c.id)) _selectedSessions.remove(c.id);
@@ -252,7 +85,7 @@ class _ChatWorkspaceSidebarState extends ConsumerState<ChatWorkspaceSidebar> {
       }
     } catch (error) {
       if (mounted) {
-        ScaffoldMessenger.of(
+        AppToastMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text('$error')));
       }
@@ -288,7 +121,7 @@ class _ChatWorkspaceSidebarState extends ConsumerState<ChatWorkspaceSidebar> {
               ?.conversations
               .any((c) => c.id == id) ==
           true) {
-        ScaffoldMessenger.of(
+        AppToastMessenger.of(
           context,
         ).showSnackBar(const SnackBar(content: Text('部分会话删除失败，已保留失败项目。')));
         return;
@@ -298,77 +131,102 @@ class _ChatWorkspaceSidebarState extends ConsumerState<ChatWorkspaceSidebar> {
     if (mounted) setState(() => _selectingSessions = false);
   }
 
-  Widget _sessionControls(List<Conversation> visible) => Padding(
-    padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
-    child: Column(
-      children: [
-        SegmentedButton<bool>(
-          showSelectedIcon: false,
-          segments: const [
-            ButtonSegment(
-              value: false,
-              label: Text('会话', key: ValueKey('sidebar-filter-chat')),
-              icon: Icon(Icons.chat_bubble_outline, size: 16),
-            ),
-            ButtonSegment(
-              value: true,
-              label: Text('工作', key: ValueKey('sidebar-filter-work')),
-              icon: Icon(Icons.work_outline, size: 16),
-            ),
-          ],
-          selected: {_workFilter},
-          onSelectionChanged: (v) => setState(() {
-            _workFilter = v.first;
-            _selectedSessions.clear();
-          }),
+  Widget _historyMenu() => PopupMenuButton<String>(
+    tooltip: '会话管理与筛选',
+    icon: const Icon(Icons.filter_list, size: 16),
+    padding: EdgeInsets.zero,
+    style: ButtonStyle(
+      minimumSize: WidgetStatePropertyAll(
+        Size(widget.desktopMode ? 28 : 44, widget.desktopMode ? 28 : 44),
+      ),
+      padding: const WidgetStatePropertyAll(EdgeInsets.zero),
+    ),
+    onSelected: (value) {
+      if (value == 'archive') {
+        setState(() {
+          _showArchived = !_showArchived;
+          _selectedSessions.clear();
+        });
+      } else if (value == 'select') {
+        setState(() {
+          _selectingSessions = !_selectingSessions;
+          _selectedSessions.clear();
+        });
+      } else {
+        _history.setMode(
+          value == 'all' ? null : ConversationMode.values.byName(value),
+        );
+      }
+    },
+    itemBuilder: (_) => [
+      PopupMenuItem(
+        value: 'archive',
+        child: Text(_showArchived ? '返回未归档' : '已归档'),
+      ),
+      PopupMenuItem(
+        value: 'select',
+        child: Text(_selectingSessions ? '取消多选' : '多选'),
+      ),
+      const PopupMenuDivider(),
+      CheckedPopupMenuItem(
+        value: 'all',
+        checked: _history.mode == null,
+        child: const Text('全部类型'),
+      ),
+      for (final entry in [
+        (ConversationMode.chat, '仅普通对话'),
+        (ConversationMode.story, '仅故事'),
+        (ConversationMode.ensemble, '仅角色大乱斗'),
+        (ConversationMode.study, '仅学习'),
+      ])
+        CheckedPopupMenuItem(
+          value: entry.$1.name,
+          checked: _history.mode == entry.$1,
+          child: Text(entry.$2),
         ),
-        if (_workFilter && !_showArchived) _workViewControl(),
-        Row(
-          children: [
-            TextButton(
-              onPressed: () => setState(() {
-                _showArchived = !_showArchived;
-                _selectedSessions.clear();
-              }),
-              child: Text(_showArchived ? '返回未归档' : '已归档'),
-            ),
-            const Spacer(),
-            TextButton(
-              onPressed: () => setState(() {
-                _selectingSessions = !_selectingSessions;
-                _selectedSessions.clear();
-              }),
-              child: Text(_selectingSessions ? '取消' : '多选'),
-            ),
-          ],
-        ),
-        if (_selectingSessions)
-          Wrap(
+    ],
+  );
+  Widget _sessionControls(List<Conversation> visible) => !_selectingSessions
+      ? const SizedBox.shrink()
+      : Padding(
+          padding: const EdgeInsets.only(top: 6),
+          child: Wrap(
             spacing: 4,
+            runSpacing: 4,
             children: [
-              TextButton(
+              PrototypeButton(
+                label: '取消',
+                small: true,
                 onPressed: () => setState(() {
-                  _selectedSessions.addAll(visible.map((c) => c.id));
+                  _selectingSessions = false;
+                  _selectedSessions.clear();
                 }),
-                child: const Text('全选'),
               ),
-              TextButton(
+              PrototypeButton(
+                label: '全选',
+                small: true,
+                onPressed: () => setState(
+                  () => _selectedSessions.addAll(visible.map((c) => c.id)),
+                ),
+              ),
+              PrototypeButton(
+                label: _showArchived ? '恢复' : '归档',
+                small: true,
                 onPressed: _selectedSessions.isEmpty
                     ? null
                     : () => _archiveSessions(List.of(_selectedSessions)),
-                child: Text(_showArchived ? '恢复' : '归档'),
               ),
-              TextButton(
+              PrototypeButton(
+                label: '删除 ${_selectedSessions.length}',
+                small: true,
+                variant: PrototypeButtonVariant.danger,
                 onPressed: _selectedSessions.isEmpty
                     ? null
                     : _deleteSelectedSessions,
-                child: Text('删除 ${_selectedSessions.length}'),
               ),
             ],
           ),
-      ],
-    ),
-  );
+        );
   @override
   void initState() {
     super.initState();
@@ -376,12 +234,11 @@ class _ChatWorkspaceSidebarState extends ConsumerState<ChatWorkspaceSidebar> {
       search: (query) =>
           ref.read(conversationRepositoryProvider).searchMessages(query),
     )..addListener(_onHistoryChanged);
-    _agentEvents = ref.read(workAgentsProvider)..addListener(_captureActivity);
-    _processEvents = ref.read(workProcessesProvider)
-      ..addListener(_captureActivity);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _captureActivity();
-    });
+    _activityEvents = Listenable.merge([
+      ref.read(workAgentsProvider),
+      ref.read(workProcessesProvider),
+    ]);
+    _activityEvents.addListener(_onHistoryChanged);
   }
 
   void _onHistoryChanged() {
@@ -390,9 +247,7 @@ class _ChatWorkspaceSidebarState extends ConsumerState<ChatWorkspaceSidebar> {
 
   @override
   void dispose() {
-    _activityRefresh?.cancel();
-    _agentEvents.removeListener(_captureActivity);
-    _processEvents.removeListener(_captureActivity);
+    _activityEvents.removeListener(_onHistoryChanged);
     _history.dispose();
     _renameCtrl.dispose();
     super.dispose();
@@ -403,10 +258,15 @@ class _ChatWorkspaceSidebarState extends ConsumerState<ChatWorkspaceSidebar> {
     SearchHit hit,
   ) async {
     final epoch = ++_navigationEpoch;
+    final initialTab = ref.read(shellTabProvider);
     final controller = ref.read(chatControllerProvider.notifier);
     ref.read(pendingJumpMessageIdProvider.notifier).clear();
     await controller.selectConversation(conversation.id);
-    if (!mounted || epoch != _navigationEpoch) return;
+    if (!mounted ||
+        epoch != _navigationEpoch ||
+        ref.read(shellTabProvider) != initialTab) {
+      return;
+    }
     final current = ref.read(chatControllerProvider).value?.current;
     if (current?.id != conversation.id) return;
     openShellTab(ref, ShellTab.chat);
@@ -473,405 +333,585 @@ class _ChatWorkspaceSidebarState extends ConsumerState<ChatWorkspaceSidebar> {
     }
   }
 
+  bool _hovering = false;
+  List<String> _frozenOrder = [];
   @override
   Widget build(BuildContext context) {
-    final controller = ref.read(chatControllerProvider.notifier);
-    final scheme = Theme.of(context).colorScheme;
-    ref.watch(
-      chatControllerProvider.select((async) {
-        final s = async.value;
-        return _HistoryListSlice(
-          currentId: s?.currentId,
-          items: [
-            for (final c in s?.conversations ?? const <Conversation>[])
-              _HistoryItemSlice(
-                id: c.id,
-                title: c.title,
-                mode: c.mode,
-                projectId: c.projectId,
-                workMode: c.workMode,
-              ),
-          ],
-        );
-      }),
-    );
-    ref.listen(chatControllerProvider, (_, _) => _captureActivity());
-    ref.listen(workQuestionsProvider, (_, _) => _captureActivity());
-    ref.listen(workApprovalsProvider, (_, _) => _captureActivity());
-    final state = ref.read(chatControllerProvider).value;
-    final selectedTab = ref.watch(shellTabProvider);
+    final state = ref.watch(chatControllerProvider).value;
     final settings = ref.watch(settingsControllerProvider).value;
-    final workspaceTabs = ShellTab.visible(
-      researchModeEnabled: settings?.researchModeEnabled ?? false,
-      studyModeEnabled: settings?.studyModeEnabled ?? true,
-      creationModeEnabled: settings?.creationModeEnabled ?? true,
-    ).where((tab) => tab != ShellTab.settings).toList();
-    final all = state?.conversations ?? const <Conversation>[];
-    if (_filterConversationId != state?.currentId) {
-      _filterConversationId = state?.currentId;
-      _workFilter = state?.current?.workMode ?? false;
-      _selectedSessions.clear();
-    }
     final policies = ref.watch(sessionPolicyProvider);
-    final visible = [
-      for (final c in all)
-        if (_history.matches(c) &&
-            c.workMode == _workFilter &&
-            (policies[c.id]?.archived ?? false) == _showArchived)
-          c,
-    ];
-    if (_workFilter && _runningView && !_showArchived) {
-      final positions = {
-        for (var i = 0; i < _activityOrder.length; i++) _activityOrder[i]: i,
+    final approvals = ref.watch(workApprovalsProvider);
+    final questions = ref.watch(workQuestionsProvider);
+    final all = state?.conversations ?? <Conversation>[];
+    final visible = all
+        .where(
+          (c) =>
+              _history.matches(c) &&
+              (policies[c.id]?.archived ?? false) == _showArchived,
+        )
+        .toList();
+    DateTime activity(Conversation c) {
+      final checkpoint = state?.sessionCheckpoints[c.id]?.updatedAt;
+      return checkpoint != null && checkpoint.isAfter(c.updatedAt)
+          ? checkpoint
+          : c.updatedAt;
+    }
+
+    visible.sort((a, b) => activity(b).compareTo(activity(a)));
+    if (_hovering) {
+      final position = {
+        for (var i = 0; i < _frozenOrder.length; i++) _frozenOrder[i]: i,
       };
-      visible.removeWhere((c) => !positions.containsKey(c.id));
-      visible.sort((a, b) => positions[a.id]!.compareTo(positions[b.id]!));
+      visible.sort(
+        (a, b) =>
+            (position[a.id] ?? 100000).compareTo(position[b.id] ?? 100000),
+      );
     }
-
-    if (widget.desktopMode) {
-      return _desktopSidebar(all, visible, state?.currentId);
-    }
-
-    void openWorkspace(ShellTab tab) {
-      ++_navigationEpoch;
+    final bindings = ref.watch(conversationWorkspaceBindingsProvider);
+    final spaces =
+        ref.watch(registeredDesktopWorkspacesProvider).value ??
+        <DesktopWorkspace>[];
+    final projects = ref.watch(_desktopProjectsProvider).value ?? <Project>[];
+    final collapsed = settings?.ui.sidebarCollapsedGroups.toSet() ?? <String>{};
+    void destination(ShellTab tab) {
       openShellTab(ref, tab);
       _closeDrawerIfAny();
     }
 
-    void newConversation() {
-      controller.newConversation(workMode: _workFilter);
-      openWorkspace(ShellTab.chat);
-    }
-
-    void toggleArchive() => setState(() {
-      _showArchived = !_showArchived;
-      _selectedSessions.clear();
-    });
-    void toggleSelection() => setState(() {
-      _selectingSessions = !_selectingSessions;
-      _selectedSessions.clear();
-    });
-    final header = Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 10),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            children: [
-              Image.asset(
-                'assets/branding/assistant.png',
-                width: 30,
-                height: 30,
-                errorBuilder: (_, _, _) => Icon(
-                  Icons.auto_awesome_outlined,
-                  size: 28,
-                  color: scheme.primary,
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  'Expert Chat',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ),
-              PopupMenuButton<String>(
-                tooltip: '更多功能',
-                icon: const Icon(Icons.more_horiz),
-                onSelected: (value) {
-                  if (value == 'resources') {
-                    _closeDrawerIfAny();
-                    Navigator.of(context).push(
-                      MaterialPageRoute<void>(
-                        builder: (_) => const ResourcesPage(),
-                      ),
-                    );
-                  } else {
-                    openWorkspace(
-                      workspaceTabs.firstWhere((tab) => tab.name == value),
-                    );
-                  }
-                },
-                itemBuilder: (_) => [
-                  const PopupMenuItem(
-                    value: 'resources',
-                    child: ListTile(
-                      dense: true,
-                      contentPadding: EdgeInsets.zero,
-                      leading: Icon(Icons.folder_outlined),
-                      title: Text('资料库'),
-                    ),
-                  ),
-
-                  const PopupMenuDivider(),
-                  for (final tab in workspaceTabs.where(
-                    (tab) => tab != ShellTab.chat,
-                  ))
-                    PopupMenuItem(
-                      value: tab.name,
-                      child: ListTile(
-                        dense: true,
-                        contentPadding: EdgeInsets.zero,
-                        leading: Icon(
-                          tab.icon,
-                          color: selectedTab == tab ? scheme.primary : null,
-                        ),
-                        title: Text(tab.label),
-                      ),
-                    ),
-                ],
-              ),
-              if (widget.onCollapse != null)
-                IconButton(
-                  tooltip: '收起侧边栏',
-                  onPressed: widget.onCollapse,
-                  icon: const Icon(Icons.menu_open_rounded),
-                ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            key: const ValueKey('conversation-search-field'),
-            decoration: InputDecoration(
-              isDense: true,
-              prefixIcon: const Icon(Icons.search, size: 20),
-              hintText: '搜索会话',
-              filled: true,
-              fillColor: scheme.surface.withValues(alpha: .7),
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: 14,
-                vertical: 13,
-              ),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(14),
-                borderSide: BorderSide.none,
-              ),
-              enabledBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(14),
-                borderSide: BorderSide.none,
+    Widget rows(List<Conversation> items) => items.isEmpty
+        ? Padding(
+            padding: const EdgeInsets.fromLTRB(26, 2, 8, 4),
+            child: Text(
+              '还没有对话',
+              style: TextStyle(
+                fontSize: 12,
+                color: PrototypeColors.of(context).muted,
               ),
             ),
-            onChanged: _history.setQuery,
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: SegmentedButton<bool>(
-                  showSelectedIcon: false,
-                  style: SegmentedButton.styleFrom(
-                    side: BorderSide.none,
-                    selectedBackgroundColor: scheme.primary.withValues(
-                      alpha: .1,
-                    ),
-                    selectedForegroundColor: scheme.primary,
-                    backgroundColor: Colors.transparent,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 10,
-                    ),
-                  ),
-                  segments: const [
-                    ButtonSegment(
-                      value: false,
-                      label: Text('聊天', key: ValueKey('sidebar-filter-chat')),
-                    ),
-                    ButtonSegment(
-                      value: true,
-                      label: Text('工作', key: ValueKey('sidebar-filter-work')),
-                    ),
-                  ],
-                  selected: {_workFilter},
-                  onSelectionChanged: (values) => setState(() {
-                    _workFilter = values.first;
-                    _selectedSessions.clear();
-                  }),
-                ),
-              ),
-              const SizedBox(width: 6),
-              PopupMenuButton<String>(
-                tooltip: '会话管理与筛选',
-                icon: Icon(
-                  Icons.tune,
-                  size: 20,
-                  color: _showArchived || _history.mode != null
-                      ? scheme.primary
-                      : scheme.onSurfaceVariant,
-                ),
-                onSelected: (value) {
-                  switch (value) {
-                    case 'archive':
-                      toggleArchive();
-                    case 'select':
-                      toggleSelection();
-                    case 'all':
-                      _history.setMode(null);
-                    case 'chat':
-                      _history.setMode(ConversationMode.chat);
-                  }
-                },
-                itemBuilder: (_) => [
-                  PopupMenuItem(
-                    value: 'archive',
-                    child: Text(_showArchived ? '返回未归档' : '查看已归档'),
-                  ),
-                  PopupMenuItem(
-                    value: 'select',
-                    child: Text(_selectingSessions ? '退出多选' : '多选会话'),
-                  ),
-                  const PopupMenuDivider(),
-                  CheckedPopupMenuItem(
-                    value: 'all',
-                    checked: _history.mode == null,
-                    child: const Text('全部类型'),
-                  ),
-                  CheckedPopupMenuItem(
-                    value: 'chat',
-                    checked: _history.mode == ConversationMode.chat,
-                    child: const Text('仅普通对话'),
-                  ),
-                ],
-              ),
-            ],
-          ),
-          if (_workFilter && !_showArchived) _workViewControl(),
-          if (_showArchived || _history.mode != null)
-            Wrap(
-              spacing: 8,
+          )
+        : ConversationHistoryList(
+            compactRows: true,
+            prototypeRows: true,
+            mobileStyle: !widget.desktopMode,
+            shrinkWrap: true,
+            currentSessionActive: ref.watch(shellTabProvider) == ShellTab.chat,
+            previews: ref.watch(conversationPreviewsProvider),
+            selecting: _selectingSessions,
+            selectedIds: _selectedSessions,
+            onToggleSelection: _toggleSession,
+            onStartSelection: (c) => setState(() {
+              _selectingSessions = true;
+              _selectedSessions.add(c.id);
+            }),
+            onArchive: (c) => _archiveSessions([c.id]),
+            archived: _showArchived,
+            visible: items,
+            currentId: state?.currentId,
+            query: _history.query,
+            searchHits: _history.hits,
+            renamingId: _renamingId,
+            renameController: _renameCtrl,
+            onCommitRename: _commitRename,
+            onRename: _startRename,
+            onDelete: _confirmDelete,
+            onOpen: _openConversation,
+          );
+    final proto = PrototypeColors.of(context);
+    final rowHeight = widget.desktopMode ? 32.0 : 44.0;
+    Widget group(
+      String key,
+      String label,
+      List<Conversation> items, {
+      VoidCallback? onNew,
+      String? type,
+    }) => Column(
+      key: ValueKey('sidebar-group-$key'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SidebarReorderMotion(
+          key: ValueKey('sidebar-group-title-$key'),
+          child: SizedBox(
+            height: rowHeight,
+            child: Row(
               children: [
-                if (_showArchived)
-                  InputChip(label: const Text('已归档'), onDeleted: toggleArchive),
-                if (_history.mode != null)
-                  InputChip(
-                    label: const Text('仅普通对话'),
-                    onDeleted: () => _history.setMode(null),
-                  ),
-              ],
-            ),
-          if (_selectingSessions)
-            Wrap(
-              spacing: 2,
-              alignment: WrapAlignment.spaceBetween,
-              children: [
-                TextButton(onPressed: toggleSelection, child: const Text('取消')),
-                TextButton(
-                  onPressed: () => setState(
-                    () => _selectedSessions.addAll(visible.map((c) => c.id)),
-                  ),
-                  child: const Text('全选'),
-                ),
-                TextButton(
-                  onPressed: _selectedSessions.isEmpty
-                      ? null
-                      : () => _archiveSessions(List.of(_selectedSessions)),
-                  child: Text(_showArchived ? '恢复' : '归档'),
-                ),
-                TextButton(
-                  onPressed: _selectedSessions.isEmpty
-                      ? null
-                      : _deleteSelectedSessions,
-                  child: Text('删除 ${_selectedSessions.length}'),
-                ),
-              ],
-            ),
-        ],
-      ),
-    );
-
-    return Material(
-      color: scheme.surfaceContainerLow,
-      child: SafeArea(
-        child: Column(
-          children: [
-            Expanded(
-              child: CustomScrollView(
-                slivers: [
-                  SliverToBoxAdapter(child: header),
-                  if (_history.searching)
-                    const SliverFillRemaining(
-                      hasScrollBody: false,
-                      child: Center(child: Text('正在搜索…')),
-                    )
-                  else if (_history.error != null)
-                    SliverFillRemaining(
-                      hasScrollBody: false,
-                      child: Center(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
+                Expanded(
+                  child: Tooltip(
+                    message: type == null ? label : '$label · $type',
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(8),
+                      onTap: settings == null
+                          ? null
+                          : () async {
+                              final next = {...collapsed};
+                              if (!next.add(key)) next.remove(key);
+                              await ref
+                                  .read(settingsControllerProvider.notifier)
+                                  .setUiPrefs(
+                                    settings.ui.copyWith(
+                                      sidebarCollapsedGroups: next.toList(),
+                                    ),
+                                  );
+                            },
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        child: Row(
                           children: [
-                            Text(_history.error!),
-                            TextButton(
-                              onPressed: _history.retry,
-                              child: const Text('重试搜索'),
+                            Icon(
+                              collapsed.contains(key)
+                                  ? Icons.chevron_right
+                                  : Icons.expand_more,
+                              size: 12,
+                              color: proto.muted,
+                            ),
+                            const SizedBox(width: 6),
+                            if (type != null) ...[
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 5,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: proto.surface,
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(
+                                  type.split(' · ').first,
+                                  style: TextStyle(
+                                    fontSize: 10.5,
+                                    height: 1.5,
+                                    color: proto.muted,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                            ],
+                            Expanded(
+                              child: Text(
+                                label,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w500,
+                                  color: proto.muted,
+                                ),
+                              ),
                             ),
                           ],
                         ),
                       ),
-                    )
-                  else
-                    SliverPadding(
-                      padding: const EdgeInsets.fromLTRB(12, 2, 12, 16),
-                      sliver: ConversationHistoryList(
-                        asSliver: true,
-                        compactRows: true,
-                        mobileStyle: true,
-                        previews: ref.watch(conversationPreviewsProvider),
-                        selecting: _selectingSessions,
-                        selectedIds: _selectedSessions,
-                        onToggleSelection: _toggleSession,
-                        onStartSelection: (c) => setState(() {
-                          _selectingSessions = true;
-                          _selectedSessions.add(c.id);
-                        }),
-                        onArchive: (c) => _archiveSessions([c.id]),
-                        archived: _showArchived,
-                        visible: visible,
-                        currentId: state?.currentId,
-                        query: _history.query,
-                        searchHits: _history.hits,
-                        renamingId: _renamingId,
-                        renameController: _renameCtrl,
-                        onCommitRename: _commitRename,
-                        onRename: _startRename,
-                        onDelete: _confirmDelete,
-                        onOpen: _openConversation,
-                      ),
                     ),
-                ],
+                  ),
+                ),
+                if (onNew != null)
+                  PrototypeIconButton(
+                    icon: Icons.add,
+                    onPressed: onNew,
+                    tooltip: '在此分组新建',
+                  ),
+              ],
+            ),
+          ),
+        ),
+        if (!collapsed.contains(key)) ...[
+          const SizedBox(height: 10),
+          rows(items),
+        ],
+      ],
+    );
+    final active = ref.watch(conversationActiveIdsProvider);
+    // Preserve results of tasks seen running in this sidebar instance.
+    _workActivitySeen.addAll(active);
+    final profiles = ref.watch(researchTerminalProvider).profiles;
+    final remoteCounts = ref.watch(remoteAutomationCountsProvider);
+    final work = visible
+        .where(
+          (c) =>
+              c.workMode && (!_runningView || _workActivitySeen.contains(c.id)),
+        )
+        .toList();
+    final chats = visible
+        .where((c) => !c.workMode && !c.isStoryLike && !c.isStudy)
+        .toList();
+    final content = <Widget>[];
+    content.add(
+      Padding(
+        padding: const EdgeInsets.only(top: 16, bottom: 4),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.only(left: 8),
+                child: Text(
+                  '工作',
+                  key: const ValueKey('sidebar-work-section-label'),
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                    color: PrototypeColors.of(context).faint,
+                  ),
+                ),
               ),
             ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 10, 12, 12),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: FilledButton.icon(
+            PrototypeIconButton(
+              key: const ValueKey('sidebar-manage-locations'),
+              icon: Icons.folder_outlined,
+              onPressed: _manageWorkspaces,
+              tooltip: '管理执行位置',
+            ),
+            PopupMenuButton<bool>(
+              key: const ValueKey('sidebar-work-filter'),
+              tooltip: '工作筛选',
+              icon: const LineIcon(Icons.more_vert, size: 16),
+              padding: EdgeInsets.zero,
+              style: ButtonStyle(
+                minimumSize: WidgetStatePropertyAll(
+                  Size(
+                    widget.desktopMode ? 28 : 44,
+                    widget.desktopMode ? 28 : 44,
+                  ),
+                ),
+                padding: const WidgetStatePropertyAll(EdgeInsets.zero),
+              ),
+              onSelected: (v) => setState(() => _runningView = v),
+              itemBuilder: (_) => [
+                CheckedPopupMenuItem(
+                  value: false,
+                  checked: !_runningView,
+                  child: const Text('全部工作'),
+                ),
+                CheckedPopupMenuItem(
+                  value: true,
+                  checked: _runningView,
+                  child: const Text('只看进行中'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+    final workGroups = <String, List<Conversation>>{};
+    for (final c in work) {
+      final ssh = policies[c.id]?.sshProfileId ?? '';
+      final key = ssh.isNotEmpty
+          ? 'ssh:$ssh'
+          : bindings[c.id] ?? defaultDesktopWorkspaceId;
+      (workGroups[key] ??= []).add(c);
+    }
+    workGroups.putIfAbsent(defaultDesktopWorkspaceId, () => []);
+    final orderedGroups = workGroups.entries.toList()
+      ..sort(
+        (a, b) => b.value.isEmpty
+            ? -1
+            : a.value.isEmpty
+            ? 1
+            : visible
+                  .indexOf(a.value.first)
+                  .compareTo(visible.indexOf(b.value.first)),
+      );
+    for (final entry in orderedGroups) {
+      final ssh = entry.key.startsWith('ssh:');
+      final profile = ssh
+          ? profiles.where((p) => p.id == entry.key.substring(4)).firstOrNull
+          : null;
+      final space = spaces.where((w) => w.id == entry.key).firstOrNull;
+      content.add(
+        group(
+          'work-${entry.key}',
+          ssh
+              ? profile?.name ?? 'SSH 配置已失效'
+              : space?.name ??
+                    (entry.key == defaultDesktopWorkspaceId
+                        ? '默认工作区'
+                        : '本机位置已失效'),
+          entry.value,
+          type: ssh
+              ? 'SSH · ${profile?.host ?? '配置不可用'} · ${entry.value.isEmpty ? '' : policies[entry.value.first.id]?.remoteRoot ?? ''}'
+              : '本机',
+          onNew: () => _newProjectChat(
+            workspaceId: ssh ? null : entry.key,
+            workMode: true,
+            sshProfileId: ssh ? entry.key.substring(4) : null,
+            remoteRoot: entry.value.isEmpty
+                ? null
+                : policies[entry.value.first.id]?.remoteRoot,
+          ),
+        ),
+      );
+    }
+    content.add(const _SidebarSectionLabel('聊天'));
+    final chatGroups = <String, List<Conversation>>{};
+    for (final c in chats) {
+      (chatGroups[c.projectId ?? ''] ??= []).add(c);
+    }
+    chatGroups.putIfAbsent('', () => []);
+    final orderedChats = chatGroups.entries.toList()
+      ..sort(
+        (a, b) => b.value.isEmpty
+            ? -1
+            : a.value.isEmpty
+            ? 1
+            : visible
+                  .indexOf(a.value.first)
+                  .compareTo(visible.indexOf(b.value.first)),
+      );
+    for (final entry in orderedChats) {
+      content.add(
+        group(
+          'chat-${entry.key}',
+          projects.where((p) => p.id == entry.key).firstOrNull?.name ??
+              (entry.key.isEmpty ? '未引用资料集' : '资料集'),
+          entry.value,
+          onNew: () => _newProjectChat(
+            projectId: entry.key.isEmpty ? null : entry.key,
+            workMode: false,
+          ),
+        ),
+      );
+    }
+    final stories = visible.where((c) => c.isStoryLike).toList();
+    if ((settings?.creationModeEnabled ?? true) && stories.isNotEmpty) {
+      content.add(
+        group(
+          'creation',
+          '创作',
+          stories,
+          onNew: () => destination(ShellTab.studio),
+        ),
+      );
+    }
+    final study = visible.where((c) => c.isStudy).toList();
+    if ((settings?.studyModeEnabled ?? true) && study.isNotEmpty) {
+      content.add(
+        group('study', '学习', study, onNew: () => destination(ShellTab.study)),
+      );
+    }
+    final pendingIds = {
+      ...approvals.map((a) => a.conversationId),
+      ...questions.map((q) => q.conversationId),
+    };
+    final hooks = ref.watch(workHooksProvider);
+    final selected = ref.watch(shellTabProvider).navigationTab;
+    return MouseRegion(
+      onEnter: (_) {
+        _frozenOrder = visible.map((c) => c.id).toList();
+        _hovering = true;
+      },
+      onExit: (_) => setState(() => _hovering = false),
+      child: Material(
+        color: proto.panel,
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 2,
+                  ),
+                  child: Row(
+                    children: [
+                      Image.asset(
+                        'assets/branding/assistant.png',
+                        width: 26,
+                        height: 26,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Expert Chat',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                            color: proto.ink,
+                          ),
+                        ),
+                      ),
+                      if (widget.onCollapse != null)
+                        SizedBox(
+                          width: 28,
+                          height: 28,
+                          child: PrototypeIconButton(
+                            icon: Icons.view_sidebar_outlined,
+                            onPressed: widget.onCollapse,
+                            tooltip: '收起侧边栏',
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Container(
+                        height: widget.desktopMode ? 36 : 44,
+                        decoration: BoxDecoration(
+                          color: proto.surface,
+                          border: Border.all(color: proto.line),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Tooltip(
+                                message: '搜索会话',
+                                child: InkWell(
+                                  onTap: () => setState(() {
+                                    _desktopSearchOpen = !_desktopSearchOpen;
+                                    if (!_desktopSearchOpen) {
+                                      _history.setQuery('');
+                                    }
+                                  }),
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 10,
+                                    ),
+                                    child: Row(
+                                      children: [
+                                        Text(
+                                          _showArchived ? '搜索已归档' : '搜索',
+                                          style: TextStyle(
+                                            fontSize: 13,
+                                            color: proto.faint,
+                                          ),
+                                        ),
+                                        const Spacer(),
+                                        LineIcon(
+                                          Icons.search,
+                                          size: 14,
+                                          color: proto.faint,
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            _historyMenu(),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Container(
                       key: const ValueKey('sidebar-new-chat'),
-                      onPressed: newConversation,
-                      icon: const Icon(Icons.edit_square, size: 20),
-                      label: Text(_workFilter ? '新工作' : '新对话'),
-                      style: FilledButton.styleFrom(
-                        minimumSize: const Size(0, 48),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(16),
+                      width: widget.desktopMode ? 36 : 44,
+                      height: widget.desktopMode ? 36 : 44,
+                      decoration: BoxDecoration(
+                        color: proto.surface,
+                        border: Border.all(color: proto.line),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: PrototypeIconButton(
+                        icon: Icons.edit_square,
+                        onPressed: () => _newProjectChat(workMode: false),
+                        tooltip: '新聊天',
+                      ),
+                    ),
+                  ],
+                ),
+                _sessionControls(visible),
+                if (_desktopSearchOpen)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: TextField(
+                      key: const ValueKey('conversation-search-field'),
+                      autofocus: true,
+                      onChanged: _history.setQuery,
+                      style: const TextStyle(fontSize: 13),
+                      decoration: const InputDecoration(
+                        hintText: '搜索聊天和工作',
+                        isDense: true,
+                        contentPadding: EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 8,
                         ),
                       ),
                     ),
                   ),
-                  const SizedBox(width: 8),
-                  IconButton(
-                    tooltip: '设置',
-                    onPressed: () => openWorkspace(ShellTab.settings),
-                    icon: const Icon(Icons.settings_outlined, size: 23),
+                Expanded(
+                  child: _history.searching
+                      ? const Center(child: Text('正在搜索…'))
+                      : _history.error != null
+                      ? PrototypeButton(
+                          label: _history.error!,
+                          onPressed: _history.retry,
+                          small: true,
+                        )
+                      : ListView(
+                          key: const ValueKey('desktop-project-conversations'),
+                          padding: const EdgeInsets.only(top: 10),
+                          children: [
+                            for (var i = 0; i < content.length; i++) ...[
+                              if (i > 0) const SizedBox(height: 10),
+                              content[i],
+                            ],
+                          ],
+                        ),
+                ),
+                Container(
+                  decoration: BoxDecoration(
+                    border: Border(top: BorderSide(color: proto.line)),
                   ),
-                ],
-              ),
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      ListenableBuilder(
+                        listenable: hooks,
+                        builder: (_, _) => _SidebarDestination(
+                          key: const ValueKey('sidebar-automation'),
+                          label: '自动化',
+                          icon: Icons.autorenew,
+                          selected: selected == ShellTab.automation,
+                          desktop: widget.desktopMode,
+                          trailing:
+                              '${hooks.records.where((r) => r.definition.enabled).length + remoteCounts.values.whereType<int>().fold(0, (a, b) => a + b)}${remoteCounts.isEmpty || remoteCounts.values.any((v) => v == null) ? ' · 远程未知' : ' 条已启用'}',
+                          onTap: () => destination(ShellTab.automation),
+                        ),
+                      ),
+                      _SidebarDestination(
+                        key: const ValueKey('sidebar-resources'),
+                        label: '资料库',
+                        icon: Icons.article_outlined,
+                        selected: selected == ShellTab.resources,
+                        desktop: widget.desktopMode,
+                        onTap: () => destination(ShellTab.resources),
+                      ),
+                      _SidebarDestination(
+                        label: '设置',
+                        icon: Icons.settings_outlined,
+                        selected: selected == ShellTab.settings,
+                        desktop: widget.desktopMode,
+                        onTap: () => destination(ShellTab.settings),
+                      ),
+                      if (pendingIds.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 6),
+                          child: PrototypeButton(
+                            label:
+                                '${[if (approvals.isNotEmpty) '${approvals.length} 个操作等你批准', if (questions.isNotEmpty) '${questions.length} 个问题等回答'].join(' · ')} →',
+                            small: true,
+                            expand: true,
+                            variant: PrototypeButtonVariant.danger,
+                            onPressed: () async {
+                              await ref
+                                  .read(chatControllerProvider.notifier)
+                                  .selectConversation(pendingIds.first);
+                              destination(ShellTab.chat);
+                            },
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
             ),
-          ],
+          ),
         ),
       ),
     );
@@ -879,20 +919,30 @@ class _ChatWorkspaceSidebarState extends ConsumerState<ChatWorkspaceSidebar> {
 
   Future<void> _manageWorkspaces() async {
     await Navigator.of(context).push(
-      MaterialPageRoute<void>(builder: (_) => const DesktopWorkspacesPage()),
+      applicationSurfaceRoute<void>(
+        context,
+        (_) => const DesktopWorkspacesPage(),
+        title: '管理执行位置',
+      ),
     );
     if (!mounted) return;
     ref.invalidate(registeredDesktopWorkspacesProvider);
     ref.invalidate(desktopWorkspacesProvider);
   }
 
-  Future<void> _newProjectChat({String? workspaceId, String? projectId}) async {
+  Future<void> _newProjectChat({
+    String? workspaceId,
+    String? projectId,
+    bool workMode = false,
+    String? sshProfileId,
+    String? remoteRoot,
+  }) async {
     setState(() => _showArchived = false);
     final epoch = ++_navigationEpoch;
     final controller = ref.read(chatControllerProvider.notifier);
     controller.newConversation(
       projectId: projectId,
-      workMode: workspaceId != null || (projectId == null && _workFilter),
+      workMode: workMode,
       forceNew: true,
     );
     final conversationId = ref.read(chatControllerProvider).value?.currentId;
@@ -904,7 +954,7 @@ class _ChatWorkspaceSidebarState extends ConsumerState<ChatWorkspaceSidebar> {
             .select(conversationId, workspaceId);
       } catch (error) {
         if (mounted) {
-          ScaffoldMessenger.of(
+          AppToastMessenger.of(
             context,
           ).showSnackBar(SnackBar(content: Text('项目选择未保存：$error')));
         }
@@ -916,412 +966,92 @@ class _ChatWorkspaceSidebarState extends ConsumerState<ChatWorkspaceSidebar> {
         return;
       }
     }
-    if (mounted) openShellTab(ref, ShellTab.chat);
-  }
-
-  Widget _desktopSidebar(
-    List<Conversation> all,
-    List<Conversation> visible,
-    String? currentId,
-  ) {
-    final colors = Theme.of(context).colorScheme;
-    final supported = ref.watch(desktopWorkspaceHostProvider).supported;
-    final bindings = supported
-        ? ref.watch(conversationWorkspaceBindingsProvider)
-        : const <String, String>{};
-    final spaces = ref.watch(registeredDesktopWorkspacesProvider);
-    final projects = ref.watch(_desktopProjectsProvider).value ?? <Project>[];
-    final assigned = <String>{};
-    final slivers = <Widget>[];
-    Widget rows(List<Conversation> items) => SliverPadding(
-      padding: const EdgeInsets.symmetric(horizontal: 10),
-      sliver: ConversationHistoryList(
-        asSliver: true,
-        compactRows: true,
-        previews: ref.watch(conversationPreviewsProvider),
-        selecting: _selectingSessions,
-        selectedIds: _selectedSessions,
-        onToggleSelection: _toggleSession,
-        onArchive: (c) => _archiveSessions([c.id]),
-        archived: _showArchived,
-        visible: items,
-        currentId: currentId,
-        query: _history.query,
-        searchHits: _history.hits,
-        renamingId: _renamingId,
-        renameController: _renameCtrl,
-        onCommitRename: _commitRename,
-        onRename: _startRename,
-        onDelete: _confirmDelete,
-        onOpen: _openConversation,
-      ),
-    );
-    void group(
-      String key,
-      String name,
-      List<Conversation> items,
-      VoidCallback onNew, {
-      bool documents = false,
-    }) {
-      assigned.addAll(items.map((c) => c.id));
-      final closed = _collapsedGroups.contains(key);
-      slivers.add(
-        SliverToBoxAdapter(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            child: ListTile(
-              key: ValueKey('desktop-project-$key'),
-              dense: true,
-              minTileHeight: 44,
-              leading: Icon(
-                closed ? Icons.folder_outlined : Icons.folder_open_outlined,
-                size: 20,
-              ),
-              title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
-              subtitle: documents
-                  ? const Text('资料项目', style: TextStyle(fontSize: 11))
-                  : null,
-              onTap: () => setState(() {
-                if (closed) {
-                  _collapsedGroups.remove(key);
-                } else {
-                  _collapsedGroups.add(key);
-                }
-              }),
-              trailing: IconButton(
-                tooltip: '在项目中新建会话',
-                onPressed: onNew,
-                icon: const Icon(Icons.add, size: 18),
-              ),
-            ),
-          ),
-        ),
-      );
-      if (!closed && items.isNotEmpty) {
-        slivers.add(
-          SliverPadding(
-            padding: const EdgeInsets.only(left: 18),
-            sliver: rows(items),
-          ),
-        );
-      }
+    if (conversationId != null && sshProfileId != null) {
+      final policy =
+          ref.read(sessionPolicyProvider)[conversationId] ??
+          const SessionPolicy();
+      await ref
+          .read(sessionPolicyProvider.notifier)
+          .save(
+            conversationId,
+            policy.copyWith(sshProfileId: sshProfileId, remoteRoot: remoteRoot),
+          );
     }
-
-    if (_history.query.isEmpty &&
-        !_showArchived &&
-        !(_workFilter && _runningView)) {
-      if (_workFilter) {
-        slivers.add(
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(22, 16, 10, 0),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      '工作',
-                      style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                        color: colors.onSurfaceVariant,
-                      ),
-                    ),
-                  ),
-                  if (supported)
-                    IconButton(
-                      tooltip: '管理项目工作区',
-                      onPressed: _manageWorkspaces,
-                      icon: const Icon(Icons.add, size: 18),
-                    ),
-                ],
-              ),
-            ),
-          ),
-        );
-        for (final space in spaces.value ?? <DesktopWorkspace>[]) {
-          if (space.id == defaultDesktopWorkspaceId) continue;
-          group(
-            'workspace-${space.id}',
-            space.name,
-            visible
-                .where((c) => c.workMode && bindings[c.id] == space.id)
-                .toList(),
-            () => _newProjectChat(workspaceId: space.id),
-          );
-        }
-        if (spaces.hasError) {
-          slivers.add(
-            SliverToBoxAdapter(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 22,
-                  vertical: 8,
-                ),
-                child: Text(
-                  '工作区暂未载入，可在管理页面检查。',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              ),
-            ),
-          );
-        }
-        if ((spaces.value ?? [])
-                .where((w) => w.id != defaultDesktopWorkspaceId)
-                .isEmpty &&
-            projects.isEmpty) {
-          slivers.add(
-            SliverToBoxAdapter(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(22, 6, 20, 12),
-                child: Text(
-                  '添加项目，将相关会话放在一起。',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: colors.onSurfaceVariant,
-                  ),
-                ),
-              ),
-            ),
-          );
-        }
-      }
-      if (!_workFilter) {
-        for (final project in projects) {
-          group(
-            'document-${project.id}',
-            project.name,
-            visible
-                .where(
-                  (c) =>
-                      !c.workMode &&
-                      c.projectId == project.id &&
-                      !assigned.contains(c.id),
-                )
-                .toList(),
-            () => _newProjectChat(projectId: project.id),
-            documents: true,
-          );
-        }
-      }
+    if (mounted) {
+      openShellTab(ref, ShellTab.chat);
+      _closeDrawerIfAny();
     }
-    final recent = _history.query.isEmpty
-        ? visible.where((c) => !assigned.contains(c.id)).toList()
-        : visible;
-    if (_history.searching) {
-      slivers.add(
-        const SliverToBoxAdapter(
-          child: Padding(padding: EdgeInsets.all(24), child: Text('正在搜索…')),
-        ),
-      );
-    } else if (_history.error != null) {
-      slivers.add(
-        SliverToBoxAdapter(
-          child: TextButton(
-            onPressed: _history.retry,
-            child: Text('${_history.error} 点击重试'),
-          ),
-        ),
-      );
-    } else if (_history.query.isNotEmpty) {
-      for (final work in [_workFilter]) {
-        slivers.add(
-          SliverToBoxAdapter(
-            child: _SidebarSectionLabel(work ? '工作会话' : '聊天会话'),
-          ),
-        );
-        slivers.add(rows(recent.where((c) => c.workMode == work).toList()));
-      }
-    } else if (recent.isNotEmpty) {
-      slivers.add(rows(recent));
-    } else {
-      slivers.add(
-        SliverToBoxAdapter(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(22, 8, 16, 16),
-            child: Text(
-              _workFilter && _runningView ? '暂无正在进行的工作' : '从一段新对话开始',
-              style: Theme.of(
-                context,
-              ).textTheme.bodySmall?.copyWith(color: colors.onSurfaceVariant),
-            ),
-          ),
-        ),
-      );
-    }
-    slivers.add(const SliverToBoxAdapter(child: SizedBox(height: 24)));
-    return Material(
-      color: colors.surfaceContainerLow,
-      child: SafeArea(
-        child: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(22, 18, 8, 14),
-              child: Row(
-                children: [
-                  const Expanded(
-                    child: Text(
-                      'Expert Chat',
-                      style: TextStyle(
-                        fontSize: 22,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: -.6,
-                      ),
-                    ),
-                  ),
-                  IconButton(
-                    tooltip: '收起侧边栏',
-                    onPressed: widget.onCollapse,
-                    icon: const Icon(Icons.view_sidebar_outlined, size: 20),
-                  ),
-                ],
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 0, 10, 4),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: TextButton.icon(
-                      key: const ValueKey('sidebar-new-chat'),
-                      onPressed: () => _newProjectChat(),
-                      icon: const Icon(Icons.edit_square, size: 19),
-                      label: Align(
-                        alignment: Alignment.centerLeft,
-                        child: Text(_workFilter ? '新工作' : '新对话'),
-                      ),
-                      style: TextButton.styleFrom(
-                        foregroundColor: colors.onSurface,
-                        minimumSize: const Size(0, 44),
-                      ),
-                    ),
-                  ),
-                  IconButton(
-                    tooltip: '搜索会话',
-                    onPressed: () => setState(() {
-                      _desktopSearchOpen = !_desktopSearchOpen;
-                      if (!_desktopSearchOpen) _history.setQuery('');
-                    }),
-                    icon: const Icon(Icons.search, size: 21),
-                  ),
-                ],
-              ),
-            ),
-            _sessionControls(visible),
-            if (_desktopSearchOpen)
-              Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 6,
-                ),
-                child: TextField(
-                  key: const ValueKey('conversation-search-field'),
-                  autofocus: true,
-                  onChanged: _history.setQuery,
-                  decoration: InputDecoration(
-                    hintText: '搜索会话',
-                    isDense: true,
-                    filled: true,
-                    fillColor: colors.surface,
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                      borderSide: BorderSide(color: colors.outlineVariant),
-                    ),
-                  ),
-                ),
-              ),
-            Expanded(
-              child: CustomScrollView(
-                key: const ValueKey('desktop-project-conversations'),
-                slivers: slivers,
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
-              child: Row(
-                children: [
-                  TextButton.icon(
-                    key: const ValueKey('sidebar-resources'),
-                    onPressed: () async {
-                      await Navigator.of(context).push(
-                        MaterialPageRoute<void>(
-                          builder: (_) => const ResourcesPage(),
-                        ),
-                      );
-                      if (mounted) ref.invalidate(_desktopProjectsProvider);
-                    },
-                    icon: const Icon(Icons.folder_copy_outlined, size: 17),
-                    label: const Text('资料库'),
-                  ),
-                  const Spacer(),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
   }
 }
 
 class _SidebarSectionLabel extends StatelessWidget {
   const _SidebarSectionLabel(this.label);
-
   final String label;
-
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.fromLTRB(16, 2, 16, 2),
+    padding: const EdgeInsets.fromLTRB(8, 24, 8, 8),
     child: Text(
       label,
-      style: Theme.of(context).textTheme.labelSmall?.copyWith(
-        color: Theme.of(context).colorScheme.onSurfaceVariant,
-        fontWeight: FontWeight.w700,
-        letterSpacing: 0.4,
+      style: TextStyle(
+        fontSize: 12,
+        fontWeight: FontWeight.w500,
+        color: PrototypeColors.of(context).faint,
       ),
     ),
   );
 }
 
-class _WorkspaceDestination extends StatelessWidget {
-  const _WorkspaceDestination({
-    required this.tab,
+class _SidebarDestination extends StatelessWidget {
+  const _SidebarDestination({
+    super.key,
+    required this.label,
+    required this.icon,
     required this.selected,
+    required this.desktop,
     required this.onTap,
+    this.trailing,
   });
-
-  final ShellTab tab;
-  final bool selected;
+  final String label;
+  final IconData icon;
+  final bool selected, desktop;
   final VoidCallback onTap;
-
+  final String? trailing;
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 1),
-      child: ListTile(
-        dense: true,
-        minTileHeight: 40,
-        selected: selected,
-        leading: Icon(
-          selected ? tab.selectedIcon : tab.icon,
-          size: 20,
-          color: selected ? scheme.primary : scheme.onSurfaceVariant,
-        ),
-        title: Text(
-          tab.label,
-          style: TextStyle(
-            fontSize: 13.5,
-            fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+    final c = PrototypeColors.of(context);
+    return Material(
+      color: selected ? c.surface : Colors.transparent,
+      borderRadius: BorderRadius.circular(8),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(minHeight: desktop ? 36 : 44),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+            child: Row(
+              children: [
+                LineIcon(icon, size: 16, color: c.muted),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    label,
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: selected ? FontWeight.w500 : FontWeight.w400,
+                      color: c.ink,
+                    ),
+                  ),
+                ),
+                if (trailing != null)
+                  Text(
+                    trailing!,
+                    style: TextStyle(fontSize: 11, color: c.muted),
+                  ),
+              ],
+            ),
           ),
         ),
-        trailing: selected
-            ? Container(
-                width: 5,
-                height: 5,
-                decoration: BoxDecoration(
-                  color: scheme.primary,
-                  shape: BoxShape.circle,
-                ),
-              )
-            : null,
-        onTap: onTap,
       ),
     );
   }

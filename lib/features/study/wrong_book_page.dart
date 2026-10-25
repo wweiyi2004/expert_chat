@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -138,12 +139,12 @@ class _WrongTile extends ConsumerWidget {
           .read(studyControllerProvider.notifier)
           .createCardFromWrong(item);
       if (!context.mounted) return;
-      ScaffoldMessenger.of(
+      AppToastMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('已加入复习卡库')));
     } catch (error) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(
+      AppToastMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('生成卡片失败：$error')));
     }

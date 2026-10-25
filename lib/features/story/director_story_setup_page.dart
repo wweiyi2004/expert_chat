@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'dart:async';
 import 'dart:convert';
 
@@ -340,7 +341,7 @@ class _DirectorStorySetupPageState
       // re-toasting on every debounce tick.
       if (!_draftSaveErrorNotified && mounted) {
         _draftSaveErrorNotified = true;
-        ScaffoldMessenger.of(context).showSnackBar(
+        AppToastMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('草稿保存失败，请检查存储空间。'),
             behavior: SnackBarBehavior.floating,
@@ -398,7 +399,7 @@ class _DirectorStorySetupPageState
     await _localDraftStore.clear();
     _suppressDraftSave = false;
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppToastMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('草稿已清空，可以重新开始。'),
           behavior: SnackBarBehavior.floating,
@@ -591,9 +592,6 @@ class _DirectorStorySetupPageState
       // AsyncNotifier methods can be invoked while build() is still loading;
       // wait for the repository snapshot so it cannot overwrite the new story.
       await ref.read(chatControllerProvider.future);
-      // Includes the pre-stream settings/prompt window, where isStreaming is
-      // still false but a replacement advancePlot would otherwise be dropped.
-      await controller.stopAndWait();
       await controller.newDirectorStoryConversation(
         title: _title.text.trim().isEmpty
             ? _premise.text.trim()

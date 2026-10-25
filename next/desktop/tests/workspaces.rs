@@ -319,3 +319,134 @@ fn symbolic_links_cannot_escape_or_bypass_a_denied_subtree() {
     assert!(f.files.read("root", "escape/project/src/main.txt").is_err());
     assert!(f.files.read("root", "alias/secret.txt").is_err());
 }
+
+#[test]
+fn artifact_manifest_streams_large_binary_and_invalidates_changed_directory() {
+    let f = Fixture::new(Access::ReadWrite);
+    let bytes = vec![0x91u8; 9 * 1024 * 1024];
+    fs::write(f.project().join("large.bin"), &bytes).unwrap();
+    let file = f.files.artifact_manifest("root", "large.bin").unwrap();
+    assert_eq!(file["bytes"], bytes.len());
+    assert_eq!(file["sha256"], expert_desktop::files::hash(&bytes));
+    assert_eq!(file["content_loaded"], false);
+    assert!(file.get("content").is_none());
+    let before = f.files.artifact_manifest("root", "src").unwrap();
+    fs::write(f.project().join("src/main.txt"), "new final version").unwrap();
+    let after = f.files.artifact_manifest("root", "src").unwrap();
+    assert_eq!(after["kind"], "directory");
+    assert_ne!(before["sha256"], after["sha256"]);
+    f.store
+        .set_scope("example", "secret", &f.project().join("src"), Access::Deny)
+        .unwrap();
+    assert!(f.files.artifact_manifest("root", ".").is_err());
+}
+
+#[test]
+fn verified_copy_never_overwrites_user_files_or_publishes_stale_source() {
+    let f = Fixture::new(Access::ReadWrite);
+    let bytes = vec![0x7bu8; 9 * 1024 * 1024];
+    fs::write(f.project().join("input.bin"), &bytes).unwrap();
+    let expected = expert_desktop::files::hash(&bytes);
+    assert!(
+        f.files
+            .copy_file("root", "input.bin", "stale.bin", "wrong-hash")
+            .is_err()
+    );
+    assert!(!f.project().join("stale.bin").exists());
+    let receipt = f
+        .files
+        .copy_file("root", "input.bin", "copy.bin", &expected)
+        .unwrap();
+    assert_eq!(receipt.sha256, expected);
+    assert_eq!(fs::read(f.project().join("copy.bin")).unwrap(), bytes);
+    fs::write(f.project().join("copy.bin"), "human edit").unwrap();
+    assert!(
+        f.files
+            .copy_file("root", "input.bin", "copy.bin", &expected)
+            .is_err()
+    );
+    assert_eq!(
+        fs::read_to_string(f.project().join("copy.bin")).unwrap(),
+        "human edit"
+    );
+    f.store
+        .set_scope("example", "root", &f.project(), Access::ReadOnly)
+        .unwrap();
+    assert!(
+        f.files
+            .copy_file("root", "input.bin", "denied.bin", &expected)
+            .is_err()
+    );
+    assert!(!f.project().join("denied.bin").exists());
+}
+
+#[test]
+fn user_rollback_deletes_new_file_only_at_exact_observed_version() {
+    let f = Fixture::new(Access::ReadWrite);
+    let first = f
+        .files
+        .write("root", "new.txt", "created by task", "new")
+        .unwrap();
+    fs::write(f.project().join("new.txt"), "human changed it").unwrap();
+    assert!(
+        f.files
+            .delete_if_current("root", "new.txt", &first.sha256)
+            .is_err()
+    );
+    assert_eq!(
+        fs::read_to_string(f.project().join("new.txt")).unwrap(),
+        "human changed it"
+    );
+    let current = f.files.read("root", "new.txt").unwrap();
+    assert_eq!(
+        f.files
+            .delete_if_current("root", "new.txt", &current.sha256)
+            .unwrap()["deleted"],
+        true
+    );
+    assert!(!f.project().join("new.txt").exists());
+    assert!(
+        f.files
+            .delete_if_current("root", "src", "anything")
+            .is_err()
+    );
+    f.store
+        .set_scope("example", "root", &f.project(), Access::ReadOnly)
+        .unwrap();
+    assert!(
+        f.files
+            .delete_if_current(
+                "root",
+                "src/main.txt",
+                &expert_desktop::files::hash(b"original\n")
+            )
+            .is_err()
+    );
+    assert!(f.project().join("src/main.txt").exists());
+}
+
+#[test]
+fn observed_destination_copy_rejects_external_changes_before_replacement() {
+    let f = Fixture::new(Access::ReadWrite);
+    fs::write(f.project().join("source.txt"), "source bytes\n").unwrap();
+    fs::write(f.project().join("target.txt"), "checkout\r\n").unwrap();
+    let source = expert_desktop::files::hash(b"source bytes\n");
+    let stale = expert_desktop::files::hash(b"old target");
+    assert!(
+        f.files
+            .copy_file_with_destination("root", "source.txt", "target.txt", &source, Some(&stale))
+            .is_err()
+    );
+    assert_eq!(
+        fs::read(f.project().join("target.txt")).unwrap(),
+        b"checkout\r\n"
+    );
+    let current = expert_desktop::files::hash(b"checkout\r\n");
+    f.files
+        .copy_file_with_destination("root", "source.txt", "target.txt", &source, Some(&current))
+        .unwrap();
+    assert_eq!(
+        fs::read(f.project().join("target.txt")).unwrap(),
+        b"source bytes\n"
+    );
+}

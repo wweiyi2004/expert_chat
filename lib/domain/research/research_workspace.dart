@@ -3,7 +3,6 @@ import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 import 'package:path/path.dart' as p;
 import '../desktop/workspace_tools.dart';
-import '../desktop/command_runner_contract.dart';
 import '../llm/llm_provider.dart';
 import 'research_files.dart';
 import 'research_ssh_contract.dart';
@@ -172,8 +171,9 @@ class ResearchWorkspaceSession implements WorkToolSession {
         ]);
       case 'coding_read_file':
         if (args['encoding'] == 'base64') {
-          if (files is! ResearchBinaryFiles)
+          if (files is! ResearchBinaryFiles) {
             throw UnsupportedError('当前连接不支持图片预览');
+          }
           final bytes = await (files as ResearchBinaryFiles).readBytes(path);
           final mime = switch (p.posix.extension(path).toLowerCase()) {
             '.png' => 'image/png',
@@ -200,6 +200,29 @@ class ResearchWorkspaceSession implements WorkToolSession {
           'content': content,
           'sha256': _hash(content),
         });
+      case 'coding_delete_file_if_current':
+        final expected = args['expected_sha256'];
+        if (expected is! String ||
+            !RegExp(r'^[a-fA-F0-9]{64}$').hasMatch(expected)) {
+          throw const FormatException('缺少有效审阅版本');
+        }
+        if (path != p.posix.normalize(p.posix.join(root, relative))) {
+          throw StateError('撤销删除不跟随 SSH 链接');
+        }
+        const script =
+            "import os,sys,hashlib,stat; p=sys.argv[1]; expected=sys.argv[2].lower(); (not os.path.islink(p) and os.path.realpath(p)==p) or sys.exit('link refused'); f=open(p,'rb'); info=os.fstat(f.fileno()); stat.S_ISREG(info.st_mode) or sys.exit('not regular'); h=hashlib.sha256(); [h.update(b) for b in iter(lambda:f.read(65536),b'')]; f.close(); current=os.lstat(p); (current.st_ino==info.st_ino and current.st_dev==info.st_dev and current.st_mtime_ns==info.st_mtime_ns and current.st_size==info.st_size and h.hexdigest()==expected and os.path.realpath(p)==p) or sys.exit('version changed'); os.unlink(p)";
+        validate();
+        if (token.isCancelled) throw token.cancelError!;
+        await command(
+          'python3 -c ${shellSingleQuote(script)} ${shellSingleQuote(path)} ${shellSingleQuote(expected)}',
+          const Duration(seconds: 30),
+          token,
+        );
+        return jsonEncode({
+          'deleted': true,
+          'path': relative,
+          'sha256': expected,
+        });
       case 'coding_write_file':
         final content = args['content'];
         if (content is! String) throw const FormatException('缺少 content');
@@ -219,7 +242,14 @@ class ResearchWorkspaceSession implements WorkToolSession {
           if (token.isCancelled) throw token.cancelError!;
           await files.saveText(path, content, original: original);
         }
-        return jsonEncode({'path': relative, 'sha256': _hash(content)});
+        return jsonEncode({
+          'path': relative,
+          'sha256': _hash(content),
+          if (files is ResearchRecoveryFiles)
+            'recovery_path': (files as ResearchRecoveryFiles).recoveryPathFor(
+              path,
+            ),
+        });
       case 'coding_create_directory':
         await files.mkdir(path);
         return jsonEncode({'path': relative, 'created': true});

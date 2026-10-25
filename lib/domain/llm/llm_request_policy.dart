@@ -16,8 +16,21 @@ abstract final class LlmRequestPolicy {
     required bool thinking,
     bool hasImages = false,
     bool hasVisionFallback = false,
+    bool selectedExplicitly = false,
   }) {
-    final candidate = !thinking || selected.capabilities.sendThinkingField
+    final capabilities = selected.capabilities;
+    final reasonerCapabilities = ModelCapabilities.resolve(reasonerModel);
+    final hasReasoner =
+        reasonerCapabilities.isReasoner ||
+        reasonerCapabilities.supportsReasoningEffort ||
+        reasonerCapabilities.sendThinkingField;
+    final candidate =
+        !thinking ||
+            selectedExplicitly ||
+            capabilities.sendThinkingField ||
+            capabilities.supportsReasoningEffort ||
+            capabilities.isReasoner ||
+            !hasReasoner
         ? selected
         : selected.copyWith(model: reasonerModel);
     if (hasImages &&
@@ -38,9 +51,8 @@ abstract final class LlmRequestPolicy {
     ReasoningEffort? manualEffort,
   }) {
     if (manualEffort != null) return manualEffort;
-    if (config.isDeepSeek && proseTask && !workMode && !hasSavedOverride) {
-      return ReasoningEffort.low;
-    }
+    // Settings decode missing preferences as High. Task classification must
+    // not silently lower that default; saved/manual Low or Max stay valid.
     return savedEffort;
   }
 

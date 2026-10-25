@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -64,7 +65,7 @@ class _QuizSetupPageState extends ConsumerState<QuizSetupPage> {
         ? _topic.text.trim()
         : selectedCourse?.title ?? '';
     if (topic.isEmpty) {
-      ScaffoldMessenger.of(
+      AppToastMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('请填写主题')));
       return;
@@ -84,7 +85,7 @@ class _QuizSetupPageState extends ConsumerState<QuizSetupPage> {
           );
       if (!mounted) return;
       if (items.isEmpty) {
-        ScaffoldMessenger.of(
+        AppToastMessenger.of(
           context,
         ).showSnackBar(const SnackBar(content: Text('未能解析题目，请重试或换模型')));
         return;
@@ -309,7 +310,7 @@ class _QuizSetupPageState extends ConsumerState<QuizSetupPage> {
                             ? null
                             : (selected) {
                                 if (!selected && _types.length == 1) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
+                                  AppToastMessenger.of(context).showSnackBar(
                                     const SnackBar(content: Text('至少保留一种题型')),
                                   );
                                   return;

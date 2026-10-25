@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 import 'oauth_callback.dart';
 import 'chatgpt_network.dart';
+import '../model_credentials_unavailable.dart';
 
 class ChatGptAuth {
   ChatGptAuth(this.storage, this.prefs);
@@ -41,8 +42,9 @@ class ChatGptAuth {
     var host = prefs.getString('chatgptAgentHostId');
     if (host == null) {
       host = 'urn:uuid:${const Uuid().v4()}';
-      if (!await prefs.setString('chatgptAgentHostId', host))
+      if (!await prefs.setString('chatgptAgentHostId', host)) {
         throw StateError('无法保存登录主机标识');
+      }
     }
     final client = previous?['client_id'] as String? ?? 'dynamic_agent_client';
     final state = _random(32), nonce = _random(32), verifier = _random(64);
@@ -70,17 +72,20 @@ class ChatGptAuth {
       state,
       token,
     );
-    if (callback['error'] != null)
+    if (callback['error'] != null) {
       throw StateError('登录未授权：${callback['error']}');
-    if (callback['code']?.isNotEmpty != true)
+    }
+    if (callback['code']?.isNotEmpty != true) {
       throw StateError('授权回调缺少授权码，请重新登录');
+    }
     final issued =
         callback['client_id'] ??
         (client == 'dynamic_agent_client' ? null : client);
     if (issued == null ||
         issued == 'dynamic_agent_client' ||
-        client != 'dynamic_agent_client' && issued != client)
+        client != 'dynamic_agent_client' && issued != client) {
       throw StateError('登录未返回匹配的客户端标识');
+    }
     onStage?.call('交换授权凭据');
     final response = await _dio.post<Map<String, dynamic>>(
       'https://auth.openai.com/api/accounts/oauth/token',
@@ -102,8 +107,9 @@ class ChatGptAuth {
       cancelToken: token,
     )).data!;
     final jwksUri = Uri.parse(discovery['jwks_uri'] as String);
-    if (jwksUri.scheme != 'https' || jwksUri.host != 'auth.openai.com')
+    if (jwksUri.scheme != 'https' || jwksUri.host != 'auth.openai.com') {
       throw StateError('登录签名服务地址不匹配');
+    }
     final keys = (await _dio.get<Map<String, dynamic>>(
       jwksUri.toString(),
       cancelToken: token,
@@ -116,17 +122,20 @@ class ChatGptAuth {
               issuer: Uri.parse(discovery['issuer'] as String),
               clientId: issued,
             )
-            .isNotEmpty)
+            .isNotEmpty) {
       throw StateError('登录身份校验失败');
+    }
     final claims = jwt.claims.toJson();
     if (claims['nonce'] != nonce ||
         claims['sub'] == null ||
-        (previous != null && previous['sub'] != claims['sub']))
+        (previous != null && previous['sub'] != claims['sub'])) {
       throw StateError('登录账号与本次授权不匹配');
+    }
     if (!(tokens['scope'] as String? ?? '')
         .split(' ')
-        .contains('chatgpt.tokens.use.direct'))
+        .contains('chatgpt.tokens.use.direct')) {
       throw StateError('未授予 ChatGPT 套餐调用权限');
+    }
     final record = {
       ...tokens,
       'client_id': issued,
@@ -144,11 +153,22 @@ class ChatGptAuth {
 
   Future<String> accessToken(String id) async {
     final record = await saved(id);
-    if (record == null) throw StateError('请先登录 ChatGPT');
-    if (DateTime.parse(
-      record['expires_at'] as String,
-    ).isAfter(DateTime.now().add(const Duration(minutes: 2))))
+    if (record == null) {
+      throw const ModelCredentialsUnavailable('account_not_signed_in');
+    }
+    final expiry = DateTime.tryParse(record['expires_at'] as String? ?? '');
+    if (expiry == null ||
+        record['access_token'] is! String ||
+        record['client_id'] is! String) {
+      throw const ModelCredentialsUnavailable('account_record_incomplete');
+    }
+    if (expiry.isAfter(DateTime.now().add(const Duration(minutes: 2)))) {
       return record['access_token'] as String;
+    }
+    if (record['refresh_token'] is! String ||
+        (record['refresh_token'] as String).isEmpty) {
+      throw const ModelCredentialsUnavailable('expired_without_refresh_grant');
+    }
     final pending = _refreshing[id];
     if (pending != null) return pending;
     final refresh = _refresh(id, record);
@@ -162,16 +182,28 @@ class ChatGptAuth {
 
   Future<String> _refresh(String id, Map<String, dynamic> record) async {
     await configureChatGptNetwork(_dio);
-    final response = await _dio.post<Map<String, dynamic>>(
-      'https://auth.openai.com/api/accounts/oauth/token',
-      data: {
-        'grant_type': 'refresh_token',
-        'client_id': record['client_id'],
-        'refresh_token': record['refresh_token'],
-        'resource': 'https://api.openai.com/v1',
-      },
-      options: Options(contentType: Headers.formUrlEncodedContentType),
-    );
+    late Response<Map<String, dynamic>> response;
+    try {
+      response = await _dio.post<Map<String, dynamic>>(
+        'https://auth.openai.com/api/accounts/oauth/token',
+        data: {
+          'grant_type': 'refresh_token',
+          'client_id': record['client_id'],
+          'refresh_token': record['refresh_token'],
+          'resource': 'https://api.openai.com/v1',
+        },
+        options: Options(contentType: Headers.formUrlEncodedContentType),
+      );
+    } on DioException catch (error) {
+      final body = error.response?.data;
+      if ((error.response?.statusCode == 400 ||
+              error.response?.statusCode == 401) &&
+          body is Map &&
+          {'invalid_grant', 'invalid_client'}.contains(body['error'])) {
+        throw const ModelCredentialsUnavailable('refresh_grant_rejected');
+      }
+      rethrow;
+    }
     final update = response.data!;
     final next = {
       ...record,
@@ -201,8 +233,9 @@ class ChatGptAuth {
           'https://auth.openai.com/.well-known/openid-configuration',
         )).data!;
         final endpoint = Uri.parse(metadata['revocation_endpoint'] as String);
-        if (endpoint.scheme != 'https' || endpoint.host != 'auth.openai.com')
+        if (endpoint.scheme != 'https' || endpoint.host != 'auth.openai.com') {
           throw StateError('撤销授权地址不匹配');
+        }
         await _dio.post(
           endpoint.toString(),
           data: {

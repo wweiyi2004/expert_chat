@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="t-a">
+<title id="t-a">Expert Chat · 小黛</title>
+<defs><clipPath id="frame-a"><rect width="1024" height="1024" rx="232"/></clipPath></defs>
+<g clip-path="url(#frame-a)">
+  <rect width="1024" height="1024" fill="#1F6FA3"/>
+  <circle cx="512" cy="500" r="408" fill="#2B82B8"/>
+  <path d="M150 176 Q156.12 203.88 184 210 Q156.12 216.12 150 244 Q143.88 216.12 116 210 Q143.88 203.88 150 176 Z" fill="#D6ECF0" opacity="0.9"/><path d="M880 278 Q883.96 296.04 902 300 Q883.96 303.96 880 322 Q876.04 303.96 858 300 Q876.04 296.04 880 278 Z" fill="#D6ECF0" opacity="0.75"/><path d="M860 804 Q862.88 817.12 876 820 Q862.88 822.88 860 836 Q857.12 822.88 844 820 Q857.12 817.12 860 804 Z" fill="#D6ECF0" opacity="0.5"/>
+  <g transform="translate(512 600) scale(1.12) translate(-512 -600)">
+  <path d="M268 474 C246 326 360 196 512 196 C664 196 778 326 756 474 C764 604 742 694 700 744 L600 704 H424 L324 744 C282 694 260 604 268 474 Z" fill="#1B2640"/>
+  <path d="M232 1024 C240 884 350 822 512 816 C674 822 784 884 792 1024 Z" fill="#F6F1E8"/>
+  <path d="M512 836 L412 808 L440 912 Z" fill="#FFFFFF"/><path d="M512 836 L612 808 L584 912 Z" fill="#FFFFFF"/>
+    <path d="M512 868 L452 840 L456 900 Z" fill="#B8333E"/><path d="M512 868 L572 840 L568 900 Z" fill="#B8333E"/><circle cx="512" cy="868" r="17" fill="#8E2430"/>
+  
+    <path d="M462 690 L462 832 Q512 852 562 832 L562 690 Z" fill="#FDEBDD"/>
+    <path d="M462 704 Q512 774 562 704 L562 748 Q512 808 462 748 Z" fill="#F2CDBD"/>
+    <path d="M330 420 C328 560 374 676 512 734 C650 676 696 560 694 420 C694 330 620 286 512 286 C404 286 330 330 330 420 Z" fill="#FDEBDD"/>
+    <clipPath id="face-a"><path d="M330 420 C328 560 374 676 512 734 C650 676 696 560 694 420 C694 330 620 286 512 286 C404 286 330 330 330 420 Z"/></clipPath>
+    <g clip-path="url(#face-a)"><path d="M288 476 C266 300 370 198 512 198 C654 198 758 300 736 476 Q708 452 694 420 Q680 472 652 506 Q642 454 616 430 Q600 476 568 500 Q560 450 534 426 Q518 472 486 508 Q478 452 450 430 Q434 474 404 494 Q396 452 380 434 Q362 468 334 486 Q310 482 288 476 Z" transform="translate(0 13)" fill="#F2CDBD" opacity=".7"/></g>
+    <ellipse cx="392" cy="630" rx="36" ry="17" fill="#F29A9A" opacity=".55"/>
+    <ellipse cx="632" cy="630" rx="36" ry="17" fill="#F29A9A" opacity=".55"/>
+    <path d="M506 618 Q512 624 518 618" fill="none" stroke="#F2CDBD" stroke-width="6" stroke-linecap="round"/>
+    <path d="M490 652 Q512 680 534 652 Q512 662 490 652 Z" fill="#C9505A"/>
+  <defs><clipPath id="ir-a"><ellipse cx="440" cy="560" rx="39" ry="51"/></clipPath><clipPath id="sc-a"><path d="M386 540 Q436 500 490 528 L490 584 Q438 608 388 584 Z"/></clipPath></defs><g transform="translate(438 556) scale(1.1) translate(-438 -556)">
+    <path d="M386 540 Q436 500 490 528 L490 584 Q438 608 388 584 Z" fill="#FFFFFF"/>
+    <g clip-path="url(#sc-a)">
+      <ellipse cx="440" cy="560" rx="39" ry="51" fill="#3A9AD9"/>
+      <g clip-path="url(#ir-a)">
+        <ellipse cx="440" cy="522" rx="50" ry="36" fill="#1D4C7E"/>
+        <ellipse cx="440" cy="604" rx="34" ry="20" fill="#8FD3F2"/>
+      </g>
+      <ellipse cx="442" cy="564" rx="15" ry="22" fill="#14304F"/>
+    </g>
+    <path d="M370 542 Q432 482 498 518 Q504 522 506 530 L496 532 Q434 498 380 550 Q366 558 352 554 Q362 550 370 542 Z" fill="#1A2236"/>
+    <path d="M370 542 Q356 532 346 534 Q356 544 366 548 Z" fill="#1A2236"/>
+    <path d="M388 584 Q394 596 408 600" fill="none" stroke="#1A2236" stroke-width="5" stroke-linecap="round" opacity=".55"/></g><g transform="translate(1024 0) scale(-1 1)"><g transform="translate(438 556) scale(1.1) translate(-438 -556)">
+    <path d="M386 540 Q436 500 490 528 L490 584 Q438 608 388 584 Z" fill="#FFFFFF"/>
+    <g clip-path="url(#sc-a)">
+      <ellipse cx="440" cy="560" rx="39" ry="51" fill="#3A9AD9"/>
+      <g clip-path="url(#ir-a)">
+        <ellipse cx="440" cy="522" rx="50" ry="36" fill="#1D4C7E"/>
+        <ellipse cx="440" cy="604" rx="34" ry="20" fill="#8FD3F2"/>
+      </g>
+      <ellipse cx="442" cy="564" rx="15" ry="22" fill="#14304F"/>
+    </g>
+    <path d="M370 542 Q432 482 498 518 Q504 522 506 530 L496 532 Q434 498 380 550 Q366 558 352 554 Q362 550 370 542 Z" fill="#1A2236"/>
+    <path d="M370 542 Q356 532 346 534 Q356 544 366 548 Z" fill="#1A2236"/>
+    <path d="M388 584 Q394 596 408 600" fill="none" stroke="#1A2236" stroke-width="5" stroke-linecap="round" opacity=".55"/></g></g><g transform="translate(438 556) scale(1.1) translate(-438 -556)"><ellipse cx="424" cy="538" rx="13" ry="17" fill="#FFFFFF"/><circle cx="454" cy="586" r="6" fill="#FFFFFF" opacity=".9"/></g><g transform="translate(586 556) scale(1.1) translate(-586 -556)"><ellipse cx="568" cy="538" rx="13" ry="17" fill="#FFFFFF"/><circle cx="598" cy="586" r="6" fill="#FFFFFF" opacity=".9"/></g>
+  
+    <path d="M296 408 C280 548 294 640 338 742 C350 700 360 650 366 606 C362 540 364 480 376 410 Z" fill="#243256"/>
+    <g transform="translate(1024 0) scale(-1 1)"><path d="M296 408 C280 548 294 640 338 742 C350 700 360 650 366 606 C362 540 364 480 376 410 Z" fill="#243256"/></g>
+    <path d="M288 476 C266 300 370 198 512 198 C654 198 758 300 736 476 Q708 452 694 420 Q680 472 652 506 Q642 454 616 430 Q600 476 568 500 Q560 450 534 426 Q518 472 486 508 Q478 452 450 430 Q434 474 404 494 Q396 452 380 434 Q362 468 334 486 Q310 482 288 476 Z" fill="#243256"/>
+    <path d="M386 322 Q424 292 468 286 Q430 302 396 334 Z" fill="#4A659C" opacity="1"/><path d="M492 280 Q532 276 570 284 Q532 290 494 294 Z" fill="#4A659C" opacity="1"/><path d="M594 290 Q632 300 656 322 Q626 312 592 304 Z" fill="#4A659C" opacity="1"/>
+    <path d="M520 236 C516 168 560 136 606 148 C572 162 552 190 546 236 Z" fill="#243256"/>
+    <path d="M282 470 C262 262 762 262 742 470" fill="none" stroke="#F6F1E8" stroke-width="24" stroke-linecap="round"/>
+    <rect x="246" y="428" width="76" height="138" rx="36" fill="#F6F1E8"/><rect x="262" y="452" width="44" height="90" rx="22" fill="#B8333E"/>
+    <g transform="translate(1024 0) scale(-1 1)"><rect x="246" y="428" width="76" height="138" rx="36" fill="#F6F1E8"/><rect x="262" y="452" width="44" height="90" rx="22" fill="#B8333E"/></g>
+  </g>
+</g>
+</svg>

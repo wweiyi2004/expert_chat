@@ -531,6 +531,18 @@ class FakeVisionSettings extends SettingsController {
   }
 }
 
+class _PinnedVisionSettings extends FakeVisionSettings {
+  @override
+  Future<SettingsState> build() async =>
+      (await super.build()).copyWith(selectedModel: 'gpt-4o');
+}
+
+class _PinnedSmallContextVisionSettings extends FakeSmallContextVisionSettings {
+  @override
+  Future<SettingsState> build() async =>
+      (await super.build()).copyWith(selectedModel: 'gpt-4o');
+}
+
 /// DeepSeek Pro (no native vision) plus a separate vision API.
 class FakeVisionToolSettings extends SettingsController {
   @override
@@ -633,6 +645,7 @@ class FakeUnknownModelSettings extends SettingsController {
       profiles: [profile],
       activeProfileId: profile.id,
       apiKey: 'sk-test',
+      searchApiKey: 'deepseek-search-fixture',
     );
   }
 }
@@ -890,6 +903,8 @@ class InMemoryLibraryFileStore extends LibraryFileStore {
   }
 }
 
+late SharedPreferences _testPreferences;
+
 /// In-memory Drift DB for story repos in unit tests (no path_provider).
 ProviderContainer _container(
   LlmProvider llm,
@@ -908,6 +923,7 @@ ProviderContainer _container(
   final worldInfo = WorldInfoRepository(db);
   final container = ProviderContainer(
     overrides: [
+      sharedPrefsProvider.overrideWithValue(_testPreferences),
       llmProvider.overrideWithValue(llm),
       if (jevClient != null) jevClientProvider.overrideWithValue(jevClient),
       conversationRepositoryProvider.overrideWithValue(repo),
@@ -935,10 +951,22 @@ ProviderContainer _container(
   // Memory DB is not opened via path_provider; close it when the test ends.
   // Callers still dispose the container (which does not own this override's DB).
   addTearDown(db.close);
+  // This legacy harness exercises ordinary chat; work defaults are covered by
+  // dedicated work-controller tests with explicit per-task policies.
+  unawaited(
+    container.read(chatControllerProvider.future).then((_) {
+      container.read(chatControllerProvider.notifier).setWorkMode(false);
+    }),
+  );
   return container;
 }
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  setUp(() async {
+    SharedPreferences.setMockInitialValues({});
+    _testPreferences = await SharedPreferences.getInstance();
+  });
   test('ChatMessage round-trips through JSON with new fields', () {
     final msg = ChatMessage(
       role: MessageRole.assistant,
@@ -982,7 +1010,9 @@ void main() {
       final ctrl = c.read(chatControllerProvider.notifier);
       await c.read(chatControllerProvider.future);
 
-      ctrl.toggleDeepThink();
+      if (!c.read(chatControllerProvider).requireValue.deepThink) {
+        ctrl.toggleDeepThink();
+      }
       await ctrl.sendMessage('hi');
 
       expect(llm.lastConfig?.model, KnownModels.chat);
@@ -1010,7 +1040,9 @@ void main() {
       final ctrl = c.read(chatControllerProvider.notifier);
       await c.read(chatControllerProvider.future);
 
-      ctrl.toggleDeepThink();
+      if (!c.read(chatControllerProvider).requireValue.deepThink) {
+        ctrl.toggleDeepThink();
+      }
       await ctrl.sendMessage('hi');
 
       expect(llm.lastConfig?.model, 'o3-mini');
@@ -1160,6 +1192,9 @@ void main() {
       addTearDown(c.dispose);
       final ctrl = c.read(chatControllerProvider.notifier);
       await c.read(chatControllerProvider.future);
+      if (c.read(chatControllerProvider).requireValue.deepThink) {
+        ctrl.toggleDeepThink();
+      }
 
       await ctrl.sendMessage('hi');
       expect(llm.lastConfig?.model, KnownModels.chat);
@@ -1250,56 +1285,68 @@ void main() {
     );
   }
 
-  test(
-    'DeepSeek prose uses low effort and restores high for other tasks',
-    () async {
-      final llm = FakeLlmProvider([const ChatChunk(contentDelta: '完整答复')]);
-      final c = _container(
-        llm,
-        InMemoryRepo(),
-        settingsBuilder: FakeChatSkillSettings.new,
-      );
-      addTearDown(c.dispose);
-      final ctrl = c.read(chatControllerProvider.notifier);
-      await c.read(settingsControllerProvider.future);
-      await c.read(chatControllerProvider.future);
+  test('DeepSeek prose and other tasks keep the default high effort', () async {
+    final llm = FakeLlmProvider([const ChatChunk(contentDelta: '完整答复')]);
+    final c = _container(
+      llm,
+      InMemoryRepo(),
+      settingsBuilder: FakeChatSkillSettings.new,
+    );
+    addTearDown(c.dispose);
+    final ctrl = c.read(chatControllerProvider.notifier);
+    await c.read(settingsControllerProvider.future);
+    await c.read(chatControllerProvider.future);
+    ctrl.setWorkMode(false);
+    expect(
+      c.read(chatControllerProvider).requireValue.current!.workMode,
+      isFalse,
+    );
+    if (!c.read(chatControllerProvider).requireValue.deepThink) {
       ctrl.toggleDeepThink();
-      for (final prompt in ['/翻译 hello', '/写作 写一段雨景']) {
-        await ctrl.sendMessage(prompt);
-        expect(llm.lastThinking, isTrue);
-        expect(llm.lastReasoningEffort, ReasoningEffort.low);
-        expect(
-          c.read(chatControllerProvider).requireValue.reasoningEffort,
-          ReasoningEffort.low,
-        );
-      }
-      await ctrl.sendMessage('/代码 分析算法复杂度');
+    }
+    for (final prompt in ['/翻译 hello', '/写作 写一段雨景']) {
+      await ctrl.sendMessage(prompt);
+      expect(llm.lastThinking, isTrue);
       expect(llm.lastReasoningEffort, ReasoningEffort.high);
-      ctrl.toggleDeepThink();
-      await ctrl.sendMessage('/翻译 hello');
-      expect(llm.lastThinking, isFalse);
-      expect(llm.lastReasoningEffort, isNull);
-    },
-  );
+      expect(
+        c.read(chatControllerProvider).requireValue.reasoningEffort,
+        ReasoningEffort.high,
+      );
+    }
+    await ctrl.sendMessage('/代码 分析算法复杂度');
+    expect(llm.lastReasoningEffort, ReasoningEffort.high);
+    ctrl.toggleDeepThink();
+    await ctrl.sendMessage('/翻译 hello');
+    expect(llm.lastThinking, isFalse);
+    expect(llm.lastReasoningEffort, isNull);
+  });
 
   test('DeepSeek prose respects a saved maximum effort', () async {
     final llm = FakeLlmProvider([const ChatChunk(contentDelta: '完整译文')]);
     final c = _container(
       llm,
-      InMemoryRepo(),
+      InMemoryRepo()
+        ..store = [
+          Conversation(
+            id: 'saved-history',
+            messages: [ChatMessage(role: MessageRole.user, content: '已有会话')],
+          ),
+        ],
       settingsBuilder: FakeSavedEffortSettings.new,
     );
     addTearDown(c.dispose);
     final ctrl = c.read(chatControllerProvider.notifier);
     await c.read(settingsControllerProvider.future);
     await c.read(chatControllerProvider.future);
-    ctrl.toggleDeepThink();
+    if (!c.read(chatControllerProvider).requireValue.deepThink) {
+      ctrl.toggleDeepThink();
+    }
     await ctrl.sendMessage('/翻译 hello');
     expect(llm.lastReasoningEffort, ReasoningEffort.max);
   });
 
   test(
-    'DeepSeek story prose uses low but outline consultation retains high',
+    'DeepSeek story prose and outline consultation retain high by default',
     () async {
       final llm = FakeLlmProvider([const ChatChunk(contentDelta: '故事答复')]);
       final c = _container(llm, InMemoryRepo());
@@ -1312,9 +1359,11 @@ void main() {
         outline: '抵达城镇',
         cast: [CharacterCard(name: '旅人')],
       );
-      ctrl.toggleDeepThink();
+      if (!c.read(chatControllerProvider).requireValue.deepThink) {
+        ctrl.toggleDeepThink();
+      }
       await ctrl.sendMessage('写一段旅人抵达城镇的场景');
-      expect(llm.lastReasoningEffort, ReasoningEffort.low);
+      expect(llm.lastReasoningEffort, ReasoningEffort.high);
       await ctrl.sendMessage('/大纲 调整下一幕的线索');
       expect(llm.lastReasoningEffort, ReasoningEffort.high);
     },
@@ -1434,6 +1483,110 @@ void main() {
     expect(repo.store.single.messages, hasLength(20));
   });
 
+  for (final misplacedReasoning in [false, true]) {
+    test(
+      'controller retains non-reasoning prose through tool wait final persistence and reload ($misplacedReasoning)',
+      () async {
+        final search = _GatedTranscriptSearch();
+        addTearDown(() {
+          if (!search.gate.isCompleted) search.gate.complete();
+        });
+        final llm = FakeLlmProvider(
+          const [],
+          scriptedChunks: [
+            const [
+              ChatChunk(contentDelta: '我先核对资料。'),
+              ChatChunk(
+                toolCalls: [
+                  ToolCall(
+                    index: 0,
+                    id: 'retain-text',
+                    name: 'web_search',
+                    argumentsJson: '{"query":"dart flutter"}',
+                  ),
+                ],
+                finishReason: 'tool_calls',
+              ),
+            ],
+            [
+              misplacedReasoning
+                  ? const ChatChunk(
+                      reasoningDelta: '最终答案：核对完成。',
+                      finishReason: 'stop',
+                    )
+                  : const ChatChunk(
+                      contentDelta: '核对完成。',
+                      finishReason: 'stop',
+                    ),
+            ],
+          ],
+        );
+        final repo = InMemoryRepo();
+        final c = _container(
+          llm,
+          repo,
+          toolEngineFactory: ({required backend, required apiKey}) =>
+              ToolEngine(search),
+        );
+        addTearDown(c.dispose);
+        await c.read(chatControllerProvider.future);
+        final ctrl = c.read(chatControllerProvider.notifier);
+        final task = ctrl.sendMessage('请核对资料');
+        await search.entered.future;
+        expect(
+          c
+              .read(chatControllerProvider)
+              .requireValue
+              .current!
+              .activePath
+              .last
+              .content,
+          '我先核对资料。',
+          reason: '工具运行期间不能抹去已显示的正文',
+        );
+        search.gate.complete();
+        await task;
+        const expected = '我先核对资料。\n\n核对完成。';
+        final current = c.read(chatControllerProvider).requireValue.current!;
+        expect(current.activePath.last.content, expected);
+        expect(current.activePath.last.reasoning, isEmpty);
+        expect(
+          repo.store
+              .firstWhere((v) => v.id == current.id)
+              .activePath
+              .last
+              .content,
+          expected,
+        );
+        final reloaded = ProviderContainer(
+          parent: c,
+          overrides: [chatControllerProvider.overrideWith(ChatController.new)],
+        );
+        addTearDown(reloaded.dispose);
+        await reloaded.read(chatControllerProvider.future);
+        await reloaded
+            .read(chatControllerProvider.notifier)
+            .selectConversation(current.id);
+        expect(
+          reloaded
+              .read(chatControllerProvider)
+              .requireValue
+              .current!
+              .activePath
+              .last
+              .content,
+          expected,
+        );
+        expect(
+          llm.calls[1].any(
+            (m) => m.role == MessageRole.assistant && m.content == '我先核对资料。',
+          ),
+          isTrue,
+        );
+      },
+    );
+  }
+
   test('web_search tool runs only when the model requests it', () async {
     final llm = FakeLlmProvider(
       const [],
@@ -1482,7 +1635,10 @@ void main() {
     expect(search.calls, 1);
     expect(search.lastQuery, 'dart flutter');
     expect(llm.callCount, 2);
-    expect(llm.toolCalls.first?.single.name, 'web_search');
+    expect(
+      llm.toolCalls.first?.where((t) => t.name == 'web_search'),
+      hasLength(1),
+    );
     expect(
       llm.calls[1].any(
         (m) =>
@@ -1503,21 +1659,24 @@ void main() {
     expect(assistant.citations.single.url, 'https://flutter.dev');
   });
 
-  test('fetch_url is not exposed without a URL in the current turn', () async {
-    final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'hello')]);
-    final c = _container(llm, InMemoryRepo());
-    addTearDown(c.dispose);
+  test(
+    'fetch_url catalog remains stable without a URL in the current turn',
+    () async {
+      final llm = FakeLlmProvider([const ChatChunk(contentDelta: 'hello')]);
+      final c = _container(llm, InMemoryRepo());
+      addTearDown(c.dispose);
 
-    final ctrl = c.read(chatControllerProvider.notifier);
-    await c.read(chatControllerProvider.future);
-    await ctrl.sendMessage('普通离线问题');
+      final ctrl = c.read(chatControllerProvider.notifier);
+      await c.read(chatControllerProvider.future);
+      await ctrl.sendMessage('普通离线问题');
 
-    expect(llm.callCount, 1);
-    expect(
-      llm.toolCalls.single?.any((t) => t.name == 'fetch_url') ?? false,
-      isFalse,
-    );
-  });
+      expect(llm.callCount, 1);
+      expect(
+        llm.toolCalls.single?.any((t) => t.name == 'fetch_url') ?? false,
+        isTrue,
+      );
+    },
+  );
 
   test(
     'fetch_url rejects model-invented URLs outside the turn allow-list',
@@ -1554,7 +1713,7 @@ void main() {
           (m) =>
               m.role == MessageRole.tool &&
               m.toolCallId == 'fetch_1' &&
-              m.content.contains('只能访问用户在本轮消息中明确提供的网址'),
+              m.content.contains('已拒绝读取：fetch_url 只能访问本轮用户提供或搜索结果中的网址。'),
         ),
         isTrue,
       );
@@ -1704,7 +1863,7 @@ void main() {
   });
 
   test(
-    'a stubborn final round emitting only tool calls gets a fallback reply',
+    'a stubborn final round emitting only tool calls reports failure',
     () async {
       final llm = FakeLlmProvider(
         const [],
@@ -1756,10 +1915,9 @@ void main() {
 
       final state = c.read(chatControllerProvider).value!;
       expect(llm.callCount, 2);
-      expect(state.error, isNull);
+      expect(state.error, contains('整理请求未返回正文'));
       final assistant = state.current!.activePath.last;
-      expect(assistant.content, isNotEmpty);
-      expect(assistant.content, '模型未能输出有效回复，请重试。');
+      expect(assistant.content, isNot('模型未能输出有效回复，请重试。'));
     },
   );
 
@@ -1807,7 +1965,7 @@ void main() {
         .current!
         .activePath
         .last;
-    expect(assistant.content, 'final answer');
+    expect(assistant.content, 'need to search\n\nfinal answer');
     // Both rounds' reasoning spans (~120ms each) must be counted, not just
     // the first round's.
     expect(assistant.thinkingMillis, greaterThanOrEqualTo(200));
@@ -2099,7 +2257,7 @@ void main() {
 
     final deletion = controller.deleteConversation(original.id);
     await repo.deleteStarted.future;
-    controller.newConversation();
+    controller.newConversation(workMode: false);
     final newId = container.read(chatControllerProvider).value!.currentId;
     repo.failDelete.complete();
     await deletion;
@@ -2108,7 +2266,12 @@ void main() {
     expect(state.conversations.map((c) => c.id), contains(original.id));
     expect(state.conversations.map((c) => c.id), contains(newId));
     expect(state.currentId, newId);
-    expect(state.error, contains('本地删除失败'));
+    expect(state.error, isNull);
+    await controller.selectConversation(original.id);
+    expect(
+      container.read(chatControllerProvider).requireValue.error,
+      contains('本地删除失败'),
+    );
   });
 
   test('newStoryConversation inserts firstMes and story metadata', () async {
@@ -2557,7 +2720,7 @@ void main() {
     final send = ctrl.sendMessage('stream into the background');
     await delayed.entered.future;
     // The user switches away while the turn is still preflighting.
-    ctrl.newConversation();
+    ctrl.newConversation(workMode: false);
     final otherId = c.read(chatControllerProvider).value!.currentId!;
     expect(otherId, isNot(originId));
 
@@ -2592,7 +2755,7 @@ void main() {
     final send = ctrl.generateImage('draw a cat');
     await delayed.entered.future;
     // The user switches away while the turn is still preflighting.
-    ctrl.newConversation();
+    ctrl.newConversation(workMode: false);
     final otherId = c.read(chatControllerProvider).value!.currentId!;
     expect(otherId, isNot(originId));
 
@@ -2648,7 +2811,7 @@ void main() {
 
       final send = ctrl.sendMessage('this turn will fail');
       await llm.entered.future;
-      ctrl.newConversation();
+      ctrl.newConversation(workMode: false);
       final otherId = c.read(chatControllerProvider).value!.currentId!;
       expect(otherId, isNot(failedId));
 
@@ -2656,10 +2819,10 @@ void main() {
       await send;
       var state = c.read(chatControllerProvider).value!;
       expect(state.currentId, otherId);
-      expect(state.errorConvoId, failedId);
+      expect(state.errorConvoId, isNull);
       expect(state.errorVisibleFor(otherId), isFalse);
 
-      ctrl.selectConversation(failedId);
+      await ctrl.selectConversation(failedId);
       state = c.read(chatControllerProvider).value!;
       expect(state.currentId, failedId);
       expect(state.error, contains('simulated stream failure'));
@@ -2680,15 +2843,16 @@ void main() {
 
       final send = ctrl.sendMessage('will fail');
       await llm.entered.future;
-      ctrl.newConversation();
+      ctrl.newConversation(workMode: false);
       final otherId = c.read(chatControllerProvider).value!.currentId!;
       expect(otherId, isNot(failedId));
       llm.gate.complete();
       await send;
 
       var state = c.read(chatControllerProvider).value!;
-      expect(state.errorConvoId, failedId);
+      expect(state.errorConvoId, isNull);
       expect(state.errorVisibleFor(otherId), isFalse);
+      await ctrl.selectConversation(failedId);
 
       // Deleting the OTHER conversation must not erase the parked banner.
       await ctrl.deleteConversation(otherId);
@@ -2824,11 +2988,13 @@ void main() {
     final c = _container(
       llm,
       InMemoryRepo(),
-      settingsBuilder: FakeSmallContextVisionSettings.new,
+      settingsBuilder: _PinnedSmallContextVisionSettings.new,
     );
     addTearDown(c.dispose);
     final ctrl = c.read(chatControllerProvider.notifier);
     await c.read(chatControllerProvider.future);
+    // Explicit native model selection keeps default thinking enabled without switching to the reasoner.
+    expect(c.read(chatControllerProvider).requireValue.deepThink, isTrue);
 
     final accepted = await ctrl.sendMessage(
       '看图',
@@ -2882,7 +3048,7 @@ void main() {
       final settings = container.read(settingsControllerProvider.notifier);
       await container.read(settingsControllerProvider.future);
 
-      await settings.setSearchBackend(SearchBackend.tavily);
+      await settings.setSearchBackend(SearchBackend.deepseek);
       await settings.setSearchApiKey('search-secret');
       await settings.setSystemPrompt('你是专业助手');
 
@@ -2895,7 +3061,7 @@ void main() {
       final next = container.read(settingsControllerProvider).value!;
       expect(next.profiles, hasLength(1));
       expect(next.profiles.single.id, isNot(onlyId));
-      expect(next.searchBackend, SearchBackend.tavily);
+      expect(next.searchBackend, SearchBackend.deepseek);
       expect(next.searchApiKey, 'search-secret');
       expect(next.systemPrompt, '你是专业助手');
       expect(next.apiKey, isEmpty);
@@ -3396,11 +3562,13 @@ void main() {
     final c = _container(
       llm,
       InMemoryRepo(),
-      settingsBuilder: FakeVisionSettings.new,
+      settingsBuilder: _PinnedVisionSettings.new,
     );
     addTearDown(c.dispose);
     final ctrl = c.read(chatControllerProvider.notifier);
     await c.read(chatControllerProvider.future);
+    // Explicit native model selection keeps default thinking enabled without switching to the reasoner.
+    expect(c.read(chatControllerProvider).requireValue.deepThink, isTrue);
 
     await ctrl.sendMessage(
       'what is this?',
@@ -3591,11 +3759,13 @@ void main() {
     final c = _container(
       llm,
       InMemoryRepo(),
-      settingsBuilder: FakeVisionSettings.new,
+      settingsBuilder: _PinnedVisionSettings.new,
     );
     addTearDown(c.dispose);
     final ctrl = c.read(chatControllerProvider.notifier);
     await c.read(chatControllerProvider.future);
+    // Explicit native model selection keeps default thinking enabled without switching to the reasoner.
+    expect(c.read(chatControllerProvider).requireValue.deepThink, isTrue);
 
     await ctrl.sendMessage('第一句纯文本');
     await ctrl.sendMessage(
@@ -3629,11 +3799,13 @@ void main() {
       final c = _container(
         llm,
         InMemoryRepo(),
-        settingsBuilder: FakeVisionSettings.new,
+        settingsBuilder: _PinnedVisionSettings.new,
       );
       addTearDown(c.dispose);
       final ctrl = c.read(chatControllerProvider.notifier);
       await c.read(chatControllerProvider.future);
+      // Explicit native model selection keeps default thinking enabled without switching to the reasoner.
+      expect(c.read(chatControllerProvider).requireValue.deepThink, isTrue);
 
       // A plain two-turn conversation.
       await ctrl.sendMessage('第一句');
@@ -3784,7 +3956,9 @@ void main() {
       final ctrl = c.read(chatControllerProvider.notifier);
       await c.read(chatControllerProvider.future);
 
-      ctrl.toggleDeepThink();
+      if (!c.read(chatControllerProvider).requireValue.deepThink) {
+        ctrl.toggleDeepThink();
+      }
       expect(c.read(chatControllerProvider).value!.deepThink, isTrue);
 
       final ok = await ctrl.generateImage('画一只猫');
@@ -3828,6 +4002,9 @@ void main() {
     addTearDown(c.dispose);
     final ctrl = c.read(chatControllerProvider.notifier);
     await c.read(chatControllerProvider.future);
+    if (c.read(chatControllerProvider).requireValue.deepThink) {
+      ctrl.toggleDeepThink();
+    }
 
     final ok = await ctrl.generateImage('画一只猫');
     expect(ok, isTrue);
@@ -4466,12 +4643,24 @@ void main() {
       addTearDown(c.dispose);
       await _pumpChat(tester, c);
 
-      expect(c.read(chatControllerProvider).value!.deepThink, isFalse);
-      await tester.tap(find.byTooltip('思考与搜索'));
+      expect(c.read(chatControllerProvider).value!.deepThink, isTrue);
+      await tester.tap(find.byKey(const ValueKey('composer-model-thinking')));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('深度思考'));
+      final slider = tester.getRect(
+        find.byKey(const ValueKey('reasoning-effort-slider')),
+      );
+      await tester.tap(find.byKey(const ValueKey('reasoning-thinking-toggle')));
+      await tester.pump();
+      expect(c.read(chatControllerProvider).value!.deepThink, isFalse);
+      await tester.tap(find.byKey(const ValueKey('reasoning-thinking-toggle')));
       await tester.pump();
       expect(c.read(chatControllerProvider).value!.deepThink, isTrue);
+      await tester.tapAt(Offset(slider.right - 20, slider.center.dy));
+      await tester.pump();
+      expect(
+        c.read(chatControllerProvider).value!.reasoningEffort,
+        ReasoningEffort.max,
+      );
     });
 
     testWidgets('preflight API-key error does not offer an invalid retry', (
@@ -4534,19 +4723,36 @@ void main() {
 
 /// Pump [ChatPage] against a prebuilt container so tests can read state back.
 Future<void> _pumpChat(WidgetTester tester, ProviderContainer container) async {
-  await tester.pumpWidget(
-    UncontrolledProviderScope(
-      container: container,
-      child: const MaterialApp(home: ChatPage()),
-    ),
-  );
+  await tester.pumpWidget(_OwnedChatFixture(container: container));
   await _drain(tester);
+}
+
+class _OwnedChatFixture extends StatefulWidget {
+  const _OwnedChatFixture({required this.container});
+  final ProviderContainer container;
+  @override
+  State<_OwnedChatFixture> createState() => _OwnedChatFixtureState();
+}
+
+class _OwnedChatFixtureState extends State<_OwnedChatFixture> {
+  @override
+  void dispose() {
+    widget.container.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => UncontrolledProviderScope(
+    container: widget.container,
+    child: const MaterialApp(home: ChatPage()),
+  );
 }
 
 /// Bounded pumping — the async-loading branch shows a spinner, so pumpAndSettle
 /// would hang; a few fixed frames let the AsyncNotifier + fake stream resolve.
 Future<void> _drain(WidgetTester tester) async {
-  for (var i = 0; i < 8; i++) {
+  // Covers the transcript scroll transition and the intentional 250ms log save.
+  for (var i = 0; i < 20; i++) {
     await tester.pump(const Duration(milliseconds: 20));
   }
 }
@@ -4605,5 +4811,27 @@ class _StubPageSearch extends HttpSearchProvider {
           'This is readable page content long enough to pass the minimum '
           'source threshold used by the tool engine.',
     );
+  }
+}
+
+class _GatedTranscriptSearch implements SearchProvider {
+  final entered = Completer<void>();
+  final gate = Completer<void>();
+  @override
+  Future<List<SearchResult>> search(
+    String query, {
+    int maxResults = 8,
+    CancelToken? cancelToken,
+  }) async {
+    entered.complete();
+    await gate.future;
+    return const [
+      SearchResult(
+        title: 'Dart',
+        url: 'https://dart.dev',
+        snippet:
+            'Dart is a programming language for building cross-platform applications with a productive development workflow.',
+      ),
+    ];
   }
 }

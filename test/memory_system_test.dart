@@ -1,3 +1,4 @@
+import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -183,7 +184,13 @@ class _CandidateLlm implements LlmProvider {
   }
 }
 
+late SharedPreferences _testPreferences;
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  setUp(() async {
+    SharedPreferences.setMockInitialValues({});
+    _testPreferences = await SharedPreferences.getInstance();
+  });
   test('Markdown memory document is readable and round-trips provenance', () {
     final now = DateTime.parse('2026-07-29T12:00:00Z');
     final document = MemoryDocument(
@@ -608,7 +615,10 @@ void main() {
       await repository.add(content: '默认使用中文回答。');
       final oldDrink = await repository.add(content: '用户每天喝咖啡。');
       final container = ProviderContainer(
-        overrides: [memoryRepositoryProvider.overrideWithValue(repository)],
+        overrides: [
+          sharedPrefsProvider.overrideWithValue(_testPreferences),
+          memoryRepositoryProvider.overrideWithValue(repository),
+        ],
       );
       addTearDown(container.dispose);
       await container.read(memoryControllerProvider.future);
@@ -728,7 +738,10 @@ void main() {
     );
     final before = await repository.load();
     final container = ProviderContainer(
-      overrides: [memoryRepositoryProvider.overrideWithValue(repository)],
+      overrides: [
+        sharedPrefsProvider.overrideWithValue(_testPreferences),
+        memoryRepositoryProvider.overrideWithValue(repository),
+      ],
     );
     addTearDown(container.dispose);
     await container.read(memoryControllerProvider.future);
@@ -783,6 +796,7 @@ void main() {
     final conversations = _ConversationStore();
     final container = ProviderContainer(
       overrides: [
+        sharedPrefsProvider.overrideWithValue(_testPreferences),
         memoryRepositoryProvider.overrideWithValue(memoryRepository),
         llmProvider.overrideWithValue(llm),
         conversationRepositoryProvider.overrideWithValue(conversations),
@@ -821,7 +835,10 @@ void main() {
     );
     await tester.pumpWidget(
       ProviderScope(
-        overrides: [memoryRepositoryProvider.overrideWithValue(repository)],
+        overrides: [
+          sharedPrefsProvider.overrideWithValue(_testPreferences),
+          memoryRepositoryProvider.overrideWithValue(repository),
+        ],
         child: const MaterialApp(home: MemoryPage()),
       ),
     );
@@ -1189,7 +1206,10 @@ void main() {
     final repository = MemoryRepository(store);
     await tester.pumpWidget(
       ProviderScope(
-        overrides: [memoryRepositoryProvider.overrideWithValue(repository)],
+        overrides: [
+          sharedPrefsProvider.overrideWithValue(_testPreferences),
+          memoryRepositoryProvider.overrideWithValue(repository),
+        ],
         child: const MaterialApp(home: MemoryPage()),
       ),
     );
@@ -1220,7 +1240,10 @@ void main() {
     final repository = MemoryRepository(store);
     await tester.pumpWidget(
       ProviderScope(
-        overrides: [memoryRepositoryProvider.overrideWithValue(repository)],
+        overrides: [
+          sharedPrefsProvider.overrideWithValue(_testPreferences),
+          memoryRepositoryProvider.overrideWithValue(repository),
+        ],
         child: const MaterialApp(home: MemoryPage()),
       ),
     );
@@ -1244,7 +1267,10 @@ void main() {
     final repository = MemoryRepository(store);
     await tester.pumpWidget(
       ProviderScope(
-        overrides: [memoryRepositoryProvider.overrideWithValue(repository)],
+        overrides: [
+          sharedPrefsProvider.overrideWithValue(_testPreferences),
+          memoryRepositoryProvider.overrideWithValue(repository),
+        ],
         child: const MaterialApp(home: MemoryPage()),
       ),
     );
@@ -1272,7 +1298,10 @@ void main() {
     final repository = MemoryRepository(store);
     await tester.pumpWidget(
       ProviderScope(
-        overrides: [memoryRepositoryProvider.overrideWithValue(repository)],
+        overrides: [
+          sharedPrefsProvider.overrideWithValue(_testPreferences),
+          memoryRepositoryProvider.overrideWithValue(repository),
+        ],
         child: const MaterialApp(home: MemoryPage()),
       ),
     );

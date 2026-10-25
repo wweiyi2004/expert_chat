@@ -1,3 +1,7 @@
+import '../../core/application_surface.dart';
+import 'files/work_file_access.dart';
+import '../../core/prototype_widgets.dart';
+import '../../domain/workbench/changes/restore_work_file_change.dart';
 import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
@@ -9,7 +13,6 @@ import '../../state/conversation_workspace_bindings.dart';
 import '../../state/session_policy.dart';
 import '../../state/research_terminal_controller.dart';
 import '../../state/chat_controller.dart';
-import '../../state/work_changes.dart';
 import 'changes/work_changes_page.dart';
 import 'git/git_workspace_page.dart';
 import 'runtime/work_task_panel.dart';
@@ -22,6 +25,14 @@ import 'logs/work_runtime_logs_panel.dart';
 import 'files/delivered_file_tab.dart';
 import '../chat/widgets/work_round_controls.dart';
 import '../chat/widgets/work_approval_card.dart';
+import '../../state/work_changes.dart';
+import '../../state/work_processes.dart';
+import '../../state/work_agents.dart';
+import '../chat/widgets/chat_workspace_options.dart';
+import '../chat/widgets/composer_model_picker.dart';
+import '../settings/settings_page.dart';
+import '../shell/conversation_return_scope.dart';
+import '../research/research_terminal_page.dart';
 
 class WorkspaceWorkbenchPage extends ConsumerStatefulWidget {
   const WorkspaceWorkbenchPage({
@@ -63,6 +74,12 @@ class _WorkspaceWorkbenchPageState
   final _tabScroll = ScrollController();
   int _nextTabId = 0;
   int? _activeTab;
+  int _section = 0;
+  static int _sectionFor(int kind) => switch (kind) {
+    0 || 3 || 5 || 9 => 0,
+    6 || 10 => 2,
+    _ => 1,
+  };
   bool _allowPop = false;
   static const _labels = [
     '工作区文件',
@@ -71,20 +88,11 @@ class _WorkspaceWorkbenchPageState
     '改动',
     '任务',
     '',
-    'Agents',
+    '子代理',
     'Services',
     '日志',
-  ];
-  static const _icons = [
-    Icons.folder_open_outlined,
-    Icons.language,
-    Icons.terminal,
-    Icons.difference_outlined,
-    Icons.task_alt,
-    Icons.insert_drive_file_outlined,
-    Icons.account_tree_outlined,
-    Icons.dns_outlined,
-    Icons.receipt_long_outlined,
+    'Git',
+    '主代理',
   ];
   final _token = CancelToken();
   late final Future<WorkToolSession> _opening = _openSession();
@@ -92,9 +100,10 @@ class _WorkspaceWorkbenchPageState
   @override
   void initState() {
     super.initState();
-    if (widget.initialTab >= 0) _selectTab(widget.initialTab);
-    if (widget.initialDelivery != null)
+    _selectTab(widget.initialTab >= 0 ? widget.initialTab : 3);
+    if (widget.initialDelivery != null) {
       _selectDelivery(widget.initialDelivery!);
+    }
   }
 
   Future<WorkToolSession> _openSession() {
@@ -123,27 +132,40 @@ class _WorkspaceWorkbenchPageState
   }
 
   void _selectTab(int kind, {bool newInstance = false}) {
+    if (kind < 0 || kind >= _labels.length) kind = 6;
     final existing = newInstance
         ? null
         : _tabs.where((t) => t.kind == kind).firstOrNull;
     final tab = existing ?? _WorkbenchTab(_nextTabId++, kind);
     if (existing == null) _tabs.add(tab);
     _activeTab = tab.id;
+    _section = _sectionFor(tab.kind);
   }
+
+  bool _isInstance(_WorkbenchTab tab) =>
+      tab.kind == 5 || tab.kind == 1 || tab.kind == 2;
+  int get _activeKind =>
+      _tabs.where((t) => t.id == _activeTab).firstOrNull?.kind ??
+      const [3, 4, 6][_section];
 
   String _tabLabel(_WorkbenchTab tab) =>
       tab.path?.replaceAll('\\', '/').split('/').last ?? _labels[tab.kind];
-  IconData _tabIcon(_WorkbenchTab tab) =>
-      tab.path == null ? _icons[tab.kind] : Icons.insert_drive_file_outlined;
 
   void _revealActiveTab() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_tabScroll.hasClients) return;
-      final index = _tabs.indexWhere((tab) => tab.id == _activeTab);
+      final index = _tabs
+          .where((t) => _sectionFor(t.kind) == _section)
+          .toList()
+          .indexWhere((tab) => tab.id == _activeTab);
       final offset = (index * 164.0).clamp(
         0.0,
         _tabScroll.position.maxScrollExtent,
       );
+      if (MediaQuery.disableAnimationsOf(context)) {
+        _tabScroll.jumpTo(offset);
+        return;
+      }
       _tabScroll.animateTo(
         offset,
         duration: const Duration(milliseconds: 160),
@@ -166,6 +188,7 @@ class _WorkspaceWorkbenchPageState
         _WorkbenchTab(_nextTabId++, 5, path: file.path, delivery: file);
     if (existing == null) _tabs.add(tab);
     _activeTab = tab.id;
+    _section = _sectionFor(tab.kind);
   }
 
   void _openFile(String path) {
@@ -176,6 +199,7 @@ class _WorkspaceWorkbenchPageState
       final tab = existing ?? _WorkbenchTab(_nextTabId++, 5, path: path);
       if (existing == null) _tabs.add(tab);
       _activeTab = tab.id;
+      _section = _sectionFor(tab.kind);
     });
     _revealActiveTab();
   }
@@ -188,17 +212,18 @@ class _WorkspaceWorkbenchPageState
   Future<void> _closeTab(_WorkbenchTab tab) async {
     if (!await (_fileControllers[tab.id]?.requestClose() ??
             Future.value(true)) ||
-        !mounted)
+        !mounted) {
       return;
+    }
     _fileControllers.remove(tab.id);
     _dirtyFiles.remove(tab.id);
     setState(() {
-      final index = _tabs.indexOf(tab);
       _tabs.remove(tab);
       if (_activeTab == tab.id) {
-        _activeTab = _tabs.isEmpty
-            ? null
-            : _tabs[(index - 1).clamp(0, _tabs.length - 1)].id;
+        _activeTab = _tabs
+            .where((t) => _sectionFor(t.kind) == _section)
+            .lastOrNull
+            ?.id;
       }
     });
   }
@@ -246,7 +271,9 @@ class _WorkspaceWorkbenchPageState
   }
 
   Future<void> _restore(WorkFileChange change) async {
-    if (!change.canRestore) throw StateError('该记录不支持撤销');
+    if (!change.canRestore && !change.recreateNewFile) {
+      throw StateError('该记录不支持撤销');
+    }
     if (ref
             .read(chatControllerProvider)
             .value
@@ -254,33 +281,9 @@ class _WorkspaceWorkbenchPageState
         false) {
       throw StateError('此会话仍在执行，请停止任务后撤销。');
     }
-    final target = jsonDecode(change.target) as Map;
-    final WorkToolSession session;
-    if (target['kind'] == 'ssh') {
-      session = await ref
-          .read(researchTerminalProvider.notifier)
-          .openWorkSession(
-            target['profileId'] as String,
-            target['root'] as String,
-          );
-    } else if (target['kind'] == 'local') {
-      session = await WorkspaceToolSession.open(
-        ref.read(desktopWorkspaceHostProvider),
-        target['workspaceId'] as String,
-        _token,
-      );
-    } else {
-      throw StateError('无法定位原工作区');
-    }
+    final session = await openDeliverySession(ref, change, _token);
     try {
-      final actual = jsonDecode(session.changeTarget) as Map;
-      if (actual['root'] != target['root']) throw StateError('工作区根目录已经改变，未撤销。');
-      await session.call('coding_write_file', {
-        'scope': change.scope,
-        'path': change.path,
-        'content': change.before!,
-        'expected_sha256': change.afterHash,
-      }, _token);
+      await restoreReviewedFileChange(session, change, _token);
     } finally {
       await session.close();
     }
@@ -291,8 +294,9 @@ class _WorkspaceWorkbenchPageState
     final workspace = (await ref.read(desktopWorkspaceHostProvider).list())
         .where((w) => w.id == session.workspace.id)
         .firstOrNull;
-    if (workspace == null || workspace.root != session.workspace.root)
+    if (workspace == null || workspace.root != session.workspace.root) {
       throw StateError('工作区已撤销或改变');
+    }
     if (workspace.scopes.isEmpty ||
         workspace.scopes.any(
           (s) =>
@@ -309,21 +313,25 @@ class _WorkspaceWorkbenchPageState
       ? value.substring(4)
       : value;
 
-  Widget _files() => FutureBuilder<WorkToolSession>(
+  Widget _files({bool git = false}) => FutureBuilder<WorkToolSession>(
     future: _opening,
     builder: (context, snapshot) {
-      if (snapshot.hasError)
+      if (snapshot.hasError) {
         return Center(
           child: Padding(
             padding: const EdgeInsets.all(24),
             child: Text('工作区暂不可用：${snapshot.error}'),
           ),
         );
+      }
       final session = snapshot.data;
-      if (session == null)
+      if (session == null) {
         return const Center(child: CircularProgressIndicator());
+      }
       final descriptor = jsonDecode(session.changeTarget) as Map;
       return GitWorkspacePage(
+        initialView: git ? 1 : 0,
+        compactHeader: true,
         workspaceName: session.target,
         rootPath: _path(descriptor['root'] as String),
         embedded: true,
@@ -331,8 +339,9 @@ class _WorkspaceWorkbenchPageState
         onOpenFile: _openFile,
         callFileTool: (name, args) => session.call(name, args, _token),
         authorizeGit: (write) async {
-          if (session is! WorkspaceToolSession)
+          if (session is! WorkspaceToolSession) {
             throw StateError('Git 视图目前仅支持本机');
+          }
           await _authorizeGit(session, write);
         },
       );
@@ -359,10 +368,47 @@ class _WorkspaceWorkbenchPageState
               ),
               onDirtyChanged: (dirty) => _dirtyChanged(tab.id, dirty),
             ),
-    6 => WorkAgentsPanel(conversationId: widget.conversationId),
+    6 => WorkAgentsPanel(
+      conversationId: widget.conversationId,
+      showConfiguration: false,
+    ),
     7 => WorkProcessesPanel(conversationId: widget.conversationId),
     8 => WorkRuntimeLogsPanel(conversationId: widget.conversationId),
     0 => _files(),
+    9 => _files(git: true),
+    10 => ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        const Text('主代理模型'),
+        ComposerModelPicker(
+          conversationId: widget.conversationId,
+          enabled: true,
+        ),
+        const SizedBox(height: 12),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: PrototypeButton(
+            key: const ValueKey('workbench-edit-main-instructions'),
+            label: '编辑主代理指令',
+            icon: Icons.edit_note_outlined,
+            small: true,
+            variant: PrototypeButtonVariant.ghost,
+            onPressed: () => Navigator.of(context).push(
+              applicationSurfaceRoute<void>(
+                context,
+                (_) => const SettingsPage(
+                  initialCategory: SettingsCategory.assistants,
+                ),
+                protectRoot: false,
+                settings: const RouteSettings(
+                  name: conversationSettingsRouteName,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    ),
     1 => const WorkspaceBrowserPanel(),
     2 => WorkspaceCommandPanel(session: _opening, active: active),
     3 => WorkChangesPage(
@@ -379,7 +425,10 @@ class _WorkspaceWorkbenchPageState
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  WorkRoundControls(conversationId: widget.conversationId),
+                  WorkRoundControls(
+                    conversationId: widget.conversationId,
+                    readOnly: true,
+                  ),
                   WorkApprovalCard(conversationId: widget.conversationId),
                 ],
               ),
@@ -391,232 +440,258 @@ class _WorkspaceWorkbenchPageState
     ),
   };
 
-  Widget _startPage(ColorScheme scheme) => Center(
-    child: SingleChildScrollView(
-      padding: const EdgeInsets.all(28),
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 500),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              Icons.explore_outlined,
-              size: 56,
-              color: scheme.outlineVariant,
-            ),
-            const SizedBox(height: 36),
-            for (final entry in const [
-              (0, '工作区文件', '浏览会话工作区的文件', Icons.folder_copy_outlined),
-              (2, '新建终端', '在会话工作区运行命令', Icons.terminal),
-              (1, '浏览器', '浏览网页与本地开发服务', Icons.language),
-              (6, 'Agents', '查看子代理和递归执行树', Icons.account_tree_outlined),
-              (7, 'Services', '查看与控制后台命令和开发服务', Icons.dns_outlined),
-              (8, '工作日志', '实时查看执行记录和错误诊断', Icons.receipt_long_outlined),
-            ]) ...[
-              Material(
-                color: scheme.surface,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(18),
-                  side: BorderSide(color: scheme.outlineVariant),
-                ),
-                clipBehavior: Clip.antiAlias,
-                child: InkWell(
-                  onTap: () => _openTab(
-                    entry.$1,
-                    newInstance: entry.$1 == 1 || entry.$1 == 2,
-                  ),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 24,
-                      vertical: 22,
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(entry.$4, color: scheme.primary, size: 26),
-                        const SizedBox(width: 20),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                entry.$2,
-                                style: Theme.of(context).textTheme.titleMedium,
-                              ),
-                              const SizedBox(height: 4),
-                              Text(
-                                entry.$3,
-                                style: Theme.of(context).textTheme.bodySmall
-                                    ?.copyWith(color: scheme.onSurfaceVariant),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 18),
-            ],
-          ],
+  Widget _emptySection() => Center(
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(switch (_section) {
+          0 => '这个会话还没有打开的文件。',
+          1 => '选择任务、终端或浏览器查看运行情况。',
+          _ => '查看主代理配置与子代理。',
+        }),
+        const SizedBox(height: 12),
+        FilledButton.tonal(
+          onPressed: () => _openTab(switch (_section) {
+            0 => 0,
+            1 => 4,
+            _ => 6,
+          }),
+          child: const Text('打开'),
         ),
-      ),
+      ],
     ),
   );
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final changes = ref
+        .watch(workChangesProvider)
+        .where((r) => r.conversationId == widget.conversationId)
+        .map((r) => (r.target, r.scope, r.path))
+        .toSet()
+        .length;
+    final processes = ref.watch(workProcessesProvider);
+    final agents = ref.watch(workAgentsProvider);
     final content = Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Container(
-          height: 54,
-          decoration: BoxDecoration(
-            border: Border(
-              bottom: BorderSide(
-                color: scheme.outlineVariant.withValues(alpha: .6),
+        SizedBox(
+          key: const ValueKey('html-workbench-header'),
+          height: 50,
+          child: Row(
+            children: [
+              const SizedBox(width: 16),
+              const Text('工作台', style: TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(width: 8),
+              Expanded(
+                child: ChatWorkspaceBar(
+                  conversationId: widget.conversationId,
+                  busy: false,
+                  plain: true,
+                ),
+              ),
+              if (widget.onToggleExpanded != null)
+                PrototypeIconButton(
+                  tooltip: widget.expanded ? '恢复分栏' : '放大工作台',
+                  onPressed: widget.onToggleExpanded,
+                  icon: widget.expanded
+                      ? Icons.fullscreen_exit
+                      : Icons.fullscreen,
+                ),
+              PrototypeIconButton(
+                tooltip: '收起工作台',
+                onPressed: () async {
+                  if (await _requestCloseAll() && context.mounted) {
+                    if (widget.onClose != null) {
+                      widget.onClose!();
+                    } else {
+                      Navigator.of(context).pop();
+                    }
+                  }
+                },
+                icon: Icons.chevron_right,
+              ),
+            ],
+          ),
+        ),
+        ListenableBuilder(
+          listenable: Listenable.merge([processes, agents]),
+          builder: (context, _) {
+            final counts = [
+              changes,
+              processes.records
+                  .where(
+                    (r) =>
+                        r.conversationId == widget.conversationId &&
+                        r.active &&
+                        r.service,
+                  )
+                  .length,
+              agents.records
+                  .where(
+                    (r) =>
+                        r.conversationId == widget.conversationId &&
+                        !r.external,
+                  )
+                  .length,
+            ];
+            return PrototypeTabStrip<int>(
+              tabs: [
+                for (var i = 0; i < 3; i++)
+                  PrototypeTab(
+                    key: ValueKey('workbench-section-$i'),
+                    value: i,
+                    label: const ['改动', '运行', '助手'][i],
+                    count: counts[i],
+                  ),
+              ],
+              value: _section,
+              onChanged: (i) => setState(() {
+                _section = i;
+                final existing = _tabs
+                    .where((t) => _sectionFor(t.kind) == i)
+                    .lastOrNull;
+                if (existing != null) {
+                  _activeTab = existing.id;
+                } else {
+                  _selectTab(const [3, 4, 6][i]);
+                }
+              }),
+            );
+          },
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+          child: Row(
+            children: [
+              Expanded(
+                child: _section == 1
+                    ? Wrap(
+                        key: const ValueKey('workbench-run-entries'),
+                        alignment: WrapAlignment.center,
+                        runAlignment: WrapAlignment.center,
+                        spacing: 6,
+                        runSpacing: 4,
+                        children: [
+                          for (final kind in const [4, 2, 1, 7, 8])
+                            PrototypeChip(
+                              key: ValueKey('workbench-run-$kind'),
+                              label: _labels[kind],
+                              selected: _activeKind == kind,
+                              onPressed: () => _openTab(kind),
+                            ),
+                        ],
+                      )
+                    : SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: PrototypeSegmentedControl<int>(
+                          segments: [
+                            for (final kind in switch (_section) {
+                              0 => [3, 0, 9],
+                              1 => [4, 2, 1, 7, 8],
+                              _ => [10, 6],
+                            })
+                              PrototypeSegment(
+                                value: kind,
+                                label: kind == 3
+                                    ? '本轮改动'
+                                    : kind == 0
+                                    ? '全部文件'
+                                    : _labels[kind],
+                              ),
+                          ],
+                          value: _activeKind == 5 ? 0 : _activeKind,
+                          onChanged: _openTab,
+                        ),
+                      ),
+              ),
+            ],
+          ),
+        ),
+        if (_section == 1 &&
+            (ref
+                    .watch(sessionPolicyProvider)[widget.conversationId]
+                    ?.sshProfileId
+                    .isNotEmpty ??
+                false))
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Padding(
+              padding: const EdgeInsets.only(left: 14, bottom: 6),
+              child: PrototypeButton(
+                label: '在科研终端中打开',
+                small: true,
+                variant: PrototypeButtonVariant.ghost,
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const ResearchTerminalPage(),
+                  ),
+                ),
               ),
             ),
           ),
-          padding: const EdgeInsets.symmetric(horizontal: 6),
-          child: Row(
-            children: [
-              if (_tabs.isEmpty)
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.only(left: 12),
-                    child: Row(
-                      children: [
-                        Icon(
-                          Icons.explore_outlined,
-                          size: 19,
-                          color: scheme.onSurfaceVariant,
-                        ),
-                        const SizedBox(width: 8),
-                        const Text('开始'),
-                      ],
-                    ),
-                  ),
-                )
-              else ...[
-                IconButton(
-                  tooltip: '开始页',
-                  onPressed: () => setState(() => _activeTab = null),
-                  icon: const Icon(Icons.explore_outlined, size: 19),
-                ),
+        if ((_activeKind == 5 ||
+                _activeKind == 0 ||
+                _activeKind == 1 ||
+                _activeKind == 2) &&
+            _tabs.any(
+              (t) =>
+                  _sectionFor(t.kind) == _section &&
+                  _isInstance(t) &&
+                  (_activeKind == 0 || _activeKind == 5
+                      ? t.kind == 5
+                      : t.kind == _activeKind),
+            ))
+          SizedBox(
+            key: const ValueKey('workbench-instance-strip'),
+            height: MediaQuery.sizeOf(context).width < 840 ? 44 : 40,
+            child: Row(
+              children: [
                 Expanded(
                   child: SingleChildScrollView(
                     controller: _tabScroll,
                     scrollDirection: Axis.horizontal,
                     child: Row(
                       children: [
-                        for (final tab in _tabs)
+                        for (final tab in _tabs.where(
+                          (t) =>
+                              _sectionFor(t.kind) == _section &&
+                              _isInstance(t) &&
+                              (_activeKind == 0 || _activeKind == 5
+                                  ? t.kind == 5
+                                  : t.kind == _activeKind),
+                        ))
                           Padding(
-                            padding: const EdgeInsets.only(right: 4),
-                            child: Material(
-                              color: _activeTab == tab.id
-                                  ? scheme.surfaceContainerHighest
-                                  : scheme.surface,
-                              borderRadius: BorderRadius.circular(10),
-                              child: InkWell(
-                                borderRadius: BorderRadius.circular(10),
-                                onTap: () =>
-                                    setState(() => _activeTab = tab.id),
-                                child: SizedBox(
-                                  height: 36,
-                                  width: 160,
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      const SizedBox(width: 10),
-                                      Icon(_tabIcon(tab), size: 17),
-                                      const SizedBox(width: 7),
-                                      Expanded(
-                                        child: Tooltip(
-                                          message: tab.path ?? _tabLabel(tab),
-                                          child: Text(
-                                            '${_dirtyFiles.contains(tab.id) ? '● ' : ''}${_tabLabel(tab)}',
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                        ),
-                                      ),
-                                      IconButton(
-                                        tooltip: '关闭${_tabLabel(tab)}',
-                                        constraints:
-                                            const BoxConstraints.tightFor(
-                                              width: 30,
-                                              height: 30,
-                                            ),
-                                        padding: EdgeInsets.zero,
-                                        iconSize: 16,
-                                        onPressed: () => _closeTab(tab),
-                                        icon: const Icon(Icons.close),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
+                            padding: const EdgeInsets.only(left: 6),
+                            child: _InstanceTab(
+                              label:
+                                  '${_dirtyFiles.contains(tab.id) ? '● ' : ''}${_tabLabel(tab)}',
+                              selected: _activeTab == tab.id,
+                              onTap: () => setState(() => _activeTab = tab.id),
+                              onClose: () => _closeTab(tab),
                             ),
                           ),
                       ],
                     ),
                   ),
                 ),
-              ],
-              IconButton(
-                tooltip: '工作日志',
-                onPressed: () => _openTab(8),
-                icon: const Icon(Icons.receipt_long_outlined, size: 19),
-              ),
-              PopupMenuButton<int>(
-                tooltip: '新建标签',
-                icon: const Icon(Icons.add, size: 20),
-                onSelected: (kind) =>
-                    _openTab(kind, newInstance: kind == 1 || kind == 2),
-                itemBuilder: (_) => [
-                  for (var i = 0; i < _labels.length; i++)
-                    if (i != 5)
-                      PopupMenuItem(
-                        value: i,
-                        child: Row(
-                          children: [
-                            Icon(_icons[i], size: 18),
-                            const SizedBox(width: 12),
-                            Text(_labels[i]),
-                          ],
-                        ),
-                      ),
-                ],
-              ),
-              if (widget.onToggleExpanded != null)
-                IconButton(
-                  tooltip: widget.expanded ? '恢复分栏' : '放大工作台',
-                  onPressed: widget.onToggleExpanded,
-                  icon: Icon(
-                    widget.expanded ? Icons.fullscreen_exit : Icons.fullscreen,
-                    size: 21,
+                if (_activeKind == 1 || _activeKind == 2)
+                  PrototypeIconButton(
+                    icon: Icons.add,
+                    tooltip: _activeKind == 2 ? '新建终端' : '新建浏览器',
+                    onPressed: () => _openTab(_activeKind, newInstance: true),
                   ),
-                ),
-              if (widget.onClose != null)
-                IconButton(
-                  tooltip: '收起工作台',
-                  onPressed: () async {
-                    if (await _requestCloseAll() && mounted)
-                      widget.onClose?.call();
-                  },
-                  icon: const Icon(Icons.chevron_right, size: 20),
-                ),
-            ],
+              ],
+            ),
           ),
-        ),
         Expanded(
           child: Stack(
             children: [
               Positioned.fill(
                 child: Offstage(
                   offstage: _activeTab != null,
-                  child: _startPage(scheme),
+                  child: _emptySection(),
                 ),
               ),
               for (final tab in _tabs)
@@ -648,9 +723,68 @@ class _WorkspaceWorkbenchPageState
           if (mounted) Navigator.of(context).pop();
         });
       },
-      child: Scaffold(
-        appBar: AppBar(title: const Text('工作台')),
-        body: content,
+      child: Scaffold(body: content),
+    );
+  }
+}
+
+class _InstanceTab extends StatelessWidget {
+  const _InstanceTab({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+    required this.onClose,
+  });
+  final String label;
+  final bool selected;
+  final VoidCallback onTap, onClose;
+  @override
+  Widget build(BuildContext context) {
+    final c = PrototypeColors.of(context);
+    return Container(
+      decoration: BoxDecoration(
+        color: selected ? c.panel : c.surface,
+        border: Border(
+          bottom: BorderSide(
+            color: selected ? c.ink : c.line,
+            width: selected ? 2 : 1,
+          ),
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          InkWell(
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 160),
+                child: Tooltip(
+                  message: label,
+                  child: Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 12, color: c.ink),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          SizedBox(
+            width: MediaQuery.sizeOf(context).width < 840 ? 44 : 28,
+            height: MediaQuery.sizeOf(context).width < 840 ? 44 : 30,
+            child: IconButton(
+              tooltip: '关闭$label',
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(),
+              iconSize: 14,
+              onPressed: onClose,
+              icon: const Icon(Icons.close),
+            ),
+          ),
+        ],
       ),
     );
   }

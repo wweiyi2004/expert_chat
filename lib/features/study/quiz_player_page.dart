@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -35,7 +36,7 @@ class _QuizPlayerPageState extends ConsumerState<QuizPlayerPage> {
   Future<void> _submitCurrent() async {
     final ans = (_answers[_item.id] ?? '').trim();
     if (ans.isEmpty) {
-      ScaffoldMessenger.of(
+      AppToastMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('请先作答')));
       return;
@@ -60,7 +61,7 @@ class _QuizPlayerPageState extends ConsumerState<QuizPlayerPage> {
       setState(() {});
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
+      AppToastMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('批改失败：$e')));
     } finally {

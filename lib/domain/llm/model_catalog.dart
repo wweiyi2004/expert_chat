@@ -13,6 +13,7 @@ class ModelCapabilities {
     this.supportsReasoningEffort = false,
     this.reasoningCanBeDisabled = false,
     this.supportsServerWebSearch = false,
+    this.reasoningEffortValues,
   });
 
   /// Streams a separate `reasoning_content` field (drives the thinking panel).
@@ -27,6 +28,19 @@ class ModelCapabilities {
 
   /// Accepts OpenAI's `reasoning_effort` request field.
   final bool supportsReasoningEffort;
+  final List<String>? reasoningEffortValues;
+
+  ModelCapabilities withReasoning({List<String>? efforts, bool? canDisable}) =>
+      ModelCapabilities(
+        isReasoner: efforts != null ? true : isReasoner,
+        supportsTools: supportsTools,
+        sendThinkingField: sendThinkingField,
+        supportsVision: supportsVision,
+        supportsReasoningEffort: efforts != null || supportsReasoningEffort,
+        reasoningCanBeDisabled: canDisable ?? reasoningCanBeDisabled,
+        supportsServerWebSearch: supportsServerWebSearch,
+        reasoningEffortValues: efforts ?? reasoningEffortValues,
+      );
 
   /// Accepts `reasoning_effort: none`; always-reasoning models omit the field
   /// in normal mode and use their provider default instead.
@@ -119,6 +133,36 @@ abstract final class ModelCatalog {
     ),
   };
 
+  // Verified official model pages, 2026-10-25. Unknown GPT ids stay conservative.
+  static List<String> reasoningEfforts(String model) {
+    final m = normalizeId(model);
+    if (RegExp(
+      r'^gpt-(?:(?:6-(?:sol|astra|luna)|6\.1-sol)|5\.6(?:-sol)?)(?:$|-)',
+    ).hasMatch(m)) {
+      return const ['low', 'medium', 'high', 'xhigh', 'max'];
+    }
+    if (RegExp(r'^gpt-5\.[2-5](?:$|-)').hasMatch(m)) {
+      return const ['low', 'medium', 'high', 'xhigh'];
+    }
+    if (m.startsWith('gpt-5.1') || RegExp(r'^o[134](?:$|-)').hasMatch(m)) {
+      return const ['low', 'medium', 'high'];
+    }
+    if (m == 'gpt-5' ||
+        m.startsWith('gpt-5-mini') ||
+        m.startsWith('gpt-5-nano')) {
+      return const ['minimal', 'low', 'medium', 'high'];
+    }
+    return const ['low', 'high', 'max'];
+  }
+
+  static bool isConfigurableGpt(String model) {
+    final m = normalizeId(model);
+    if (m.contains('-chat') || m.contains('-pro')) return false;
+    return RegExp(
+      r'^gpt-(?:5(?:$|-|\.[1-6](?:$|-))|(?:6-(?:sol|astra|luna)|6\.1-sol)(?:$|-))',
+    ).hasMatch(m);
+  }
+
   static String normalizeId(String model) =>
       model.toLowerCase().split('/').last;
 
@@ -158,7 +202,9 @@ abstract final class ModelCatalog {
     // Broadened vs. the old check to also catch `*-thinking-*` reasoners (e.g.
     // kimi-thinking-preview, GLM thinking variants), which previously did not
     // light up the panel. xAI Grok: `grok-*-reasoning` / mini reasoning paths.
+    final configurableGpt = isConfigurableGpt(m);
     final reasoner =
+        configurableGpt ||
         m.contains('reasoner') ||
         (m.contains('reasoning') && !nonReasoning) ||
         m.contains('thinking') ||
@@ -211,6 +257,7 @@ abstract final class ModelCatalog {
     // Well-known OpenAI-compatible vision models. Conservative: unknown models
     // default to no vision so images are never sent to a text-only endpoint.
     final vision =
+        (configurableGpt && m.startsWith('gpt-6')) ||
         deepseekFlash ||
         m.contains('vision') ||
         m.contains('-vl') ||
@@ -242,8 +289,17 @@ abstract final class ModelCatalog {
       supportsVision: vision,
       // DeepSeek V4 uses `reasoning_effort` with thinking enabled; Grok uses
       // the same field, and Grok 4.3 additionally accepts `none`.
-      supportsReasoningEffort: deepseekV4 || grok43 || grok45,
-      reasoningCanBeDisabled: grok43,
+      supportsReasoningEffort:
+          deepseekV4 || grok43 || grok45 || configurableGpt,
+      reasoningCanBeDisabled:
+          grok43 ||
+          (configurableGpt &&
+              !m.startsWith('gpt-6.1-sol') &&
+              !m.startsWith('gpt-6-astra') &&
+              !m.contains('-pro') &&
+              m != 'gpt-5' &&
+              !m.startsWith('gpt-5-mini') &&
+              !m.startsWith('gpt-5-nano')),
       supportsServerWebSearch: serverWebSearch,
     );
   }

@@ -50,11 +50,355 @@ Future<void> _until(bool Function() condition) async {
 
 void main() {
   test(
+    'queued Auto child recovery preserves root quota and gates persistence before dispatch',
+    () async {
+      var requests = 0;
+      final environment = _environment(
+        _Provider((_, _) async* {
+          requests++;
+          yield const ChatChunk(contentDelta: 'resumed', finishReason: 'stop');
+        }),
+      );
+      final source = WorkAgentRuntime();
+      final root = source.registerRoot(
+        conversationId: 'c',
+        taskId: 't',
+        task: 'root',
+        environment: environment,
+        limits: const WorkAgentLimits(maxChildren: 1),
+      );
+      final child = source.spawn(parentId: root, task: 'queued');
+      final rows = source.journal();
+      source.dispose();
+      final blocked = WorkAgentRuntime(
+        persistJournal: (_) async => throw StateError('storage failure'),
+      );
+      addTearDown(blocked.dispose);
+      blocked.restoreJournal(rows);
+      await expectLater(
+        blocked.resumeRestoredChild(
+          agentId: child,
+          environment: environment,
+          reconciliation: 'verified',
+          validate: (_) async {},
+        ),
+        throwsStateError,
+      );
+      expect(blocked.record(child)!.restored, isTrue);
+      expect(requests, 0);
+      final restored = WorkAgentRuntime();
+      addTearDown(restored.dispose);
+      restored.restoreJournal(rows);
+      await restored.activateRestoredRoot(
+        rootId: root,
+        environment: environment,
+        validate: (_) async {},
+      );
+      expect(restored.record(root)!.childrenCreated, 1);
+      expect(
+        () => restored.spawn(parentId: root, task: 'quota bypass'),
+        throwsStateError,
+      );
+      await restored.resumeRestoredChildUsingRoot(
+        agentId: child,
+        rootId: root,
+        reconciliation: 'verified original root and effects',
+        validate: (_) async {},
+      );
+      await _until(() => restored.record(child)!.terminal);
+      expect(restored.record(child)!.status, WorkAgentStatus.completed);
+      expect(requests, 1);
+    },
+  );
+
+  test(
+    'failed durable snapshot prevents child model and tool dispatch',
+    () async {
+      var requests = 0;
+      final runtime = WorkAgentRuntime(
+        persistJournal: (_) async => throw StateError('storage full'),
+      );
+      addTearDown(runtime.dispose);
+      final root = runtime.registerRoot(
+        conversationId: 'c',
+        taskId: 't',
+        task: 'root',
+        environment: _environment(
+          _Provider((_, _) async* {
+            requests++;
+            yield const ChatChunk(
+              contentDelta: 'should not run',
+              finishReason: 'stop',
+            );
+          }),
+        ),
+      );
+      final child = runtime.spawn(parentId: root, task: 'child');
+      await _until(() => runtime.record(child)!.terminal);
+      expect(runtime.record(child)!.status, WorkAgentStatus.failed);
+      expect(requests, 0);
+      expect(runtime.persistenceError, isA<StateError>());
+    },
+  );
+
+  test(
+    'tool waits release model permits for sibling and root at cap one',
+    () async {
+      final runtime = WorkAgentRuntime();
+      addTearDown(runtime.dispose);
+      final toolStarted = Completer<void>(), releaseTool = Completer<void>();
+      var requests = 0;
+      final environment = WorkAgentEnvironment(
+        provider: _Provider((_, _) async* {
+          requests++;
+          if (requests == 1) {
+            yield const ChatChunk(
+              toolCalls: [
+                ToolCall(
+                  index: 0,
+                  id: 'wait',
+                  name: 'fixture_wait',
+                  argumentsJson: '{}',
+                ),
+              ],
+              finishReason: 'tool_calls',
+            );
+          } else {
+            yield const ChatChunk(
+              contentDelta: 'completed',
+              finishReason: 'stop',
+            );
+          }
+        }),
+        config: const LlmConfig(
+          baseUrl: 'https://test.invalid',
+          apiKey: 'fixture',
+          model: 'fixture',
+        ),
+        tools: const [],
+        executeTool: (_, _, _, _) async {
+          toolStarted.complete();
+          await releaseTool.future;
+          return 'done';
+        },
+        resolveModel: (_, config) async => config,
+      );
+      final root = runtime.registerRoot(
+        conversationId: 'c',
+        taskId: 't',
+        task: 'root',
+        environment: environment,
+        limits: const WorkAgentLimits(maxConcurrent: 1),
+      );
+      final first = runtime.spawn(parentId: root, task: 'first');
+      await toolStarted.future;
+      expect(runtime.capacity(root)['running_model_requests'], 0);
+      final second = runtime.spawn(parentId: root, task: 'second');
+      await _until(() => runtime.record(second)!.terminal);
+      expect(runtime.record(second)!.status, WorkAgentStatus.completed);
+      await runtime.acquireRootSlot(root, CancelToken());
+      expect(runtime.capacity(root)['running_model_requests'], 1);
+      runtime.releaseRootSlot(root);
+      releaseTool.complete();
+      await _until(() => runtime.record(first)!.terminal);
+      expect(runtime.record(first)!.status, WorkAgentStatus.completed);
+    },
+  );
+
+  test(
+    'journal omits native reasoning and credentials and resumes only after validation',
+    () async {
+      final runtime = WorkAgentRuntime(), restored = WorkAgentRuntime();
+      addTearDown(runtime.dispose);
+      addTearDown(restored.dispose);
+      final environment = _environment(
+        _Provider((_, _) async* {
+          yield const ChatChunk(
+            contentDelta: 'safe result',
+            reasoningDelta: 'HIDDEN_NATIVE_REASONING',
+            responseOutputItems: [
+              {'secret': 'NATIVE_PAYLOAD'},
+            ],
+            finishReason: 'stop',
+          );
+        }),
+      );
+      final root = runtime.registerRoot(
+        conversationId: 'c',
+        taskId: 't',
+        task: 'root',
+        environment: environment,
+      );
+      final child = runtime.spawn(parentId: root, task: 'task api_key=test');
+      await _until(() => runtime.record(child)!.terminal);
+      final encoded = jsonEncode(runtime.journal());
+      expect(encoded, isNot(contains('HIDDEN_NATIVE_REASONING')));
+      expect(encoded, isNot(contains('NATIVE_PAYLOAD')));
+      expect(encoded, isNot(contains('api_key=test')));
+      restored.restoreJournal(runtime.journal());
+      expect(() => restored.followup(child, 'resume'), throwsStateError);
+      await expectLater(
+        restored.resumeRestoredChild(
+          agentId: child,
+          environment: environment,
+          reconciliation: 'checked',
+          validate: (_) async => throw StateError('grant revoked'),
+        ),
+        throwsStateError,
+      );
+      expect(restored.record(child)!.restored, isTrue);
+      await restored.resumeRestoredChild(
+        agentId: child,
+        environment: environment,
+        reconciliation: 'workspace and side effects checked',
+        validate: (_) async {},
+      );
+      await _until(() => restored.record(child)!.terminal);
+      expect(restored.record(child)!.restored, isFalse);
+    },
+  );
+
+  test(
+    'file ownership rejects overlapping siblings and protects root integration',
+    () async {
+      final runtime = WorkAgentRuntime();
+      addTearDown(runtime.dispose);
+      final root = runtime.registerRoot(
+        conversationId: 'c',
+        taskId: 't',
+        task: 'root',
+        environment: _environment(_Provider((_, _) => const Stream.empty())),
+      );
+      final child = runtime.spawn(
+        parentId: root,
+        task: 'edit',
+        ownedPaths: ['lib/a.dart'],
+      );
+      expect(
+        () => runtime.authorizeFileWrite(child, 'lib/a.dart'),
+        returnsNormally,
+      );
+      expect(
+        () => runtime.authorizeFileWrite(child, 'lib/b.dart'),
+        throwsStateError,
+      );
+      expect(
+        () => runtime.authorizeFileWrite(root, 'lib/a.dart'),
+        throwsStateError,
+      );
+      expect(
+        () => runtime.spawn(
+          parentId: root,
+          task: 'conflict',
+          ownedPaths: ['LIB/a.dart'],
+        ),
+        throwsStateError,
+      );
+      final viewer = runtime.spawn(
+        parentId: root,
+        task: 'read',
+        readOnly: true,
+      );
+      expect(
+        () => runtime.authorizeFileWrite(viewer, 'lib/a.dart'),
+        throwsStateError,
+      );
+      expect(
+        () =>
+            runtime.spawn(parentId: viewer, task: 'escalate', readOnly: false),
+        throwsStateError,
+      );
+      runtime.cancel(child);
+      expect(
+        () => runtime.authorizeFileWrite(root, 'lib/a.dart'),
+        returnsNormally,
+      );
+      runtime.cancel(root);
+    },
+  );
+
+  test(
+    'root ownership cannot be bypassed by an alias scope and shared child cannot widen root claims',
+    () {
+      final runtime = WorkAgentRuntime();
+      addTearDown(runtime.dispose);
+      final root = runtime.registerRoot(
+        conversationId: 'c',
+        taskId: 't',
+        task: 'root',
+        environment: _environment(_Provider((_, _) => const Stream.empty())),
+      );
+      final child = runtime.spawn(
+        parentId: root,
+        task: 'web',
+        ownedPaths: ['apps/web'],
+      );
+      final target = jsonEncode({
+        'kind': 'local',
+        'workspaceId': 'p',
+        'root': 'C:/project',
+        'scopes': {
+          'root': 'C:/project',
+          'frontend': 'C:/project/apps/web',
+          'outside': 'D:/extra',
+        },
+      });
+      expect(
+        () => runtime.authorizeScopedFileWrite(
+          root,
+          target,
+          'frontend',
+          'page.dart',
+        ),
+        throwsStateError,
+      );
+      expect(
+        () => runtime.authorizeScopedFileWrite(
+          child,
+          target,
+          'frontend',
+          'apps/web/page.dart',
+        ),
+        throwsStateError,
+      );
+      expect(
+        () => runtime.authorizeScopedFileWrite(
+          child,
+          target,
+          'root',
+          'apps/web/page.dart',
+        ),
+        returnsNormally,
+      );
+      expect(
+        () => runtime.authorizeScopedFileWrite(
+          root,
+          target,
+          'outside',
+          'other.txt',
+        ),
+        returnsNormally,
+      );
+      runtime.cancel(child);
+      expect(
+        () => runtime.authorizeScopedFileWrite(
+          root,
+          target,
+          'frontend',
+          'page.dart',
+        ),
+        returnsNormally,
+      );
+      runtime.cancel(root);
+    },
+  );
+
+  test(
     'quota and model-pool refusals are recoverable and advertise remaining capacity',
     () async {
       final runtime = WorkAgentRuntime();
       addTearDown(runtime.dispose);
-      final response = StreamController<ChatChunk>();
+      final response = StreamController<ChatChunk>.broadcast();
       addTearDown(response.close);
       final env = _environment(_Provider((_, _) => response.stream));
       final root = runtime.registerRoot(
@@ -64,6 +408,17 @@ void main() {
         environment: env,
         limits: const WorkAgentLimits(maxChildren: 1),
       );
+      for (final args in [
+        {'task': 'write', 'read_only': false},
+        {'task': 'bad', 'read_only': 'false'},
+        {'task': 'bad', 'isolated': true, 'read_only': true},
+      ]) {
+        final rejected = jsonDecode(
+          await runtime.safeCallTool(root, 'work_spawn_agent', args),
+        );
+        expect(rejected['ok'], false);
+        expect(runtime.record(root)!.childrenCreated, 0);
+      }
       final denied = jsonDecode(
         await runtime.safeCallTool(root, 'work_spawn_agent', {
           'task': 'audit',
@@ -300,8 +655,9 @@ void main() {
       final routes = <String?>[];
       final provider = _Provider((messages, _) async* {
         requests++;
-        if (requests > 1)
+        if (requests > 1) {
           expect(messages.any((m) => m.responseOutputItems.isNotEmpty), isTrue);
+        }
         yield const ChatChunk(
           contentDelta: 'evidence',
           finishReason: 'stop',

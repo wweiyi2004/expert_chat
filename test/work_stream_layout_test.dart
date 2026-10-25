@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:expert_chat/state/work_changes.dart';
 import 'dart:convert';
 import 'package:expert_chat/core/providers.dart';
 import 'package:expert_chat/core/desktop_providers.dart';
@@ -84,6 +85,14 @@ class LayoutSettings extends FakeSettings {
   );
 }
 
+class _EmptyChanges extends WorkChanges {
+  @override
+  List<WorkFileChange> build() {
+    ready = Future.value();
+    return const [];
+  }
+}
+
 void main() {
   testWidgets(
     'hovered composer tooltip survives welcome transition and a long live work timeline',
@@ -97,6 +106,7 @@ void main() {
       addTearDown(database.close);
       final container = ProviderContainer(
         overrides: [
+          workChangesProvider.overrideWith(_EmptyChanges.new),
           appDatabaseProvider.overrideWithValue(database),
           sharedPrefsProvider.overrideWithValue(prefs),
           settingsControllerProvider.overrideWith(LayoutSettings.new),
@@ -118,6 +128,11 @@ void main() {
       await mouse.addPointer();
       addTearDown(mouse.removePointer);
       for (var turn = 0; turn < 3; turn++) {
+        // HTML empty/live layouts keep the composer in the same bottom slot.
+        // Each regression pass needs a genuine exit/enter, rather than moving
+        // to identical coordinates after the preceding tooltip timed out.
+        await mouse.moveTo(Offset.zero);
+        await tester.pump();
         await tester.enterText(
           find.byKey(const ValueKey('composer-text-field')),
           '保留输入',
@@ -125,8 +140,25 @@ void main() {
         await mouse.moveTo(
           tester.getCenter(find.byKey(const ValueKey('composer-plus-button'))),
         );
+        // Apply the prototype's hover-highlight rebuild before advancing the
+        // tooltip delay; a single large pump starts the rebuilt tooltip late.
+        await tester.pump();
         await tester.pump(const Duration(seconds: 1));
-        expect(find.text('添加'), findsOneWidget);
+        final tooltip = tester.widget<Tooltip>(
+          find.descendant(
+            of: find.byKey(const ValueKey('composer-plus-button')),
+            matching: find.byType(Tooltip),
+          ),
+        );
+        debugPrint(
+          'composer plus Tooltip.message at pass $turn: ${tooltip.message}',
+        );
+        expect(tooltip.message, '添加');
+        expect(
+          find.text('添加'),
+          findsOneWidget,
+          reason: 'fresh hover in regression pass $turn',
+        );
         for (var step = 0; step < 18; step++) {
           controller.advance(step);
           await tester.pump(const Duration(milliseconds: 30));

@@ -1,4 +1,7 @@
+import 'package:expert_chat/domain/task_core/task_core.dart';
+import 'package:expert_chat/domain/task_core/task_acceptance.dart';
 import 'dart:convert';
+import 'package:expert_chat/data/ui_prefs.dart';
 import 'dart:io';
 import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:drift/native.dart';
@@ -65,6 +68,48 @@ void main() {
     await temp.delete(recursive: true);
   });
 
+  test('default backup restore keeps the current UI preferences', () async {
+    const imported = UiPrefs(
+      colorTheme: ColorThemePref.wadaViolet,
+      workbenchWidth: 724,
+      sidebarCollapsedGroups: ['work:imported'],
+    );
+    const existing = UiPrefs(
+      colorTheme: ColorThemePref.forest,
+      workbenchWidth: 616,
+      sidebarCollapsedGroups: ['chat:existing'],
+    );
+    await prefs.setString('uiPrefs', jsonEncode(imported.toJson()));
+    final bytes = await service.exportBackup();
+    await prefs.setString('uiPrefs', jsonEncode(existing.toJson()));
+    await service.restoreCopies(await service.preview(bytes));
+    final restored = UiPrefs.fromJson(
+      jsonDecode(prefs.getString('uiPrefs')!) as Map<String, dynamic>,
+    );
+    expect(restored.toJson(), existing.toJson());
+  });
+
+  test('redesign UI preferences survive full backup restore', () async {
+    const original = UiPrefs(
+      colorTheme: ColorThemePref.wadaViolet,
+      workbenchWidth: 724,
+      sidebarCollapsedGroups: ['work:local', 'chat:docs'],
+    );
+    await prefs.setString('uiPrefs', jsonEncode(original.toJson()));
+    final bytes = await service.exportBackup();
+    await prefs.remove('uiPrefs');
+    await service.restoreCopies(
+      await service.preview(bytes),
+      restorePreferences: true,
+    );
+    final restored = UiPrefs.fromJson(
+      jsonDecode(prefs.getString('uiPrefs')!) as Map<String, dynamic>,
+    );
+    expect(restored.colorTheme, original.colorTheme);
+    expect(restored.workbenchWidth, original.workbenchWidth);
+    expect(restored.sidebarCollapsedGroups, original.sidebarCollapsedGroups);
+  });
+
   Future<Uint8List> seed() async {
     final now = DateTime.now();
     await db
@@ -118,6 +163,280 @@ void main() {
     );
     return service.exportBackup();
   }
+
+  Future<void> seedTaskRecords() async {
+    await seed();
+    final core = TaskCore(
+      rootId: 'independent-root',
+      goal: 'preserve task goal',
+    );
+    core.agentTaskId = 'a';
+    core.agentRootId = 'machine-child';
+    core.lineage.add('a');
+    core.target = {
+      'workspaceId': 'machine-workspace',
+      'root': 'C:/original',
+      'sshProfileId': '',
+      'remoteRoot': '',
+      'approval': 'ask',
+      'network': false,
+    };
+    core.receive('event-one', 'durable external result', 'a');
+    await prefs.setString(
+      'chatSessionJournal.v1',
+      jsonEncode([
+        {
+          'conversationId': 'c',
+          'taskId': 'a',
+          'status': 'running',
+          'updatedAt': DateTime.now().toIso8601String(),
+          'phase': 'working',
+          'queuedEvents': 1,
+          'taskState': core.toJson(),
+        },
+        {
+          'conversationId': 'orphan',
+          'taskId': null,
+          'status': 'completed',
+          'updatedAt': DateTime.now().toIso8601String(),
+          'taskState': {},
+        },
+      ]),
+    );
+    final task = TaskAcceptance(
+      taskId: core.rootId,
+      conversationId: 'c',
+      criteria: AcceptanceCriteria(
+        checkIds: ['dart test'],
+        artifactPaths: ['result.txt'],
+      ),
+    );
+    task.recordCheck(
+      id: 'dart test',
+      exitCode: 0,
+      invocationId: 'command-one',
+      provenance: 'host:process',
+    );
+    task.recordArtifact(
+      path: 'result.txt',
+      present: true,
+      sha256: 'a' * 64,
+      provenance: 'host:file',
+    );
+    task.replyComplete = true;
+    task.toolsComplete = true;
+    task.acceptByUser('user');
+    await prefs.setString(
+      'taskAcceptance.v1',
+      jsonEncode({
+        'tasks': [
+          task.toJson(),
+          {
+            ...task.toJson(),
+            'taskId': 'orphan-task',
+            'conversationId': 'orphan',
+          },
+        ],
+        'drafts': {
+          'c': task.criteria.toJson(),
+          'orphan': task.criteria.toJson(),
+        },
+      }),
+    );
+  }
+
+  test(
+    'full backup remaps durable task identity additively without importing authority',
+    () async {
+      await seedTaskRecords();
+      final originalSession = prefs.getString('chatSessionJournal.v1');
+      final originalAcceptance =
+          jsonDecode(prefs.getString('taskAcceptance.v1')!) as Map;
+      final bytes = await service.exportBackup();
+      final decoded = BackupCodec.decode(bytes);
+      final exported = decoded['preferences'] as Map;
+      expect(exported.containsKey('terminalPassword'), false);
+      expect(exported.containsKey('providerProfiles'), false);
+      expect(
+        (jsonDecode(exported['chatSessionJournal.v1'] as String) as List)
+            .length,
+        1,
+      );
+      final exportedAcceptance =
+          jsonDecode(exported['taskAcceptance.v1'] as String) as Map;
+      expect((exportedAcceptance['tasks'] as List).length, 1);
+      expect((exportedAcceptance['drafts'] as Map).keys, ['c']);
+      await service.restoreCopies(await service.preview(bytes));
+      final sessions =
+          jsonDecode(prefs.getString('chatSessionJournal.v1')!) as List;
+      expect(sessions.take(2), jsonDecode(originalSession!) as List);
+      final imported = sessions.last as Map;
+      expect(imported['conversationId'], isNot('c'));
+      expect(imported['status'], 'interrupted');
+      final core = imported['taskState'] as Map;
+      expect(core['rootId'], isNot('independent-root'));
+      expect(core['target'], isEmpty);
+      expect(core['agentRootId'], isNull);
+      expect(core['resumeRequired'], true);
+      final message = await db
+          .customSelect(
+            'SELECT convo_id FROM messages WHERE id = ?',
+            variables: [Variable<String>(imported['taskId'] as String)],
+          )
+          .getSingle();
+      expect(message.data['convo_id'], imported['conversationId']);
+      expect(core['agentTaskId'], imported['taskId']);
+      expect(core['lineage'], [imported['taskId']]);
+      final event = (core['inbox'] as List).single as Map;
+      expect(event['taskId'], imported['taskId']);
+      expect(event['id'], isNot('event-one'));
+      final a = jsonDecode(prefs.getString('taskAcceptance.v1')!) as Map;
+      expect((a['tasks'] as List).take(2), originalAcceptance['tasks']);
+      final restored = TaskAcceptance.fromJson(
+        Map<String, dynamic>.from((a['tasks'] as List).last as Map),
+      );
+      expect(restored.taskId, core['rootId']);
+      expect(restored.conversationId, imported['conversationId']);
+      expect(restored.requiresReverification, true);
+      expect(restored.manuallyAccepted, false);
+      expect(restored.machineVerified, false);
+      expect(restored.checks['dart test']?['exitCode'], 0);
+      expect(restored.acceptedBy, 'user');
+      expect(
+        (a['drafts'] as Map).containsKey(imported['conversationId']),
+        true,
+      );
+    },
+  );
+  test(
+    'task backup rejects unknown fields and orphan imported associations',
+    () async {
+      await seedTaskRecords();
+      final payload = BackupCodec.decode(await service.exportBackup());
+      final preferences = payload['preferences'] as Map;
+      final sessions =
+          jsonDecode(preferences['chatSessionJournal.v1'] as String) as List;
+      (sessions.single['taskState'] as Map)['apiToken'] = 'must reject';
+      preferences['chatSessionJournal.v1'] = jsonEncode(sessions);
+      await expectLater(
+        service.preview(BackupCodec.encode(payload)),
+        throwsFormatException,
+      );
+      (sessions.single['taskState'] as Map).remove('apiToken');
+      sessions.single['conversationId'] = 'missing-conversation';
+      preferences['chatSessionJournal.v1'] = jsonEncode(sessions);
+      await expectLater(
+        service.preview(BackupCodec.encode(payload)),
+        throwsFormatException,
+      );
+    },
+  );
+  test(
+    'task restore failure rolls back journal and local records; old backups add no invented state',
+    () async {
+      final oldBytes = await seed();
+      await prefs.remove('chatSessionJournal.v1');
+      await prefs.remove('taskAcceptance.v1');
+      await service.restoreCopies(await service.preview(oldBytes));
+      expect(prefs.containsKey('chatSessionJournal.v1'), false);
+      expect(prefs.containsKey('taskAcceptance.v1'), false);
+      // Populate task data on the original saved conversation without reseeding rows.
+      final core = TaskCore(rootId: 'rollback-root');
+      await prefs.setString(
+        'chatSessionJournal.v1',
+        jsonEncode([
+          {
+            'conversationId': 'c',
+            'status': 'completed',
+            'updatedAt': DateTime.now().toIso8601String(),
+            'taskState': core.toJson(),
+          },
+        ]),
+      );
+      await prefs.setString(
+        'taskAcceptance.v1',
+        jsonEncode({
+          'tasks': [
+            TaskAcceptance(
+              taskId: core.rootId,
+              conversationId: 'c',
+              criteria: AcceptanceCriteria(),
+            ).toJson(),
+          ],
+          'drafts': {},
+        }),
+      );
+      final bytes = await service.exportBackup();
+      final oldJournal = prefs.getString('chatSessionJournal.v1'),
+          oldAcceptance = prefs.getString('taskAcceptance.v1');
+      final count =
+          (await db
+                  .customSelect('SELECT COUNT(*) AS n FROM conversations')
+                  .getSingle())
+              .read<int>('n');
+      memory.failOnce = true;
+      await expectLater(
+        service.restoreCopies(await service.preview(bytes)),
+        throwsStateError,
+      );
+      expect(prefs.getString('chatSessionJournal.v1'), oldJournal);
+      expect(prefs.getString('taskAcceptance.v1'), oldAcceptance);
+      expect(
+        (await db
+                .customSelect('SELECT COUNT(*) AS n FROM conversations')
+                .getSingle())
+            .read<int>('n'),
+        count,
+      );
+      expect(await journal.read(), isNull);
+    },
+  );
+
+  test(
+    'work memory and user pins follow imported conversation copies without replay state',
+    () async {
+      await seed();
+      await prefs.setString(
+        'workMemory.v1',
+        jsonEncode({
+          'c': {
+            'revision': 4,
+            'user_pins': 'keep user constraint',
+            'plan': 'verify final artifacts',
+            'summary': 'public task notes',
+            'compact_revision': 4,
+          },
+        }),
+      );
+      await prefs.setString(
+        'workOperations.v1',
+        'SENSITIVE_DEVICE_LOCAL_EXECUTION',
+      );
+      final bytes = await service.exportBackup();
+      final payload = BackupCodec.decode(bytes);
+      expect(
+        jsonEncode(payload),
+        isNot(contains('SENSITIVE_DEVICE_LOCAL_EXECUTION')),
+      );
+      expect(
+        jsonDecode(
+          payload['preferences']['workMemory.v1'],
+        )['c'].containsKey('compact_revision'),
+        isFalse,
+      );
+      await service.restoreCopies(await service.preview(bytes));
+      final conversations = await DriftConversationRepository(db).loadAll();
+      final copy = conversations.singleWhere((c) => c.id != 'c');
+      final memory = jsonDecode(prefs.getString('workMemory.v1')!) as Map;
+      expect(memory['c']['user_pins'], 'keep user constraint');
+      expect(memory[copy.id]['user_pins'], 'keep user constraint');
+      expect(memory[copy.id]['plan'], 'verify final artifacts');
+      expect(
+        prefs.getString('workOperations.v1'),
+        'SENSITIVE_DEVICE_LOCAL_EXECUTION',
+      );
+    },
+  );
 
   Future<Uint8List> legacyBackup() async {
     final payload = BackupCodec.decode(await seed());

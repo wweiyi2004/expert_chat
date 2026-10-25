@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -216,7 +217,7 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
   }
 
   void _toast(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
+    AppToastMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message), behavior: SnackBarBehavior.floating),
     );
   }

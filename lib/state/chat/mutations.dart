@@ -29,18 +29,44 @@ mixin ChatMutations on _ChatControllerBase {
     String msgId,
     ToolCall call,
     String result,
-    Set<String> priorIds,
-  ) {
+    Set<String> priorIds, {
+    String? createdActivityId,
+  }) {
     final message = _messageById(convoId, msgId);
     if (message == null) return;
+    final legacyKind = switch (call.name) {
+      'web_search' => SearchActivityKind.search,
+      'fetch_url' => SearchActivityKind.fetch,
+      'analyze_image' => SearchActivityKind.vision,
+      _ => null,
+    };
     final created = message.searchActivities
         .where(
           (a) =>
               !priorIds.contains(a.id) &&
-              a.toolName == call.name &&
-              a.toolArguments == call.argumentsJson,
+              (createdActivityId != null
+                  ? a.id == createdActivityId
+                  : ((a.toolCallId != null && a.toolCallId == call.id) ||
+                        (a.toolName == call.name &&
+                            a.toolArguments == call.argumentsJson) ||
+                        (legacyKind != null &&
+                            a.toolName == null &&
+                            a.kind == legacyKind))),
         )
         .toList();
+    for (final activity in created) {
+      _upsertSearchActivity(
+        convoId,
+        msgId,
+        activity.copyWith(
+          toolName: call.name,
+          toolArguments:
+              (activity.id == createdActivityId || activity.toolCallId != null)
+              ? activity.toolArguments
+              : call.argumentsJson,
+        ),
+      );
+    }
     final activity = created.isEmpty
         ? SearchActivity(
             kind: SearchActivityKind.mcp,
@@ -54,7 +80,11 @@ mixin ChatMutations on _ChatControllerBase {
       msgId,
       activity.copyWith(
         toolName: created.isEmpty ? null : call.name,
-        toolArguments: created.isEmpty ? null : call.argumentsJson,
+        toolArguments: created.isEmpty
+            ? null
+            : (activity.id == createdActivityId || activity.toolCallId != null)
+            ? activity.toolArguments
+            : call.argumentsJson,
         resultText: result.length > 64000
             ? '${result.substring(0, 64000)}\n【结果过长，已截断】'
             : result,

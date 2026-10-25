@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
@@ -140,7 +141,7 @@ class _LearningPlanPageState extends ConsumerState<LearningPlanPage> {
       await File(path).writeAsBytes(bytes);
     }
     if (mounted && (kIsWeb || path != null)) {
-      ScaffoldMessenger.of(
+      AppToastMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('学习档案已导出')));
     }

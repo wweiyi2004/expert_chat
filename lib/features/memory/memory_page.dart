@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -129,7 +130,7 @@ class MemoryPage extends ConsumerWidget {
         fileName: fileName,
       );
       if (result == null || !context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppToastMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('记忆备份已导出'),
           behavior: SnackBarBehavior.floating,
@@ -137,7 +138,7 @@ class MemoryPage extends ConsumerWidget {
       );
     } catch (error) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppToastMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('导出失败：$error'),
           behavior: SnackBarBehavior.floating,
@@ -169,7 +170,7 @@ class MemoryPage extends ConsumerWidget {
         if (result.replaced > 0) '更新 ${result.replaced} 条',
         if (result.skipped > 0) '跳过 ${result.skipped} 条',
       ];
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppToastMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(parts.isEmpty ? '没有需要合并的记忆' : parts.join('，')),
           behavior: SnackBarBehavior.floating,
@@ -177,7 +178,7 @@ class MemoryPage extends ConsumerWidget {
       );
     } catch (error) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppToastMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('导入失败：$error'),
           behavior: SnackBarBehavior.floating,
@@ -192,7 +193,7 @@ class MemoryPage extends ConsumerWidget {
       await ref.read(memoryControllerProvider.notifier).reload(refresh: true);
     } catch (error) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppToastMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('重新读取失败：$error'),
           behavior: SnackBarBehavior.floating,
@@ -271,12 +272,12 @@ class MemoryPage extends ConsumerWidget {
     try {
       await operation();
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppToastMessenger.of(context).showSnackBar(
         SnackBar(content: Text(success), behavior: SnackBarBehavior.floating),
       );
     } catch (error) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppToastMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('操作失败：$error'),
           behavior: SnackBarBehavior.floating,

@@ -316,7 +316,10 @@ class SettingsState {
       model: model,
       apiFormat: apiFormat,
     );
-    return applyContextConfig(base, effectiveContextPrefs(this, base));
+    return applyReportedModelCapabilities(
+      this,
+      applyContextConfig(base, effectiveContextPrefs(this, base)),
+    );
   }
 
   LlmConfig get visionConfig => LlmConfig(

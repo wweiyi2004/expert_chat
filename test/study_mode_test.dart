@@ -23,6 +23,8 @@ void main() {
     test('default visible includes study', () {
       expect(ShellTab.visible(researchModeEnabled: false), [
         ShellTab.chat,
+        ShellTab.automation,
+        ShellTab.resources,
         ShellTab.tools,
         ShellTab.study,
         ShellTab.studio,
@@ -37,7 +39,14 @@ void main() {
           studyModeEnabled: false,
           creationModeEnabled: true,
         ),
-        [ShellTab.chat, ShellTab.tools, ShellTab.studio, ShellTab.settings],
+        [
+          ShellTab.chat,
+          ShellTab.automation,
+          ShellTab.resources,
+          ShellTab.tools,
+          ShellTab.studio,
+          ShellTab.settings,
+        ],
       );
     });
   });

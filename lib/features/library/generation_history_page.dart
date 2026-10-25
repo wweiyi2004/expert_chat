@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/providers.dart';
+import '../../core/prototype_widgets.dart';
 import '../../data/db/app_database.dart' show GenerationRecord;
 import '../../domain/media/generation_catalog.dart';
 import '../../state/chat_controller.dart';
@@ -11,7 +12,8 @@ import '../shared/recovery_notice.dart';
 import 'library_image_preview.dart';
 
 class GenerationHistoryPage extends ConsumerStatefulWidget {
-  const GenerationHistoryPage({super.key});
+  const GenerationHistoryPage({super.key, this.embedded = false});
+  final bool embedded;
   @override
   ConsumerState<GenerationHistoryPage> createState() =>
       _GenerationHistoryPageState();
@@ -63,22 +65,26 @@ class _GenerationHistoryPageState extends ConsumerState<GenerationHistoryPage> {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      title: const Text('生图版本记录'),
-      actions: [
-        IconButton(
-          tooltip: '刷新',
-          onPressed: () async {
-            try {
-              await _reload();
-            } catch (_) {
-              /* FutureBuilder shows the error. */
-            }
-          },
-          icon: const Icon(Icons.refresh),
-        ),
-      ],
-    ),
+    appBar: widget.embedded
+        ? null
+        : AppBar(
+            title: widget.embedded ? null : const Text('生图版本记录'),
+            automaticallyImplyLeading: !widget.embedded,
+            toolbarHeight: widget.embedded ? 44 : null,
+            actions: [
+              IconButton(
+                tooltip: '刷新',
+                onPressed: () async {
+                  try {
+                    await _reload();
+                  } catch (_) {
+                    /* FutureBuilder shows the error. */
+                  }
+                },
+                icon: const Icon(Icons.refresh),
+              ),
+            ],
+          ),
     body: FutureBuilder<List<GenerationRecord>>(
       future: _records,
       builder: (context, snapshot) {
@@ -111,32 +117,58 @@ class _GenerationHistoryPageState extends ConsumerState<GenerationHistoryPage> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Padding(
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+                padding: widget.embedded
+                    ? const EdgeInsets.only(bottom: 12)
+                    : const EdgeInsets.fromLTRB(16, 8, 16, 12),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      '找到图片，继续创作',
-                      style: Theme.of(context).textTheme.headlineSmall,
-                    ),
-                    const SizedBox(height: 6),
-                    const Text('点击图片查看参数，选择两张图片进行对比。'),
-                    const SizedBox(height: 16),
-                    TextField(
-                      key: const ValueKey('generation-search'),
-                      controller: _search,
-                      onChanged: (_) => setState(() {}),
-                      decoration: InputDecoration(
-                        hintText: '搜索描述或模型',
-                        prefixIcon: const Icon(Icons.search),
-                        suffixIcon: _search.text.isEmpty
-                            ? null
-                            : IconButton(
-                                tooltip: '清除搜索',
-                                onPressed: () => setState(_search.clear),
-                                icon: const Icon(Icons.close),
-                              ),
+                    if (!widget.embedded) ...[
+                      Text(
+                        '找到图片，继续创作',
+                        style: Theme.of(context).textTheme.headlineSmall,
                       ),
+                      const SizedBox(height: 6),
+                    ],
+                    Text(
+                      '点击图片查看参数，选择两张图片进行对比。',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: PrototypeColors.of(context).muted,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            key: const ValueKey('generation-search'),
+                            controller: _search,
+                            onChanged: (_) => setState(() {}),
+                            decoration: InputDecoration(
+                              hintText: '搜索描述或模型',
+                              prefixIcon: const Icon(Icons.search),
+                              suffixIcon: _search.text.isEmpty
+                                  ? null
+                                  : IconButton(
+                                      tooltip: '清除搜索',
+                                      onPressed: () => setState(_search.clear),
+                                      icon: const Icon(Icons.close),
+                                    ),
+                            ),
+                          ),
+                        ),
+                        if (widget.embedded)
+                          PrototypeIconButton(
+                            icon: Icons.refresh,
+                            onPressed: () async {
+                              try {
+                                await _reload();
+                              } catch (_) {}
+                            },
+                            tooltip: '刷新',
+                          ),
+                      ],
                     ),
                     const SizedBox(height: 8),
                     Wrap(
@@ -196,7 +228,11 @@ class _GenerationHistoryPageState extends ConsumerState<GenerationHistoryPage> {
                         builder: (context, constraints) {
                           final scale =
                               MediaQuery.textScalerOf(context).scale(14) / 14;
-                          final columns = scale > 1.4
+                          final columns = widget.embedded
+                              ? ((constraints.maxWidth + 12) / 232)
+                                    .floor()
+                                    .clamp(1, 4)
+                              : scale > 1.4
                               ? 1
                               : constraints.maxWidth >= 1000
                               ? 4
@@ -204,17 +240,23 @@ class _GenerationHistoryPageState extends ConsumerState<GenerationHistoryPage> {
                               ? 3
                               : 2;
                           final width =
-                              (constraints.maxWidth - 32 - (columns - 1) * 12) /
+                              (constraints.maxWidth -
+                                  (widget.embedded ? 0 : 32) -
+                                  (columns - 1) * 12) /
                               columns;
                           return GridView.builder(
                             key: const ValueKey('generation-grid'),
-                            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                            padding: widget.embedded
+                                ? EdgeInsets.zero
+                                : const EdgeInsets.fromLTRB(16, 0, 16, 16),
                             gridDelegate:
                                 SliverGridDelegateWithFixedCrossAxisCount(
                                   crossAxisCount: columns,
                                   crossAxisSpacing: 12,
                                   mainAxisSpacing: 12,
-                                  mainAxisExtent: width * 0.78 + 154 * scale,
+                                  mainAxisExtent:
+                                      (widget.embedded ? 96 : width * 0.78) +
+                                      (widget.embedded ? 136 : 154) * scale,
                                 ),
                             itemCount: visible.length,
                             itemBuilder: (context, index) {
@@ -222,8 +264,14 @@ class _GenerationHistoryPageState extends ConsumerState<GenerationHistoryPage> {
                               final checked = _selected.contains(record.id);
                               return Card(
                                 key: ValueKey('${record.id}-$_refresh'),
+                                color: widget.embedded
+                                    ? PrototypeColors.of(context).panel
+                                    : null,
+                                elevation: widget.embedded ? 0 : null,
                                 shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(18),
+                                  borderRadius: BorderRadius.circular(
+                                    widget.embedded ? 12 : 18,
+                                  ),
                                   side: BorderSide(
                                     color: checked
                                         ? scheme.primary
@@ -242,7 +290,9 @@ class _GenerationHistoryPageState extends ConsumerState<GenerationHistoryPage> {
                                       onTap: () => _open([record], catalog),
                                       child: LibraryImagePreview(
                                         itemId: record.libraryItemId,
-                                        height: width * 0.78,
+                                        height: widget.embedded
+                                            ? 96
+                                            : width * 0.78,
                                         fit: BoxFit.cover,
                                         cacheWidth: (width * 2).round().clamp(
                                           240,
@@ -266,7 +316,9 @@ class _GenerationHistoryPageState extends ConsumerState<GenerationHistoryPage> {
                                             children: [
                                               Text(
                                                 record.originalPrompt,
-                                                maxLines: 2,
+                                                maxLines: widget.embedded
+                                                    ? 1
+                                                    : 2,
                                                 overflow: TextOverflow.ellipsis,
                                                 style: Theme.of(
                                                   context,

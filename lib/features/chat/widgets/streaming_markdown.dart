@@ -145,22 +145,26 @@ extension MarkdownStylePrefTheme on MarkdownStylePref {
     final scheme = Theme.of(context).colorScheme;
     final text = Theme.of(context).textTheme;
     final lineHeight =
-        Theme.of(context).extension<AppMetrics>()?.lineHeight ?? 1.85;
+        Theme.of(context).extension<AppMetrics>()?.lineHeight ?? 1.7;
     return switch (this) {
       MarkdownStylePref.standard => text.bodyLarge?.copyWith(
         height: lineHeight,
+        fontSize: 14,
         color: scheme.onSurface,
       ),
       MarkdownStylePref.github => text.bodyLarge?.copyWith(
         height: lineHeight,
+        fontSize: 14,
         color: scheme.onSurface,
       ),
       MarkdownStylePref.notion => text.bodyLarge?.copyWith(
         height: lineHeight,
+        fontSize: 14,
         color: scheme.onSurface,
       ),
       MarkdownStylePref.terminal => text.bodyMedium?.copyWith(
         height: lineHeight,
+        fontSize: 14,
         fontFamily: 'monospace',
         color: scheme.onSurface,
       ),

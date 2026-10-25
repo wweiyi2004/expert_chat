@@ -5,6 +5,51 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   testWidgets(
+    'work status stays in footer and actual tool params/results are separate',
+    (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ThinkingPanel(
+              reasoning: '',
+              isStreaming: true,
+              workMode: true,
+              onStop: () {},
+              activities: [
+                SearchActivity(
+                  kind: SearchActivityKind.mcp,
+                  query: '目录',
+                  status: SearchActivityStatus.done,
+                  toolName: 'coding_list_directory',
+                  toolArguments: '{"path":"src"}',
+                  resultText:
+                      '{"entries":[{"name":"main.dart","kind":"file","access":"read"}]}',
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+      expect(find.text('正在处理 · 1 个步骤'), findsOneWidget);
+      final status = tester.getRect(find.text('正在处理 · 1 个步骤'));
+      final collapse = tester.getRect(
+        find.byKey(const ValueKey('work-round-collapse-bottom')),
+      );
+      final step = tester.getRect(find.text('已查看文件目录 · src'));
+      expect(status.top, greaterThan(step.bottom));
+      expect((status.center.dy - collapse.center.dy).abs(), lessThan(1));
+      await tester.tap(find.text('已查看文件目录 · src'));
+      await tester.pump(const Duration(milliseconds: 350));
+      expect(find.text('参数'), findsOneWidget);
+      expect(find.text('结果'), findsOneWidget);
+      expect(find.text('main.dart'), findsOneWidget);
+      expect(find.text('read'), findsOneWidget);
+      expect(find.text('复制原始数据'), findsNWidgets(2));
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
     'completed work folds by round and reveals summaries before raw details',
     (tester) async {
       await tester.pumpWidget(

@@ -1,3 +1,4 @@
+import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:async';
 import 'dart:convert';
 
@@ -93,7 +94,13 @@ class _Gateway extends LongTaskGatewayClient {
   }
 }
 
+late SharedPreferences _testPreferences;
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  setUp(() async {
+    SharedPreferences.setMockInitialValues({});
+    _testPreferences = await SharedPreferences.getInstance();
+  });
   TestWidgetsFlutterBinding.ensureInitialized();
 
   test(
@@ -143,6 +150,7 @@ void main() {
       );
       final container = ProviderContainer(
         overrides: [
+          sharedPrefsProvider.overrideWithValue(_testPreferences),
           appDatabaseProvider.overrideWithValue(db),
           conversationRepositoryProvider.overrideWithValue(repository),
           longTaskGatewayClientProvider.overrideWithValue(gateway),

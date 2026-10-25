@@ -1,3 +1,5 @@
+import '../../chat/widgets/preview_zoom_control.dart';
+import '../../../domain/html/html_snippet.dart';
 import 'dart:convert';
 import 'dart:math' as math;
 import 'package:crypto/crypto.dart';
@@ -151,11 +153,12 @@ class WorkspaceFileTabState extends State<WorkspaceFileTab> {
       });
       _notifyDirty();
     } catch (error) {
-      if (mounted && !token.isCancelled)
+      if (mounted && !token.isCancelled) {
         setState(() {
           _error = '$error';
           _loading = false;
         });
+      }
     }
   }
 
@@ -309,8 +312,9 @@ class WorkspaceFileTabState extends State<WorkspaceFileTab> {
 
   @override
   void dispose() {
-    if (dirty && _draftKey != null && _hash != null)
+    if (dirty && _draftKey != null && _hash != null) {
       _drafts[_draftKey!] = _FileDraft(_original, _editor.text, _hash!);
+    }
     widget.tabController?._state = null;
     _token?.cancel('文件标签已关闭');
     _editor.removeListener(_changed);
@@ -325,7 +329,12 @@ class WorkspaceFileTabState extends State<WorkspaceFileTab> {
       _editor.scheme = scheme;
       const style = TextStyle(
         fontFamily: 'Consolas',
-        fontFamilyFallback: ['monospace'],
+        fontFamilyFallback: [
+          'NotoSansSC',
+          'Microsoft YaHei',
+          'PingFang SC',
+          'monospace',
+        ],
         fontSize: 13,
         height: 1.6,
       );
@@ -434,17 +443,24 @@ class WorkspaceFileTabState extends State<WorkspaceFileTab> {
     return math.max(minimum, painter.height);
   }
 
+  double? _previewZoom;
+
   Widget _renderPreview() {
-    if (const ['md', 'markdown'].contains(_extension))
+    if (const ['md', 'markdown'].contains(_extension)) {
       return SelectionArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
           child: GptMarkdown(_editor.text),
         ),
       );
+    }
     return LocalHtmlSurface(
       key: ValueKey(_editor.text),
-      document: buildSandboxedHtmlPreview(_editor.text),
+      zoom: _previewZoom,
+      document: buildSandboxedHtmlPreview(
+        previewSnippetForCode(_extension, _editor.text)?.html ?? _editor.text,
+        fitToWindow: true,
+      ),
     );
   }
 
@@ -479,6 +495,14 @@ class WorkspaceFileTabState extends State<WorkspaceFileTab> {
                       ),
                     ),
                   ),
+                  if (_preview &&
+                      _extension != 'md' &&
+                      _extension != 'markdown')
+                    PreviewZoomControl(
+                      zoom: _previewZoom,
+                      onChanged: (value) =>
+                          setState(() => _previewZoom = value),
+                    ),
                   if (!_writable)
                     Text('只读', style: Theme.of(context).textTheme.labelSmall),
                   if (_hasPreview)
@@ -573,18 +597,20 @@ class _SourceController extends TextEditingController {
     TextStyle? style,
     required bool withComposing,
   }) {
-    if (value.composing.isValid && !value.composing.isCollapsed)
+    if (value.composing.isValid && !value.composing.isCollapsed) {
       return super.buildTextSpan(
         context: context,
         style: style,
         withComposing: withComposing,
       );
+    }
     final colors = scheme ?? Theme.of(context).colorScheme;
     final spans = <TextSpan>[];
     var offset = 0;
     for (final match in _tokens.allMatches(text)) {
-      if (match.start > offset)
+      if (match.start > offset) {
         spans.add(TextSpan(text: text.substring(offset, match.start)));
+      }
       spans.add(
         TextSpan(
           text: match.group(0),

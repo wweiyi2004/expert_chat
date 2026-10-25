@@ -68,6 +68,7 @@ class ScopedDesktopClient extends McpClient {
     required String name,
     required Map<String, dynamic> arguments,
     CancelToken? cancelToken,
+    bool userInitiated = false,
   }) async {
     if (!tools.contains(name)) {
       throw const McpClientException('测试仅允许专用窗口的编辑与保存工具');
@@ -94,6 +95,7 @@ class ScopedDesktopClient extends McpClient {
         if (name == 'get_window_state') 'include_screenshot': false,
       },
       cancelToken: cancelToken,
+      userInitiated: userInitiated,
     );
     final structured = response.structuredContent;
     if (structured['elements'] is! List) {

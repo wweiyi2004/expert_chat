@@ -31,6 +31,8 @@ import '../domain/gateway/gateway_client.dart';
 import '../domain/gateway/gateway_auth_service.dart';
 import '../domain/llm/routing_llm_provider.dart';
 import '../domain/llm/prioritized_llm_provider.dart';
+import '../domain/llm/model_route_diagnostics.dart';
+import '../domain/llm/model_group_llm_provider.dart';
 import '../state/model_service_credentials.dart';
 import '../domain/llm/usage_tracking_llm_provider.dart';
 import '../domain/llm/deepseek_reasoning_guard.dart';
@@ -177,15 +179,22 @@ final modelUsageControllerProvider =
       ModelUsageController.new,
     );
 
+final modelRouteDiagnosticsProvider = Provider(
+  (ref) => ModelRouteDiagnostics(),
+);
+
 final llmProvider = Provider<LlmProvider>((ref) {
   final usageController = ref.read(modelUsageControllerProvider.notifier);
-  return PrioritizedLlmProvider(
-    candidates: (config) => modelServiceCandidates(ref, config),
-    credentials: (config) => resolveModelCredentials(ref, config),
-    delegate: DeepSeekReasoningGuard(
-      delegate: UsageTrackingLlmProvider(
-        delegate: RoutingLlmProvider(),
-        onUsage: usageController.record,
+  return ModelGroupLlmProvider(
+    PrioritizedLlmProvider(
+      diagnostics: ref.read(modelRouteDiagnosticsProvider),
+      candidates: (config) => modelServiceCandidates(ref, config),
+      credentials: (config) => resolveModelCredentials(ref, config),
+      delegate: DeepSeekReasoningGuard(
+        delegate: UsageTrackingLlmProvider(
+          delegate: RoutingLlmProvider(),
+          onUsage: usageController.record,
+        ),
       ),
     ),
   );

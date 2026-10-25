@@ -21,6 +21,7 @@ prepareMcpProcess(McpProcessConfig config) async {
   if (config.isPlaywright) {
     final error = PlaywrightMcpPreset.validate(config);
     if (error != null) throw StateError(error);
+    args = PlaywrightMcpPreset.runtimeArguments(config);
     // Do not let an inherited CDP endpoint, extension token, profile or config
     // override the isolated preset. Other runtime/network variables stay intact.
     environment = Map<String, String>.from(

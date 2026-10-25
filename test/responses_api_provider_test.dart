@@ -11,6 +11,105 @@ import 'package:expert_chat/domain/llm/openai_compatible_provider.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test(
+    'official GPT6 auto actually routes five-tier tool request to Responses',
+    () async {
+      final response = _RecordingAdapter(
+        sse:
+            'data: {"type":"response.completed","response":{"status":"completed","output":[]}}\n\n',
+      );
+      final chat = _RecordingAdapter(sse: 'data: [DONE]\n\n');
+      final router = RoutingLlmProvider(
+        chatCompletions: OpenAiCompatibleProvider(
+          dio: Dio()..httpClientAdapter = chat,
+        ),
+        responses: ResponsesApiProvider(
+          dio: Dio()..httpClientAdapter = response,
+        ),
+      );
+      await router
+          .streamChat(
+            config: const LlmConfig(
+              baseUrl: 'https://api.openai.com/v1',
+              apiKey: 'fixture',
+              model: 'gpt-6.1-sol',
+            ),
+            messages: const [],
+            thinking: true,
+            reasoningEffort: ReasoningEffort.max,
+            tools: const [
+              ToolSpec(
+                name: 'fixture_tool',
+                description: 'fixture',
+                parameters: {'type': 'object', 'properties': {}},
+              ),
+            ],
+          )
+          .toList();
+      expect(chat.path, isEmpty);
+      expect(response.path, '/v1/responses');
+      expect(response.body['reasoning'], {'effort': 'max'});
+      expect((response.body['tools'] as List).single['name'], 'fixture_tool');
+    },
+  );
+
+  for (final effort in [
+    ReasoningEffort.low,
+    ReasoningEffort.medium,
+    ReasoningEffort.high,
+    ReasoningEffort.xhigh,
+    ReasoningEffort.max,
+  ]) {
+    test(
+      'GPT 6.1 sends actual ${effort.wire} effort without collapsing tiers',
+      () async {
+        final adapter = _RecordingAdapter(
+          sse:
+              'data: {"type":"response.completed","response":{"status":"completed","output":[]}}\n\n',
+        );
+        await ResponsesApiProvider(dio: Dio()..httpClientAdapter = adapter)
+            .streamChat(
+              config: const LlmConfig(
+                baseUrl: 'https://fixture.invalid',
+                apiKey: 'fixture',
+                model: 'gpt-6.1-sol',
+              ),
+              messages: const [],
+              thinking: true,
+              reasoningEffort: effort,
+            )
+            .toList();
+        expect(adapter.body['reasoning'], {'effort': effort.wire});
+      },
+    );
+  }
+  test(
+    'GPT6.1 does not send unsupported none while GPT6 supports explicit off',
+    () async {
+      for (final model in ['gpt-6.1-sol', 'gpt-6-sol']) {
+        final adapter = _RecordingAdapter(
+          sse:
+              'data: {"type":"response.completed","response":{"status":"completed","output":[]}}\n\n',
+        );
+        await ResponsesApiProvider(dio: Dio()..httpClientAdapter = adapter)
+            .streamChat(
+              config: LlmConfig(
+                baseUrl: 'https://fixture.invalid',
+                apiKey: 'fixture',
+                model: model,
+              ),
+              messages: const [],
+              thinking: false,
+            )
+            .toList();
+        expect(
+          adapter.body['reasoning'],
+          model == 'gpt-6-sol' ? {'effort': 'none'} : {'effort': 'high'},
+        );
+      }
+    },
+  );
+
   for (final separator in ['', '\n\n']) {
     final ending = separator.isEmpty ? 'EOF' : 'blank separator';
     test('Responses failure propagates at $ending', () async {

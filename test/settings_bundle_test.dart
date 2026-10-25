@@ -1,9 +1,11 @@
 import 'dart:convert';
+import 'package:expert_chat/data/ui_prefs.dart';
 
 import 'package:expert_chat/core/providers.dart';
 import 'package:expert_chat/data/gateway_config.dart';
 import 'package:expert_chat/data/media_api_config.dart';
 import 'package:expert_chat/data/provider_profile.dart';
+import 'package:expert_chat/data/model_token_limits.dart';
 import 'package:expert_chat/data/settings_bundle.dart';
 import 'package:expert_chat/domain/llm/llm_provider.dart';
 import 'package:expert_chat/domain/tools/search_provider.dart';
@@ -16,6 +18,39 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  test(
+    'legacy Tavily import is retained separately and never reused as unified DeepSeek credential',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final secure = TestFlutterSecureStoragePlatform({});
+      FlutterSecureStoragePlatform.instance = secure;
+      final container = ProviderContainer(
+        overrides: [
+          sharedPrefsProvider.overrideWithValue(
+            await SharedPreferences.getInstance(),
+          ),
+          secureStorageProvider.overrideWithValue(const FlutterSecureStorage()),
+        ],
+      );
+      addTearDown(container.dispose);
+      await container.read(settingsControllerProvider.future);
+      await container
+          .read(settingsControllerProvider.notifier)
+          .importSettingsJson(
+            SettingsBundle.encode({
+              'search': {'backend': 'tavily', 'apiKey': 'tvly-legacy-fixture'},
+            }),
+          );
+      for (var boot = 0; boot < 2; boot++) {
+        final loaded = await container.read(settingsControllerProvider.future);
+        expect(loaded.searchBackend, SearchBackend.deepseek);
+        expect(loaded.searchApiKey, isEmpty);
+        expect(secure.data['search_api_key'], 'tvly-legacy-fixture');
+        expect(secure.data['deepseek_search_api_key'], isNull);
+        container.invalidate(settingsControllerProvider);
+      }
+    },
+  );
   test('decodeUtf8 strips a UTF-8 BOM', () {
     final bom = [0xEF, 0xBB, 0xBF, ...utf8.encode('{"format":"x"}')];
     expect(SettingsBundle.decodeUtf8(bom), '{"format":"x"}');
@@ -90,6 +125,12 @@ void main() {
     final profile = ProviderProfile(
       id: 'profile-a',
       name: '搬家服务商',
+      modelLimits: const {
+        KnownModels.chat: ModelTokenLimits(
+          reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+          reasoningCanBeDisabled: true,
+        ),
+      },
       baseUrl: 'https://api.moved.example/v1',
       chatModel: KnownModels.chat,
       reasonerModel: KnownModels.reasoner,
@@ -97,8 +138,8 @@ void main() {
     );
     await controller.addProfile(profile);
     await controller.setApiKey('sk-moved');
-    await controller.setSearchBackend(SearchBackend.tavily);
-    await controller.setSearchApiKey('tvly-moved');
+    await controller.setSearchBackend(SearchBackend.deepseek);
+    await controller.setSearchApiKey('sk-deepseek-search-fixture');
     await controller.setGatewayConfig(
       const GatewayConfig(
         enabled: true,
@@ -115,10 +156,19 @@ void main() {
     );
     await controller.setMediaApiKey(MediaApiKind.imageGeneration, 'sk-image');
 
+    await controller.setUiPrefs(
+      const UiPrefs(
+        colorTheme: ColorThemePref.dailan,
+        workbenchWidth: 704,
+        sidebarCollapsedGroups: ['work:local', 'chat:docs'],
+      ),
+    );
     final exported = await controller.exportSettingsJson();
     final snapshot = jsonDecode(exported) as Map<String, dynamic>;
     expect(snapshot['format'], SettingsBundle.formatId);
     expect(snapshot['gateway']['token'], 'gw-moved');
+    expect(snapshot['search']['backend'], SearchBackend.deepseek.wire);
+    expect(snapshot['search']['apiKey'], 'sk-deepseek-search-fixture');
 
     SharedPreferences.setMockInitialValues({});
     FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
@@ -139,9 +189,29 @@ void main() {
 
     final imported = other.read(settingsControllerProvider).value!;
     expect(imported.active?.name, '搬家服务商');
+    expect(imported.active!.modelLimits[KnownModels.chat]!.reasoningEfforts, [
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max',
+    ]);
+    expect(
+      imported.active!.modelLimits[KnownModels.chat]!.reasoningCanBeDisabled,
+      true,
+    );
+    other.invalidate(settingsControllerProvider);
+    final rebooted = await other.read(settingsControllerProvider.future);
+    expect(
+      rebooted.active!.modelLimits[KnownModels.chat]!.toJson(),
+      imported.active!.modelLimits[KnownModels.chat]!.toJson(),
+    );
+    expect(imported.ui.colorTheme, ColorThemePref.dailan);
+    expect(imported.ui.workbenchWidth, 704);
+    expect(imported.ui.sidebarCollapsedGroups, ['work:local', 'chat:docs']);
     expect(imported.apiKey, 'sk-moved');
-    expect(imported.searchBackend, SearchBackend.tavily);
-    expect(imported.searchApiKey, 'tvly-moved');
+    expect(imported.searchBackend, SearchBackend.deepseek);
+    expect(imported.searchApiKey, 'sk-deepseek-search-fixture');
     expect(imported.gateway.baseUrl, 'https://gateway.moved.example');
     expect(imported.gatewayLegacyToken, 'gw-moved');
     expect(

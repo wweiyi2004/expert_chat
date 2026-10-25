@@ -77,6 +77,22 @@ class McpClient {
   McpClient({Dio? dio}) : _dio = dio ?? Dio();
 
   final Dio _dio;
+  final _browserModelPaused = <String>{};
+  final _browserLeaseEpochs = <String, int>{};
+
+  /// A user takeover invalidates already queued model operations, including
+  /// those still queued after the user releases the browser. In-flight calls
+  /// may finish; no old queued mutation is replayed onto the user's new page.
+  void setBrowserModelPaused(String conversation, bool paused) {
+    _browserLeaseEpochs[conversation] =
+        (_browserLeaseEpochs[conversation] ?? 0) + 1;
+    if (paused) {
+      _browserModelPaused.add(conversation);
+    } else {
+      _browserModelPaused.remove(conversation);
+    }
+  }
+
   int _nextId = 0;
   final Map<String, StdioTransport> _local = {};
   final Map<String, String> _localOwners = {};
@@ -244,7 +260,18 @@ class McpClient {
     required String name,
     required Map<String, dynamic> arguments,
     CancelToken? cancelToken,
+    bool userInitiated = false,
   }) async {
+    final browserModelCall =
+        connection.localProcess?.isPlaywright == true && !userInitiated;
+    final browserEpoch = _browserLeaseEpochs[connection.sessionId] ?? 0;
+    if (browserModelCall &&
+        _browserModelPaused.contains(connection.sessionId)) {
+      throw const McpClientException(
+        '用户正在接手浏览器，模型操作未派发',
+        code: 'browser_user_takeover',
+      );
+    }
     if (connection.localProcess?.requiresSession == true &&
         !connection.computerUse) {
       final key = _localKey(connection);
@@ -257,6 +284,15 @@ class McpClient {
         // Browser operations must retain order within one agent, even if the
         // provider emits several calls in a parallel tool batch.
         await previous;
+        if (browserModelCall &&
+            (_browserModelPaused.contains(connection.sessionId) ||
+                browserEpoch !=
+                    (_browserLeaseEpochs[connection.sessionId] ?? 0))) {
+          throw const McpClientException(
+            '浏览器已由用户接手，本次旧排队操作已丢弃；请重新观察',
+            code: 'browser_stale_lease',
+          );
+        }
         if (cancelToken?.isCancelled == true ||
             stopEpoch != _stopEpoch ||
             epoch != (_sessionEpochs[connection.sessionId] ?? 0)) {

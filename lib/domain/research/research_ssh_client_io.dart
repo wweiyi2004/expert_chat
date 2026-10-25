@@ -624,8 +624,9 @@ class _WorkspaceSshTerminal implements TerminalConnection {
 
   @override
   void resize(int columns, int rows) {
-    if (!_closed && !_exited && columns > 0 && rows > 0)
+    if (!_closed && !_exited && columns > 0 && rows > 0) {
       session.resizeTerminal(columns, rows);
+    }
   }
 
   @override

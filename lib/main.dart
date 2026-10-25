@@ -16,6 +16,7 @@ import 'data/legacy_conversation_migration.dart';
 import 'data/study_repository.dart';
 import 'data/ui_prefs.dart';
 import 'features/shell/app_shell.dart';
+import 'features/shell/conversation_return_scope.dart';
 import 'features/shell/startup_error_app.dart';
 import 'state/settings_controller.dart';
 
@@ -93,6 +94,8 @@ class ExpertChatApp extends ConsumerStatefulWidget {
 }
 
 class _ExpertChatAppState extends ConsumerState<ExpertChatApp> {
+  final _navigatorKey = GlobalKey<NavigatorState>();
+  final _routeObserver = ConversationRouteObserver();
   UiPrefs? _themeUi;
   VisualDensity? _themeDensity;
   ThemeData? _lightTheme;
@@ -133,6 +136,8 @@ class _ExpertChatAppState extends ConsumerState<ExpertChatApp> {
 
     return MaterialApp(
       title: 'Expert Chat',
+      navigatorKey: _navigatorKey,
+      navigatorObservers: [_routeObserver],
       locale: const Locale('zh', 'CN'),
       supportedLocales: const [Locale('zh', 'CN')],
       localizationsDelegates: GlobalMaterialLocalizations.delegates,
@@ -144,7 +149,11 @@ class _ExpertChatAppState extends ConsumerState<ExpertChatApp> {
         final mq = MediaQuery.of(context);
         return MediaQuery(
           data: mq.copyWith(textScaler: TextScaler.linear(ui.textScale.scale)),
-          child: child ?? const SizedBox.shrink(),
+          child: ConversationReturnScope(
+            navigatorKey: _navigatorKey,
+            observer: _routeObserver,
+            child: child ?? const SizedBox.shrink(),
+          ),
         );
       },
       home: const AppShell(),

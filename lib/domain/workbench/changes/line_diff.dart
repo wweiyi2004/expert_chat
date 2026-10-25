@@ -92,3 +92,59 @@ List<DiffLine> buildLineDiff(String? before, String after) {
   }
   return result;
 }
+
+/// Independently reviewable contiguous changed blocks, indexed in diff order.
+List<List<DiffLine>> changedDiffBlocks(String before, String after) {
+  final blocks = <List<DiffLine>>[];
+  var current = <DiffLine>[];
+  for (final line in buildLineDiff(before, after)) {
+    if (line.kind == DiffLineKind.context) {
+      if (current.isNotEmpty) {
+        blocks.add(current);
+        current = [];
+      }
+    } else {
+      current.add(line);
+    }
+  }
+  if (current.isNotEmpty) blocks.add(current);
+  return blocks;
+}
+
+/// Builds the desired whole-file content; caller must still CAS-write against
+/// the reviewed afterHash, so an external edit cannot be silently overwritten.
+String revertDiffBlocks(String before, String after, Set<int> selected) {
+  final blocks = changedDiffBlocks(before, after);
+  if (selected.isEmpty) return after;
+  if (selected.length == blocks.length &&
+      selected.every((i) => i >= 0 && i < blocks.length)) {
+    return before;
+  }
+  List<String> rawLines(String text) => RegExp(r'[^\r\n]*(?:\r\n|\r|\n|$)')
+      .allMatches(text)
+      .map((m) => m.group(0)!)
+      .where((line) => line.isNotEmpty)
+      .toList();
+  final oldRaw = rawLines(before), newRaw = rawLines(after);
+  final output = StringBuffer();
+  var block = -1;
+  var changing = false;
+  for (final line in buildLineDiff(before, after)) {
+    if (line.kind == DiffLineKind.context) {
+      changing = false;
+      output.write(newRaw[line.newLine! - 1]);
+      continue;
+    }
+    if (!changing) {
+      block++;
+      changing = true;
+    }
+    final undo = selected.contains(block);
+    if (undo && line.kind == DiffLineKind.removed) {
+      output.write(oldRaw[line.oldLine! - 1]);
+    } else if (!undo && line.kind == DiffLineKind.added) {
+      output.write(newRaw[line.newLine! - 1]);
+    }
+  }
+  return output.toString();
+}

@@ -1,0 +1,368 @@
+<title>Expert 终端界面</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<style>
+/* Layout: one reading column of captions; each terminal frame sits below its caption at true 80-column width, scrolling sideways on phones. */
+:root {
+  --bg: #eef1f2; --fg: #1f2d33; --muted: #5d6d74; --line: #cfd8db; --chip: #e2e9eb;
+  --t-bg: #fbfcfc; --t-fg: #22343c; --t-muted: #66767e; --t-accent: #1f6283;
+  --t-good: #2a7350; --t-warn: #87591a; --t-bad: #a83e48; --t-add: #e6f3ea; --t-del: #f8e6e8; --t-frame: #c4cfd2;
+  --sans: "Noto Sans SC", "PingFang SC", system-ui, sans-serif;
+  --mono: "JetBrains Mono", "Sarasa Mono SC", "Noto Sans SC", ui-monospace, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0f1417; --fg: #d6e0e4; --muted: #8a9aa3; --line: #26323a; --chip: #1a2329;
+  --t-bg: #141b1f; --t-fg: #dbe5e9; --t-muted: #8a9aa3; --t-accent: #7cc0de;
+  --t-good: #8fcca8; --t-warn: #e3bc72; --t-bad: #eaa1a8; --t-add: #1c3326; --t-del: #3a2226; --t-frame: #2c3a42;
+  color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #0f1417; --fg: #d6e0e4; --muted: #8a9aa3; --line: #26323a; --chip: #1a2329;
+  --t-bg: #141b1f; --t-fg: #dbe5e9; --t-muted: #8a9aa3; --t-accent: #7cc0de;
+  --t-good: #8fcca8; --t-warn: #e3bc72; --t-bad: #eaa1a8; --t-add: #1c3326; --t-del: #3a2226; --t-frame: #2c3a42;
+  color-scheme: dark; }
+.force-dark { --t-bg: #141b1f; --t-fg: #dbe5e9; --t-muted: #8a9aa3; --t-accent: #7cc0de; --t-good: #8fcca8; --t-warn: #e3bc72; --t-bad: #eaa1a8; --t-add: #1c3326; --t-del: #3a2226; --t-frame: #2c3a42; }
+.force-light { --t-bg: #fbfcfc; --t-fg: #22343c; --t-muted: #66767e; --t-accent: #1f6283; --t-good: #2a7350; --t-warn: #87591a; --t-bad: #a83e48; --t-add: #e6f3ea; --t-del: #f8e6e8; --t-frame: #c4cfd2; }
+
+body { background: var(--bg); color: var(--fg); font: 15px/1.7 var(--sans); }
+.page { max-width: 1040px; margin: 0 auto; padding-block: 48px 80px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); display: grid; gap: 56px; }
+header { display: grid; gap: 14px; max-width: 68ch; }
+h1 { font: 700 28px/1.25 var(--mono); margin: 0; letter-spacing: -.01em; text-wrap: balance; }
+h1 span { color: var(--t-accent); }
+h2 { font: 700 13px/1.4 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0; }
+h3 { font: 500 17px/1.4 var(--sans); margin: 0; text-wrap: balance; }
+p { margin: 0; }
+.lede { color: var(--muted); }
+code { font-family: var(--mono); font-size: .9em; background: var(--chip); padding: 1px 5px; border-radius: 3px; }
+
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 13px; color: var(--muted); }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg button { font: inherit; color: var(--fg); background: transparent; border: 0; padding: 5px 12px; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed="true"] { background: var(--chip); color: var(--t-accent); font-weight: 500; }
+.seg button:focus-visible { outline: 2px solid var(--t-accent); outline-offset: -2px; }
+
+.principles { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 28px; margin: 0; padding: 0; list-style: none; }
+.principles li { display: grid; gap: 4px; min-width: 0; }
+.principles b { font: 700 14px/1.4 var(--mono); color: var(--t-accent); }
+.principles span { font-size: 14px; color: var(--muted); }
+
+section.screens { display: grid; gap: 48px; }
+.screen { display: grid; gap: 14px; min-width: 0; }
+.cap { display: grid; gap: 6px; max-width: 70ch; }
+.cap .size { font: 12px var(--mono); color: var(--muted); }
+.cap p { font-size: 14px; color: var(--muted); }
+.scroll { overflow-x: auto; padding-bottom: 4px; }
+
+.term { position: relative; font: 13px/1.62 var(--mono); background: var(--t-bg); color: var(--t-fg); border: 1px solid var(--t-frame); border-radius: 8px; padding: 14px 16px; box-sizing: content-box; font-variant-numeric: tabular-nums; }
+.row { display: flex; justify-content: space-between; gap: 2ch; white-space: pre; min-height: 1.62em; }
+.row .l { overflow: hidden; text-overflow: ellipsis; }
+.row .r { flex: none; color: var(--t-muted); }
+.a { color: var(--t-accent); } .m { color: var(--t-muted); } .g { color: var(--t-good); } .w { color: var(--t-warn); } .b { color: var(--t-bad); }
+.B { font-weight: 700; }
+.s { background: var(--t-fg); color: var(--t-bg); }
+.ab { background: var(--t-add); display: block; } .db { background: var(--t-del); display: block; }
+.box { position: relative; border: 1px solid var(--t-accent); border-radius: 6px; padding: 0 1ch; margin: .5em 0 .1em; }
+.box.w { border-color: var(--t-warn); } .box.m { border-color: var(--t-frame); }
+.box .title { position: absolute; top: -.85em; left: 1.2ch; background: var(--t-bg); padding: 0 .6ch; white-space: pre; }
+.rule { border-top: 1px solid var(--t-frame); margin: .8em 0 .1em; min-height: 0; }
+.cols { display: grid; }
+.cols > div + div { border-left: 1px solid var(--t-frame); padding-left: 1ch; }
+.cols .ab, .cols .db { display: inline; }
+.cols .row.add { background: var(--t-add); } .cols .row.del { background: var(--t-del); }
+.pet { position: absolute; top: 14px; right: calc(16px + 2ch); display: grid; grid-template-columns: repeat(20, 1ch); grid-auto-rows: .81em; padding: 0; border: 0; background: transparent; cursor: pointer; }
+.pet i { display: block; }
+.pet:focus-visible { outline: 1px dashed var(--t-accent); outline-offset: 2px; }
+.bubble { position: absolute; top: calc(14px + 1.62em); right: calc(16px + 24ch); white-space: pre; color: var(--t-accent); }
+
+.tables { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 40px; }
+.tables > div { display: grid; gap: 14px; align-content: start; min-width: 0; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th { text-align: left; font: 500 12px var(--mono); color: var(--muted); letter-spacing: .04em; padding: 0 12px 8px 0; border-bottom: 1px solid var(--line); }
+td { padding: 7px 12px 7px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+td:first-child { font-family: var(--mono); font-size: 13px; white-space: nowrap; }
+.swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: 1px; margin-right: 8px; }
+footer.note { font-size: 14px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 20px; }
+@media (max-width: 520px) { h1 { font-size: 22px; } .page { gap: 40px; padding-block: 28px 56px; } }
+</style>
+
+<div class="page">
+  <header>
+    <h1><span>◈</span> expert 终端界面</h1>
+    <p class="lede">按字符网格重新设计的 TUI。没有标题栏和导航栏，固定区域只有状态行、输入框和底栏三处，在 80×24 的终端里给对话留出 18 行以上。下面每个画面都按真实列宽绘制，实现规格见 <code>design/tui/TUI-SPEC.md</code>。</p>
+    <div class="controls">
+      <span>终端主题</span>
+      <div class="seg" role="group" aria-label="终端主题">
+        <button type="button" id="tm-auto" data-tm="" aria-pressed="true">跟随页面</button>
+        <button type="button" id="tm-dark" data-tm="force-dark" aria-pressed="false">深色</button>
+        <button type="button" id="tm-light" data-tm="force-light" aria-pressed="false">浅色</button>
+      </div>
+    </div>
+  </header>
+
+  <ul class="principles">
+    <li><b>只有一种字号</b><span>层级靠颜色、DIM、缩进表达，可以照着直接实现。</span></li>
+    <li><b>外框最少</b><span>状态写在窗口标题和底栏里，记录区占满剩余高度。</span></li>
+    <li><b>跟随终端配色</b><span>默认用 ANSI 16 色，不涂背景，真彩色只是增强。</span></li>
+    <li><b>危险状态常驻</b><span>完全访问、计划模式、待批准都显示在固定区域。</span></li>
+  </ul>
+
+  <section class="screens" id="screens"></section>
+
+  <div class="tables">
+    <div>
+      <h2>键位</h2>
+      <table>
+        <thead><tr><th>键</th><th>作用</th></tr></thead>
+        <tbody>
+          <tr><td>enter</td><td>发送；运行中则排队到下一轮</td></tr>
+          <tr><td>ctrl+j</td><td>换行（任何终端都可用）</td></tr>
+          <tr><td>esc esc</td><td>中断任务；按一次只关闭浮层或显示提示</td></tr>
+          <tr><td>ctrl+c</td><td>清空输入，或立即中断</td></tr>
+          <tr><td>shift+tab</td><td>工作模式 / 计划模式</td></tr>
+          <tr><td>ctrl+o</td><td>展开或折叠执行详情</td></tr>
+          <tr><td>ctrl+g</td><td>改动与差异</td></tr>
+          <tr><td>ctrl+t</td><td>任务树</td></tr>
+          <tr><td>ctrl+y</td><td>处理待批准操作</td></tr>
+          <tr><td>/  @  ?</td><td>命令、文件、帮助</td></tr>
+        </tbody>
+      </table>
+      <p class="lede" style="font-size:14px">不用 F 键（macOS 和 tmux 下不可靠），不占用 ctrl+s/q（流控）和 readline 编辑键。</p>
+    </div>
+    <div>
+      <h2>颜色</h2>
+      <table>
+        <thead><tr><th>令牌</th><th>ANSI 16</th><th>用途</th></tr></thead>
+        <tbody>
+          <tr><td><i class="swatch" style="background:var(--t-fg)"></i>fg</td><td>默认前景</td><td>正文</td></tr>
+          <tr><td><i class="swatch" style="background:var(--t-muted)"></i>muted</td><td>DIM</td><td>路径、耗时、提示</td></tr>
+          <tr><td><i class="swatch" style="background:var(--t-accent)"></i>accent</td><td>cyan</td><td>› ◈、焦点、选中</td></tr>
+          <tr><td><i class="swatch" style="background:var(--t-good)"></i>good</td><td>green</td><td>✓、新增</td></tr>
+          <tr><td><i class="swatch" style="background:var(--t-warn)"></i>warn</td><td>yellow</td><td>待批准、重试、计划</td></tr>
+          <tr><td><i class="swatch" style="background:var(--t-bad)"></i>bad</td><td>red</td><td>✗、删除、完全访问</td></tr>
+        </tbody>
+      </table>
+      <p class="lede" style="font-size:14px">muted 用 DIM 而不是 bright black，因为后者在 Solarized 等主题下几乎看不见。</p>
+    </div>
+  </div>
+
+  <footer class="note">画面中的中文在浏览器里约占 1.7 列，所以右侧信息用弹性布局对齐。真实终端里中文占 2 列，实现时按显示宽度对齐，具体规则见规格 §13。</footer>
+</div>
+
+<script>
+const FOOT = '  ⌂ image-lab {m|› preview-fix}   GPT-6 Sol {m|· 高}   {m|◇ 请求批准} >> 上下文 38%';
+const blanks = n => Array(n).fill('');
+const screens = [
+  { title: '启动', size: '80 × 24 · 点击右上角的惠惠', w: 80, pet: true,
+    note: '欢迎块是记录区的第一块内容，发出第一条消息后随记录往上滚走。底栏已经显示了位置、模型和权限，这里不再重复。右上角的惠惠用半格字符绘制，占 20 列 × 6 行，点击会依次切换自我介绍、爆裂魔法、倒地、起身。',
+    lines: [
+      '{a|◈} {B|expert}  {m|v3.6.1}', '',
+      '  image-lab  {m|~/code/image-lab}',
+      '  {m|main · 3 个未提交改动}',
+      '  {m|已加载  AGENTS.md · MCP 2 个 · 记忆 14 条}', '',
+      '  最近会话 >> /resume',
+      '    {a|●} 自适应图片预览 >> 运行中 · 2 分钟前',
+      '    {m|○} 接口回归检查 >> 待验收 · 昨天',
+      '    {m|○} 实验结果汇总 >> 已结束 · 3 天前', '',
+      '  {a|/} {m|命令}   {a|@} {m|文件}   {a|?} {m|快捷键}   {a|shift+tab} {m|计划模式}',
+      ...blanks(7),
+      { box: 'a', lines: ['{a|›} {m|描述任务，/ 命令，@ 文件}'] },
+      '  ⌂ image-lab {m|› main}   GPT-6 Sol {m|· 高}   {m|◇ 请求批准}' ] },
+  { title: '首次运行', size: '80 × 24 · 顶部', w: 80, pet: true,
+    note: '还没有可用的模型时，用一个提示块替换最近会话。此时直接发送消息会打开登录。',
+    lines: [
+      '{a|◈} {B|expert}  {m|v3.6.1}', '',
+      '  image-lab  {m|~/code/image-lab}',
+      '  {m|main · 3 个未提交改动}', '',
+      '  {w|还没有可用的模型}',
+      '  {a|/login} {m|登录官方订阅}   {a|/model} {m|添加 API 来源}', '',
+      '  {a|/} {m|命令}   {a|@} {m|文件}   {a|?} {m|快捷键}',
+      ...blanks(2),
+      { box: 'a', lines: ['{a|›} {m|先登录或添加模型来源}'] },
+      '  ⌂ image-lab {m|› main}   {m|未选择模型}   {m|◇ 请求批准}' ] },
+  { title: '运行中', size: '80 × 24', w: 80,
+    note: '步骤行固定为「状态 + 两字动词 + 对象 + 右侧信息」，运行中的命令显示最近两行输出。状态行只在任务进行时出现，右侧写明当前能用的键。',
+    lines: [
+      '{a|›} 让 SVG 预览按窗口大小等比例缩放，保留源码编辑和手动缩放。', '',
+      '{a|◈} 我会检查预览容器，调整缩放逻辑，再验证窄窗口和图片比例。', '',
+      '  {g|✓} 读取  lib/preview.dart',
+      '  {g|✓} 编辑  lib/preview.dart >> {g|+18} {b|−6}',
+      '  {g|✓} 新建  test/preview_test.dart >> {g|+24}',
+      '  {a|⠹} 运行  flutter test test/preview_test.dart >> 12s',
+      '    {m|│ 00:08 +3: preview scales to container}',
+      '    {m|│ 00:11 +4: keeps manual zoom when resized}',
+      '  {a|⠹} 助手  回归检查 {m|· 检查布局与图片比例} >> ctrl+t',
+      ...blanks(7),
+      '{a|⠹} {m|运行检查 · 第 4/24 轮 · 1m42s} >> esc 中断',
+      { box: 'a', lines: ['{a|›} {m|输入补充要求，下一轮发送}'] },
+      FOOT ] },
+  { title: '等待批准', size: '80 × 24 · 底部', w: 80,
+    note: '批准卡直接替换输入框，y / a / n / e 单键处理。esc 只是收起，任务继续等待，不会被当作拒绝。',
+    lines: [
+      '  {a|⠹} 助手  回归检查 {m|· 检查布局与图片比例} >> ctrl+t',
+      '  {m|◌} 运行  flutter test test/preview_test.dart >> 等待批准', '',
+      '{w|◇ 等待你批准} {m|· 第 4/24 轮}',
+      { box: 'w', title: '{w|运行命令}', lines: [
+        'flutter test test/preview_test.dart',
+        '{m|目录} ~/image-lab   {m|原因} 验证缩放回归', '',
+        '{a|y} 允许一次   {a|a} 本会话允许 flutter test   {a|n} 拒绝   {a|e} 拒绝并说明' ] },
+      FOOT ] },
+  { title: '完成，待验收', size: '80 × 24 · 底部', w: 80,
+    note: '这一轮的步骤折叠成一行。交付摘要只列出本轮真实产生的改动，和步骤记录一一对应。',
+    lines: [
+      '{a|◈} 已完成。预览改为按容器宽高的较小比例缩放；手动缩放仍然优先。', '',
+      '  {g|✓} 5 个步骤 {m|· 1m58s} >> ctrl+o 展开', '',
+      '  {m|改动}  2 个文件  {g|+42} {b|−6} >> ctrl+g 查看差异',
+      '    {w|M} lib/preview.dart          {g|+18} {b|−6}   {m|自适应比例与手动缩放}',
+      '    {g|A} test/preview_test.dart       {g|+24}   {m|窗口尺寸和比例回归}',
+      '  {m|检查}  {g|✓} flutter test {m|· 4 通过 · 退出码 0}', '',
+      '{g|✓ 检查完成 · 待验收} >> /accept 验收 · 直接输入修改意见',
+      { box: 'a', lines: ['{a|›} {m|描述任务，/ 命令，@ 文件}'] },
+      FOOT ] },
+  { title: '失败与重试', size: '80 × 24 · 底部', w: 80,
+    note: '工具失败时保留最后三行输出，原因一眼可见。请求重试只占状态行，不写进记录区。',
+    lines: [
+      '  {b|✗} 运行  flutter test test/preview_test.dart >> {b|退出码 1}',
+      '    {m|│} Expected: <1.0>  Actual: <0.82>',
+      '    {m|│} {m|test/preview_test.dart:41}',
+      '    {m|│} {m|1 failed, 3 passed}', '',
+      '{a|◈} 高度比例没有参与计算，我来修正。', '',
+      '{w|! 429 速率限制 · 8s 后重试（2/5）} >> esc 中断',
+      { box: 'a', lines: ['{a|›} {m|输入补充要求，下一轮发送}'] },
+      FOOT ] },
+  { title: '命令补全', size: '80 × 24 · 底部', w: 80,
+    note: '在输入框开头打 / 弹出补全列表，替换底栏位置显示，不弹居中对话框。@ 文件补全的行为相同。',
+    lines: [
+      { box: 'a', lines: ['{a|›} /mo'] },
+      '  {s| /model         切换模型与思考强度                                           }',
+      '  {a|/mode}          {m|工作模式 / 计划模式}',
+      '  {a|/permissions}   {m|工具权限}' ] },
+  { title: '模型与思考', size: '80 × 24 · 底部抽屉', w: 80,
+    note: '浮层统一做成底部抽屉，结构都是标题、搜索、分组列表，把记录区往上推，不遮挡。',
+    lines: [
+      { rule: true },
+      ' {B|模型} >> ↑↓ 选择 · enter 确认 · esc 关闭',
+      ' {m|⌕} ',
+      ' {m|官方订阅}',
+      ' {a|›} {a|GPT-6 Sol} >> {g|当前}',
+      '   GPT-6 Sol mini',
+      ' {m|DeepSeek API}',
+      '   DeepSeek V4.1 Flash', '',
+      ' {m|思考} {g|开}    {m|强度}  低  中 {s|[高]} 极高  最大 >> tab 切换 · ←→ 调整',
+      { rule: true },
+      { box: 'm', lines: ['{m|›}'] },
+      FOOT ] },
+  { title: '改动视图', size: '100 × 16 · 全屏', w: 100,
+    note: 'ctrl+g 打开。宽度达到 100 列时左右分栏，更窄时上下排布。这里没有文本输入，可以用单键操作。',
+    lines: [
+      ' {B|改动} {m|·} 2 个文件 {g|+42} {b|−6} >> j/k 文件 · space 翻页 · a 验收 · q 返回',
+      { rule: true },
+      { cols: [[
+        ' {s|› M lib/preview.dart  +18 −6 }',
+        '   {g|A} test/preview_test   {g|+24}',
+      ], [
+        '{B|lib/preview.dart}',
+        '{a|@@ -38,9 +38,21 @@} {m|class PreviewBox}',
+        '{m| 38}    final size = constraints.biggest;',
+        { cls: 'del', t: '{m| 39}  {b|−} final scale = size.width / canvas.width;' },
+        { cls: 'add', t: '{m| 39}  {g|+} final scale = min(' },
+        { cls: 'add', t: '{m| 40}  {g|+}   size.width / canvas.width,' },
+        { cls: 'add', t: '{m| 41}  {g|+}   size.height / canvas.height,' },
+        { cls: 'add', t: '{m| 42}  {g|+} );' },
+        '{m| 43}    return Transform.scale(',
+        { cls: 'add', t: '{m| 44}  {g|+}   scale: manualZoom ?? scale,' },
+      ]], lw: '30ch' } ] },
+  { title: '底栏的几种状态', size: '80 / 60 / 40 列', w: 80,
+    note: '宽度不够时依次省略上下文、分支、思考强度、模型全名，权限段始终保留。完全访问在任何宽度下都用红色粗体显示。',
+    lines: [
+      FOOT,
+      '  {w|▣ 计划}   ⌂ image-lab   GPT-6 Sol {m|· 高}   {a|◆ 自动审查} >> {w|上下文 84%}',
+      '  ⌂ image-lab   GPT-6 Sol {m|· 高}   {b|{B|▲ 完全访问}} >> 上下文 38%', '',
+      '{m|── 60 列 ──}',
+      '  ⌂ image-lab   GPT-6 Sol   {b|{B|▲ 完全访问}}', '',
+      '{m|── 40 列 ──}',
+      '  ⌂   Sol   {b|{B|▲ 完全访问}}' ] },
+];
+
+const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+function spans(s) {
+  let out = esc(s);
+  let prev;
+  do { prev = out; out = out.replace(/\{(\w+)\|([^{}]*)\}/g, '<span class="$1">$2</span>'); } while (out !== prev);
+  return out;
+}
+function row(s, cls) {
+  const i = s.indexOf(' >> ');
+  const L = i < 0 ? s : s.slice(0, i), R = i < 0 ? null : s.slice(i + 4);
+  return `<div class="row${cls ? ' ' + cls : ''}"><span class="l">${spans(L)}</span>${R !== null ? `<span class="r">${spans(R)}</span>` : ''}</div>`;
+}
+function render(line) {
+  if (typeof line === 'string') return row(line);
+  if (line.cls) return row(line.t, line.cls);
+  if (line.rule) return '<div class="rule"></div>';
+  if (line.box) return `<div class="box ${line.box}">${line.title ? `<span class="title">${spans(line.title)}</span>` : ''}${line.lines.map(render).join('')}</div>`;
+  if (line.cols) return `<div class="cols" style="grid-template-columns:${line.lw} 1fr">${line.cols.map(c => `<div>${c.map(render).join('')}</div>`).join('')}</div>`;
+  return '';
+}
+const host = document.getElementById('screens');
+host.innerHTML = screens.map(sc => `
+  <article class="screen">
+    <div class="cap"><span class="size">${sc.size}</span><h3>${sc.title}</h3><p>${sc.note}</p></div>
+    <div class="scroll"><div class="term" style="width:${sc.w}ch">${sc.lines.map(render).join('')}${sc.pet ? '<button type="button" class="pet" aria-label="惠惠，点击切换动作"></button><span class="bubble" aria-live="polite"></span>' : ''}</div></div>
+  </article>`).join('');
+
+document.querySelectorAll('[data-tm]').forEach(btn => btn.addEventListener('click', () => {
+  document.querySelectorAll('[data-tm]').forEach(b => b.setAttribute('aria-pressed', b === btn ? 'true' : 'false'));
+  host.classList.remove('force-dark', 'force-light');
+  if (btn.dataset.tm) host.classList.add(btn.dataset.tm);
+  pets.forEach(p => p.draw());
+}));
+
+// 惠惠：与 pet/megumin.json 相同的数据和状态机（规格 §1 启动页宠物）
+const PET = {"palette":{"K":"#2f2838","k":"#5a4e6a","B":"#c8423c","H":"#6a4430","S":"#f3d2b8","P":"#141016","R":"#e8303c","M":"#c77a72","D":"#b8323a","d":"#8e2430","C":"#3a3242","W":"#9a6a3c","G":"#ff5a4a","w":"#fff6d8","Y":"#ffd24a","O":"#ff9a2e","E":"#e2462c","g":"#6f6a72","h":"#9a949c"},"frames":{"idle":["............K.......","..........KKKk......","........KKKKKKk...G.","......BBBBBBBBB...W.","..kKKKKKKKKKKKKKk.W.",".....HHHHHHHHH....W.",".....HSPSSSRSH....W.","....HHSSSMSSSHH...W.","....HCDDDDDDDCHCCSW.","....CCDDDDDDDCC...W.","...CCCDDDdDDDCCC..W.","......SS...SS.....W."],"blink":["............K.......","..........KKKk......","........KKKKKKk...G.","......BBBBBBBBB...W.","..kKKKKKKKKKKKKKk.W.",".....HHHHHHHHH....W.",".....HSPSSSPSH....W.","....HHSSSMSSSHH...W.","....HCDDDDDDDCHCCSW.","....CCDDDDDDDCC...W.","...CCCDDDdDDDCCC..W.","......SS...SS.....W."],"pose":["............K.....G.","..........KKKk....W.","........KKKKKKk...W.","......BBBBBBBBB...W.","..kKKKKKKKKKKKKKk.W.",".....HHHHHHHHH...SW.",".....HSPSSSRSH..C.W.","....HHSSSMMSSHHC..W.","....HCDDDDDDDCC.....","....CCDDDDDDDCC.....","...CCCDDDdDDDCCC....","......SS...SS......."],"chant1":["............K.......","..........KKKk...O.O","........KKKKKKk...Y.","......BBBBBBBBB...W.","..kKKKKKKKKKKKKKk.W.",".....HHHHHHHHH....W.",".....HSPSSSGSH....W.","....HHSSSPSSSHH...W.","....HCDDDDDDDCHCCSW.","....CCDDDDDDDCC...W.","...CCCDDDdDDDCCC..W.","..OOOOSSOOOOS.OO..W."],"chant2":["............K.......","..........KKKk...OYO","........KKKKKKk.O.wY","......BBBBBBBBB...WY","..kKKKKKKKKKKKKKk.W.",".....HHHHHHHHH....W.",".....HSPSSSGSH....W.","....HHSSSPSSSHH...W.","....HCDDDDDDDCHCCSW.","....CCDDDDDDDCC...W.",".O.CCCDDDdDDDCCCO.W.","..YYYYSSYYYYS.YY..W."],"boom1":["....................","....................","..............O.....","......O.............","....................","....Y...............","........OOOO....Y...",".......OYYYYO.......",".......OYwwYO.......",".......OYwwYO.......","...O...OYYYYO.......","........OOOO.....Y.."],"boom2":["...EEEOOOOOOOOEEE...","..EEOOYYYYYYYYOOEE..",".EEOOYYYwwwwYYYOOEE.","EEOOYYYwwwwwwYYYOOEE","EEEOOYYYwwwwYYYOOEEE",".EEOOOYYYYYYYYOOOEE.","..EEEOOOOYYOOOOEEE..","...EEEEEOYYOEEEEE...",".......EOYYOE.......",".......EOYYOE.......","......EEOYYOEE......",".EEEOOOOOYYOOOOOEEE."],"boom3":[".....gggggggggg.....","...gggggggggggggg...","..ggggggggghhhhggg..","..ggghhhhgghhhhggg..","..ggghhhhggggggggg..","..gggggggOgggggggg..","...gggggggggEgggg...",".....gggggggggg.....","........gggg........","........ggOg........","........gggg........","...gggOgggggggggg..."],"down":["....................","....................","....................","....................","....................","...........Y...Y....","....................","..k.........Y.......","..Kk................",".KKKk...HHHH........","BBBBBB.HHHHHCCDDDDSS","..GWWWWWWWWWWWW....."]}};
+const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const lum = c => { const m = c.trim().match(/^#(..)(..)(..)$/); return m ? (0.2126 * parseInt(m[1], 16) + 0.7152 * parseInt(m[2], 16) + 0.0722 * parseInt(m[3], 16)) : 255; };
+const pets = [...document.querySelectorAll('.pet')].map(btn => {
+  const term = btn.parentElement, bubble = term.querySelector('.bubble');
+  const cells = Array.from({ length: 240 }, () => btn.appendChild(document.createElement('i')));
+  const p = { frame: 'idle', state: 'idle', busy: false, clicks: 0, timers: [], bubbleTimer: 0 };
+  p.draw = () => {
+    const dark = lum(getComputedStyle(term).getPropertyValue('--t-bg')) < 128;
+    PET.frames[p.frame].forEach((row, y) => [...row].forEach((ch, x) => {
+      const col = ch === '.' ? 'transparent' : (ch === 'K' && dark ? '#3d3448' : PET.palette[ch]);
+      cells[y * 20 + x].style.background = col;
+    }));
+  };
+  const show = f => { p.frame = f; p.draw(); };
+  const say = (text, ms = 2500) => {
+    bubble.textContent = text ? `「${text}」` : '';
+    clearTimeout(p.bubbleTimer);
+    if (text) p.bubbleTimer = setTimeout(() => { bubble.textContent = ''; }, ms);
+  };
+  const run = (steps, done) => {
+    p.busy = true;
+    let t = 0;
+    steps.forEach(([f, ms, line]) => { p.timers.push(setTimeout(() => { show(f); if (line) say(line); }, t)); t += ms; });
+    p.timers.push(setTimeout(() => { p.busy = false; done && done(); }, t));
+  };
+  btn.addEventListener('click', () => {
+    if (p.busy) return;
+    if (p.state === 'down') { p.state = 'idle'; show('idle'); say('明天还要再放一发。'); return; }
+    p.clicks += 1;
+    if (p.clicks % 2 === 1) {
+      run([['pose', 1600, '吾名惠惠！'], ['idle', 0]]);
+    } else {
+      const chant = reduce ? [] : [['chant1', 200, '比黑更黑……'], ['chant2', 200], ['chant1', 200], ['chant2', 200], ['boom1', 120], ['boom2', 450, 'Explosion！'], ['boom3', 600]];
+      run([...chant, ['down', 0, '……动不了了。']], () => { p.state = 'down'; });
+    }
+  });
+  if (!reduce) (function blink() {
+    p.timers.push(setTimeout(() => {
+      if (!p.busy && p.state === 'idle' && p.frame === 'idle') { show('blink'); setTimeout(() => { if (p.frame === 'blink') show('idle'); }, 150); }
+      blink();
+    }, 3000 + Math.random() * 3000));
+  })();
+  show('idle');
+  return p;
+});
+</script>

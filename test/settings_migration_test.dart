@@ -68,14 +68,16 @@ void main() {
           ],
         );
         addTearDown(container.dispose);
-        final expected = backend == 'tavily'
-            ? SearchBackend.tavily
-            : SearchBackend.deepseek;
         final loaded = await container.read(settingsControllerProvider.future);
-        expect(loaded.searchBackend, expected);
-        expect(prefs.getString(kSettingsSearchBackend), expected.wire);
+        expect(loaded.searchBackend, SearchBackend.deepseek);
+        // Retain a legacy vendor label as credential provenance; runtime/UI is
+        // DeepSeek-only and must not relabel its old key as a DeepSeek key.
+        expect(
+          prefs.getString(kSettingsSearchBackend),
+          backend == 'tavily' ? 'tavily' : 'deepseek',
+        );
         expect(prefs.getBool(kSettingsDeepSeekSearchDefaultMigrated), isTrue);
-        // A later explicit choice is not overwritten on every launch.
+        // Legacy callers cannot reactivate a removed alternate search backend.
         await container
             .read(settingsControllerProvider.notifier)
             .setSearchBackend(SearchBackend.duckduckgo);
@@ -84,7 +86,7 @@ void main() {
           (await container.read(
             settingsControllerProvider.future,
           )).searchBackend,
-          SearchBackend.duckduckgo,
+          SearchBackend.deepseek,
         );
       },
     );

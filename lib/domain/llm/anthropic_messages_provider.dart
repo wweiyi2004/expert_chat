@@ -160,13 +160,14 @@ class AnthropicMessagesProvider implements LlmProvider {
         };
       } else {
         var budget = switch (effort) {
-          ReasoningEffort.low => 2048,
-          ReasoningEffort.high => 8192,
-          ReasoningEffort.max => 24576,
+          ReasoningEffort.minimal || ReasoningEffort.low => 2048,
+          ReasoningEffort.medium || ReasoningEffort.high => 8192,
+          ReasoningEffort.xhigh || ReasoningEffort.max => 24576,
         };
         if (config.maxOutputTokens != null) {
-          if (config.maxOutputTokens! <= 1024)
+          if (config.maxOutputTokens! <= 1024) {
             throw StateError('当前思考模式需要单次输出上限大于 1024 token');
+          }
           budget = budget.clamp(1024, config.maxOutputTokens! - 1);
         }
         body['thinking'] = {'type': 'enabled', 'budget_tokens': budget};
@@ -239,8 +240,12 @@ class AnthropicMessagesProvider implements LlmProvider {
               responseType: ResponseType.stream,
               headers: {
                 ...config.transportHeaders,
-                'x-api-key': config.apiKey.trim(),
-                if (Uri.parse(config.baseUrl).host != 'api.anthropic.com')
+                if (config.authMode != 'none' &&
+                    config.apiKey.trim().isNotEmpty)
+                  'x-api-key': config.apiKey.trim(),
+                if (config.authMode != 'none' &&
+                    config.apiKey.trim().isNotEmpty &&
+                    Uri.parse(config.baseUrl).host != 'api.anthropic.com')
                   'Authorization': 'Bearer ${config.apiKey.trim()}',
                 'anthropic-version': '2023-06-01',
                 'Content-Type': 'application/json',

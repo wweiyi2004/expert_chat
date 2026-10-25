@@ -11,7 +11,15 @@ import '../shell/shell_tab.dart';
 import 'project_document_page.dart';
 
 class ProjectsPage extends ConsumerStatefulWidget {
-  const ProjectsPage({super.key});
+  const ProjectsPage({
+    super.key,
+    this.embedded = false,
+    this.initialProjectId,
+    this.createOnOpen = false,
+  });
+  final String? initialProjectId;
+  final bool createOnOpen;
+  final bool embedded;
   @override
   ConsumerState<ProjectsPage> createState() => _ProjectsPageState();
 }
@@ -34,7 +42,9 @@ class _ProjectsPageState extends ConsumerState<ProjectsPage> {
   @override
   void initState() {
     super.initState();
-    _reload();
+    _reload().then((_) {
+      if (mounted && widget.createOnOpen) _edit();
+    });
   }
 
   Future<void> _reload() async {
@@ -56,7 +66,11 @@ class _ProjectsPageState extends ConsumerState<ProjectsPage> {
               .value
               ?.current
               ?.projectId;
-          _selected = projects.any((p) => p.id == activeProject)
+          _selected = widget.initialProjectId == ''
+              ? null
+              : projects.any((p) => p.id == widget.initialProjectId)
+              ? widget.initialProjectId
+              : projects.any((p) => p.id == activeProject)
               ? activeProject
               : projects.firstOrNull?.id;
           _projects = [
@@ -159,8 +173,8 @@ class _ProjectsPageState extends ConsumerState<ProjectsPage> {
     final yes = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text('删除项目「${project.name}」？'),
-        content: const Text('会话将移至“未归类”，素材和记忆保留。此项目的记忆将不再用于回答。'),
+        title: Text('删除资料集「${project.name}」？'),
+        content: const Text('会话将移至“未归类”，素材和记忆保留。此资料集的记忆将不再用于回答。'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
@@ -168,7 +182,7 @@ class _ProjectsPageState extends ConsumerState<ProjectsPage> {
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('删除项目'),
+            child: const Text('删除资料集'),
           ),
         ],
       ),
@@ -234,7 +248,7 @@ class _ProjectsPageState extends ConsumerState<ProjectsPage> {
   void _newConversation() {
     ref
         .read(chatControllerProvider.notifier)
-        .newConversation(projectId: _selected);
+        .newConversation(projectId: _selected, workMode: false, forceNew: true);
     _returnToChat();
   }
 
@@ -255,15 +269,17 @@ class _ProjectsPageState extends ConsumerState<ProjectsPage> {
     ];
     return Scaffold(
       appBar: AppBar(
-        title: const Text('项目'),
+        title: widget.embedded ? null : const Text('资料集'),
+        automaticallyImplyLeading: !widget.embedded,
+        toolbarHeight: widget.embedded ? 44 : null,
         actions: [
           IconButton(
-            tooltip: '刷新项目',
+            tooltip: '刷新资料集',
             onPressed: _loading ? null : _reload,
             icon: const Icon(Icons.refresh),
           ),
           IconButton(
-            tooltip: '新建项目',
+            tooltip: '新建资料集',
             onPressed: _opening ? null : () => _edit(),
             icon: const Icon(Icons.folder_open_outlined),
           ),
@@ -284,7 +300,7 @@ class _ProjectsPageState extends ConsumerState<ProjectsPage> {
                           key: const ValueKey('project-search'),
                           onChanged: (v) => setState(() => _query = v),
                           decoration: const InputDecoration(
-                            hintText: '查找项目',
+                            hintText: '查找资料集',
                             prefixIcon: Icon(Icons.search),
                           ),
                         ),
@@ -359,7 +375,7 @@ class _ProjectsPageState extends ConsumerState<ProjectsPage> {
     return ListView(
       key: ValueKey('project-details-$_selected'),
       children: [
-        const Text('集中管理项目会话、说明和资料。'),
+        const Text('集中管理资料集会话、说明和资料。'),
         const SizedBox(height: 16),
         Card(
           child: Padding(
@@ -374,9 +390,9 @@ class _ProjectsPageState extends ConsumerState<ProjectsPage> {
                 const SizedBox(height: 8),
                 Text(
                   project == null
-                      ? '这里的对话尚未归入项目，可继续聊天或移入合适的项目。'
+                      ? '这里的对话尚未归入资料集，可继续聊天或移入合适的资料集。'
                       : (project.instructions.isEmpty
-                            ? '添加项目说明和资料，让后续对话共享背景。'
+                            ? '添加资料集说明和资料，让后续对话共享背景。'
                             : project.instructions),
                   maxLines: 4,
                   overflow: TextOverflow.ellipsis,
@@ -398,7 +414,7 @@ class _ProjectsPageState extends ConsumerState<ProjectsPage> {
                     OutlinedButton.icon(
                       onPressed: _opening ? null : _newConversation,
                       icon: const Icon(Icons.add),
-                      label: const Text('在此新建对话'),
+                      label: const Text('在新聊天中引用'),
                     ),
                     if (project != null)
                       TextButton(
@@ -416,7 +432,7 @@ class _ProjectsPageState extends ConsumerState<ProjectsPage> {
             padding: const EdgeInsets.only(top: 16),
             child: RecoveryNotice(
               error: _error!,
-              title: '项目操作未完成',
+              title: '资料集操作未完成',
               onRetry: _reload,
               retryLabel: '重新加载列表',
             ),
@@ -455,7 +471,7 @@ class _ProjectsPageState extends ConsumerState<ProjectsPage> {
           if (conversations.isEmpty)
             const _ProjectEmpty(
               icon: Icons.chat_bubble_outline,
-              text: '还没有会话。在此新建对话后，会自动归入这个项目。',
+              text: '还没有会话。在此新建对话后，会自动归入这个资料集。',
             ),
           for (final conversation
               in (_allConversations ? conversations : conversations.take(5)))
@@ -503,7 +519,7 @@ class _ProjectsPageState extends ConsumerState<ProjectsPage> {
           else if (_files.isEmpty)
             const _ProjectEmpty(
               icon: Icons.insert_drive_file_outlined,
-              text: '关联素材库中的文档，供项目内的回答参考。',
+              text: '关联素材库中的文档，供资料集内的回答参考。',
             )
           else
             for (final file in _files)
@@ -535,7 +551,7 @@ class _ProjectsPageState extends ConsumerState<ProjectsPage> {
             alignment: Alignment.centerLeft,
             child: TextButton(
               onPressed: _opening ? null : () => _delete(project),
-              child: Text('删除项目', style: TextStyle(color: scheme.error)),
+              child: Text('删除资料集', style: TextStyle(color: scheme.error)),
             ),
           ),
         ],
@@ -606,7 +622,7 @@ class _ProjectCard extends StatelessWidget {
                 const SizedBox(height: 6),
                 Text(
                   project!.instructions.isEmpty
-                      ? '尚未添加项目说明'
+                      ? '尚未添加资料集说明'
                       : project!.instructions,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -715,7 +731,7 @@ class _ProjectEditorState extends ConsumerState<_ProjectEditor> {
   Widget build(BuildContext context) => PopScope(
     canPop: !_saving,
     child: AlertDialog(
-      title: Text(widget.project == null ? '新建项目' : '编辑项目'),
+      title: Text(widget.project == null ? '新建资料集' : '编辑资料集'),
       content: SizedBox(
         width: 580,
         child: SingleChildScrollView(
@@ -725,7 +741,7 @@ class _ProjectEditorState extends ConsumerState<_ProjectEditor> {
               TextField(
                 controller: _name,
                 maxLength: 80,
-                decoration: const InputDecoration(labelText: '项目名称'),
+                decoration: const InputDecoration(labelText: '资料集名称'),
               ),
               TextField(
                 controller: _instructions,
@@ -733,8 +749,8 @@ class _ProjectEditorState extends ConsumerState<_ProjectEditor> {
                 minLines: 3,
                 maxLines: 8,
                 decoration: const InputDecoration(
-                  labelText: '项目说明',
-                  helperText: '将随本项目的对话发送给模型。',
+                  labelText: '资料集说明',
+                  helperText: '将随本资料集的对话发送给模型。',
                 ),
               ),
               const Text('选择素材库文档（最多 20 份）'),
@@ -742,7 +758,7 @@ class _ProjectEditorState extends ConsumerState<_ProjectEditor> {
                 tilePadding: EdgeInsets.zero,
                 title: Text('资料使用说明'),
                 children: [
-                  Text('所选文档将用于本项目的回答，每次最多读取 32000 字，超出部分会被截断。图片请在对话中单独添加。'),
+                  Text('所选文档将用于本资料集的回答，每次最多读取 32000 字，超出部分会被截断。图片请在对话中单独添加。'),
                 ],
               ),
               if (widget.library.isEmpty) const Text('素材库暂无文档，请先在聊天中导入资料。'),
@@ -765,7 +781,7 @@ class _ProjectEditorState extends ConsumerState<_ProjectEditor> {
               if (_error != null)
                 RecoveryNotice(
                   error: _error!,
-                  title: '项目尚未保存',
+                  title: '资料集尚未保存',
                   guidance: '名称、说明和资料选择仍然保留，检查后可再次保存。',
                 ),
             ],

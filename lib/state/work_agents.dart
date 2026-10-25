@@ -45,8 +45,14 @@ class WorkAgentModelPool extends Notifier<List<WorkAgentModelOption>?> {
 }
 
 final workAgentsProvider = Provider<WorkAgentRuntime>((ref) {
-  final runtime = WorkAgentRuntime();
   final prefs = ref.read(sharedPrefsProvider);
+  final runtime = WorkAgentRuntime(
+    persistJournal: (rows) async {
+      if (!await prefs.setString('workAgentJournal.v1', jsonEncode(rows))) {
+        throw StateError('子代理恢复快照保存失败；未继续派发操作');
+      }
+    },
+  );
   try {
     runtime.restoreJournal(
       (jsonDecode(prefs.getString('workAgentJournal.v1') ?? '[]') as List)
@@ -59,7 +65,9 @@ final workAgentsProvider = Provider<WorkAgentRuntime>((ref) {
     saveTimer ??= Timer(const Duration(milliseconds: 400), () {
       saveTimer = null;
       unawaited(
-        prefs.setString('workAgentJournal.v1', jsonEncode(runtime.journal())),
+        runtime.flushJournal().catchError((Object _) {
+          // Critical dispatch awaits flushJournal and surfaces the failure.
+        }),
       );
     });
   }
@@ -97,8 +105,9 @@ class WorkAgentLimitSettings extends Notifier<WorkAgentLimits> {
     final safe = WorkAgentLimits.fromJson(limits.toJson());
     if (!await ref
         .read(sharedPrefsProvider)
-        .setString('workAgentLimits.v1', jsonEncode(safe.toJson())))
+        .setString('workAgentLimits.v1', jsonEncode(safe.toJson()))) {
       throw StateError('代理限制保存失败');
+    }
     state = safe;
   }
 }

@@ -1,3 +1,4 @@
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:expert_chat/core/providers.dart';
 import 'package:expert_chat/data/character_repository.dart';
 import 'package:expert_chat/data/conversation_repository.dart';
@@ -172,11 +173,18 @@ class _FakeStudioAssetIo extends StudioAssetIo {
   Future<List<WorldInfoEntry>?> importWorldInfo() async => entries;
 }
 
+late SharedPreferences _testPreferences;
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  setUp(() async {
+    SharedPreferences.setMockInitialValues({});
+    _testPreferences = await SharedPreferences.getInstance();
+  });
   testWidgets('创作首页展示开始路径与素材入口', (tester) async {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          sharedPrefsProvider.overrideWithValue(_testPreferences),
           conversationRepositoryProvider.overrideWithValue(
             _MemoryConversationRepository(),
           ),
@@ -210,6 +218,7 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          sharedPrefsProvider.overrideWithValue(_testPreferences),
           conversationRepositoryProvider.overrideWithValue(
             _MemoryConversationRepository(),
           ),
@@ -248,6 +257,7 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          sharedPrefsProvider.overrideWithValue(_testPreferences),
           conversationRepositoryProvider.overrideWithValue(
             _MemoryConversationRepository(),
           ),
@@ -305,6 +315,7 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          sharedPrefsProvider.overrideWithValue(_testPreferences),
           conversationRepositoryProvider.overrideWithValue(conversations),
           characterRepositoryProvider.overrideWithValue(
             _MemoryCharacterRepository(),
@@ -344,6 +355,7 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          sharedPrefsProvider.overrideWithValue(_testPreferences),
           conversationRepositoryProvider.overrideWithValue(
             _MemoryConversationRepository(),
           ),
@@ -383,6 +395,7 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          sharedPrefsProvider.overrideWithValue(_testPreferences),
           conversationRepositoryProvider.overrideWithValue(
             _MemoryConversationRepository(),
           ),

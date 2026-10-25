@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'dart:convert';
 import 'dart:math' as math;
 
@@ -125,13 +126,13 @@ class _CommandActivityDialogState extends State<CommandActivityDialog> {
     try {
       await Clipboard.setData(ClipboardData(text: text));
       if (mounted) {
-        ScaffoldMessenger.maybeOf(
+        AppToastMessenger.maybeOf(
           context,
         )?.showSnackBar(SnackBar(content: Text('已复制$label')));
       }
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.maybeOf(
+        AppToastMessenger.maybeOf(
           context,
         )?.showSnackBar(const SnackBar(content: Text('复制失败，请选择文本复制')));
       }

@@ -74,14 +74,16 @@ class _ModelPricingDialogState extends ConsumerState<_ModelPricingDialog> {
               currency: currency.text.trim().toUpperCase(),
             ),
           );
-      if (mounted && ModalRoute.of(context)?.isCurrent == true)
+      if (mounted && ModalRoute.of(context)?.isCurrent == true) {
         Navigator.of(context).pop();
+      }
     } catch (e) {
-      if (mounted)
+      if (mounted) {
         setState(() {
           saving = false;
           error = '请检查单价：$e';
         });
+      }
     }
   }
 

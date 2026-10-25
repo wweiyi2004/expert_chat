@@ -1,3 +1,5 @@
+import '../domain/workbench/changes/review_path_identity.dart';
+import 'package:path/path.dart' as p;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 
@@ -5,6 +7,30 @@ import '../domain/workbench/changes/work_change_store.dart';
 import '../domain/workbench/changes/work_file_change.dart';
 
 export '../domain/workbench/changes/work_file_change.dart';
+
+(String, String) _physicalReviewLocation(
+  String target,
+  String scope,
+  String path,
+) {
+  final location = reviewPhysicalPath(target, scope, path);
+  if (location != null) {
+    return (location.authority, location.physical);
+  }
+  return ('$target:$scope', p.posix.normalize(path.replaceAll(r'\', '/')));
+}
+
+bool _affectedPublishedArtifact(WorkFileChange entry, WorkFileChange changed) {
+  if (!entry.isDelivery || entry.conversationId != changed.conversationId) {
+    return false;
+  }
+  final a = _physicalReviewLocation(entry.target, entry.scope, entry.path),
+      b = _physicalReviewLocation(changed.target, changed.scope, changed.path);
+  if (a.$1 != b.$1) return false;
+  if (a.$2 == b.$2) return entry.afterHash != changed.afterHash;
+  return entry.artifactManifest?['kind'] == 'directory' &&
+      (a.$2 == '.' || b.$2.startsWith('${a.$2}/'));
+}
 
 final workChangesProvider = NotifierProvider<WorkChanges, List<WorkFileChange>>(
   WorkChanges.new,
@@ -30,7 +56,6 @@ class WorkChanges extends Notifier<List<WorkFileChange>> {
       bool matches(WorkFileChange entry) =>
           entry.conversationId == conversation &&
           entry.assistantId == assistant &&
-          entry.target == target &&
           entry.deliveryHash != null;
       if (!entries.any(matches)) return entries;
       return [
@@ -147,13 +172,16 @@ class WorkChanges extends Notifier<List<WorkFileChange>> {
   Future<void> record({
     required String conversationId,
     String assistantId = '',
+    String roundId = '',
+    Map<String, dynamic>? artifactManifest,
     bool beforeKnown = true,
     bool textSnapshot = true,
     required String target,
     String scope = 'root',
     required String path,
     String? before,
-    required String after,
+    required String? after,
+    bool deleted = false,
     String? beforeHash,
     required String afterHash,
   }) => _update((entries) {
@@ -164,6 +192,7 @@ class WorkChanges extends Notifier<List<WorkFileChange>> {
           (entry) =>
               entry.conversationId == conversationId &&
               entry.assistantId == assistantId &&
+              entry.roundId == roundId &&
               entry.target == target &&
               entry.scope == scope &&
               entry.path == path &&
@@ -176,6 +205,10 @@ class WorkChanges extends Notifier<List<WorkFileChange>> {
       id: continuous ? previous.id : const Uuid().v4(),
       conversationId: conversationId,
       assistantId: assistantId,
+      roundId: roundId,
+      artifactManifest: artifactManifest,
+      textSnapshot: textSnapshot,
+      deleted: deleted,
       beforeKnown:
           textSnapshot && (continuous ? previous.beforeKnown : beforeKnown),
       target: target,
@@ -189,7 +222,10 @@ class WorkChanges extends Notifier<List<WorkFileChange>> {
     );
     return [
       for (final entry in entries)
-        if (entry.id != change.id) entry,
+        if (entry.id != change.id)
+          _affectedPublishedArtifact(entry, change)
+              ? entry.withDelivery(false)
+              : entry,
       change,
     ];
   });

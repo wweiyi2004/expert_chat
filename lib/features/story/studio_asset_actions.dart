@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -9,7 +10,7 @@ import '../../state/world_info_controller.dart';
 final studioAssetIoProvider = Provider<StudioAssetIo>((_) => StudioAssetIo());
 
 void _toast(BuildContext context, String message) {
-  ScaffoldMessenger.of(context)
+  AppToastMessenger.of(context)
     ..hideCurrentSnackBar()
     ..showSnackBar(
       SnackBar(content: Text(message), behavior: SnackBarBehavior.floating),
@@ -20,7 +21,7 @@ void _toast(BuildContext context, String message) {
 /// reports how many actually landed so a mid-batch failure cannot masquerade
 /// as a complete one (and the user knows a re-import may duplicate).
 Future<void> importCharactersAction(BuildContext context, WidgetRef ref) async {
-  final messenger = ScaffoldMessenger.of(context);
+  final messenger = AppToastMessenger.of(context);
   try {
     final cards = await ref.read(studioAssetIoProvider).importCharacters();
     if (cards == null) return;

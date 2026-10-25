@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart'
@@ -43,7 +44,7 @@ Future<RecentPhotoPickResult?> showRecentPhotoPicker(
   );
   if (!permission.isAuth && !permission.hasAccess) {
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppToastMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('未获得相册权限，将使用系统文件选择器'),
           behavior: SnackBarBehavior.floating,
@@ -192,7 +193,7 @@ class _RecentPhotoSheetBodyState extends State<_RecentPhotoSheetBody> {
       if (_selected.containsKey(asset.id)) {
         _selected.remove(asset.id);
       } else if (_selected.length >= widget.maxCount) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        AppToastMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('最多选择 ${widget.maxCount} 张'),
             behavior: SnackBarBehavior.floating,

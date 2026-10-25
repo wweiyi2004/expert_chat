@@ -44,8 +44,12 @@ int nextReasoningTranslationEnd(
     start + (source.length - start >= 300 ? 300 : 0),
   );
   if (paragraph >= start + 300 && paragraph + 2 <= end) end = paragraph + 2;
-  if (end == source.length && !flushTail && end - start < 1500 && paragraph < 0)
+  if (end == source.length &&
+      !flushTail &&
+      end - start < 1500 &&
+      paragraph < 0) {
     return start;
+  }
   for (final span in reasoningProtectedPattern.allMatches(source)) {
     if (span.start < end && span.end > end) {
       end = span.start > start ? span.start : span.end;
@@ -62,8 +66,9 @@ int nextReasoningTranslationEnd(
   }
   if (!sourceComplete) {
     final unfinished = unfinishedReasoningProtectedStart(source);
-    if (unfinished != null && end > unfinished)
+    if (unfinished != null && end > unfinished) {
       end = unfinished.clamp(start, end);
+    }
   }
   return end;
 }
@@ -91,8 +96,9 @@ int? unfinishedReasoningProtectedStart(String source) {
     }
     if (opening == null) continue;
     var end = source.indexOf(closing!, i + opening.length);
-    while (end > 0 && source[end - 1] == r'\')
+    while (end > 0 && source[end - 1] == r'\') {
       end = source.indexOf(closing, end + closing.length);
+    }
     if (end < 0) return i;
     i = end + closing.length - 1;
   }
@@ -130,8 +136,9 @@ class ReasoningTranslationState {
   String? textFor(int index, String exactSource) {
     if (index >= sources.length ||
         sources[index] != exactSource ||
-        !translatedSegments.containsKey(index))
+        !translatedSegments.containsKey(index)) {
       return null;
+    }
     return '${translatedSegments[index]}${exactSource.substring(translatedSourceLengths[index] ?? 0)}';
   }
 }

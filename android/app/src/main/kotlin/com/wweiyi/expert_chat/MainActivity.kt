@@ -30,6 +30,24 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "expert_chat/device_agent")
+            .setMethodCallHandler { call, result ->
+                if (call.method == "settings") {
+                    startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                    result.success(null)
+                } else if (call.method == "status") {
+                    result.success(DeviceAgentService.current?.status() ?: mapOf("enabled" to false, "armed" to false, "sdk" to Build.VERSION.SDK_INT))
+                } else {
+                    if (call.method == "arm" && Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                        requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 7523)
+                        result.error("notification_consent", "Allow notifications, then tap Arm again", null)
+                        return@setMethodCallHandler
+                    }
+                    val service = DeviceAgentService.current
+                    if (service == null) result.error("consent_required", "Enable Expert Chat in Android accessibility settings first", null)
+                    else service.handle(call.method, call.arguments as? Map<*, *>, result)
+                }
+            }
         uploadDirectory.attach(
             MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "expert_chat/upload_directory"),
         )

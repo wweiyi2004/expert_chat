@@ -138,12 +138,13 @@ class _WorkspaceCommandPanelState extends State<WorkspaceCommandPanel> {
       setState(() => _opening = false);
       _focusTerminal();
     } catch (error) {
-      if (mounted)
+      if (mounted) {
         setState(() {
           _opening = false;
           _exited = true;
           _error = '$error';
         });
+      }
     }
   }
 

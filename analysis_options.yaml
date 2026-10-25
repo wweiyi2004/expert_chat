@@ -29,6 +29,9 @@ linter:
 
 analyzer:
   exclude:
+    # Vendored packages carry their own manifests and upstream lint policy.
+    # Root app imports are still type checked; do not rewrite vendor examples.
+    - third_party/**
     - tmp/**
     - output/**
     - remote_lab_ui/node_modules/**

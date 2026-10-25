@@ -1,12 +1,28 @@
 import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/providers.dart';
-import '../data/settings_storage_keys.dart';
 import '../domain/llm/llm_provider.dart';
 import 'settings_controller.dart';
 import 'model_service_routing.dart';
+import 'model_route_groups.dart';
+import 'model_context.dart';
+import 'model_service_credentials.dart';
+import '../domain/llm/model_credentials_unavailable.dart';
 
 const autoModelChoice = '__auto__';
+const modelSourcePrefix = '__source__:';
+String modelSourceChoice(String profile, String model) =>
+    '$modelSourcePrefix${Uri.encodeComponent(profile)}:${Uri.encodeComponent(model)}';
+({String profile, String model})? parseModelSourceChoice(String choice) {
+  if (!choice.startsWith(modelSourcePrefix)) return null;
+  final parts = choice.substring(modelSourcePrefix.length).split(':');
+  if (parts.length != 2) return null;
+  return (
+    profile: Uri.decodeComponent(parts[0]),
+    model: Uri.decodeComponent(parts[1]),
+  );
+}
+
 final conversationModelChoiceProvider =
     NotifierProvider<ConversationModelChoice, Map<String, String>>(
       ConversationModelChoice.new,
@@ -25,8 +41,9 @@ class ConversationModelChoice extends Notifier<Map<String, String>> {
     final next = {...state, conversation: model};
     if (!await ref
         .read(sharedPrefsProvider)
-        .setString('conversationModelChoices', jsonEncode(next)))
+        .setString('conversationModelChoices', jsonEncode(next))) {
       throw StateError('模型选择保存失败');
+    }
     if (ref.mounted) state = next;
   }
 }
@@ -49,13 +66,14 @@ Future<LlmConfig> resolveConversationModel(
       ? choiceOverride
       : ref.read(conversationModelChoiceProvider)[conversation];
   if (settings == null || choice == null) return fallback;
+  await ref.read(settingsControllerProvider.notifier).waitForProfileMutations();
   final keys = <String, String>{};
   for (final profile in settings.profiles) {
-    keys[profile.id] =
-        await ref
-            .read(secureStorageProvider)
-            .read(key: providerApiKeyStorageKey(profile.id)) ??
-        '';
+    final coherent = await readCoherentModelService(ref, profile.id);
+    if (coherent.profile.toJson().toString() != profile.toJson().toString()) {
+      throw const ModelCredentialsUnavailable('channel_descriptor_changed');
+    }
+    keys[profile.id] = coherent.apiKey;
   }
   final availableProfiles = settings.profiles
       .where(
@@ -63,7 +81,58 @@ Future<LlmConfig> resolveConversationModel(
             profile.authMode != 'apiKey' || keys[profile.id]!.isNotEmpty,
       )
       .toList();
-  var model = choice;
+  final source = parseModelSourceChoice(choice);
+  var model = source?.model ?? choice;
+  final policy = ref.read(modelRouteGroupsProvider);
+  final groupId = choice.startsWith(modelGroupPrefix)
+      ? choice.substring(modelGroupPrefix.length)
+      : choice == autoModelChoice
+      ? policy.autoGroup
+      : '';
+  final group = policy.groups.where((group) => group.id == groupId).firstOrNull;
+  if (choice.startsWith(modelGroupPrefix) && group == null) {
+    throw StateError('所选模型路由组已删除，请重新选择');
+  }
+  if (group != null) {
+    final options = <LlmConfig>[];
+    for (final id in group.models) {
+      final capabilities = ModelCapabilities.resolve(id);
+      if ((work && !capabilities.supportsTools) ||
+          (images && !capabilities.supportsVision)) {
+        continue;
+      }
+      final services = servicesForModel(
+        id,
+        availableProfiles,
+        servicePrioritiesOverride ?? ref.read(modelServiceRoutingProvider),
+      );
+      if (services.isEmpty) continue;
+      final profile = services.first;
+      final candidate = fallback.copyWith(
+        lockProfile: false,
+        model: id,
+        profileId: profile.id,
+        baseUrl: profile.baseUrl,
+        apiFormat: profile.apiFormat,
+        authMode: profile.authMode,
+        apiKey: keys[profile.id] ?? '',
+        modelFallbacks: const [],
+      );
+      options.add(
+        applyContextConfig(
+          candidate,
+          effectiveContextPrefs(settings, candidate),
+        ),
+      );
+    }
+    if (options.isEmpty) throw StateError('模型路由组没有符合本任务能力且已配置的模型');
+    return applyReportedModelCapabilities(
+      settings,
+      options.first.copyWith(
+        modelFallbacks: group.failover ? options.skip(1).toList() : const [],
+      ),
+    );
+  }
   if (choice == autoModelChoice) {
     // Capability routing avoids another paid model call just to select a model.
     final candidates = serviceModelCatalog(availableProfiles).where((id) {
@@ -89,18 +158,32 @@ Future<LlmConfig> resolveConversationModel(
   }
   final services = servicesForModel(
     model,
-    choice == autoModelChoice ? availableProfiles : settings.profiles,
+    source != null
+        ? settings.profiles.where((p) => p.id == source.profile).toList()
+        : choice == autoModelChoice
+        ? availableProfiles
+        : settings.profiles,
     servicePrioritiesOverride ?? ref.read(modelServiceRoutingProvider),
   );
-  if (services.isEmpty) return fallback;
+  if (services.isEmpty) {
+    if (choice != autoModelChoice) {
+      throw StateError('所选模型已没有配置渠道，请重新选择模型；不会自动改用其他模型。');
+    }
+    return fallback;
+  }
   final provider = services.first;
   final key = keys[provider.id] ?? '';
-  return fallback.copyWith(
-    model: model,
-    profileId: provider.id,
-    baseUrl: provider.baseUrl,
-    apiFormat: provider.apiFormat,
-    authMode: provider.authMode,
-    apiKey: key,
+  return applyReportedModelCapabilities(
+    settings,
+    fallback.copyWith(
+      modelFallbacks: const [],
+      lockProfile: source != null,
+      model: model,
+      profileId: provider.id,
+      baseUrl: provider.baseUrl,
+      apiFormat: provider.apiFormat,
+      authMode: provider.authMode,
+      apiKey: key,
+    ),
   );
 }

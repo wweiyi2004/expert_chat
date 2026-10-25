@@ -1,4 +1,5 @@
 import 'dart:async';
+import '../../../domain/html/preview_viewport.dart';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -8,7 +9,8 @@ import 'package:webview_windows/webview_windows.dart' as windows;
 
 /// One immutable render session. The owner replaces its key to refresh content.
 class LocalHtmlSurface extends StatefulWidget {
-  const LocalHtmlSurface({super.key, required this.document});
+  const LocalHtmlSurface({super.key, required this.document, this.zoom});
+  final double? zoom;
   final String document;
 
   @override
@@ -20,6 +22,7 @@ class _LocalHtmlSurfaceState extends State<LocalHtmlSurface> {
   WebViewController? _mobile;
   StreamSubscription<windows.WebErrorStatus>? _loadErrors;
   String? _error;
+  StreamSubscription<windows.LoadingState>? _loading;
 
   @override
   void initState() {
@@ -48,6 +51,12 @@ class _LocalHtmlSurfaceState extends State<LocalHtmlSurface> {
           if (mounted) setState(() => _error = '页面加载失败，请刷新预览。');
         });
         setState(() => _windows = controller);
+        unawaited(_applyZoom());
+        _loading = controller.loadingState.listen((state) {
+          if (state == windows.LoadingState.navigationCompleted) {
+            unawaited(_applyZoom());
+          }
+        });
         pending =
             null; // Ownership passes to dispose only after initialization.
       } else if (!kIsWeb &&
@@ -62,6 +71,7 @@ class _LocalHtmlSurfaceState extends State<LocalHtmlSurface> {
         await controller.setBackgroundColor(Colors.white);
         await controller.setNavigationDelegate(
           NavigationDelegate(
+            onPageFinished: (_) => unawaited(_applyZoom()),
             onNavigationRequest: (request) =>
                 request.url == baseUrl ||
                     request.url.startsWith('$baseUrl#') ||
@@ -79,7 +89,10 @@ class _LocalHtmlSurfaceState extends State<LocalHtmlSurface> {
         );
         if (!mounted) return;
         await controller.loadHtmlString(widget.document, baseUrl: baseUrl);
-        if (mounted) setState(() => _mobile = controller);
+        if (mounted) {
+          setState(() => _mobile = controller);
+          unawaited(_applyZoom());
+        }
       } else {
         if (mounted) setState(() => _error = '可使用右上角的浏览器按钮打开本地预览。');
       }
@@ -103,8 +116,25 @@ class _LocalHtmlSurfaceState extends State<LocalHtmlSurface> {
   }
 
   @override
+  void didUpdateWidget(covariant LocalHtmlSurface oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.zoom != widget.zoom) unawaited(_applyZoom());
+  }
+
+  Future<void> _applyZoom() async {
+    try {
+      final script = previewSetZoomScript(widget.zoom);
+      if (_windows != null) await _windows!.executeScript(script);
+      if (_mobile != null) await _mobile!.runJavaScript(script);
+    } catch (_) {
+      // Navigation/disposal may interrupt an adjustment; next load restores it.
+    }
+  }
+
+  @override
   void dispose() {
     unawaited(_loadErrors?.cancel());
+    unawaited(_loading?.cancel());
     final controller = _windows;
     if (controller != null) unawaited(_release(controller));
     super.dispose();

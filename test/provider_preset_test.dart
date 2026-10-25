@@ -32,16 +32,41 @@ void main() {
     final names = ProviderPreset.presets.map((p) => p.name).toList();
     expect(names.toSet().length, names.length);
     expect(ProviderPreset.presets.length, greaterThanOrEqualTo(35));
+    const accountDiscoveryPresets = {
+      'OpenCode Console / Zen (OpenAI)',
+      'OpenCode Go (OpenAI)',
+      'OpenCode Console (Claude)',
+      'OpenCode Go (Claude)',
+      'OpenCode Console (Gemini)',
+      'OpenCode Go (Gemini)',
+      '智谱 GLM Coding Plan',
+      'Z.AI GLM Coding Plan',
+      'Kimi Code / Coding Plan',
+      '阿里云 Coding Plan',
+      'MiniMax M Plan / Coding Plan',
+      'Anthropic Claude API',
+    };
 
     for (final preset in ProviderPreset.presets) {
       expect(preset.baseUrl, isNotEmpty, reason: preset.name);
-      expect(preset.chatModel, isNotEmpty, reason: preset.name);
-      expect(preset.models, contains(preset.chatModel), reason: preset.name);
-      expect(
-        preset.models,
-        contains(preset.reasonerModel),
-        reason: preset.name,
-      );
+      if (accountDiscoveryPresets.contains(preset.name)) {
+        expect(
+          preset.models,
+          isEmpty,
+          reason: 'Account entitlements must come from a real scan',
+        );
+        expect(preset.chatModel, isEmpty);
+        expect(preset.reasonerModel, isEmpty);
+        expect(preset.hint, isNotEmpty);
+      } else {
+        expect(preset.chatModel, isNotEmpty, reason: preset.name);
+        expect(preset.models, contains(preset.chatModel), reason: preset.name);
+        expect(
+          preset.models,
+          contains(preset.reasonerModel),
+          reason: preset.name,
+        );
+      }
       final uri = Uri.parse(preset.baseUrl);
       expect(uri.hasScheme, isTrue, reason: preset.name);
       expect(

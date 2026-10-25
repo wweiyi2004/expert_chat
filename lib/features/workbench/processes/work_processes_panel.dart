@@ -1,10 +1,16 @@
+import 'package:expert_chat/core/app_toast.dart';
 import '../workbench_split_view.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../state/work_processes.dart';
 
 class WorkProcessesPanel extends ConsumerStatefulWidget {
-  const WorkProcessesPanel({super.key, required this.conversationId});
+  const WorkProcessesPanel({
+    super.key,
+    required this.conversationId,
+    this.initialTab = 0,
+  });
+  final int initialTab;
   final String conversationId;
   @override
   ConsumerState<WorkProcessesPanel> createState() => _WorkProcessesPanelState();
@@ -20,6 +26,7 @@ class _WorkProcessesPanelState extends ConsumerState<WorkProcessesPanel> {
       listenable: Listenable.merge([runtime, hooks]),
       builder: (context, _) {
         return DefaultTabController(
+          initialIndex: widget.initialTab.clamp(0, 2),
           length: 3,
           child: Column(
             children: [
@@ -55,7 +62,7 @@ class _WorkProcessesPanelState extends ConsumerState<WorkProcessesPanel> {
         .toList()
         .reversed
         .toList();
-    if (records.isEmpty)
+    if (records.isEmpty) {
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
@@ -80,6 +87,7 @@ class _WorkProcessesPanelState extends ConsumerState<WorkProcessesPanel> {
           ),
         ),
       );
+    }
     final selected =
         records.where((r) => r.id == _selected).firstOrNull ?? records.first;
     final list = ListView.builder(
@@ -378,17 +386,19 @@ class _WorkProcessesPanelState extends ConsumerState<WorkProcessesPanel> {
     );
     command.dispose();
     path.dispose();
-    if (saved == true && mounted)
-      ScaffoldMessenger.of(
+    if (saved == true && mounted) {
+      AppToastMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('Hook 已保存并启用')));
+    }
   }
 
   void _error(Object error) {
-    if (mounted)
-      ScaffoldMessenger.of(
+    if (mounted) {
+      AppToastMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('$error')));
+    }
   }
 }
 

@@ -22,8 +22,9 @@ class ToolMarkupFilter {
       return '';
     }
     if (_openers.any((opener) => opener.startsWith(leading)) &&
-        _pending.length < 128)
+        _pending.length < 128) {
       return '';
+    }
     _plainText = true;
     final result = _pending;
     _pending = '';

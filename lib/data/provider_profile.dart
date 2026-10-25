@@ -145,6 +145,7 @@ class ProviderPreset {
   final LlmApiFormat apiFormat;
 
   ProviderProfile toProfile() => ProviderProfile(
+    authMode: group == ProviderPresetGroup.local ? 'none' : 'apiKey',
     name: name,
     baseUrl: baseUrl,
     chatModel: chatModel,

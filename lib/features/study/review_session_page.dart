@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -52,7 +53,7 @@ class _ReviewSessionPageState extends ConsumerState<ReviewSessionPage> {
       });
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
+      AppToastMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('保存复习结果失败：$e')));
     } finally {
@@ -79,12 +80,12 @@ class _ReviewSessionPageState extends ConsumerState<ReviewSessionPage> {
             ),
           );
       if (!mounted) return;
-      ScaffoldMessenger.of(
+      AppToastMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('已加入错题本')));
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
+      AppToastMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('加入错题本失败：$error')));
     }

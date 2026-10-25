@@ -100,187 +100,194 @@ class _ReadingAppearanceSettingsState extends State<ReadingAppearanceSettings> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colors = theme.colorScheme;
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: colors.surfaceContainerLow,
+    return Material(
+      color: colors.surfaceContainerLow,
+      shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: colors.outlineVariant),
+        side: BorderSide(color: colors.outlineVariant),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            children: [
-              Expanded(child: Text('阅读排版', style: theme.textTheme.titleMedium)),
-              TextButton(
-                onPressed: () => _save(
-                  _draft.copyWith(
-                    lineHeight: 1.85,
-                    paragraphSpacing: 8,
-                    messageSpacing: 24,
-                    adaptiveMessagePadding: true,
-                    messagePadding: 32,
-                    workMessageStyle: MessageStylePref.document,
-                    workContentWidth: ContentWidthPref.full,
-                    popoverMaxHeight: 420,
-                    popoverTopMargin: 40,
-                  ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text('阅读排版', style: theme.textTheme.titleMedium),
                 ),
-                child: const Text('恢复默认'),
-              ),
-            ],
-          ),
-          Text('拖动时预览，松手后自动保存并应用到回复。', style: theme.textTheme.bodySmall),
-          const SizedBox(height: 12),
-          Theme(
-            data: theme.copyWith(extensions: [AppMetrics.fromPrefs(_draft)]),
-            child: Builder(
-              builder: (previewContext) => LayoutBuilder(
-                builder: (context, constraints) {
-                  final padding = _draft.horizontalMessagePadding(
-                    constraints.maxWidth,
-                  );
-                  return Container(
-                    decoration: BoxDecoration(
-                      color: colors.surface,
-                      border: Border.all(color: colors.outlineVariant),
-                      borderRadius: BorderRadius.circular(12),
+                TextButton(
+                  onPressed: () => _save(
+                    _draft.copyWith(
+                      lineHeight: 1.7,
+                      paragraphSpacing: 8,
+                      messageSpacing: 24,
+                      adaptiveMessagePadding: true,
+                      messagePadding: 32,
+                      workMessageStyle: MessageStylePref.document,
+                      workContentWidth: ContentWidthPref.full,
+                      popoverMaxHeight: 420,
+                      popoverTopMargin: 40,
                     ),
-                    padding: EdgeInsets.symmetric(
-                      horizontal: padding,
-                      vertical: 16,
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Text(
-                          '工作回复预览',
-                          style: theme.textTheme.labelSmall?.copyWith(
-                            color: colors.onSurfaceVariant,
+                  ),
+                  child: const Text('恢复默认'),
+                ),
+              ],
+            ),
+            Text('拖动时预览，松手后自动保存并应用到回复。', style: theme.textTheme.bodySmall),
+            const SizedBox(height: 12),
+            Theme(
+              data: theme.copyWith(extensions: [AppMetrics.fromPrefs(_draft)]),
+              child: Builder(
+                builder: (previewContext) => LayoutBuilder(
+                  builder: (context, constraints) {
+                    final padding = _draft.horizontalMessagePadding(
+                      constraints.maxWidth,
+                    );
+                    return Container(
+                      decoration: BoxDecoration(
+                        color: colors.surface,
+                        border: Border.all(color: colors.outlineVariant),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      padding: EdgeInsets.symmetric(
+                        horizontal: padding,
+                        vertical: 16,
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Text(
+                            '工作回复预览',
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              color: colors.onSurfaceVariant,
+                            ),
                           ),
-                        ),
-                        const SizedBox(height: 8),
-                        Container(
-                          padding:
-                              _draft.workMessageStyle == MessageStylePref.bubble
-                              ? const EdgeInsets.all(12)
-                              : EdgeInsets.zero,
-                          decoration:
-                              _draft.workMessageStyle == MessageStylePref.bubble
-                              ? BoxDecoration(
-                                  color: colors.surfaceContainer,
-                                  borderRadius: BorderRadius.circular(16),
-                                  border: Border.all(
-                                    color: colors.outlineVariant,
-                                  ),
-                                )
-                              : null,
-                          child: StreamingGptMarkdown(
-                            '正文会按设定的行距换行。读较长的分析、代码说明和工作报告时，可以适当调宽行距。\n\n这是第二段，用来观察段落之间的距离。',
-                            markdownStyle: _draft.markdownStyle,
+                          const SizedBox(height: 8),
+                          Container(
+                            padding:
+                                _draft.workMessageStyle ==
+                                    MessageStylePref.bubble
+                                ? const EdgeInsets.all(12)
+                                : EdgeInsets.zero,
+                            decoration:
+                                _draft.workMessageStyle ==
+                                    MessageStylePref.bubble
+                                ? BoxDecoration(
+                                    color: colors.surfaceContainer,
+                                    borderRadius: BorderRadius.circular(16),
+                                    border: Border.all(
+                                      color: colors.outlineVariant,
+                                    ),
+                                  )
+                                : null,
+                            child: StreamingGptMarkdown(
+                              '正文会按设定的行距换行。读较长的分析、代码说明和工作报告时，可以适当调宽行距。\n\n这是第二段，用来观察段落之间的距离。',
+                              markdownStyle: _draft.markdownStyle,
+                            ),
                           ),
-                        ),
-                        SizedBox(height: _draft.messageSpacing),
-                        Text(
-                          '下一条消息',
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: colors.onSurfaceVariant,
+                          SizedBox(height: _draft.messageSpacing),
+                          Text(
+                            '下一条消息',
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: colors.onSurfaceVariant,
+                            ),
                           ),
-                        ),
-                      ],
-                    ),
-                  );
-                },
+                        ],
+                      ),
+                    );
+                  },
+                ),
               ),
             ),
-          ),
-          const SizedBox(height: 18),
-          _slider(
-            '正文行距',
-            _draft.lineHeight,
-            1.2,
-            2.4,
-            24,
-            (v) => _draft.copyWith(lineHeight: v),
-            label: '${_draft.lineHeight.toStringAsFixed(2)} 倍',
-          ),
-          _slider(
-            '段落间距',
-            _draft.paragraphSpacing,
-            0,
-            24,
-            12,
-            (v) => _draft.copyWith(paragraphSpacing: v),
-          ),
-          _slider(
-            '消息间距',
-            _draft.messageSpacing,
-            8,
-            48,
-            20,
-            (v) => _draft.copyWith(messageSpacing: v),
-          ),
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('左右留白自适应'),
-            subtitle: const Text('跟随对话栏宽度，窄屏自动收紧'),
-            value: _draft.adaptiveMessagePadding,
-            onChanged: (v) => _save(_draft.copyWith(adaptiveMessagePadding: v)),
-          ),
-          _slider(
-            '左右留白',
-            _draft.messagePadding,
-            12,
-            72,
-            15,
-            (v) => _draft.copyWith(messagePadding: v),
-            enabled: !_draft.adaptiveMessagePadding,
-          ),
-          _choices(
-            '工作回复样式',
-            MessageStylePref.values,
-            _draft.workMessageStyle,
-            (v) => v == MessageStylePref.document ? '无气泡' : '气泡',
-            (v) => _draft.copyWith(workMessageStyle: v),
-          ),
-          _choices(
-            '工作内容宽度',
-            ContentWidthPref.values,
-            _draft.workContentWidth,
-            (v) => v.label,
-            (v) => _draft.copyWith(workContentWidth: v),
-          ),
-          ExpansionTile(
-            tilePadding: EdgeInsets.zero,
-            title: const Text('悬浮框尺寸'),
-            children: [
-              _slider(
-                '最大高度',
-                _draft.popoverMaxHeight,
-                280,
-                600,
-                16,
-                (v) => _draft.copyWith(popoverMaxHeight: v),
-              ),
-              _slider(
-                '顶部留白',
-                _draft.popoverTopMargin,
-                16,
-                64,
-                12,
-                (v) => _draft.copyWith(popoverTopMargin: v),
-              ),
-              const Padding(
-                padding: EdgeInsets.only(bottom: 8),
-                child: Text(
-                  '模型、项目、文件和 MCP 弹层共用；屏幕空间不足时自动缩小。',
-                  style: TextStyle(fontSize: 12),
+            const SizedBox(height: 18),
+            _slider(
+              '正文行距',
+              _draft.lineHeight,
+              1.2,
+              2.4,
+              24,
+              (v) => _draft.copyWith(lineHeight: v),
+              label: '${_draft.lineHeight.toStringAsFixed(2)} 倍',
+            ),
+            _slider(
+              '段落间距',
+              _draft.paragraphSpacing,
+              0,
+              24,
+              12,
+              (v) => _draft.copyWith(paragraphSpacing: v),
+            ),
+            _slider(
+              '消息间距',
+              _draft.messageSpacing,
+              8,
+              48,
+              20,
+              (v) => _draft.copyWith(messageSpacing: v),
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('左右留白自适应'),
+              subtitle: const Text('跟随对话栏宽度，工作消息保留更充足的左右留白'),
+              value: _draft.adaptiveMessagePadding,
+              onChanged: (v) =>
+                  _save(_draft.copyWith(adaptiveMessagePadding: v)),
+            ),
+            _slider(
+              '左右留白',
+              _draft.messagePadding,
+              12,
+              72,
+              15,
+              (v) => _draft.copyWith(messagePadding: v),
+              enabled: !_draft.adaptiveMessagePadding,
+            ),
+            _choices(
+              '工作回复样式',
+              MessageStylePref.values,
+              _draft.workMessageStyle,
+              (v) => v == MessageStylePref.document ? '无气泡' : '气泡',
+              (v) => _draft.copyWith(workMessageStyle: v),
+            ),
+            _choices(
+              '工作内容宽度',
+              ContentWidthPref.values,
+              _draft.workContentWidth,
+              (v) => v.label,
+              (v) => _draft.copyWith(workContentWidth: v),
+            ),
+            ExpansionTile(
+              tilePadding: EdgeInsets.zero,
+              title: const Text('悬浮框尺寸'),
+              children: [
+                _slider(
+                  '最大高度',
+                  _draft.popoverMaxHeight,
+                  280,
+                  600,
+                  16,
+                  (v) => _draft.copyWith(popoverMaxHeight: v),
                 ),
-              ),
-            ],
-          ),
-        ],
+                _slider(
+                  '顶部留白',
+                  _draft.popoverTopMargin,
+                  16,
+                  64,
+                  12,
+                  (v) => _draft.copyWith(popoverTopMargin: v),
+                ),
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 8),
+                  child: Text(
+                    '模型、项目、文件和 MCP 弹层共用；屏幕空间不足时自动缩小。',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }

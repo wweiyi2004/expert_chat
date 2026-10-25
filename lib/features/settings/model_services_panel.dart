@@ -11,9 +11,19 @@ import '../../state/model_service_credentials.dart';
 import '../../state/model_service_routing.dart';
 import '../../state/settings_controller.dart';
 import 'model_service_editor.dart';
+import '../../core/prototype_widgets.dart';
+import 'widgets/model_route_diagnostics_panel.dart';
+import 'widgets/model_route_groups_panel.dart';
+import 'widgets/magpie_companion_panel.dart';
 
 class ModelServicesPanel extends ConsumerStatefulWidget {
-  const ModelServicesPanel({super.key});
+  const ModelServicesPanel({
+    super.key,
+    this.embedded = false,
+    this.beforeSubscriptions,
+  });
+  final Widget? beforeSubscriptions;
+  final bool embedded;
   @override
   ConsumerState<ModelServicesPanel> createState() => _ModelServicesPanelState();
 }
@@ -116,13 +126,15 @@ class _ModelServicesPanelState extends ConsumerState<ModelServicesPanel> {
       await ref
           .read(settingsControllerProvider.notifier)
           .saveModelService(profile, '');
+      ref.invalidate(_chatGptAccountRecordProvider(id));
       if (mounted) setState(() => _selected = models.first);
     } catch (error) {
-      if (mounted && !token.isCancelled)
+      if (mounted && !token.isCancelled) {
         setState(
           () => _error =
               '${authorized ? '账号已授权，模型扫描未完成' : _loginStage}：${describeChatGptAuthFailure(error)}',
         );
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -164,8 +176,9 @@ class _ModelServicesPanelState extends ConsumerState<ModelServicesPanel> {
       await ref
           .read(settingsControllerProvider.notifier)
           .deleteProfile(profile.id);
-      if (!revoked && mounted)
+      if (!revoked && mounted) {
         setState(() => _error = '本机已退出；远程撤销未确认，可在 ChatGPT 设置中断开此应用。');
+      }
     } catch (error) {
       if (mounted) setState(() => _error = '$error');
     }
@@ -185,13 +198,17 @@ class _ModelServicesPanelState extends ConsumerState<ModelServicesPanel> {
     final services = selected == null
         ? <ProviderProfile>[]
         : servicesForModel(selected, settings.profiles, priorities);
-    return Column(
+    return _serviceSettingsPanels(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text('模型与服务', style: Theme.of(context).textTheme.titleLarge),
+        if (!widget.embedded)
+          Text('模型与服务', style: Theme.of(context).textTheme.titleLarge),
         const SizedBox(height: 8),
-        const Text('选择模型，管理哪些服务提供它，并拖动调整使用顺序。'),
-        const SizedBox(height: 18),
+        Text(
+          '选择模型，管理哪些服务提供它，并拖动调整使用顺序。',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        const SizedBox(height: 8),
         if (selected != null)
           DropdownMenu<String>(
             key: ValueKey('models-$selected-${models.length}'),
@@ -200,6 +217,18 @@ class _ModelServicesPanelState extends ConsumerState<ModelServicesPanel> {
             enableSearch: true,
             expandedInsets: EdgeInsets.zero,
             label: const Text('模型'),
+            textStyle: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(fontSize: 13),
+            inputDecorationTheme: Theme.of(context).inputDecorationTheme
+                .copyWith(
+                  isDense: true,
+                  constraints: const BoxConstraints(
+                    minHeight: 34,
+                    maxHeight: 40,
+                  ),
+                  floatingLabelBehavior: FloatingLabelBehavior.never,
+                ),
             dropdownMenuEntries: [
               for (final model in models)
                 DropdownMenuEntry(value: model, label: model),
@@ -210,15 +239,16 @@ class _ModelServicesPanelState extends ConsumerState<ModelServicesPanel> {
         if (selected != null)
           Align(
             alignment: Alignment.centerLeft,
-            child: FilledButton.tonalIcon(
+            child: PrototypeButton(
+              small: true,
+              variant: PrototypeButtonVariant.ghost,
               onPressed: () => _use(selected),
-              icon: const Icon(Icons.check_circle_outline, size: 18),
-              label: Text(
-                settings.model == selected &&
-                        settings.activeProfileId == services.firstOrNull?.id
-                    ? '当前使用此模型'
-                    : '使用此模型',
-              ),
+              icon: Icons.check_circle_outline,
+              label:
+                  settings.model == selected &&
+                      settings.activeProfileId == services.firstOrNull?.id
+                  ? '当前使用此模型'
+                  : '使用此模型',
             ),
           ),
         const SizedBox(height: 16),
@@ -238,9 +268,8 @@ class _ModelServicesPanelState extends ConsumerState<ModelServicesPanel> {
             physics: const NeverScrollableScrollPhysics(),
             buildDefaultDragHandles: false,
             itemCount: services.length,
-            onReorder: (oldIndex, newIndex) async {
+            onReorderItem: (oldIndex, newIndex) async {
               final ids = services.map((p) => p.id).toList();
-              if (newIndex > oldIndex) newIndex--;
               ids.insert(newIndex, ids.removeAt(oldIndex));
               try {
                 await ref
@@ -255,9 +284,9 @@ class _ModelServicesPanelState extends ConsumerState<ModelServicesPanel> {
               return Card(
                 key: ValueKey(service.id),
                 child: ListTile(
-                  leading: CircleAvatar(
-                    radius: 15,
-                    child: Text('${index + 1}'),
+                  leading: Text(
+                    '${index + 1}',
+                    style: Theme.of(context).textTheme.bodySmall,
                   ),
                   title: Text(service.name),
                   subtitle: Text(
@@ -307,48 +336,50 @@ class _ModelServicesPanelState extends ConsumerState<ModelServicesPanel> {
           ),
         const SizedBox(height: 10),
         Text(
-          '按顺序尝试可用服务；收到内容后固定本轮服务。',
+          '仅在同一模型的渠道之间按优先级故障转移；收到内容后固定任务渠道。切换模型需要单独选择。',
           style: Theme.of(context).textTheme.bodySmall,
         ),
         const SizedBox(height: 20),
+        ModelRouteDiagnosticsPanel(profiles: settings.profiles),
+        const ModelRouteGroupsPanel(),
         Wrap(
           spacing: 10,
           runSpacing: 10,
           children: [
-            OutlinedButton.icon(
+            PrototypeButton(
+              small: true,
               onPressed: _busy ? null : _add,
-              icon: const Icon(Icons.add),
-              label: const Text('预设服务'),
+              icon: Icons.add,
+              label: '预设服务',
             ),
-            OutlinedButton.icon(
+            PrototypeButton(
+              small: true,
               onPressed: _busy ? null : () => _edit(),
-              icon: const Icon(Icons.link),
-              label: const Text('自定义 Base URL'),
+              icon: Icons.link,
+              label: '自定义 Base URL',
             ),
           ],
         ),
         const SizedBox(height: 22),
         Text('订阅与账号', style: Theme.of(context).textTheme.titleMedium),
+        const MagpieCompanionPanel(),
         const SizedBox(height: 8),
-        Card(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const ListTile(
-                leading: Icon(Icons.login),
-                title: Text('Codex / ChatGPT'),
-                subtitle: Text('通过 ChatGPT 官方授权连接账号并扫描可用模型'),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-                child: OutlinedButton(
-                  onPressed: _busy ? null : () => _signIn(),
-                  child: Text(
-                    _busy ? '$_loginStage…' : 'Continue with ChatGPT',
-                  ),
-                ),
-              ),
-            ],
+        Text('Codex / ChatGPT', style: Theme.of(context).textTheme.titleSmall),
+        const Text('通过系统浏览器授权订阅账号；登录凭据与 API Key 分开管理。'),
+        for (final profile in settings.profiles.where(
+          (p) => p.authMode == 'chatgpt',
+        ))
+          _ChatGptAccountCard(
+            profile: profile,
+            busy: _busy,
+            onSignIn: () => _signIn(profile),
+          ),
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: OutlinedButton.icon(
+            onPressed: _busy ? null : () => _signIn(),
+            icon: const Icon(Icons.person_add_alt),
+            label: Text(_busy ? '$_loginStage…' : '添加 ChatGPT 账号'),
           ),
         ),
         if (_busy)
@@ -435,6 +466,72 @@ class _ModelServicesPanelState extends ConsumerState<ModelServicesPanel> {
       ],
     );
   }
+
+  Widget _serviceSettingsPanels({
+    required CrossAxisAlignment crossAxisAlignment,
+    required List<Widget> children,
+  }) {
+    if (!widget.embedded) {
+      return Column(crossAxisAlignment: crossAxisAlignment, children: children);
+    }
+    final parts = <String, List<Widget>>{
+      '模型服务': [],
+      '默认模型': [],
+      '路由与故障转移': [],
+      '订阅与账号': [],
+    };
+    var current = '默认模型';
+    for (final child in children) {
+      if (child is SizedBox && child.child == null && child.height != null) {
+        continue;
+      }
+      if (child is Text && child.data == '订阅与账号') {
+        current = '订阅与账号';
+        continue;
+      }
+      if (child is Text && (child.data?.startsWith('提供此模型的服务') ?? false)) {
+        current = '模型服务';
+      }
+      if (child is ModelRouteDiagnosticsPanel ||
+          child is ModelRouteGroupsPanel) {
+        parts['路由与故障转移']!.add(child);
+        continue;
+      }
+      if (child is Wrap &&
+          child.children.any(
+            (w) => w is OutlinedButton || w is PrototypeButton,
+          )) {
+        parts['模型服务']!.add(child);
+        continue;
+      }
+      parts[current]!.add(child);
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        for (final part in parts.entries)
+          if (part.value.isNotEmpty) ...[
+            if (part.key == '订阅与账号' && widget.beforeSubscriptions != null) ...[
+              widget.beforeSubscriptions!,
+              const SizedBox(height: 16),
+            ],
+            PrototypePanel(
+              title: part.key,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (var i = 0; i < part.value.length; i++) ...[
+                    if (i > 0) const SizedBox(height: 8),
+                    part.value[i],
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+          ],
+      ],
+    );
+  }
 }
 
 class _ServicePresetPicker extends StatefulWidget {
@@ -481,4 +578,100 @@ class _ServicePresetPickerState extends State<_ServicePresetPicker> {
       ),
     ),
   );
+}
+
+final _chatGptAccountRecordProvider = FutureProvider.autoDispose
+    .family<Map<String, dynamic>?, String>(
+      (ref, id) => ref.watch(chatGptAuthProvider).saved(id),
+    );
+
+class _ChatGptAccountCard extends ConsumerStatefulWidget {
+  const _ChatGptAccountCard({
+    required this.profile,
+    required this.busy,
+    required this.onSignIn,
+  });
+  final ProviderProfile profile;
+  final bool busy;
+  final VoidCallback onSignIn;
+  @override
+  ConsumerState<_ChatGptAccountCard> createState() =>
+      _ChatGptAccountCardState();
+}
+
+class _ChatGptAccountCardState extends ConsumerState<_ChatGptAccountCard> {
+  bool _refreshing = false;
+  String? _status;
+  Future<void> _refresh() async {
+    setState(() {
+      _refreshing = true;
+      _status = null;
+    });
+    try {
+      await ref.read(chatGptAuthProvider).accessToken(widget.profile.id);
+      ref.invalidate(_chatGptAccountRecordProvider(widget.profile.id));
+      if (mounted) setState(() => _status = '登录凭据有效');
+    } catch (error) {
+      if (mounted) setState(() => _status = describeChatGptAuthFailure(error));
+    } finally {
+      if (mounted) setState(() => _refreshing = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final record = ref.watch(_chatGptAccountRecordProvider(widget.profile.id));
+    final saved = record.value;
+    final signedIn =
+        saved?['access_token'] is String &&
+        (saved!['access_token'] as String).isNotEmpty;
+    final email = saved?['email']?.toString();
+    final expiry = DateTime.tryParse(saved?['expires_at']?.toString() ?? '');
+    final expired = expiry != null && expiry.isBefore(DateTime.now());
+    return Card(
+      key: ValueKey('chatgpt-account-${widget.profile.id}'),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              email?.isNotEmpty == true
+                  ? 'ChatGPT · $email'
+                  : widget.profile.name,
+              style: Theme.of(context).textTheme.titleSmall,
+            ),
+            const SizedBox(height: 6),
+            Text(
+              record.isLoading
+                  ? '读取登录状态…'
+                  : record.hasError
+                  ? '无法读取登录状态'
+                  : signedIn
+                  ? '${expired ? '登录凭据待刷新' : '已登录'} · ${widget.profile.models.length} 个已扫描模型'
+                  : '未登录或登录凭据已移除',
+            ),
+            if (_status != null) Text(_status!),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                if (signedIn)
+                  OutlinedButton.icon(
+                    onPressed: _refreshing || widget.busy ? null : _refresh,
+                    icon: const Icon(Icons.refresh),
+                    label: Text(_refreshing ? '刷新中…' : '刷新登录状态'),
+                  ),
+                OutlinedButton(
+                  onPressed: widget.busy ? null : widget.onSignIn,
+                  child: Text(signedIn ? '重新授权并扫描模型' : 'Continue with ChatGPT'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }

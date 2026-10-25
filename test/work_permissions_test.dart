@@ -163,8 +163,9 @@ void main() {
           await db.close();
           if (p.basename(root.path).startsWith('expert-permission-test-') &&
               await root.parent.resolveSymbolicLinks() ==
-                  await Directory.systemTemp.resolveSymbolicLinks())
+                  await Directory.systemTemp.resolveSymbolicLinks()) {
             await root.delete(recursive: true);
+          }
         });
         await c.read(chatControllerProvider.future);
         final ctrl = c.read(chatControllerProvider.notifier);

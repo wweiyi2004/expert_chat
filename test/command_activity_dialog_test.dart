@@ -79,7 +79,7 @@ void main() {
     );
     await tester.tap(find.byKey(const ValueKey('work-round-toggle')));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('已运行命令'));
+    await tester.tap(find.textContaining('已运行命令 · '));
     await tester.pumpAndSettle();
     final commandWidget = tester.widget<SelectableText>(
       find.byKey(const ValueKey('command-detail-command')),

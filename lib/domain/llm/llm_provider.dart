@@ -21,7 +21,9 @@ class LlmConfig {
     this.maxOutputTokens,
     this.profileId,
     this.routingSessionId,
+    this.lockProfile = false,
     this.authMode = 'apiKey',
+    this.modelFallbacks = const [],
     // A public param feeding a private backing field (the getter falls back to
     // resolve()); an initializing formal can't keep the public name here.
     // ignore: prefer_initializing_formals
@@ -57,14 +59,27 @@ class LlmConfig {
   final int? maxOutputTokens;
   final String? profileId, routingSessionId;
   final String authMode;
+  final bool lockProfile;
+
+  /// Explicit user opt-in model group, captured at a full tool boundary.
+  /// Same-model channels remain the responsibility of PrioritizedLlmProvider.
+  final List<LlmConfig> modelFallbacks;
 
   ModelCapabilities get capabilities =>
       _capabilities ?? ModelCapabilities.resolve(model);
 
   /// Explicit format or the initial URL hint for auto mode. The router can
   /// learn a different working format; this getter does not perform I/O.
-  LlmApiFormat get effectiveApiFormat =>
-      GeminiEndpoint.resolveFormat(format: apiFormat, baseUrl: baseUrl);
+  LlmApiFormat get effectiveApiFormat {
+    final host = Uri.tryParse(baseUrl)?.host;
+    if (apiFormat == LlmApiFormat.auto &&
+        host == 'api.openai.com' &&
+        ModelCatalog.isConfigurableGpt(model) &&
+        ModelCatalog.normalizeId(model).startsWith('gpt-6')) {
+      return LlmApiFormat.openAiResponses;
+    }
+    return GeminiEndpoint.resolveFormat(format: apiFormat, baseUrl: baseUrl);
+  }
 
   Map<String, String> get transportHeaders =>
       Uri.tryParse(baseUrl)?.host == 'opencode.ai'
@@ -119,7 +134,9 @@ class LlmConfig {
     bool clearMaxOutputTokens = false,
     String? profileId,
     String? routingSessionId,
+    bool? lockProfile,
     String? authMode,
+    List<LlmConfig>? modelFallbacks,
   }) => LlmConfig(
     baseUrl: baseUrl ?? this.baseUrl,
     apiKey: apiKey ?? this.apiKey,
@@ -140,7 +157,9 @@ class LlmConfig {
         : maxOutputTokens ?? this.maxOutputTokens,
     profileId: profileId ?? this.profileId,
     routingSessionId: routingSessionId ?? this.routingSessionId,
+    lockProfile: lockProfile ?? this.lockProfile,
     authMode: authMode ?? this.authMode,
+    modelFallbacks: modelFallbacks ?? this.modelFallbacks,
   );
 }
 
@@ -474,11 +493,17 @@ const kToolChoiceRequired = 'required';
 enum ReasoningEffort {
   low,
   high,
-  max;
+  max,
+  minimal,
+  medium,
+  xhigh;
 
   String get wire => name;
 
   String get label => switch (this) {
+    ReasoningEffort.minimal => '极低',
+    ReasoningEffort.medium => '中',
+    ReasoningEffort.xhigh => '极高',
     ReasoningEffort.low => '低',
     ReasoningEffort.high => '高',
     ReasoningEffort.max => '最大',
@@ -487,7 +512,10 @@ enum ReasoningEffort {
   static ReasoningEffort fromWire(String? value) => switch (value) {
     'low' => ReasoningEffort.low,
     'max' => ReasoningEffort.max,
-    'medium' || 'xhigh' || 'high' => ReasoningEffort.high,
+    'minimal' => ReasoningEffort.minimal,
+    'medium' => ReasoningEffort.medium,
+    'xhigh' => ReasoningEffort.xhigh,
+    'high' => ReasoningEffort.high,
     _ => ReasoningEffort.high,
   };
 }
@@ -510,4 +538,23 @@ abstract class LlmProvider {
     // during connection setup (before any chunk has streamed).
     CancelToken? cancelToken,
   });
+}
+
+/// Supported effort values, kept separate from the on/off control.
+List<ReasoningEffort> reasoningEffortsFor(LlmConfig config) =>
+    (config.capabilities.reasoningEffortValues ??
+            ModelCatalog.reasoningEfforts(config.model))
+        .map(ReasoningEffort.fromWire)
+        .toList();
+
+String reasoningEffortWire(LlmConfig config, ReasoningEffort effort) {
+  final supported = reasoningEffortsFor(config);
+  if (supported.contains(effort)) return effort.wire;
+  // Legacy values stay readable; never send an unsupported enum value.
+  if (effort == ReasoningEffort.max && supported.isNotEmpty) {
+    return supported.last.wire;
+  }
+  return supported.contains(ReasoningEffort.high)
+      ? 'high'
+      : supported.first.wire;
 }

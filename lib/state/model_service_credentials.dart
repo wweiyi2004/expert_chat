@@ -1,11 +1,51 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/providers.dart';
-import '../data/settings_storage_keys.dart';
 import '../domain/llm/llm_provider.dart';
+import '../domain/llm/model_credentials_unavailable.dart';
 import '../domain/llm/auth/chatgpt_auth.dart';
 import 'settings_controller.dart';
 import 'model_service_routing.dart';
 import 'model_context.dart';
+import '../data/model_service_credential_snapshot.dart';
+export '../data/model_service_credential_snapshot.dart';
+
+Future<ModelServiceCredentialSnapshot> readCoherentModelService(
+  Ref ref,
+  String profileId,
+) => ref
+    .read(settingsControllerProvider.notifier)
+    .readCurrentProfileCredentials(profileId);
+
+bool modelServiceDescriptorMatches(
+  LlmConfig config,
+  ModelServiceCredentialSnapshot current,
+) {
+  final profile = current.profile;
+  return profile.baseUrl.replaceFirst(RegExp(r'/+$'), '') ==
+          config.baseUrl.replaceFirst(RegExp(r'/+$'), '') &&
+      profile.authMode == config.authMode &&
+      (profile.models.contains(config.model) ||
+          profile.chatModel == config.model ||
+          profile.reasonerModel == config.model) &&
+      (profile.apiFormat == config.apiFormat ||
+          profile.apiFormat == LlmApiFormat.auto ||
+          profile.authMode == 'chatgpt' &&
+              config.apiFormat == LlmApiFormat.openAiResponses);
+}
+
+/// Explicit user key edits only. Ephemeral counters contain no credentials and
+/// must not enter settings/backup or change on ordinary OAuth token refresh.
+final explicitCredentialEpochProvider =
+    NotifierProvider<ExplicitCredentialEpochs, Map<String, int>>(
+      ExplicitCredentialEpochs.new,
+    );
+
+class ExplicitCredentialEpochs extends Notifier<Map<String, int>> {
+  @override
+  Map<String, int> build() => {};
+  void bump(String profileId) =>
+      state = {...state, profileId: (state[profileId] ?? 0) + 1};
+}
 
 final chatGptAuthProvider = Provider<ChatGptAuth>(
   (ref) => ChatGptAuth(
@@ -14,11 +54,26 @@ final chatGptAuthProvider = Provider<ChatGptAuth>(
   ),
 );
 Future<LlmConfig> resolveModelCredentials(Ref ref, LlmConfig config) async {
+  if (config.profileId != null) {
+    final current = await readCoherentModelService(ref, config.profileId!);
+    if (!modelServiceDescriptorMatches(config, current)) {
+      throw const ModelCredentialsUnavailable('channel_descriptor_changed');
+    }
+    if (config.authMode == 'apiKey' && current.apiKey != config.apiKey) {
+      throw const ModelCredentialsUnavailable(
+        'explicit_key_changed_wait_boundary',
+      );
+    }
+  }
+  if (config.authMode == 'apiKey' && config.apiKey.trim().isEmpty) {
+    throw const ModelCredentialsUnavailable('api_key_missing');
+  }
   if (config.authMode == 'chatgpt') {
     if (config.baseUrl.replaceFirst(RegExp(r'/+$'), '') !=
             'https://api.openai.com/v1' ||
-        config.profileId == null)
+        config.profileId == null) {
       throw StateError('ChatGPT 登录凭据只能用于官方服务');
+    }
     return config.copyWith(
       apiKey: await ref
           .read(chatGptAuthProvider)
@@ -26,7 +81,7 @@ Future<LlmConfig> resolveModelCredentials(Ref ref, LlmConfig config) async {
       apiFormat: LlmApiFormat.openAiResponses,
     );
   }
-  return config;
+  return config.authMode == 'none' ? config.copyWith(apiKey: '') : config;
 }
 
 Future<List<LlmConfig>> modelServiceCandidates(
@@ -34,14 +89,19 @@ Future<List<LlmConfig>> modelServiceCandidates(
   LlmConfig config,
 ) async {
   if (config.profileId == null) return [config];
+  await ref.read(settingsControllerProvider.notifier).waitForProfileMutations();
   final settings = ref.read(settingsControllerProvider).value;
   if (settings == null) return [config];
   final profiles = servicesForModel(
     config.model,
-    settings.profiles,
+    config.lockProfile
+        ? settings.profiles.where((p) => p.id == config.profileId).toList()
+        : settings.profiles,
     ref.read(modelServiceRoutingProvider),
   );
-  if (profiles.isEmpty) return [config];
+  if (profiles.isEmpty) {
+    throw const ModelCredentialsUnavailable('model_channels_removed');
+  }
   if (!ref.read(modelServiceRoutingProvider).containsKey(config.model)) {
     final original = profiles
         .where((profile) => profile.id == config.profileId)
@@ -53,21 +113,19 @@ Future<List<LlmConfig>> modelServiceCandidates(
   }
   final result = <LlmConfig>[];
   for (final profile in profiles) {
+    final current = await readCoherentModelService(ref, profile.id);
+    if (current.profile.toJson().toString() != profile.toJson().toString()) {
+      throw const ModelCredentialsUnavailable('channel_descriptor_changed');
+    }
     final candidate = config.copyWith(
       profileId: profile.id,
       baseUrl: profile.baseUrl,
       apiFormat: profile.apiFormat,
       authMode: profile.authMode,
-      apiKey:
-          profile.id == config.profileId && profile.baseUrl == config.baseUrl
-          ? config.apiKey
-          : await ref
-                    .read(secureStorageProvider)
-                    .read(key: providerApiKeyStorageKey(profile.id)) ??
-                '',
+      apiKey: current.apiKey,
     );
     var bounded = applyContextConfig(
-      candidate,
+      applyReportedModelCapabilities(settings, candidate),
       effectiveContextPrefs(settings, candidate),
     );
     final requested = config.maxOutputTokens;

@@ -385,6 +385,7 @@ class SearchActivity {
     this.startedAt,
     this.finishedAt,
     this.toolName,
+    this.toolCallId,
     this.toolArguments,
     this.resultText,
     this.retryOfId,
@@ -416,6 +417,7 @@ class SearchActivity {
   final DateTime? startedAt;
   final DateTime? finishedAt;
   final String? toolName;
+  final String? toolCallId;
   final String? toolArguments;
   final String? resultText;
   final String? retryOfId;
@@ -437,6 +439,7 @@ class SearchActivity {
     DateTime? startedAt,
     DateTime? finishedAt,
     String? toolName,
+    String? toolCallId,
     String? toolArguments,
     String? resultText,
     String? retryOfId,
@@ -454,6 +457,7 @@ class SearchActivity {
     startedAt: startedAt ?? this.startedAt,
     finishedAt: finishedAt ?? this.finishedAt,
     toolName: toolName ?? this.toolName,
+    toolCallId: toolCallId ?? this.toolCallId,
     toolArguments: toolArguments ?? this.toolArguments,
     resultText: resultText ?? this.resultText,
     retryOfId: retryOfId ?? this.retryOfId,
@@ -469,6 +473,7 @@ class SearchActivity {
     if (startedAt != null) 'startedAt': startedAt!.toIso8601String(),
     if (finishedAt != null) 'finishedAt': finishedAt!.toIso8601String(),
     if (toolName != null) 'toolName': toolName,
+    if (toolCallId != null) 'toolCallId': toolCallId,
     if (toolArguments != null) 'toolArguments': toolArguments,
     if (resultText != null) 'resultText': resultText,
     if (retryOfId != null) 'retryOfId': retryOfId,
@@ -500,6 +505,7 @@ class SearchActivity {
     startedAt: DateTime.tryParse(json['startedAt']?.toString() ?? ''),
     finishedAt: DateTime.tryParse(json['finishedAt']?.toString() ?? ''),
     toolName: json['toolName'] as String?,
+    toolCallId: json['toolCallId'] as String?,
     toolArguments: json['toolArguments'] as String?,
     resultText: json['resultText'] as String?,
     retryOfId: json['retryOfId'] as String?,
@@ -611,6 +617,7 @@ class ChatMessage {
   final DateTime createdAt;
 
   ChatMessage copyWith({
+    Object? parentId = _msgSentinel,
     String? content,
     String? reasoning,
     String? model,
@@ -627,7 +634,9 @@ class ChatMessage {
   }) => ChatMessage(
     id: id,
     role: role,
-    parentId: parentId,
+    parentId: identical(parentId, _msgSentinel)
+        ? this.parentId
+        : parentId as String?,
     content: content ?? this.content,
     reasoning: reasoning ?? this.reasoning,
     model: model ?? this.model,

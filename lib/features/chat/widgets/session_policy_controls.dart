@@ -1,4 +1,6 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'package:flutter/material.dart';
+import '../../../core/prototype_widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../state/session_policy.dart';
 import '../../../state/model_service_routing.dart';
@@ -6,7 +8,9 @@ import '../../../state/settings_controller.dart';
 import '../../../state/research_terminal_controller.dart';
 import '../../research/research_terminal_page.dart';
 import 'work_round_controls.dart';
+import 'composer_popover.dart';
 import 'settings_field_section.dart';
+import '../../workbench/runtime/task_control_panel.dart';
 
 class SessionPolicyControls extends ConsumerWidget {
   const SessionPolicyControls({
@@ -29,10 +33,11 @@ class SessionPolicyControls extends ConsumerWidget {
             .read(sessionPolicyProvider.notifier)
             .save(conversationId, value);
       } catch (error) {
-        if (context.mounted)
-          ScaffoldMessenger.of(
+        if (context.mounted) {
+          AppToastMessenger.of(
             context,
           ).showSnackBar(SnackBar(content: Text('$error')));
+        }
       }
     }
 
@@ -111,6 +116,7 @@ class SessionPolicyControls extends ConsumerWidget {
             description: '按评判模型的服务优先级调用；评判请求也消耗 token。',
           ),
         if (workMode) ...[
+          TaskAdvancedOptions(conversationId: conversationId),
           field(
             '工具轮次',
             OutlinedButton.icon(
@@ -192,67 +198,124 @@ class SessionPolicyControls extends ConsumerWidget {
 }
 
 class ComposerPermissionControl extends ConsumerWidget {
-  const ComposerPermissionControl({super.key, required this.conversationId});
+  const ComposerPermissionControl({
+    super.key,
+    required this.conversationId,
+    this.plain = false,
+  });
   final String conversationId;
+  final bool plain;
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final policy =
         ref.watch(sessionPolicyProvider)[conversationId] ??
         const SessionPolicy();
-    return MenuAnchor(
-      menuChildren: [
-        for (final mode in WorkApprovalMode.values)
-          MenuItemButton(
-            leadingIcon: Icon(
-              mode == policy.approval ? Icons.check : Icons.shield_outlined,
-              size: 17,
+    return Builder(
+      builder: (anchor) => _ComposerPermissionButton(
+        key: const ValueKey('composer-permission'),
+        plain: plain,
+        icon: Icons.shield_outlined,
+        label: policy.approval.label,
+        onPressed: () => showComposerPopover<void>(
+          anchor,
+          width: 420,
+          builder: (menu) => ComposerPopoverFrame(
+            title: '工具权限',
+            body: ListView(
+              shrinkWrap: true,
+              children: [
+                for (final mode in WorkApprovalMode.values)
+                  Card(
+                    elevation: 0,
+                    color: mode == policy.approval
+                        ? Theme.of(menu).colorScheme.primaryContainer
+                        : Theme.of(menu).colorScheme.surfaceContainerLow,
+                    margin: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+                    child: ListTile(
+                      leading: Icon(
+                        mode == policy.approval
+                            ? Icons.check_circle_outline
+                            : Icons.shield_outlined,
+                      ),
+                      title: Text(mode.label),
+                      subtitle: Text(switch (mode) {
+                        WorkApprovalMode.request => '读取自动执行；写入、命令和外部工具执行前请求批准。',
+                        WorkApprovalMode.assisted => '由评判模型审查；不批准或失败时交给你决定。',
+                        WorkApprovalMode.full => '自动执行工具，沿用当前会话的目录与系统权限。',
+                      }),
+                      onTap: () async {
+                        try {
+                          await ref
+                              .read(sessionPolicyProvider.notifier)
+                              .save(
+                                conversationId,
+                                policy.copyWith(approval: mode),
+                              );
+                          if (menu.mounted) {
+                            Navigator.pop(menu);
+                          }
+                        } catch (error) {
+                          if (context.mounted) {
+                            AppToastMessenger.of(
+                              context,
+                            ).showSnackBar(SnackBar(content: Text('$error')));
+                          }
+                        }
+                      },
+                    ),
+                  ),
+                ExpansionTile(
+                  title: const Text('评判模型、联网与会话策略'),
+                  children: [
+                    SessionPolicyControls(
+                      conversationId: conversationId,
+                      workMode: true,
+                    ),
+                  ],
+                ),
+              ],
             ),
-            onPressed: () async {
-              try {
-                await ref
-                    .read(sessionPolicyProvider.notifier)
-                    .save(conversationId, policy.copyWith(approval: mode));
-              } catch (error) {
-                if (context.mounted)
-                  ScaffoldMessenger.of(
-                    context,
-                  ).showSnackBar(SnackBar(content: Text('$error')));
-              }
-            },
-            child: Text(mode.label),
           ),
-      ],
-      builder: (context, menu, _) => LayoutBuilder(
-        builder: (context, constraints) {
-          void toggle() => menu.isOpen ? menu.close() : menu.open();
-          if (constraints.maxWidth < 100) {
-            return IconButton(
-              tooltip: '工具权限 · ${policy.approval.label}',
-              onPressed: toggle,
-              icon: const Icon(Icons.shield_outlined, size: 17),
-              style: IconButton.styleFrom(
-                minimumSize: const Size.square(32),
-                maximumSize: const Size.square(32),
-                padding: EdgeInsets.zero,
-                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              ),
-            );
-          }
-          return TextButton.icon(
-            onPressed: toggle,
-            icon: const Icon(Icons.shield_outlined, size: 15),
-            label: Text(
-              policy.approval.label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-            style: TextButton.styleFrom(
-              minimumSize: const Size(0, 32),
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              foregroundColor: Theme.of(context).colorScheme.onSurfaceVariant,
-            ),
-          );
-        },
+        ),
+      ),
+    );
+  }
+}
+
+class _ComposerPermissionButton extends StatelessWidget {
+  const _ComposerPermissionButton({
+    super.key,
+    required this.label,
+    required this.icon,
+    required this.onPressed,
+    required this.plain,
+  });
+  final String label;
+  final IconData icon;
+  final VoidCallback onPressed;
+  final bool plain;
+  @override
+  Widget build(BuildContext context) {
+    if (!plain) {
+      return PrototypeChip(label: label, icon: icon, onPressed: onPressed);
+    }
+    return Tooltip(
+      message: '工具权限 · $label',
+      child: TextButton.icon(
+        onPressed: onPressed,
+        style: TextButton.styleFrom(
+          minimumSize: Size(
+            44,
+            MediaQuery.sizeOf(context).width < 840 ? 44 : 28,
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+          foregroundColor: PrototypeColors.of(context).muted,
+          textStyle: Theme.of(
+            context,
+          ).textTheme.bodyMedium?.copyWith(fontSize: 12),
+        ),
+        icon: Icon(icon, size: 14),
+        label: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
       ),
     );
   }

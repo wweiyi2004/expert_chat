@@ -4,13 +4,22 @@ class ModelTokenLimits {
     this.contextWindowTokens,
     this.maxOutputTokens,
     this.inputLimitTokens,
+    this.reasoningEfforts,
+    this.reasoningCanBeDisabled,
   });
   final int? contextWindowTokens, maxOutputTokens, inputLimitTokens;
+  final List<String>? reasoningEfforts;
+  final bool? reasoningCanBeDisabled;
   bool get isKnown =>
+      reasoningEfforts != null ||
+      reasoningCanBeDisabled != null ||
       contextWindowTokens != null ||
       maxOutputTokens != null ||
       inputLimitTokens != null;
   Map<String, dynamic> toJson() => {
+    if (reasoningEfforts != null) 'reasoningEfforts': reasoningEfforts,
+    if (reasoningCanBeDisabled != null)
+      'reasoningCanBeDisabled': reasoningCanBeDisabled,
     if (contextWindowTokens != null) 'contextWindowTokens': contextWindowTokens,
     if (maxOutputTokens != null) 'maxOutputTokens': maxOutputTokens,
     if (inputLimitTokens != null) 'inputLimitTokens': inputLimitTokens,
@@ -22,11 +31,39 @@ class ModelTokenLimits {
 
   factory ModelTokenLimits.fromJson(Map<String, dynamic> data) =>
       ModelTokenLimits(
+        reasoningEfforts: _efforts(data['reasoningEfforts']),
+        reasoningCanBeDisabled: data['reasoningCanBeDisabled'] as bool?,
         contextWindowTokens: _positive(data['contextWindowTokens']),
         maxOutputTokens: _positive(data['maxOutputTokens']),
         inputLimitTokens: _positive(data['inputLimitTokens']),
       );
+  static List<String>? _efforts(dynamic value) {
+    if (value is! List) return null;
+    final known = value
+        .map((v) => v is Map ? v['effort'] : v)
+        .whereType<String>()
+        .where(
+          (v) => const [
+            'minimal',
+            'low',
+            'medium',
+            'high',
+            'xhigh',
+            'max',
+          ].contains(v),
+        )
+        .toSet()
+        .toList();
+    return known.isEmpty ? null : known;
+  }
+
   factory ModelTokenLimits.fromModelApi(Map data) {
+    final reportedEfforts =
+        data['supported_reasoning_levels'] ??
+        data['supported_reasoning_efforts'];
+    final allowsNone = reportedEfforts is List
+        ? reportedEfforts.any((v) => (v is Map ? v['effort'] : v) == 'none')
+        : null;
     final top = data['top_provider'] is Map
         ? data['top_provider'] as Map
         : const {};
@@ -46,6 +83,8 @@ class ModelTokenLimits {
           top['context_length'],
     );
     return ModelTokenLimits(
+      reasoningEfforts: _efforts(reportedEfforts),
+      reasoningCanBeDisabled: allowsNone,
       contextWindowTokens:
           total ?? (input == null ? null : input + (output ?? 0)),
       inputLimitTokens: input,

@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../state/settings_controller.dart';
@@ -55,10 +56,11 @@ class ModelContextSettings extends ConsumerWidget {
                   .read(settingsControllerProvider.notifier)
                   .setModelContextPrefs(config.baseUrl, config.model, value);
             } catch (error) {
-              if (context.mounted)
-                ScaffoldMessenger.of(
+              if (context.mounted) {
+                AppToastMessenger.of(
                   context,
                 ).showSnackBar(SnackBar(content: Text('$error')));
+              }
             }
           },
         ),

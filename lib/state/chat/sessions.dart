@@ -1,6 +1,25 @@
 part of '../chat_controller.dart';
 
 mixin ChatSessions on ChatTurns {
+  String _freshComposerId(String id) {
+    _composerThinking[id] = true;
+    _composerEffort[id] = ReasoningEffort.high;
+    return id;
+  }
+
+  String _existingComposerId(String id) {
+    final previous = _sessionRuns[id]?.configuration;
+    _composerThinking.putIfAbsent(id, () => previous?.thinking ?? true);
+    _composerEffort.putIfAbsent(
+      id,
+      () =>
+          previous?.effort ??
+          ref.read(settingsControllerProvider).value?.reasoningEffort ??
+          ReasoningEffort.high,
+    );
+    return id;
+  }
+
   /// The caller must keep a modal barrier up until maintenance is finished.
   Future<void> prepareDataMaintenance() async {
     if (runningConversationIds.isNotEmpty ||
@@ -53,7 +72,9 @@ mixin ChatSessions on ChatTurns {
       _set(
         _s.copyWith(
           conversations: _replace(updated),
-          currentId: updated.id,
+          currentId: _existingComposerId(updated.id),
+          deepThink: _composerThinking[updated.id],
+          reasoningEffort: _composerEffort[updated.id],
           error: null,
         ),
       );
@@ -81,7 +102,9 @@ mixin ChatSessions on ChatTurns {
     _set(
       _s.copyWith(
         conversations: [fresh, ..._s.conversations],
-        currentId: fresh.id,
+        currentId: _freshComposerId(fresh.id),
+        deepThink: _composerThinking[fresh.id],
+        reasoningEffort: _composerEffort[fresh.id],
         error: null,
       ),
     );
@@ -123,7 +146,9 @@ mixin ChatSessions on ChatTurns {
     _set(
       _s.copyWith(
         conversations: [fresh, ..._s.conversations],
-        currentId: fresh.id,
+        currentId: _freshComposerId(fresh.id),
+        deepThink: _composerThinking[fresh.id],
+        reasoningEffort: _composerEffort[fresh.id],
         error: null,
       ),
     );
@@ -251,7 +276,9 @@ mixin ChatSessions on ChatTurns {
     _set(
       _s.copyWith(
         conversations: [fresh, ..._s.conversations],
-        currentId: fresh.id,
+        currentId: _freshComposerId(fresh.id),
+        deepThink: _composerThinking[fresh.id],
+        reasoningEffort: _composerEffort[fresh.id],
         error: null,
       ),
     );
@@ -337,7 +364,9 @@ mixin ChatSessions on ChatTurns {
       _set(
         _s.copyWith(
           conversations: [fresh, ..._s.conversations],
-          currentId: fresh.id,
+          currentId: _freshComposerId(fresh.id),
+          deepThink: _composerThinking[fresh.id],
+          reasoningEffort: _composerEffort[fresh.id],
           error: null,
         ),
       );
@@ -348,7 +377,9 @@ mixin ChatSessions on ChatTurns {
             for (final c in _s.conversations)
               if (c.id == fresh.id) fresh else c,
           ],
-          currentId: fresh.id,
+          currentId: _existingComposerId(fresh.id),
+          deepThink: _composerThinking[fresh.id],
+          reasoningEffort: _composerEffort[fresh.id],
           error: null,
         ),
       );
@@ -413,7 +444,9 @@ mixin ChatSessions on ChatTurns {
       _set(
         _s.copyWith(
           conversations: [fresh, ..._s.conversations],
-          currentId: fresh.id,
+          currentId: _freshComposerId(fresh.id),
+          deepThink: _composerThinking[fresh.id],
+          reasoningEffort: _composerEffort[fresh.id],
           error: null,
         ),
       );
@@ -424,7 +457,9 @@ mixin ChatSessions on ChatTurns {
             for (final c in _s.conversations)
               if (c.id == fresh.id) fresh else c,
           ],
-          currentId: fresh.id,
+          currentId: _existingComposerId(fresh.id),
+          deepThink: _composerThinking[fresh.id],
+          reasoningEffort: _composerEffort[fresh.id],
           error: null,
         ),
       );
@@ -735,6 +770,7 @@ mixin ChatSessions on ChatTurns {
     required ReasoningEffort reasoningEffort,
   }) {
     _editedComposerPrefs.addAll(['effort', 'search', 'image']);
+    if (_s.currentId case final id?) _composerEffort[id] = reasoningEffort;
     if (_s.searchMode == searchMode &&
         _s.imageGenMode == imageGenMode &&
         _s.reasoningEffort == reasoningEffort) {
@@ -912,12 +948,16 @@ mixin ChatSessions on ChatTurns {
       try {
         await ref.read(conversationPreviewsProvider.notifier).remove(id);
         await ref.read(workChangesProvider.notifier).removeConversation(id);
+        await ref.read(workMemoryProvider).removeConversation(id);
+        await ref.read(workTaskSteeringProvider).removeConversation(id);
+        await ref.read(workOperationJournalProvider).removeConversation(id);
         await ref.read(workRuntimeLogsProvider.notifier).clearConversation(id);
         await ref
             .read(reasoningTranslationProvider.notifier)
             .forgetConversation(id);
-        if (ref.mounted)
+        if (ref.mounted) {
           ref.read(workTaskRuntimeProvider.notifier).removeConversation(id);
+        }
       } catch (error) {
         debugPrint('Sidebar preview cleanup: $error');
       }

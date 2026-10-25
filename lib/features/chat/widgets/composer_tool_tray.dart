@@ -19,7 +19,6 @@ class ComposerToolTray extends StatelessWidget {
     required this.onPickImages,
     required this.onPickLibrary,
     required this.onToggleImageMode,
-    required this.onToggleSearch,
     required this.onSetImageGenMode,
     required this.onPickMcpServers,
     required this.onDocumentEdit,
@@ -42,7 +41,6 @@ class ComposerToolTray extends StatelessWidget {
   final VoidCallback? onPickImages;
   final VoidCallback? onPickLibrary;
   final VoidCallback? onToggleImageMode;
-  final VoidCallback? onToggleSearch;
   final ValueChanged<ImageGenMode>? onSetImageGenMode;
   final VoidCallback? onPickMcpServers;
   final VoidCallback? onDocumentEdit;

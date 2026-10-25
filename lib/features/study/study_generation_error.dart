@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -9,7 +10,7 @@ Future<void> showStudyGenerationError(
   required Object error,
 }) async {
   if (error is! StudyStructuredOutputException) {
-    ScaffoldMessenger.of(context).showSnackBar(
+    AppToastMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text('$title，请重试。'),
         action: SnackBarAction(

@@ -363,6 +363,9 @@ void main() {
       final ref = await container(llm, media: media);
       final controller = ref.read(chatControllerProvider.notifier);
       controller.newConversation();
+      if (ref.read(chatControllerProvider).requireValue.deepThink) {
+        controller.toggleDeepThink();
+      }
       await controller.generateImage('蓝色的小鸟');
       final first = (await generations.list()).single;
       await controller.regenerateImageVersion(first);
@@ -401,7 +404,9 @@ void main() {
         Attachment(name: 'a.jpg', mimeType: 'image/jpeg', imageBase64: 'AQID'),
         Attachment(name: 'b.png', mimeType: 'image/png', imageBase64: 'BAUG'),
       ];
-      controller.toggleDeepThink();
+      if (!c.read(chatControllerProvider).requireValue.deepThink) {
+        controller.toggleDeepThink();
+      }
       await controller.generateImage('original scene', referenceImages: refs);
       final first = (await generations.list()).single;
       expect(first.originalPrompt, 'original scene');
@@ -577,7 +582,7 @@ void main() {
         controller.newConversation();
         final selected = c.read(chatControllerProvider).requireValue.currentId;
         expect(selected, isNot(origin));
-        if (cancel) controller.stop();
+        if (cancel) controller.stop(conversationId: origin);
         media.gate!.complete();
         await running;
         final state = c.read(chatControllerProvider).requireValue;

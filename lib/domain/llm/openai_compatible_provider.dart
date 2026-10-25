@@ -97,9 +97,13 @@ class OpenAiCompatibleProvider implements LlmProvider {
     // Grok 4.3 accepts `none` to disable; Grok 4.5 always reasons, so normal
     // mode leaves its provider default untouched while deep-think requests high.
     if (thinking != null && config.capabilities.supportsReasoningEffort) {
-      if (thinking) {
-        body['reasoning_effort'] =
-            (reasoningEffort ?? ReasoningEffort.high).wire;
+      if (thinking ||
+          (ModelCatalog.isConfigurableGpt(config.model) &&
+              !config.capabilities.reasoningCanBeDisabled)) {
+        body['reasoning_effort'] = reasoningEffortWire(
+          config,
+          reasoningEffort ?? ReasoningEffort.high,
+        );
       } else if (config.capabilities.reasoningCanBeDisabled) {
         body['reasoning_effort'] = 'none';
       }
@@ -143,7 +147,9 @@ class OpenAiCompatibleProvider implements LlmProvider {
               responseType: ResponseType.stream,
               headers: {
                 ...config.transportHeaders,
-                'Authorization': 'Bearer ${config.apiKey}',
+                if (config.authMode != 'none' &&
+                    config.apiKey.trim().isNotEmpty)
+                  'Authorization': 'Bearer ${config.apiKey}',
                 'Content-Type': 'application/json',
                 'Accept': 'text/event-stream',
               },

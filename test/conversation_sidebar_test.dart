@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' show PointerDeviceKind;
 
 import 'package:drift/native.dart';
 import 'package:expert_chat/core/providers.dart';
@@ -13,6 +14,7 @@ import 'package:expert_chat/features/chat/widgets/conversation_history_list.dart
 import 'package:expert_chat/features/shell/shell_tab.dart';
 import 'package:expert_chat/state/chat_controller.dart';
 import 'package:expert_chat/state/settings_controller.dart';
+import 'package:expert_chat/state/conversation_previews.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -264,11 +266,28 @@ void main() {
     }
 
     Finder row(String id) => find.byKey(ValueKey('conversation-row-$id'));
-    ConversationHistoryList list(WidgetTester tester) =>
-        tester.widget<ConversationHistoryList>(
-          find.byType(ConversationHistoryList).first,
-        );
+    ({List<Conversation> visible, String? currentId}) list(
+      WidgetTester tester,
+    ) {
+      final lists = tester
+          .widgetList<ConversationHistoryList>(
+            find.byType(ConversationHistoryList),
+          )
+          .toList();
+      return (
+        visible: lists.expand((list) => list.visible).toList(),
+        currentId: lists.first.currentId,
+      );
+    }
+
     Future<void> query(WidgetTester tester, String text) async {
+      if (find
+          .byKey(const ValueKey('conversation-search-field'))
+          .evaluate()
+          .isEmpty) {
+        await tester.tap(find.byTooltip('搜索会话'));
+        await tester.pump();
+      }
       await tester.enterText(
         find.byKey(const ValueKey('conversation-search-field')),
         text,
@@ -285,6 +304,73 @@ void main() {
       await tester.tap(find.text(label));
       await tester.pumpAndSettle();
     }
+
+    testWidgets(
+      'phone single-line row keeps long-press selection and summary menu',
+      (tester) async {
+        final c = await setup(tester);
+        tester.view.physicalSize = const Size(390, 900);
+        await c
+            .read(conversationPreviewsProvider.notifier)
+            .record('a', '真实保存的最近回复摘要');
+        await drain(tester);
+        expect(find.text('真实保存的最近回复摘要'), findsNothing);
+        await tester.longPress(row('a'));
+        await tester.pumpAndSettle();
+        expect(
+          tester
+              .widgetList<ConversationHistoryList>(
+                find.byType(ConversationHistoryList),
+              )
+              .any((list) => list.selecting && list.selectedIds.contains('a')),
+          isTrue,
+        );
+        expect(
+          find.text('真实保存的最近回复摘要'),
+          findsNothing,
+          reason:
+              'phone long press selects, without a competing preview Tooltip',
+        );
+        await tester.tap(find.text('取消'));
+        await tester.pumpAndSettle();
+        await action(tester, 'a', '预览最近消息');
+        expect(find.byType(BottomSheet), findsOneWidget);
+        expect(find.text('真实保存的最近回复摘要'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets('desktop plain history rows use the HTML 36px geometry', (
+      tester,
+    ) async {
+      final c = await setup(tester);
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: c,
+          child: const MaterialApp(
+            home: Scaffold(
+              body: SizedBox(
+                width: 252,
+                child: ChatWorkspaceSidebar(desktopMode: true),
+              ),
+            ),
+          ),
+        ),
+      );
+      await drain(tester);
+      expect(
+        tester
+            .getSize(find.byKey(const ValueKey('prototype-sidebar-row-a')))
+            .height,
+        36,
+      );
+      expect(
+        find.text('尚无完成的回复'),
+        findsNothing,
+        reason: 'excerpt moves to Tooltip, not a permanent second line',
+      );
+      expect(tester.takeException(), isNull);
+    });
 
     testWidgets('latest search controls rows and clear restores history', (
       tester,
@@ -304,7 +390,7 @@ void main() {
     });
 
     testWidgets(
-      'search failure offers retry and mode filter remains independent',
+      'search failure offers retry and matching conversation types keep their groups',
       (tester) async {
         var fail = true;
         repo.search = (_) async {
@@ -315,13 +401,11 @@ void main() {
         await query(tester, 'query');
         expect(find.text('搜索失败，请重试。'), findsOneWidget);
         fail = false;
-        await tester.tap(find.text('重试搜索'));
+        await tester.tap(find.text('搜索失败，请重试。'));
         await drain(tester);
-        await tester.tap(
-          find.byKey(const ValueKey('conversation-mode-filter-chat')),
-        );
-        await drain(tester);
-        expect(list(tester).visible.map((c) => c.id), ['a']);
+        expect(list(tester).visible.map((c) => c.id).toSet(), {'a', 'c'});
+        expect(find.text('聊天'), findsOneWidget);
+        expect(find.text('创作'), findsOneWidget);
       },
     );
 
@@ -404,6 +488,8 @@ void main() {
         list(tester).visible.any((c) => c.id == list(tester).currentId),
         isTrue,
       );
+      c.read(chatControllerProvider.notifier).selectConversation('a');
+      await drain(tester);
       expect(
         c.read(chatControllerProvider).requireValue.error,
         contains('本地删除失败'),
@@ -454,7 +540,7 @@ void main() {
       repo.loads['b'] = Completer<void>();
       await tester.tap(find.text('Beta'));
       await drain(tester);
-      await tester.tap(find.text('工具'));
+      c.read(shellTabProvider.notifier).state = ShellTab.tools;
       await drain(tester);
       expect(c.read(shellTabProvider), ShellTab.tools);
       repo.loads['b']!.complete();
@@ -477,6 +563,48 @@ void main() {
       await drain(tester);
       expect(list(tester).currentId, fresh);
       expect(fresh, isNot('b'));
+    });
+
+    testWidgets('hover freezes recent activity order until pointer leaves', (
+      tester,
+    ) async {
+      final c = await setup(tester);
+      final before = tester.getTopLeft(row('a')).dy;
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await mouse.addPointer(location: const Offset(100, 400));
+      await tester.pump();
+      c
+          .read(chatControllerProvider.notifier)
+          .renameConversation('a', 'Alpha recent');
+      await drain(tester);
+      expect(tester.getTopLeft(row('a')).dy, before);
+      await mouse.moveTo(const Offset(900, 400));
+      await tester.pumpAndSettle();
+      expect(
+        tester.getTopLeft(row('a')).dy,
+        lessThan(tester.getTopLeft(row('b')).dy),
+      );
+      await mouse.removePointer();
+    });
+
+    testWidgets('group collapse persists through saved UI preferences', (
+      tester,
+    ) async {
+      final c = await setup(tester);
+      await tester.tap(find.text('未引用资料集'));
+      await drain(tester);
+      expect(row('a'), findsNothing);
+      expect(
+        c
+            .read(settingsControllerProvider)
+            .requireValue
+            .ui
+            .sidebarCollapsedGroups,
+        contains('chat-'),
+      );
+      await tester.tap(find.text('未引用资料集'));
+      await drain(tester);
+      expect(row('a'), findsOneWidget);
     });
   });
 }

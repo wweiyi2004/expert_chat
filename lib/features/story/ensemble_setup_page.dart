@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -33,7 +34,7 @@ class _EnsembleSetupPageState extends ConsumerState<EnsembleSetupPage> {
         if (_selected.contains(c.id)) c,
     ];
     if (cast.length < 2) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppToastMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('请至少选择 2 名角色'),
           behavior: SnackBarBehavior.floating,

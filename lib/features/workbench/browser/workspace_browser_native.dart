@@ -1,3 +1,5 @@
+import '../../../domain/html/preview_viewport.dart';
+import '../../chat/widgets/preview_zoom_control.dart';
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -5,6 +7,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_windows/webview_windows.dart' as windows;
 import '../../../domain/html/windows_webview_environment.dart';
+import 'controlled_browser_panel.dart';
 
 class WorkspaceBrowserPanel extends StatefulWidget {
   const WorkspaceBrowserPanel({super.key});
@@ -21,6 +24,7 @@ class _WorkspaceBrowserPanelState extends State<WorkspaceBrowserPanel> {
   bool _ready = false, _loading = false, _hasPage = false;
   String? _error;
   String _url = '';
+  double? _zoom;
   @override
   void initState() {
     super.initState();
@@ -48,17 +52,22 @@ class _WorkspaceBrowserPanelState extends State<WorkspaceBrowserPanel> {
         _subscriptions.add(pending.url.listen(_navigated));
         _subscriptions.add(
           pending.loadingState.listen((state) {
-            if (mounted)
+            if (mounted) {
               setState(() => _loading = state == windows.LoadingState.loading);
+              if (state == windows.LoadingState.navigationCompleted) {
+                unawaited(_fitPage());
+              }
+            }
           }),
         );
         _subscriptions.add(
           pending.onLoadError.listen((_) {
-            if (mounted)
+            if (mounted) {
               setState(() {
                 _loading = false;
                 _error = '页面未能加载，可以重试或在外部浏览器打开。';
               });
+            }
           }),
         );
       } else if ([
@@ -79,13 +88,15 @@ class _WorkspaceBrowserPanelState extends State<WorkspaceBrowserPanel> {
             },
             onPageFinished: (_) {
               if (mounted) setState(() => _loading = false);
+              unawaited(_fitPage());
             },
             onWebResourceError: (error) {
-              if (mounted && error.isForMainFrame == true)
+              if (mounted && error.isForMainFrame == true) {
                 setState(() {
                   _loading = false;
                   _error = error.description;
                 });
+              }
             },
           ),
         );
@@ -96,9 +107,21 @@ class _WorkspaceBrowserPanelState extends State<WorkspaceBrowserPanel> {
       }
       if (mounted) setState(() => _ready = true);
     } catch (error) {
-      if (pending != null && initialized && _windows == null)
+      if (pending != null && initialized && _windows == null) {
         await pending.dispose();
+      }
       if (mounted) setState(() => _error = '$error');
+    }
+  }
+
+  Future<void> _fitPage() async {
+    try {
+      final script =
+          '$previewAutoFitScript\n${previewSetZoomScript(_zoom, sandboxed: false)}';
+      if (_windows != null) await _windows!.executeScript(script);
+      if (_mobile != null) await _mobile!.runJavaScript(script);
+    } catch (_) {
+      // Navigation can replace the document while a resize is pending.
     }
   }
 
@@ -146,11 +169,12 @@ class _WorkspaceBrowserPanelState extends State<WorkspaceBrowserPanel> {
         await _mobile!.loadRequest(Uri.parse(url));
       }
     } catch (error) {
-      if (mounted)
+      if (mounted) {
         setState(() {
           _loading = false;
           _error = '$error';
         });
+      }
     }
   }
 
@@ -192,7 +216,29 @@ class _WorkspaceBrowserPanelState extends State<WorkspaceBrowserPanel> {
   }
 
   @override
-  Widget build(BuildContext context) => Column(
+  Widget build(BuildContext context) => DefaultTabController(
+    length: 2,
+    child: Column(
+      children: [
+        const TabBar(
+          tabs: [
+            Tab(text: '人工网页'),
+            Tab(text: '受控浏览器'),
+          ],
+        ),
+        Expanded(
+          child: TabBarView(
+            children: [
+              _buildHumanBrowser(context),
+              const ControlledBrowserPanel(),
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
+
+  Widget _buildHumanBrowser(BuildContext context) => Column(
     children: [
       Padding(
         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
@@ -242,15 +288,23 @@ class _WorkspaceBrowserPanelState extends State<WorkspaceBrowserPanel> {
                 ),
               ),
             ),
+            PreviewZoomControl(
+              zoom: _zoom,
+              onChanged: (value) {
+                setState(() => _zoom = value);
+                unawaited(_fitPage());
+              },
+            ),
             IconButton(
               tooltip: '外部浏览器打开',
               onPressed: () async {
                 final url = _url.isEmpty ? _normalized() : _url;
-                if (_valid(url))
+                if (_valid(url)) {
                   await launchUrl(
                     Uri.parse(url),
                     mode: LaunchMode.externalApplication,
                   );
+                }
               },
               icon: const Icon(Icons.north_east, size: 19),
             ),

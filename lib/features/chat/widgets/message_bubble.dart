@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'dart:convert';
 import 'dart:io' show File;
 
@@ -152,7 +153,7 @@ class _MessageBubbleState extends State<MessageBubble> {
   Future<void> _copyMessage(String content) async {
     await Clipboard.setData(ClipboardData(text: content));
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
+    AppToastMessenger.of(context).showSnackBar(
       const SnackBar(
         content: Text('已复制'),
         duration: Duration(seconds: 1),
@@ -169,7 +170,7 @@ class _MessageBubbleState extends State<MessageBubble> {
       bytes = Uint8List.fromList(base64Decode(b64));
     } catch (_) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(
+      AppToastMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('文件数据无效，无法下载')));
       return;
@@ -189,7 +190,7 @@ class _MessageBubbleState extends State<MessageBubble> {
       );
       if (kIsWeb) {
         if (context.mounted) {
-          ScaffoldMessenger.of(
+          AppToastMessenger.of(
             context,
           ).showSnackBar(SnackBar(content: Text('已开始下载：${a.name}')));
         }
@@ -200,12 +201,12 @@ class _MessageBubbleState extends State<MessageBubble> {
         await File(path).writeAsBytes(bytes, flush: true);
       }
       if (!context.mounted) return;
-      ScaffoldMessenger.of(
+      AppToastMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('已保存：${a.name}')));
     } catch (e) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(
+      AppToastMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('保存失败：$e')));
     }
@@ -266,78 +267,98 @@ class _MessageBubbleState extends State<MessageBubble> {
         ? _buildUser(context, scheme, m, doc)
         : _buildAssistant(context, scheme, m, doc);
 
-    return GestureDetector(
-      onLongPress: widget.onStartSelect == null
-          ? null
-          : () {
-              if (widget.selectionMode) {
-                widget.onToggleSelect?.call();
-              } else {
-                widget.onStartSelect?.call();
-              }
-            },
-      onSecondaryTap: widget.onStartSelect == null
-          ? null
-          : () {
-              if (widget.selectionMode) {
-                widget.onToggleSelect?.call();
-              } else {
-                widget.onStartSelect?.call();
-              }
-            },
-      onTap: widget.selectionMode ? widget.onToggleSelect : null,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 120),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(16),
-          color: widget.selected
-              ? scheme.primaryContainer.withValues(alpha: 0.35)
-              : null,
-          border: widget.selectionMode
-              ? Border.all(
-                  color: widget.selected
-                      ? scheme.primary.withValues(alpha: 0.55)
-                      : scheme.outlineVariant.withValues(alpha: 0.5),
-                )
-              : null,
+    final mobile = MediaQuery.sizeOf(context).width < 840;
+    return IconButtonTheme(
+      data: IconButtonThemeData(
+        style: IconButton.styleFrom(
+          minimumSize: Size.square(mobile ? 44 : 28),
+          maximumSize: Size.square(mobile ? 44 : 28),
+          padding: const EdgeInsets.all(4),
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
         ),
-        padding: widget.selectionMode
-            ? const EdgeInsets.fromLTRB(4, 4, 4, 4)
-            : EdgeInsets.zero,
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (widget.selectionMode) ...[
-              Padding(
-                padding: const EdgeInsets.only(top: 10, left: 2, right: 4),
-                child: Icon(
-                  widget.selected
-                      ? Icons.check_circle
-                      : Icons.radio_button_unchecked,
-                  size: 22,
-                  color: widget.selected
-                      ? scheme.primary
-                      : scheme.onSurfaceVariant,
+      ),
+      child: GestureDetector(
+        onLongPress: widget.onStartSelect == null
+            ? null
+            : () {
+                if (widget.selectionMode) {
+                  widget.onToggleSelect?.call();
+                } else {
+                  widget.onStartSelect?.call();
+                }
+              },
+        onSecondaryTap: widget.onStartSelect == null
+            ? null
+            : () {
+                if (widget.selectionMode) {
+                  widget.onToggleSelect?.call();
+                } else {
+                  widget.onStartSelect?.call();
+                }
+              },
+        onTap: widget.selectionMode ? widget.onToggleSelect : null,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 120),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            color: widget.selected
+                ? scheme.primaryContainer.withValues(alpha: 0.35)
+                : null,
+            border: widget.selectionMode
+                ? Border.all(
+                    color: widget.selected
+                        ? scheme.primary.withValues(alpha: 0.55)
+                        : scheme.outlineVariant.withValues(alpha: 0.5),
+                  )
+                : null,
+          ),
+          padding: widget.selectionMode
+              ? const EdgeInsets.fromLTRB(4, 4, 4, 4)
+              : EdgeInsets.zero,
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (widget.selectionMode) ...[
+                Padding(
+                  padding: const EdgeInsets.only(top: 10, left: 2, right: 4),
+                  child: Icon(
+                    widget.selected
+                        ? Icons.check_circle
+                        : Icons.radio_button_unchecked,
+                    size: 22,
+                    color: widget.selected
+                        ? scheme.primary
+                        : scheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Padding(
+                      padding: EdgeInsets.only(
+                        bottom:
+                            Theme.of(
+                              context,
+                            ).extension<AppMetrics>()?.messageSpacing ??
+                            14,
+                      ),
+                      child: bubble,
+                    ),
+                    if (widget.message.recoveredStorage.isNotEmpty)
+                      const Padding(
+                        padding: EdgeInsets.only(top: 8),
+                        child: Text(
+                          '部分附件或记录无法读取，原始数据已保留。请先导出完整备份，再联系维护者处理。',
+                          key: ValueKey('storage-recovery-notice'),
+                        ),
+                      ),
+                  ],
                 ),
               ),
             ],
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  bubble,
-                  if (widget.message.recoveredStorage.isNotEmpty)
-                    const Padding(
-                      padding: EdgeInsets.only(top: 8),
-                      child: Text(
-                        '部分附件或记录无法读取，原始数据已保留。请先导出完整备份，再联系维护者处理。',
-                        key: ValueKey('storage-recovery-notice'),
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          ],
+          ),
         ),
       ),
     );
@@ -349,169 +370,154 @@ class _MessageBubbleState extends State<MessageBubble> {
     ChatMessage m,
     bool doc,
   ) {
-    return Align(
-      alignment: doc ? Alignment.centerLeft : Alignment.centerRight,
-      child: Column(
-        crossAxisAlignment: doc
-            ? CrossAxisAlignment.start
-            : CrossAxisAlignment.end,
-        children: [
-          if (m.attachments.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child: Wrap(
-                alignment: WrapAlignment.end,
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  for (final a in m.attachments)
-                    AttachmentChip(
-                      attachment: a,
-                      onDownload: a.hasDownloadableBytes && !a.isImage
-                          ? () => _downloadAttachment(context, a)
-                          : null,
-                    ),
-                ],
-              ),
-            ),
-          if (_editing)
-            _EditBox(
-              controller: _editCtrl,
-              onCancel: () => setState(() => _editing = false),
-              onSave: _commitEdit,
-            )
-          else if (m.content.isNotEmpty)
-            Container(
-              margin: EdgeInsets.symmetric(
-                vertical:
-                    (Theme.of(
-                          context,
-                        ).extension<AppMetrics>()?.messageSpacing ??
-                        24) /
-                    2,
-              ),
-              padding: EdgeInsets.symmetric(
-                horizontal: doc ? 4 : 16,
-                vertical: doc ? 8 : 12,
-              ),
-              constraints: BoxConstraints(maxWidth: doc ? 900 : 560),
-              width: doc ? double.infinity : null,
-              decoration: doc
-                  ? BoxDecoration(
-                      border: Border(
-                        left: BorderSide(
-                          color: scheme.primary.withValues(alpha: 0.45),
-                          width: 3,
-                        ),
+    return LayoutBuilder(
+      builder: (context, constraints) => Align(
+        alignment: doc ? Alignment.centerLeft : Alignment.centerRight,
+        child: Column(
+          crossAxisAlignment: doc
+              ? CrossAxisAlignment.start
+              : CrossAxisAlignment.end,
+          children: [
+            if (m.attachments.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Wrap(
+                  alignment: WrapAlignment.end,
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final a in m.attachments)
+                      AttachmentChip(
+                        attachment: a,
+                        onDownload: a.hasDownloadableBytes && !a.isImage
+                            ? () => _downloadAttachment(context, a)
+                            : null,
                       ),
-                    )
-                  : BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                        colors: [
-                          scheme.primary,
-                          Color.lerp(scheme.primary, scheme.secondary, 0.22)!,
-                        ],
-                      ),
-                      borderRadius:
-                          Theme.of(
-                            context,
-                          ).extension<AppMetrics>()?.bubbleUser ??
-                          const BorderRadius.only(
-                            topLeft: Radius.circular(20),
-                            topRight: Radius.circular(20),
-                            bottomLeft: Radius.circular(20),
-                            bottomRight: Radius.circular(6),
+                  ],
+                ),
+              ),
+            if (_editing)
+              _EditBox(
+                controller: _editCtrl,
+                onCancel: () => setState(() => _editing = false),
+                onSave: _commitEdit,
+              )
+            else if (m.content.isNotEmpty)
+              Container(
+                margin: const EdgeInsets.only(bottom: 4),
+                padding: EdgeInsets.symmetric(
+                  horizontal: doc ? 4 : 14,
+                  vertical: doc ? 8 : 8,
+                ),
+                constraints: BoxConstraints(
+                  maxWidth: doc
+                      ? constraints.maxWidth
+                      : constraints.maxWidth * .82,
+                ),
+                width: doc ? double.infinity : null,
+                decoration: doc
+                    ? BoxDecoration(
+                        border: Border(
+                          left: BorderSide(
+                            color: scheme.primary.withValues(alpha: 0.45),
+                            width: 3,
                           ),
-                      boxShadow: [
-                        BoxShadow(
-                          color: scheme.primary.withValues(alpha: 0.18),
-                          blurRadius: 16,
-                          offset: const Offset(0, 6),
                         ),
-                      ],
-                    ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  if (doc)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 4),
-                      child: Text(
-                        widget.userLabel ?? '你',
-                        style: Theme.of(context).textTheme.labelMedium
-                            ?.copyWith(
-                              color: scheme.primary,
-                              fontWeight: FontWeight.w700,
+                      )
+                    : BoxDecoration(
+                        color: scheme.surfaceContainer,
+                        borderRadius:
+                            Theme.of(
+                              context,
+                            ).extension<AppMetrics>()?.bubbleUser ??
+                            const BorderRadius.only(
+                              topLeft: Radius.circular(20),
+                              topRight: Radius.circular(20),
+                              bottomLeft: Radius.circular(20),
+                              bottomRight: Radius.circular(6),
                             ),
                       ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (doc)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 4),
+                        child: Text(
+                          widget.userLabel ?? '你',
+                          style: Theme.of(context).textTheme.labelMedium
+                              ?.copyWith(
+                                color: scheme.primary,
+                                fontWeight: FontWeight.w700,
+                              ),
+                        ),
+                      ),
+                    SelectableText(
+                      m.content,
+                      style: TextStyle(
+                        color: scheme.onSurface,
+                        height:
+                            Theme.of(
+                              context,
+                            ).extension<AppMetrics>()?.lineHeight ??
+                            1.7,
+                        fontSize: 14,
+                      ),
                     ),
-                  SelectableText(
-                    m.content,
-                    style: TextStyle(
-                      color: doc ? scheme.onSurface : scheme.onPrimary,
-                      height:
-                          Theme.of(
-                            context,
-                          ).extension<AppMetrics>()?.lineHeight ??
-                          1.85,
-                      fontSize: 15,
+                  ],
+                ),
+              ),
+            if (!_editing)
+              Row(
+                mainAxisAlignment: doc
+                    ? MainAxisAlignment.start
+                    : MainAxisAlignment.end,
+                children: [
+                  _branchNav(scheme),
+                  if (messageHasHtmlPreview(m.content))
+                    IconButton(
+                      tooltip: '本地预览 HTML / SVG',
+                      iconSize: 18,
+                      icon: const Icon(Icons.visibility_outlined),
+                      onPressed: () => HtmlPreviewPage.open(
+                        context,
+                        snippets: extractHtmlSnippets(m.content),
+                      ),
                     ),
-                  ),
+                  if (m.content.isNotEmpty)
+                    IconButton(
+                      iconSize: 16,
+                      tooltip: '复制',
+                      color: scheme.onSurfaceVariant,
+                      icon: const Icon(Icons.copy_outlined),
+                      onPressed: () => _copyMessage(m.content),
+                    ),
+                  if (widget.onRemember != null && m.content.isNotEmpty)
+                    IconButton(
+                      iconSize: 16,
+                      tooltip: widget.isRemembered ? '已记住' : '记住这条',
+                      color: widget.isRemembered
+                          ? scheme.primary
+                          : scheme.onSurfaceVariant,
+                      icon: Icon(
+                        widget.isRemembered
+                            ? Icons.bookmark
+                            : Icons.bookmark_add_outlined,
+                      ),
+                      onPressed: widget.isRemembered ? null : widget.onRemember,
+                    ),
+                  if (widget.onEdit != null && !widget.isStreaming)
+                    IconButton(
+                      iconSize: 16,
+                      tooltip: '编辑',
+                      color: scheme.onSurfaceVariant,
+                      icon: const Icon(Icons.edit_outlined),
+                      onPressed: _startEdit,
+                    ),
                 ],
               ),
-            ),
-          if (!_editing)
-            Row(
-              mainAxisAlignment: doc
-                  ? MainAxisAlignment.start
-                  : MainAxisAlignment.end,
-              children: [
-                _branchNav(scheme),
-                if (messageHasHtmlPreview(m.content))
-                  IconButton(
-                    tooltip: '本地预览 HTML / SVG',
-                    iconSize: 18,
-                    icon: const Icon(Icons.visibility_outlined),
-                    onPressed: () => HtmlPreviewPage.open(
-                      context,
-                      snippets: extractHtmlSnippets(m.content),
-                    ),
-                  ),
-                if (m.content.isNotEmpty)
-                  IconButton(
-                    iconSize: 16,
-                    tooltip: '复制',
-                    color: scheme.onSurfaceVariant,
-                    icon: const Icon(Icons.copy_outlined),
-                    onPressed: () => _copyMessage(m.content),
-                  ),
-                if (widget.onRemember != null && m.content.isNotEmpty)
-                  IconButton(
-                    iconSize: 16,
-                    tooltip: widget.isRemembered ? '已记住' : '记住这条',
-                    color: widget.isRemembered
-                        ? scheme.primary
-                        : scheme.onSurfaceVariant,
-                    icon: Icon(
-                      widget.isRemembered
-                          ? Icons.bookmark
-                          : Icons.bookmark_add_outlined,
-                    ),
-                    onPressed: widget.isRemembered ? null : widget.onRemember,
-                  ),
-                if (widget.onEdit != null && !widget.isStreaming)
-                  IconButton(
-                    iconSize: 16,
-                    tooltip: '编辑',
-                    color: scheme.onSurfaceVariant,
-                    icon: const Icon(Icons.edit_outlined),
-                    onPressed: _startEdit,
-                  ),
-              ],
-            ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -524,7 +530,7 @@ class _MessageBubbleState extends State<MessageBubble> {
   ) {
     final plain = widget.workMode
         ? widget.workMessageStyle == MessageStylePref.document
-        : doc;
+        : true;
     // Assistant message: optional thinking panel + markdown body + actions.
     final hasReasoning = m.reasoning.trim().isNotEmpty;
     final stillThinking = widget.isStreaming && m.content.isEmpty;
@@ -538,16 +544,35 @@ class _MessageBubbleState extends State<MessageBubble> {
     return Align(
       alignment: Alignment.centerLeft,
       child: Container(
-        margin: EdgeInsets.symmetric(
-          vertical:
-              (Theme.of(context).extension<AppMetrics>()?.messageSpacing ??
-                  24) /
-              2,
-        ),
+        margin: EdgeInsets.zero,
         width: double.infinity,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if (plain && (speaker == null || speaker.isEmpty))
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 8,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: scheme.primary,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      '${widget.workMode ? '主代理' : '助手'}${m.searchActivities.isEmpty ? '' : ' · ${m.searchActivities.length} 步'}',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             if (speaker != null && speaker.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(left: 2, bottom: 6),

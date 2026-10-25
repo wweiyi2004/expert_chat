@@ -6,7 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   testWidgets(
-    'compact composer switches voice/send, keeps controls above, and opens blurred effort slider',
+    'compact composer switches voice/send, keeps controls above, and opens bounded effort sheet',
     (tester) async {
       tester.view.physicalSize = const Size(320, 640);
       tester.view.devicePixelRatio = 1;
@@ -52,7 +52,6 @@ void main() {
                         update(() => deepThink = !deepThink),
                     onReasoningEffortChanged: (value) =>
                         update(() => effort = value),
-                    onToggleSearch: () {},
                     onSetImageGenMode: (_) {},
                     onToggleImageMode: () {},
                     onToggleLongTask: () {},
@@ -80,7 +79,7 @@ void main() {
       await tester.tap(button);
       await tester.pumpAndSettle();
       expect(
-        find.byKey(const ValueKey('reasoning-effort-dialog')),
+        find.byKey(const ValueKey('reasoning-effort-slider')),
         findsNothing,
       );
       input.text = '你好';
@@ -104,13 +103,17 @@ void main() {
       }
       await tester.tap(button);
       await tester.pumpAndSettle();
-      expect(find.byType(BackdropFilter), findsOneWidget);
+      expect(find.byType(BottomSheet), findsOneWidget);
+      final sheet = tester.getRect(find.byType(BottomSheet));
+      expect(sheet.left, greaterThanOrEqualTo(0));
+      expect(sheet.right, lessThanOrEqualTo(320));
+      expect(sheet.bottom, lessThanOrEqualTo(640));
       final slider = find.byKey(const ValueKey('reasoning-effort-slider'));
       final rect = tester.getRect(slider);
       await tester.tapAt(Offset(rect.right - 20, rect.center.dy));
       await tester.pumpAndSettle();
       expect(effort, ReasoningEffort.max);
-      await tester.tap(find.text('完成'));
+      await tester.binding.handlePopRoute();
       await tester.pumpAndSettle();
       update(() => listening = true);
       await tester.pumpAndSettle();

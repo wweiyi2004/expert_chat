@@ -9,15 +9,26 @@ class SubagentRole {
     required this.instructions,
     this.model = '',
     this.enabled = true,
+    this.version = 1,
+    this.source = '',
+    this.requiredTools = const [],
+    this.validation = '',
   });
   final String id, name, when, instructions, model;
   final bool enabled;
+  final int version;
+  final String source, validation;
+  final List<String> requiredTools;
   SubagentRole copyWith({
     String? name,
     String? when,
     String? instructions,
     String? model,
     bool? enabled,
+    int? version,
+    String? source,
+    List<String>? requiredTools,
+    String? validation,
   }) => SubagentRole(
     id: id,
     name: name ?? this.name,
@@ -25,6 +36,28 @@ class SubagentRole {
     instructions: instructions ?? this.instructions,
     model: model ?? this.model,
     enabled: enabled ?? this.enabled,
+    version:
+        version ??
+        ((instructions != null && instructions != this.instructions) ||
+                (when != null && when != this.when) ||
+                (model != null && model != this.model) ||
+                (requiredTools != null &&
+                    requiredTools.join('\u0000') !=
+                        this.requiredTools.join('\u0000'))
+            ? this.version + 1
+            : this.version),
+    source: source ?? this.source,
+    requiredTools: requiredTools ?? this.requiredTools,
+    validation:
+        validation ??
+        ((instructions != null && instructions != this.instructions) ||
+                (when != null && when != this.when) ||
+                (model != null && model != this.model) ||
+                (requiredTools != null &&
+                    requiredTools.join('\u0000') !=
+                        this.requiredTools.join('\u0000'))
+            ? ''
+            : this.validation),
   );
   Map<String, dynamic> toJson() => {
     'id': id,
@@ -33,6 +66,10 @@ class SubagentRole {
     'instructions': instructions,
     'model': model,
     'enabled': enabled,
+    'version': version,
+    if (source.isNotEmpty) 'source': source,
+    if (requiredTools.isNotEmpty) 'requiredTools': requiredTools,
+    if (validation.isNotEmpty) 'validation': validation,
   };
   factory SubagentRole.fromJson(Map<String, dynamic> j) => SubagentRole(
     id: j['id'] as String,
@@ -41,6 +78,10 @@ class SubagentRole {
     instructions: j['instructions'] as String? ?? '',
     model: j['model'] as String? ?? '',
     enabled: j['enabled'] as bool? ?? true,
+    version: j['version'] as int? ?? 1,
+    source: j['source'] as String? ?? '',
+    requiredTools: (j['requiredTools'] as List? ?? []).cast<String>(),
+    validation: j['validation'] as String? ?? '',
   );
   static List<SubagentRole>? decode(String? value) {
     if (value == null) return null;

@@ -34,8 +34,9 @@ ContextPrefs effectiveContextPrefs(SettingsState settings, LlmConfig config) {
   }
   window = window.clamp(4096, 2000000);
   var output = defaults.maxOutputTokens;
-  if (limits?.maxOutputTokens != null && output > limits!.maxOutputTokens!)
+  if (limits?.maxOutputTokens != null && output > limits!.maxOutputTokens!) {
     output = limits.maxOutputTokens!;
+  }
   // Imported or legacy settings must not reserve a larger response than the window.
   if (output >= window) output = (window ~/ 4).clamp(512, 32768);
   final reserve = defaults.reservedOutputTokens.clamp(512, window - 1024);
@@ -65,4 +66,17 @@ Map<String, ContextPrefs> decodeModelContexts(String? raw) {
           Map<String, dynamic>.from(entry.value as Map),
         ),
   };
+}
+
+LlmConfig applyReportedModelCapabilities(
+  SettingsState settings,
+  LlmConfig config,
+) {
+  final metadata = reportedModelLimits(settings, config);
+  return config.copyWith(
+    capabilities: ModelCapabilities.resolve(config.model).withReasoning(
+      efforts: metadata?.reasoningEfforts,
+      canDisable: metadata?.reasoningCanBeDisabled,
+    ),
+  );
 }

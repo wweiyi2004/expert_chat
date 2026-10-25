@@ -18,7 +18,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # of the product and file versions while build-number is used as the build suffix.
 # build-number must stay > any prior split-per-abi code (abi*1000 + old build).
 # v3.0.0 arm64 was 2015, x86_64 was 4015 — use 4100+ for clean upgrades.
-version: 3.6.1+4109
+version: 3.8.1+4113
 
 environment:
   sdk: ^3.12.0
@@ -120,10 +120,14 @@ dev_dependencies:
     sdk: flutter
   flutter_test:
     sdk: flutter
+  # Pure Dart host/protocol fixtures run without Flutter UI bindings.
+  test: 1.31.0
   # Tests install the package's fake platform implementation directly.
   flutter_secure_storage_platform_interface: ^2.0.1
   # Tests install the package's fake platform implementation directly.
   path_provider_platform_interface: ^2.1.2
+  # Deterministic credential/profile save ordering and failure fixtures.
+  shared_preferences_platform_interface: 2.4.2
   # TTS playback tests fake the just_audio platform via this interface.
   just_audio_platform_interface: ^4.6.0
   # M2 — drift codegen (keep drift_dev on the same minor as drift)
@@ -156,6 +160,7 @@ flutter:
       fonts:
         - asset: assets/fonts/NotoSansSC.ttf
   assets:
+    - assets/math/toolkit.py
     - assets/branding/
     - shorebird.yaml
     # Short Edge-TTS samples used as optional clone seeds for anime-style

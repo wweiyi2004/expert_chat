@@ -71,7 +71,9 @@ class ResponsesApiProvider implements LlmProvider {
               responseType: ResponseType.stream,
               headers: {
                 ...config.transportHeaders,
-                'Authorization': 'Bearer ${config.apiKey}',
+                if (config.authMode != 'none' &&
+                    config.apiKey.trim().isNotEmpty)
+                  'Authorization': 'Bearer ${config.apiKey}',
                 'Content-Type': 'application/json',
                 'Accept': 'text/event-stream',
               },
@@ -326,21 +328,19 @@ class ResponsesApiProvider implements LlmProvider {
       if (input.isNotEmpty) 'input': input,
     };
 
-    if (thinking != null &&
-        (config.capabilities.supportsReasoningEffort ||
-            config.model.toLowerCase().startsWith('gpt-5') ||
-            config.model.toLowerCase().startsWith('gpt-6') ||
-            RegExp(r'^o[1-9]').hasMatch(config.model.toLowerCase()))) {
-      if (thinking) {
-        final selected = reasoningEffort ?? ReasoningEffort.high;
-        final effort = selected == ReasoningEffort.max && !config.isDeepSeek
-            ? 'high'
-            : selected.wire;
+    if (thinking != null && config.capabilities.supportsReasoningEffort) {
+      if (thinking ||
+          (!config.capabilities.reasoningCanBeDisabled &&
+              !config.capabilities.sendThinkingField)) {
+        final effort = reasoningEffortWire(
+          config,
+          reasoningEffort ?? ReasoningEffort.high,
+        );
         body['reasoning'] = {'effort': effort};
         if (config.capabilities.sendThinkingField) {
           body['output_config'] = {'effort': effort};
         }
-      } else {
+      } else if (config.capabilities.reasoningCanBeDisabled) {
         body['reasoning'] = {'effort': 'none'};
       }
     }

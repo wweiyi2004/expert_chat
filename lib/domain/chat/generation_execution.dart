@@ -76,11 +76,16 @@ class GenerationExecution {
   void beginBudget(
     TaskBudgetPrefs prefs, {
     required void Function() beforeCancel,
+    Map<String, dynamic> snapshot = const {},
   }) {
-    endBudget();
     if (_disposed || _cancelled) return;
+    if (_budget != null) {
+      _budget!.resumeWork();
+      return;
+    }
     _budget = TaskBudget(
       prefs,
+      snapshot: snapshot,
       onExhausted: (reason) {
         if (_disposed || _cancelled) return;
         DiagnosticTrace.instance.record(
@@ -137,7 +142,7 @@ class GenerationExecution {
       _cancelled ? DiagnosticPhase.cancelled : DiagnosticPhase.finished,
     );
     _diagnostic = null;
-    endBudget();
+    _budget?.waitForApproval();
     _active = false;
     final idle = _idle;
     _idle = null;

@@ -5,6 +5,8 @@ import '../../../data/composer_modes.dart';
 import '../../../data/models.dart';
 import '../../../domain/llm/llm_provider.dart';
 import 'attachment_chip.dart';
+import '../../../core/theme.dart';
+import '../../../core/prototype_widgets.dart';
 import 'composer_popover.dart';
 import 'composer_tool_tray.dart';
 import 'reasoning_effort_control.dart';
@@ -38,7 +40,6 @@ class ChatComposer extends StatefulWidget {
     required this.speechUsesCloudAsr,
     required this.onToggleDeepThink,
     this.onReasoningEffortChanged,
-    required this.onToggleSearch,
     this.mcpAvailable = false,
     this.mcpSelectedCount = 0,
     this.onPickMcpServers,
@@ -55,7 +56,15 @@ class ChatComposer extends StatefulWidget {
     this.onConversationOptions,
     this.modelPicker,
     this.permissionControl,
+    this.workbenchControl,
     this.attachedToolbar,
+    this.locationControl,
+    this.contextControl,
+    this.locationControlBuilder,
+    this.permissionControlBuilder,
+    this.hasContextUsage = true,
+    this.steering = false,
+    this.onCancelSteering,
     required this.onSend,
     this.onDocumentEdit,
     required this.onStop,
@@ -87,7 +96,6 @@ class ChatComposer extends StatefulWidget {
   final bool speechUsesCloudAsr;
   final VoidCallback onToggleDeepThink;
   final ValueChanged<ReasoningEffort>? onReasoningEffortChanged;
-  final VoidCallback onToggleSearch;
   final bool mcpAvailable;
   final int mcpSelectedCount;
   final VoidCallback? onPickMcpServers;
@@ -105,7 +113,16 @@ class ChatComposer extends StatefulWidget {
   final VoidCallback? onVoiceConversation;
   final VoidCallback? onConversationOptions;
   final Widget? modelPicker;
-  final Widget? permissionControl, attachedToolbar;
+  final Widget? workbenchControl;
+  final Widget? permissionControl,
+      attachedToolbar,
+      locationControl,
+      contextControl;
+  final Widget Function(bool outside)? locationControlBuilder,
+      permissionControlBuilder;
+  final bool hasContextUsage;
+  final bool steering;
+  final VoidCallback? onCancelSteering;
   final VoidCallback onSend;
   final VoidCallback? onDocumentEdit;
   final VoidCallback onStop;
@@ -122,13 +139,20 @@ class _ComposerState extends State<ChatComposer> {
   @override
   void initState() {
     super.initState();
-    _focusNode = FocusNode();
+    _focusNode = FocusNode()..addListener(_onFocusChanged);
     HardwareKeyboard.instance.addHandler(_onHardwareKey);
+  }
+
+  void _onFocusChanged() {
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   @override
   void dispose() {
     HardwareKeyboard.instance.removeHandler(_onHardwareKey);
+    _focusNode.removeListener(_onFocusChanged);
     _focusNode.dispose();
     super.dispose();
   }
@@ -197,7 +221,14 @@ class _ComposerState extends State<ChatComposer> {
   Widget _buildComposer(BuildContext context, BoxConstraints constraints) {
     final scheme = Theme.of(context).colorScheme;
     final media = MediaQuery.of(context);
-    final phone = constraints.maxWidth < 600;
+    final phone = media.size.width < 840;
+    final narrow = constraints.maxWidth < 620;
+    final keyboard = View.of(context).viewInsets.bottom > 0;
+    final locationControl =
+        widget.locationControlBuilder?.call(narrow) ?? widget.locationControl;
+    final permissionControl =
+        widget.permissionControlBuilder?.call(narrow) ??
+        widget.permissionControl;
     final compactHeight = media.size.height - media.viewInsets.bottom < 720;
     final canAttachDocs =
         !widget.isStreaming && !widget.picking && !widget.imageMode;
@@ -221,7 +252,7 @@ class _ComposerState extends State<ChatComposer> {
         key: const ValueKey('composer-text-field'),
         controller: widget.controller,
         focusNode: _focusNode,
-        minLines: 1,
+        minLines: narrow && !keyboard ? 2 : 1,
         maxLines: phone || compactHeight ? 3 : 5,
         readOnly: widget.speechListening,
         textInputAction: TextInputAction.newline,
@@ -244,14 +275,23 @@ class _ComposerState extends State<ChatComposer> {
             ],
           );
         },
+        style: const TextStyle(fontSize: 14, height: 1.5),
         decoration: InputDecoration(
+          hintText: widget.steering
+              ? '补充方向或验收要求，下一轮生效'
+              : widget.workMode
+              ? '描述目标、材料和交付要求…'
+              : '发消息…',
+          isDense: true,
+          isCollapsed: true,
+          constraints: const BoxConstraints(minHeight: 24),
           filled: false,
           border: InputBorder.none,
           enabledBorder: InputBorder.none,
           focusedBorder: InputBorder.none,
           contentPadding: const EdgeInsets.symmetric(
             horizontal: 4,
-            vertical: 7,
+            vertical: 2,
           ),
         ),
       ),
@@ -317,9 +357,6 @@ class _ComposerState extends State<ChatComposer> {
       onToggleImageMode: widget.isStreaming
           ? null
           : () => _runAndClose(widget.onToggleImageMode),
-      onToggleSearch: widget.storyLike || widget.isStudy
-          ? null
-          : widget.onToggleSearch,
       onSetImageGenMode:
           widget.imageGenerationConfigured &&
               !widget.imageMode &&
@@ -336,6 +373,162 @@ class _ComposerState extends State<ChatComposer> {
           ? widget.onToggleLongTask
           : null,
     );
+    final toolMenu = Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        toolTray,
+        if (!widget.hasContextUsage && widget.contextControl != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 4, 8, 4),
+            child: Row(
+              children: [
+                const Expanded(
+                  child: Text('上下文与用量', style: TextStyle(fontSize: 13)),
+                ),
+                widget.contextControl!,
+              ],
+            ),
+          ),
+      ],
+    );
+    final primaryControls = <Widget>[
+      Padding(
+        padding: EdgeInsets.zero,
+        child: Builder(
+          builder: (anchor) => _ComposerPlusButton(
+            open: _plusOpen,
+            enabled: true,
+            picking: widget.picking,
+            onPressed: () => _togglePlus(anchor, toolMenu),
+          ),
+        ),
+      ),
+      if (!narrow && locationControl != null)
+        ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 140),
+          child: locationControl,
+        ),
+      if (!narrow && widget.workbenchControl != null) widget.workbenchControl!,
+      if (!narrow && permissionControl != null)
+        ConstrainedBox(
+          constraints: BoxConstraints(maxWidth: 100),
+          child: permissionControl,
+        ),
+    ];
+    final modelControl = widget.modelPicker == null
+        ? null
+        : ConstrainedBox(
+            constraints: BoxConstraints(
+              maxWidth: narrow
+                  ? 360
+                  : (constraints.maxWidth - 430).clamp(100.0, 240.0),
+            ),
+            child: widget.modelPicker!,
+          );
+    final actionControls = <Widget>[
+      ?modelControl,
+      if (widget.desktopLayout && widget.modelPicker == null)
+        ReasoningEffortControl(
+          compact: phone,
+          enabled: true,
+          thinking: widget.deepThink,
+          effort: widget.reasoningEffort,
+          supportsEffort: widget.supportsReasoningEffort,
+          onToggle: widget.onToggleDeepThink,
+          onChanged: widget.onReasoningEffortChanged,
+        ),
+      if (widget.contextControl != null && widget.hasContextUsage)
+        widget.contextControl!,
+      Padding(
+        padding: const EdgeInsets.only(left: 4),
+        child: ValueListenableBuilder<TextEditingValue>(
+          valueListenable: widget.controller,
+          builder: (context, value, _) {
+            final hasContent =
+                value.text.trim().isNotEmpty || widget.attachments.isNotEmpty;
+            final voice =
+                !hasContent ||
+                widget.speechBusy ||
+                (widget.speechListening && widget.speechUsesCloudAsr);
+            return SizedBox.square(
+              dimension: phone ? 44 : 32,
+              child: Center(
+                child: IconButton.filled(
+                  key: ValueKey(
+                    widget.isStreaming
+                        ? 'composer-stop-button'
+                        : voice
+                        ? 'composer-microphone-button'
+                        : 'composer-send-button',
+                  ),
+                  tooltip: widget.isStreaming
+                      ? '停止'
+                      : voice
+                      ? widget.speechBusy
+                            ? widget.speechUsesCloudAsr
+                                  ? '正在上传语音；点按取消'
+                                  : '正在准备语音输入'
+                            : widget.speechListening
+                            ? widget.speechUsesCloudAsr
+                                  ? '结束录音并识别'
+                                  : '停止语音输入'
+                            : '语音输入'
+                      : '发送',
+                  onPressed: widget.isStreaming
+                      ? widget.onStop
+                      : widget.speechBusy && !widget.speechUsesCloudAsr
+                      ? null
+                      : () {
+                          _closePlus();
+                          if (voice) {
+                            widget.onToggleSpeech();
+                          } else {
+                            widget.onSend();
+                          }
+                        },
+                  icon: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 180),
+                    child: widget.speechBusy
+                        ? const SizedBox.square(
+                            dimension: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : Icon(
+                            widget.isStreaming
+                                ? Icons.stop_rounded
+                                : voice
+                                ? widget.speechListening
+                                      ? Icons.mic_rounded
+                                      : Icons.mic_none_rounded
+                                : Icons.arrow_upward_rounded,
+                            key: ValueKey(
+                              '${widget.isStreaming}-$voice-${widget.speechListening}',
+                            ),
+                            size: 19,
+                          ),
+                  ),
+                  style: IconButton.styleFrom(
+                    minimumSize: const Size.square(32),
+                    maximumSize: const Size.square(32),
+                    padding: EdgeInsets.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    backgroundColor:
+                        widget.isStreaming || widget.speechListening
+                        ? scheme.errorContainer
+                        : scheme.primary,
+                    foregroundColor:
+                        widget.isStreaming || widget.speechListening
+                        ? scheme.onErrorContainer
+                        : scheme.onPrimary,
+                  ),
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    ];
     return Container(
       key: const ValueKey('chat-composer'),
       decoration: BoxDecoration(
@@ -356,13 +549,21 @@ class _ComposerState extends State<ChatComposer> {
         top: false,
         child: Center(
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 900),
+            constraints: const BoxConstraints(maxWidth: 740),
             child: Padding(
               padding: EdgeInsets.fromLTRB(
-                12,
-                compactHeight ? 4 : 8,
-                12,
-                compactHeight ? 4 : 13,
+                phone
+                    ? 10
+                    : narrow
+                    ? 12
+                    : 20,
+                0,
+                phone
+                    ? 10
+                    : narrow
+                    ? 12
+                    : 20,
+                phone ? 10 : 14,
               ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -375,30 +576,88 @@ class _ComposerState extends State<ChatComposer> {
                       padding: const EdgeInsets.fromLTRB(6, 6, 6, 6),
                       child: widget.attachedToolbar!,
                     ),
-                  if (!widget.desktopLayout)
+                  if (!widget.desktopLayout && widget.modelPicker == null)
                     Padding(
                       key: const ValueKey('composer-thinking-controls'),
                       padding: const EdgeInsets.fromLTRB(4, 8, 4, 8),
                       child: thinkingControls,
                     ),
+                  if (widget.steering)
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            '补充任务 · 不会打断当前轮',
+                            style: TextStyle(
+                              color: AppStatusColors.of(context).running,
+                            ),
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: widget.onCancelSteering,
+                          child: const Text('取消'),
+                        ),
+                      ],
+                    ),
+                  if (narrow &&
+                      (locationControl != null || permissionControl != null))
+                    Padding(
+                      key: const ValueKey('composer-context-row'),
+                      padding: EdgeInsets.only(bottom: keyboard ? 0 : 6),
+                      child: Row(
+                        children: [
+                          if (locationControl != null)
+                            Expanded(
+                              child: SizedBox(
+                                height: phone ? 44 : 28,
+                                child: locationControl,
+                              ),
+                            )
+                          else
+                            const Spacer(),
+                          if (widget.workbenchControl != null)
+                            widget.workbenchControl!,
+                          if (permissionControl != null) ...[
+                            const SizedBox(width: 12),
+                            permissionControl,
+                          ],
+                        ],
+                      ),
+                    ),
                   Container(
                     key: const ValueKey('composer-input-box'),
-                    padding: const EdgeInsets.fromLTRB(6, 4, 6, 4),
+                    padding: EdgeInsets.symmetric(
+                      horizontal: phone ? 10 : 12,
+                      vertical: narrow && !keyboard
+                          ? 12
+                          : phone
+                          ? 8
+                          : 10,
+                    ),
                     decoration: BoxDecoration(
-                      color: widget.desktopLayout
-                          ? scheme.surface
-                          : scheme.surfaceContainer,
-                      borderRadius: BorderRadius.circular(
-                        widget.desktopLayout ? 28 : 22,
-                      ),
+                      color: scheme.surface,
+                      borderRadius: BorderRadius.circular(phone ? 22 : 18),
                       border: Border.all(
-                        color: scheme.outlineVariant.withValues(alpha: 0.72),
+                        color: widget.steering
+                            ? AppStatusColors.of(context).running
+                            : _focusNode.hasFocus
+                            ? Color.lerp(
+                                scheme.outlineVariant,
+                                scheme.primary,
+                                .45,
+                              )!
+                            : PrototypeColors.of(context).line,
                       ),
                       boxShadow: [
+                        if (_focusNode.hasFocus)
+                          BoxShadow(
+                            color: scheme.primary.withValues(alpha: .14),
+                            spreadRadius: 3,
+                          ),
                         BoxShadow(
-                          color: scheme.shadow.withValues(alpha: 0.08),
-                          blurRadius: widget.desktopLayout ? 16 : 24,
-                          offset: Offset(0, widget.desktopLayout ? 3 : 10),
+                          color: scheme.shadow.withValues(alpha: .06),
+                          blurRadius: 2,
+                          offset: const Offset(0, 1),
                         ),
                       ],
                     ),
@@ -468,152 +727,53 @@ class _ComposerState extends State<ChatComposer> {
                             ),
                           ),
                         Padding(
-                          padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
+                          padding: EdgeInsets.only(
+                            bottom: narrow && !keyboard ? 12 : 8,
+                          ),
                           child: editor,
                         ),
-                        Row(
-                          crossAxisAlignment: CrossAxisAlignment.center,
-                          children: [
-                            Padding(
-                              padding: EdgeInsets.zero,
-                              child: Builder(
-                                builder: (anchor) => _ComposerPlusButton(
-                                  open: _plusOpen,
-                                  enabled: true,
-                                  picking: widget.picking,
-                                  onPressed: () =>
-                                      _togglePlus(anchor, toolTray),
-                                ),
-                              ),
-                            ),
-                            if (widget.permissionControl != null)
-                              ConstrainedBox(
-                                constraints: BoxConstraints(
-                                  maxWidth: phone ? 36 : 160,
-                                ),
-                                child: widget.permissionControl!,
-                              ),
-                            const Spacer(),
-                            if (widget.modelPicker != null)
-                              ConstrainedBox(
-                                constraints: BoxConstraints(
-                                  maxWidth: phone
-                                      ? (constraints.maxWidth - 170).clamp(
-                                          64.0,
-                                          260.0,
-                                        )
-                                      : (constraints.maxWidth - 310).clamp(
-                                          160.0,
-                                          300.0,
-                                        ),
-                                ),
-                                child: widget.modelPicker!,
-                              ),
-                            if (widget.desktopLayout)
-                              ReasoningEffortControl(
-                                compact: phone,
-                                enabled: true,
-                                thinking: widget.deepThink,
-                                effort: widget.reasoningEffort,
-                                supportsEffort: widget.supportsReasoningEffort,
-                                onToggle: widget.onToggleDeepThink,
-                                onChanged: widget.onReasoningEffortChanged,
-                              ),
-                            Padding(
-                              padding: const EdgeInsets.only(left: 4),
-                              child: ValueListenableBuilder<TextEditingValue>(
-                                valueListenable: widget.controller,
-                                builder: (context, value, _) {
-                                  final hasContent =
-                                      value.text.trim().isNotEmpty ||
-                                      widget.attachments.isNotEmpty;
-                                  final voice =
-                                      !hasContent ||
-                                      widget.speechBusy ||
-                                      (widget.speechListening &&
-                                          widget.speechUsesCloudAsr);
-                                  return IconButton.filled(
-                                    key: ValueKey(
-                                      widget.isStreaming
-                                          ? 'composer-stop-button'
-                                          : voice
-                                          ? 'composer-microphone-button'
-                                          : 'composer-send-button',
-                                    ),
-                                    tooltip: widget.isStreaming
-                                        ? '停止'
-                                        : voice
-                                        ? widget.speechBusy
-                                              ? widget.speechUsesCloudAsr
-                                                    ? '正在上传语音；点按取消'
-                                                    : '正在准备语音输入'
-                                              : widget.speechListening
-                                              ? widget.speechUsesCloudAsr
-                                                    ? '结束录音并识别'
-                                                    : '停止语音输入'
-                                              : '语音输入'
-                                        : '发送',
-                                    onPressed: widget.isStreaming
-                                        ? widget.onStop
-                                        : widget.speechBusy &&
-                                              !widget.speechUsesCloudAsr
-                                        ? null
-                                        : () {
-                                            _closePlus();
-                                            if (voice) {
-                                              widget.onToggleSpeech();
-                                            } else {
-                                              widget.onSend();
-                                            }
-                                          },
-                                    icon: AnimatedSwitcher(
-                                      duration: const Duration(
-                                        milliseconds: 180,
-                                      ),
-                                      child: widget.speechBusy
-                                          ? const SizedBox.square(
-                                              dimension: 16,
-                                              child: CircularProgressIndicator(
-                                                strokeWidth: 2,
-                                              ),
-                                            )
-                                          : Icon(
-                                              widget.isStreaming
-                                                  ? Icons.stop_rounded
-                                                  : voice
-                                                  ? widget.speechListening
-                                                        ? Icons.mic_rounded
-                                                        : Icons.mic_none_rounded
-                                                  : Icons.arrow_upward_rounded,
-                                              key: ValueKey(
-                                                '${widget.isStreaming}-$voice-${widget.speechListening}',
-                                              ),
-                                              size: 19,
-                                            ),
-                                    ),
-                                    style: IconButton.styleFrom(
-                                      minimumSize: const Size.square(32),
-                                      maximumSize: const Size.square(32),
-                                      padding: EdgeInsets.zero,
-                                      tapTargetSize:
-                                          MaterialTapTargetSize.shrinkWrap,
-                                      backgroundColor:
-                                          widget.isStreaming ||
-                                              widget.speechListening
-                                          ? scheme.errorContainer
-                                          : scheme.primary,
-                                      foregroundColor:
-                                          widget.isStreaming ||
-                                              widget.speechListening
-                                          ? scheme.onErrorContainer
-                                          : scheme.onPrimary,
-                                    ),
-                                  );
-                                },
-                              ),
-                            ),
-                          ],
-                        ),
+                        if (narrow)
+                          Row(
+                            key: const ValueKey('composer-input-actions'),
+                            children: [
+                              primaryControls.first,
+                              const SizedBox(width: 12),
+                              if (modelControl != null)
+                                Expanded(
+                                  child: Align(
+                                    alignment: Alignment.centerLeft,
+                                    child: modelControl,
+                                  ),
+                                )
+                              else
+                                const Spacer(),
+                              for (final action in actionControls.skip(
+                                modelControl == null ? 0 : 1,
+                              )) ...[const SizedBox(width: 8), action],
+                            ],
+                          )
+                        else
+                          Row(
+                            children: [
+                              for (
+                                var i = 0;
+                                i < primaryControls.length;
+                                i++
+                              ) ...[
+                                if (i > 0) const SizedBox(width: 6),
+                                primaryControls[i],
+                              ],
+                              const Spacer(),
+                              for (
+                                var i = 0;
+                                i < actionControls.length;
+                                i++
+                              ) ...[
+                                if (i > 0) const SizedBox(width: 6),
+                                actionControls[i],
+                              ],
+                            ],
+                          ),
                       ],
                     ),
                   ),
@@ -667,61 +827,18 @@ class _ComposerPlusButton extends StatelessWidget {
   final VoidCallback onPressed;
 
   @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final active = open;
-    return Semantics(
-      key: const ValueKey('composer-plus-button'),
-      button: true,
-      enabled: enabled,
-      label: open ? '收起附件菜单' : '展开附件菜单',
-      excludeSemantics: true,
-      child: Tooltip(
-        message: open ? '收起' : '添加',
-        child: Padding(
-          padding: const EdgeInsets.only(bottom: 2, right: 2),
-          child: Material(
-            color: active
-                ? scheme.primaryContainer
-                : scheme.surfaceContainerHighest,
-            shape: const CircleBorder(),
-            child: InkWell(
-              customBorder: const CircleBorder(),
-              onTap: enabled ? onPressed : null,
-              child: SizedBox(
-                width: 30,
-                height: 30,
-                child: Center(
-                  child: picking
-                      ? SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: scheme.primary,
-                          ),
-                        )
-                      : AnimatedRotation(
-                          turns: open ? 0.125 : 0,
-                          duration: const Duration(milliseconds: 180),
-                          child: Icon(
-                            Icons.add_rounded,
-                            size: 19,
-                            color: enabled
-                                ? (active
-                                      ? scheme.onPrimaryContainer
-                                      : scheme.onSurfaceVariant)
-                                : scheme.onSurface.withValues(alpha: 0.38),
-                          ),
-                        ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => Semantics(
+    key: const ValueKey('composer-plus-button'),
+    button: true,
+    enabled: enabled,
+    label: open ? '收起附件菜单' : '展开附件菜单',
+    child: PrototypeChip(
+      label: picking ? '…' : '＋',
+      tooltip: open ? '收起' : '添加',
+      selected: open,
+      onPressed: enabled ? onPressed : null,
+    ),
+  );
 }
 
 class _ComposerToggleChip extends StatelessWidget {

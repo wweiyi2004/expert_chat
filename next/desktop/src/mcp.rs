@@ -33,6 +33,25 @@ pub struct WriteRequest {
     pub expected_sha256: String,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CopyRequest {
+    pub scope: String,
+    pub source: String,
+    pub destination: String,
+    pub expected_sha256: String,
+    pub destination_expected_sha256: Option<String>,
+    pub destination_expected_identity: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DeleteRollbackRequest {
+    pub scope: String,
+    pub path: String,
+    pub expected_sha256: String,
+    pub source_absent_path: Option<String>,
+    pub expected_identity: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct CodingServer {
     files: WorkspaceFiles,
@@ -87,6 +106,46 @@ impl CodingServer {
         Parameters(request): Parameters<FileRequest>,
     ) -> CallToolResult {
         reply(self.files.list(&request.scope, &request.path))
+    }
+
+    #[tool(
+        description = "Internal explicit user rollback: delete exactly one regular file only when its SHA-256 still matches the reviewed version. Refuses directories, links, denied/read-only paths and stale versions. The app does not offer this primitive to models."
+    )]
+    fn coding_delete_file_if_current(
+        &self,
+        Parameters(request): Parameters<DeleteRollbackRequest>,
+    ) -> CallToolResult {
+        reply(self.files.delete_file_guarded(
+            &request.scope,
+            &request.path,
+            &request.expected_sha256,
+            request.source_absent_path.as_deref(),
+            request.expected_identity.as_deref(),
+        ))
+    }
+
+    #[tool(
+        description = "Copy an observed file in bounded memory to a new path within the same authorized scope. Requires source expected_sha256; never overwrites an existing destination or returns binary bodies."
+    )]
+    fn coding_copy_file(&self, Parameters(request): Parameters<CopyRequest>) -> CallToolResult {
+        reply(self.files.copy_file_guarded(
+            &request.scope,
+            &request.source,
+            &request.destination,
+            &request.expected_sha256,
+            request.destination_expected_sha256.as_deref(),
+            request.destination_expected_identity.as_deref(),
+        ))
+    }
+
+    #[tool(
+        description = "Verify a final file or complete directory artifact using bounded-memory streaming SHA-256. Returns paths, byte sizes and content hashes, never file bodies. Rejects links, denied entries, changing files and manifests above 1000 files/depth 32."
+    )]
+    fn coding_artifact_manifest(
+        &self,
+        Parameters(request): Parameters<FileRequest>,
+    ) -> CallToolResult {
+        reply(self.files.artifact_manifest(&request.scope, &request.path))
     }
 
     #[tool(

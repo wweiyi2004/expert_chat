@@ -90,7 +90,7 @@ class _Translation extends ReasoningTranslation {
     stops++;
     final key = ReasoningTranslation.key(conversationId, messageId);
     final previous = state[key];
-    if (previous != null)
+    if (previous != null) {
       state = {
         ...state,
         key: ReasoningTranslationState(
@@ -104,6 +104,7 @@ class _Translation extends ReasoningTranslation {
           outputTokens: previous.outputTokens,
         ),
       };
+    }
   }
 }
 
@@ -201,7 +202,7 @@ void main() {
       final second = find.byKey(
         const ValueKey('thinking-translated-segment-1'),
       );
-      final tool = find.text('已读取文件');
+      final tool = find.textContaining('已读取文件');
       expect(tester.getTopLeft(first).dy, lessThan(tester.getTopLeft(tool).dy));
       expect(
         tester.getTopLeft(tool).dy,

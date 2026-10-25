@@ -5,7 +5,6 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
 import '../../desktop/command_runner.dart';
-import '../../desktop/command_runner_contract.dart';
 import '../../desktop/workspace_tools.dart';
 import '../../llm/llm_provider.dart';
 import '../../research/research_workspace.dart';
@@ -164,10 +163,11 @@ class WorkProcessRuntime extends ChangeNotifier {
       });
       r.exitCode = result.exitCode;
       r.outputs = result.outputs;
-      if (r.log.isEmpty)
+      if (r.log.isEmpty) {
         r.log = result.output.length > 64000
             ? result.output.substring(result.output.length - 64000)
             : result.output;
+      }
       r.status = result.cancelled || r.token.isCancelled
           ? WorkProcessStatus.cancelled
           : result.exitCode == 0 && !result.timedOut
@@ -182,7 +182,7 @@ class WorkProcessRuntime extends ChangeNotifier {
     } finally {
       r.finishedAt = DateTime.now();
       _notify();
-      if (!_disposed)
+      if (!_disposed) {
         _events.add(
           WorkProcessEvent(
             id: 'process_event_${_sequence++}',
@@ -194,6 +194,7 @@ class WorkProcessRuntime extends ChangeNotifier {
                 '${r.service ? '后台服务已退出' : '后台命令已完成'}：${r.id}\n命令：${r.command}\n状态：${r.status.name}；退出码：${r.exitCode ?? '未知'}\n${r.error}\n产物：${r.outputs.join(', ')}\n日志末尾：\n${r.log.length > 12000 ? r.log.substring(r.log.length - 12000) : r.log}',
           ),
         );
+      }
     }
   }
 
@@ -406,23 +407,26 @@ class WorkProcessRuntime extends ChangeNotifier {
     String name,
     Map<String, dynamic> args,
   ) {
-    if (name == 'work_list_processes')
+    if (name == 'work_list_processes') {
       return jsonEncode(
         records
             .where((r) => r.conversationId == conversationId)
             .map((r) => r.toJson())
             .toList(),
       );
+    }
     final r = _records[args['process_id']];
-    if (r == null || r.conversationId != conversationId)
+    if (r == null || r.conversationId != conversationId) {
       throw StateError('进程不属于当前会话');
+    }
     if (name == 'work_process_status') return jsonEncode(r.toJson());
     if (name == 'work_stop_process') {
       stop(r.id);
       return '已请求停止';
     }
-    if (name == 'work_restart_process')
+    if (name == 'work_restart_process') {
       return jsonEncode({'process_id': restart(r.id)});
+    }
     throw StateError('启动进程需要当前会话的独立执行器');
   }
 

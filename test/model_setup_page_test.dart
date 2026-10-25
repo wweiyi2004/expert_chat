@@ -10,6 +10,7 @@ import 'package:expert_chat/features/settings/model_setup_page.dart';
 import 'package:expert_chat/features/shared/recovery_notice.dart';
 import 'package:expert_chat/state/chat_controller.dart';
 import 'package:expert_chat/state/settings_controller.dart';
+import 'package:expert_chat/state/work_runtime_logs.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/test/test_flutter_secure_storage_platform.dart';
@@ -70,7 +71,9 @@ void main() {
     prefs = await SharedPreferences.getInstance();
     db = AppDatabase(NativeDatabase.memory());
     probe = _Probe();
-    llm = FakeLlmProvider(const [ChatChunk(contentDelta: '你好，连接正常。')]);
+    llm = FakeLlmProvider(const [
+      ChatChunk(contentDelta: '你好，连接正常。', finishReason: 'stop'),
+    ]);
     container = ProviderContainer(
       overrides: [
         appDatabaseProvider.overrideWithValue(db),
@@ -82,6 +85,14 @@ void main() {
     );
     await container.read(settingsControllerProvider.future);
     await container.read(chatControllerProvider.future);
+    // This fixture verifies setup and first reply, not an external search API.
+    container
+        .read(chatControllerProvider.notifier)
+        .applyComposerPrefs(
+          searchMode: SearchMode.off,
+          imageGenMode: ImageGenMode.off,
+          reasoningEffort: ReasoningEffort.high,
+        );
     await tester.pumpWidget(
       UncontrolledProviderScope(
         container: container,
@@ -91,6 +102,9 @@ void main() {
     await tester.pumpAndSettle();
     addTearDown(() async {
       await tester.pumpWidget(const SizedBox.shrink());
+      await tester.runAsync(
+        () => container.read(workRuntimeLogsProvider.notifier).flush(),
+      );
       container.dispose();
       await db.close();
       await tester.binding.setSurfaceSize(null);
@@ -163,7 +177,13 @@ void main() {
       expect(observed.current!.messages, hasLength(2));
       expect(observed.current!.messages.first.content, '我的第一个问题');
       expect(observed.current!.messages.last.content, '你好，连接正常。');
-      expect(find.text('你好，连接正常。'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('assistant-response-body')),
+          matching: find.text('你好，连接正常。'),
+        ),
+        findsOneWidget,
+      );
       final reloaded = ProviderContainer(
         overrides: [sharedPrefsProvider.overrideWithValue(prefs)],
       );
@@ -172,6 +192,10 @@ void main() {
         'opaque-test-key',
       );
       reloaded.dispose();
+      await tester.runAsync(
+        () => container.read(workRuntimeLogsProvider.notifier).flush(),
+      );
+      await tester.pump(const Duration(milliseconds: 400));
     },
   );
 

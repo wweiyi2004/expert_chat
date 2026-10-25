@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
@@ -37,7 +38,7 @@ Future<UpdateCheckResult> _checkConfiguredSources() async {
 
 /// Manual check from Settings — always shows a result dialog.
 Future<void> checkForUpdatesInteractive(BuildContext context) async {
-  final messenger = ScaffoldMessenger.maybeOf(context);
+  final messenger = AppToastMessenger.maybeOf(context);
   showDialog<void>(
     context: context,
     barrierDismissible: false,
@@ -229,7 +230,7 @@ Future<void> downloadAndApplyUpdate(
     return;
   }
 
-  final messenger = ScaffoldMessenger.maybeOf(context);
+  final messenger = AppToastMessenger.maybeOf(context);
   final cancelToken = CancelToken();
   final progress = ValueNotifier<double?>(0);
   final sourceLabel = ValueNotifier<String>('正在连接下载源…');
@@ -436,7 +437,7 @@ Future<void> resumePendingApkInstall() async {
 Future<void> _installAndroidApk(
   BuildContext context,
   String path,
-  ScaffoldMessengerState? messenger,
+  AppToastMessenger? messenger,
 ) async {
   try {
     final allowed = await InstallApk.canRequestPackageInstalls();

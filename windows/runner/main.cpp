@@ -4,9 +4,24 @@
 
 #include "flutter_window.h"
 #include "utils.h"
+#include "single_instance.h"
 
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
                       _In_ wchar_t *command_line, _In_ int show_command) {
+  SingleInstance single_instance;
+  const auto instance_result = single_instance.Acquire();
+  if (instance_result != SingleInstance::Result::primary) {
+    if (instance_result == SingleInstance::Result::error) {
+      MessageBoxW(nullptr, L"无法建立单实例保护，程序未启动。请稍后重试。",
+                  L"Expert Chat", MB_OK | MB_ICONERROR);
+      return EXIT_FAILURE;
+    }
+    if (instance_result == SingleInstance::Result::starting_existing) {
+      MessageBoxW(nullptr, L"Expert Chat 已在启动中，请稍候。未打开第二个实例。",
+                  L"Expert Chat", MB_OK | MB_ICONINFORMATION);
+    }
+    return EXIT_SUCCESS;
+  }
   // Attach to console when present (e.g., 'flutter run') or create a
   // new console when running with a debugger.
   if (!::AttachConsole(ATTACH_PARENT_PROCESS) && ::IsDebuggerPresent()) {
@@ -30,6 +45,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   if (!window.Create(L"Expert Chat", origin, size)) {
     return EXIT_FAILURE;
   }
+  if (!single_instance.AttachWindow(window.GetHandle())) return EXIT_FAILURE;
   window.SetQuitOnClose(true);
 
   ::MSG msg;

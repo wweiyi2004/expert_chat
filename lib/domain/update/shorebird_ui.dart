@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'package:flutter/material.dart';
 
 import 'shorebird_patch.dart';
@@ -31,7 +32,7 @@ Future<void> checkShorebirdPatchOnLaunch(BuildContext context) async {
 
 /// Manual Shorebird patch check from Settings.
 Future<void> checkShorebirdPatchInteractive(BuildContext context) async {
-  final messenger = ScaffoldMessenger.maybeOf(context);
+  final messenger = AppToastMessenger.maybeOf(context);
   final check = ShorebirdPatchService().check(download: true);
   final result = await showDialog<ShorebirdPatchResult>(
     context: context,

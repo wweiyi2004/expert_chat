@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'execution_ring.dart';
 import 'command_activity_dialog.dart';
+import 'tool_activity_details.dart';
 import 'thinking_translation_host.dart';
 import 'package:flutter/material.dart';
 import '../../../data/models.dart';
@@ -95,16 +96,19 @@ class _WorkRoundActivityState extends State<WorkRoundActivity> {
         SearchActivityKind.fetch => '读取网页',
         SearchActivityKind.image => '处理图片',
         SearchActivityKind.document => '处理文档',
-        _ => '调用工具',
+        _ => activity.toolName ?? '调用工具',
       },
     };
     String path = '';
     try {
       final args = jsonDecode(activity.toolArguments ?? '{}');
-      if (args is Map && args['path'] is String) path = args['path'] as String;
+      if (args is Map) {
+        path = '${args['path'] ?? args['command'] ?? args['query'] ?? ''}';
+      }
     } on FormatException {
       /* An interrupted call can have partial arguments. */
     }
+    if (path.isEmpty) path = activity.query;
     final status = switch (activity.status) {
       SearchActivityStatus.done => '已',
       SearchActivityStatus.failed => '未完成：',
@@ -123,31 +127,7 @@ class _WorkRoundActivityState extends State<WorkRoundActivity> {
       showCommandActivityDialog(context, activity, title: _stepLabel(activity));
       return;
     }
-    showDialog<void>(
-      context: context,
-      builder: (dialog) => AlertDialog(
-        title: Text(_stepLabel(activity)),
-        content: SizedBox(
-          width: 640,
-          child: SingleChildScrollView(
-            child: SelectableText(
-              [
-                if (activity.toolName != null) activity.toolName!,
-                if (activity.toolArguments != null) activity.toolArguments!,
-                if (activity.error != null) activity.error!,
-                if (activity.resultText != null) activity.resultText!,
-              ].join('\n\n'),
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialog),
-            child: const Text('关闭'),
-          ),
-        ],
-      ),
-    );
+    showToolActivityDetails(context, activity, title: _stepLabel(activity));
   }
 
   @override
@@ -170,35 +150,28 @@ class _WorkRoundActivityState extends State<WorkRoundActivity> {
         key: const ValueKey('work-tool-timeline'),
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          InkWell(
-            key: const ValueKey('work-round-toggle'),
-            onTap: _toggle,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              child: Row(
-                children: [
-                  if (widget.running) ...[
-                    const ExecutionRing(size: 14),
-                    const SizedBox(width: 8),
-                  ],
-                  Expanded(
-                    child: Text(
-                      _label,
-                      maxLines: 2,
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: colors.onSurfaceVariant,
+          if (!_expanded)
+            InkWell(
+              key: const ValueKey('work-round-toggle'),
+              onTap: _toggle,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  vertical: 12,
+                  horizontal: 10,
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        _label,
+                        style: Theme.of(context).textTheme.bodySmall,
                       ),
                     ),
-                  ),
-                  Icon(
-                    _expanded ? Icons.expand_more : Icons.chevron_right,
-                    size: 18,
-                    color: colors.onSurfaceVariant,
-                  ),
-                ],
+                    const Icon(Icons.chevron_right, size: 18),
+                  ],
+                ),
               ),
             ),
-          ),
           if (_expanded) ...[
             translationControls,
             ConstrainedBox(
@@ -218,112 +191,156 @@ class _WorkRoundActivityState extends State<WorkRoundActivity> {
                   child: SingleChildScrollView(
                     key: const ValueKey('work-round-scroll'),
                     controller: _scroll,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        for (final segment in segments)
-                          if (segment.isReasoning)
-                            renderReasoning(
-                              prose.indexOf(segment),
-                              segment.text!,
-                              Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  vertical: 8,
+                    child: Container(
+                      padding: const EdgeInsets.only(left: 10),
+                      decoration: BoxDecoration(
+                        border: Border(
+                          left: BorderSide(color: colors.outlineVariant),
+                        ),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          for (final segment in segments)
+                            if (segment.isReasoning)
+                              renderReasoning(
+                                prose.indexOf(segment),
+                                segment.text!,
+                                Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 8,
+                                  ),
+                                  child: SelectableText(
+                                    segment.text!,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .bodyMedium
+                                        ?.copyWith(height: 1.6),
+                                  ),
                                 ),
-                                child: SelectableText(
-                                  segment.text!,
-                                  style: Theme.of(
-                                    context,
-                                  ).textTheme.bodyMedium?.copyWith(height: 1.6),
-                                ),
-                              ),
-                            )
-                          else ...[
-                            InkWell(
-                              onTap: () => _details(segment.activity!),
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  vertical: 9,
-                                ),
-                                child: Row(
-                                  children: [
-                                    if (segment.activity!.status ==
-                                            SearchActivityStatus.running &&
-                                        widget.running)
-                                      const ExecutionRing(size: 15)
-                                    else
-                                      Icon(
-                                        _cancelled(segment.activity!)
-                                            ? Icons.cancel_outlined
-                                            : segment.activity!.status ==
-                                                  SearchActivityStatus.done
-                                            ? Icons.check_circle_outline
-                                            : segment.activity!.status ==
+                              )
+                            else ...[
+                              InkWell(
+                                onTap: () => _details(segment.activity!),
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 6,
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      if (segment.activity!.status ==
+                                              SearchActivityStatus.running &&
+                                          widget.running)
+                                        const ExecutionRing(size: 15)
+                                      else
+                                        Icon(
+                                          _cancelled(segment.activity!)
+                                              ? Icons.cancel_outlined
+                                              : segment.activity!.status ==
+                                                    SearchActivityStatus.done
+                                              ? Icons.check_circle_outline
+                                              : segment.activity!.status ==
+                                                    SearchActivityStatus.failed
+                                              ? Icons.error_outline
+                                              : Icons.cancel_outlined,
+                                          size: 16,
+                                          color:
+                                              segment.activity!.status ==
                                                   SearchActivityStatus.failed
-                                            ? Icons.error_outline
-                                            : Icons.cancel_outlined,
-                                        size: 16,
-                                        color:
-                                            segment.activity!.status ==
-                                                SearchActivityStatus.failed
-                                            ? colors.error
-                                            : colors.onSurfaceVariant,
+                                              ? colors.error
+                                              : colors.onSurfaceVariant,
+                                        ),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: Text.rich(
+                                          TextSpan(
+                                            children: [
+                                              TextSpan(
+                                                text: _stepLabel(
+                                                  segment.activity!,
+                                                ).split(' · ').first,
+                                                style: const TextStyle(
+                                                  fontWeight: FontWeight.w600,
+                                                ),
+                                              ),
+                                              if (_stepLabel(
+                                                segment.activity!,
+                                              ).contains(' · '))
+                                                TextSpan(
+                                                  text:
+                                                      ' · ${_stepLabel(segment.activity!).split(' · ').skip(1).join(' · ')}',
+                                                ),
+                                            ],
+                                          ),
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodySmall
+                                              ?.copyWith(
+                                                color: colors.onSurfaceVariant,
+                                                height: 1.6,
+                                              ),
+                                        ),
                                       ),
-                                    const SizedBox(width: 8),
-                                    Expanded(
-                                      child: Text(
-                                        _stepLabel(segment.activity!),
-                                        maxLines: 2,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .bodySmall
-                                            ?.copyWith(
-                                              color: colors.onSurfaceVariant,
-                                            ),
+                                      Icon(
+                                        Icons.chevron_right,
+                                        size: 14,
+                                        color: colors.onSurfaceVariant,
                                       ),
-                                    ),
-                                    Icon(
-                                      Icons.chevron_right,
-                                      size: 14,
-                                      color: colors.onSurfaceVariant,
-                                    ),
-                                  ],
+                                    ],
+                                  ),
                                 ),
                               ),
-                            ),
-                            if (segment.activity!.canRetry &&
-                                widget.onRetry != null)
-                              Align(
-                                alignment: Alignment.centerLeft,
-                                child: TextButton(
-                                  onPressed: () =>
-                                      widget.onRetry!(segment.activity!),
-                                  child: const Text('重试此步骤'),
+                              if (segment.activity!.canRetry &&
+                                  widget.onRetry != null)
+                                Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: TextButton(
+                                    onPressed: () =>
+                                        widget.onRetry!(segment.activity!),
+                                    child: const Text('重试此步骤'),
+                                  ),
                                 ),
-                              ),
-                          ],
-                      ],
+                            ],
+                        ],
+                      ),
                     ),
                   ),
                 ),
               ),
             ),
-            Row(
-              children: [
-                TextButton.icon(
-                  key: const ValueKey('work-round-collapse-bottom'),
-                  onPressed: _toggle,
-                  icon: const Icon(Icons.expand_less, size: 16),
-                  label: const Text('收起执行记录'),
-                ),
-                const Spacer(),
-                if (widget.onStop != null)
-                  TextButton(
-                    onPressed: widget.onStop,
-                    child: const Text('停止任务'),
+            Padding(
+              padding: const EdgeInsets.only(left: 10),
+              child: Row(
+                children: [
+                  if (widget.running) ...[
+                    const ExecutionRing(size: 12),
+                    const SizedBox(width: 6),
+                  ],
+                  Flexible(
+                    child: Text(
+                      _label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
                   ),
-              ],
+                  const SizedBox(width: 4),
+                  TextButton.icon(
+                    key: const ValueKey('work-round-collapse-bottom'),
+                    onPressed: _toggle,
+                    icon: const Icon(Icons.expand_less, size: 16),
+                    label: const Text('收起'),
+                  ),
+                  const Spacer(),
+                  if (widget.onStop != null)
+                    TextButton(
+                      onPressed: widget.onStop,
+                      child: const Text('停止任务'),
+                    ),
+                ],
+              ),
             ),
           ],
           Divider(

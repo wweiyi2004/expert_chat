@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'dart:async';
 import 'dart:math' as math;
 
@@ -259,7 +260,7 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
       await ref.read(researchTerminalProvider.notifier).createTmuxSession(name);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
+      AppToastMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('创建失败：$e')));
     }
@@ -361,7 +362,7 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
   }
 
   void _showInterruptBlockedSnack() {
-    final messenger = ScaffoldMessenger.of(context);
+    final messenger = AppToastMessenger.of(context);
     messenger.hideCurrentSnackBar();
     messenger.showSnackBar(
       const SnackBar(
@@ -435,11 +436,12 @@ class _ResearchTerminalPageState extends ConsumerState<ResearchTerminalPage>
       if (prev?.connectionGeneration != next.connectionGeneration &&
           _extraShells.isNotEmpty) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted)
+          if (mounted) {
             setState(() {
               _extraShells.clear();
               _activeShell = null;
             });
+          }
         });
       }
       if (next.interruptBlockedFlash && prev?.interruptBlockedFlash != true) {
@@ -1489,11 +1491,12 @@ class _ProfileEditDialogState extends State<_ProfileEditDialog> {
     });
     try {
       final result = await widget.onTest(_draft());
-      if (mounted)
+      if (mounted) {
         setState(() {
           _testedFingerprint = result.fingerprint;
           _testMessage = '连接成功 · ${result.elapsed.inMilliseconds} ms';
         });
+      }
     } catch (error) {
       if (mounted) setState(() => _testMessage = '连接失败：$error');
     } finally {
@@ -1776,7 +1779,7 @@ class _AiAssistPanelState extends ConsumerState<_AiAssistPanel> {
         .read(researchTerminalProvider.notifier)
         .approveCurrentProposal(command: command, cwdHint: 'cwd');
     if (approved == null) {
-      ScaffoldMessenger.of(
+      AppToastMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('审批已失效或命令不可执行')));
       return;
@@ -1791,7 +1794,7 @@ class _AiAssistPanelState extends ConsumerState<_AiAssistPanel> {
       }
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+      AppToastMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
     }
   }
 

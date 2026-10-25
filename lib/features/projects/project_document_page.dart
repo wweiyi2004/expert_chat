@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -92,7 +93,7 @@ class _ProjectDocumentPageState extends ConsumerState<ProjectDocumentPage> {
                       onPressed: () async {
                         await Clipboard.setData(ClipboardData(text: doc.text));
                         if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
+                          AppToastMessenger.of(context).showSnackBar(
                             const SnackBar(content: Text('已复制资料文字')),
                           );
                         }

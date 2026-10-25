@@ -14,6 +14,7 @@ import 'package:expert_chat/data/media_api_config.dart';
 import 'package:expert_chat/data/models.dart';
 import 'package:expert_chat/features/chat/chat_page.dart';
 import 'package:expert_chat/state/settings_controller.dart';
+import 'package:expert_chat/state/session_policy.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -143,7 +144,7 @@ void main() {
               of: find.byType(AppBar),
               matching: find.byIcon(Icons.more_horiz),
             ),
-            findsNothing,
+            findsOneWidget,
           );
           final input = tester.getRect(
             find.byKey(const ValueKey('composer-text-field')),
@@ -207,27 +208,22 @@ void main() {
 
     expect(find.text('Expert Chat'), findsOneWidget);
     expect(find.byKey(const ValueKey('sidebar-new-chat')), findsOneWidget);
-    expect(find.text('资料库'), findsOneWidget);
-    expect(find.text('工具'), findsOneWidget);
-    expect(find.text('学习'), findsOneWidget);
-    expect(find.text('创作'), findsOneWidget);
-    expect(
-      find.byKey(const ValueKey('conversation-mode-filter')),
-      findsOneWidget,
-    );
-    expect(
-      find.byKey(const ValueKey('conversation-mode-filter-all')),
-      findsOneWidget,
-    );
-    expect(
-      find.byKey(const ValueKey('conversation-mode-filter-chat')),
-      findsOneWidget,
-    );
+    expect(find.byKey(const ValueKey('sidebar-automation')), findsOneWidget);
+    expect(find.byKey(const ValueKey('sidebar-resources')), findsOneWidget);
+    expect(find.text('设置').hitTestable(), findsOneWidget);
+    expect(find.text('工作').hitTestable(), findsOneWidget);
+    expect(find.text('聊天').hitTestable(), findsOneWidget);
+    await tester.tap(find.byTooltip('工作筛选'));
+    await tester.pumpAndSettle();
+    expect(find.text('全部工作'), findsOneWidget);
+    expect(find.text('只看进行中'), findsOneWidget);
+    await tester.tapAt(const Offset(1100, 750));
+    await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
   });
 
   testWidgets(
-    'short window keeps the empty state scroll-safe and composer low',
+    'short window can reveal the full composer while retaining header controls',
     (tester) async {
       SharedPreferences.setMockInitialValues({});
       final prefs = await SharedPreferences.getInstance();
@@ -257,25 +253,37 @@ void main() {
         find.byKey(const ValueKey('desktop-chat-welcome')),
         findsOneWidget,
       );
-      expect(find.byKey(const ValueKey('chat-context-usage')), findsOneWidget);
-      expect(find.byTooltip('上下文预算 251.9K（发送后显示本轮用量）'), findsOneWidget);
+      expect(find.byKey(const ValueKey('work-context-details')), findsNothing);
 
       final composerHeight = tester
           .getSize(find.byKey(const ValueKey('chat-composer')))
           .height;
-      expect(composerHeight, lessThan(125));
+      final composer = find.byKey(const ValueKey('chat-composer'));
+      await tester.ensureVisible(composer);
+      await tester.pumpAndSettle();
+      final composerRect = tester.getRect(composer);
+      final chrome = tester.getRect(find.byType(AppBar));
+      expect(composerHeight, lessThan(320 - chrome.height));
+      expect(
+        tester.getRect(find.byKey(const ValueKey('composer-input-box'))).top,
+        greaterThanOrEqualTo(chrome.bottom),
+      );
+      expect(composerRect.bottom, lessThanOrEqualTo(320));
 
-      // Context usage lives in the AppBar, not the composer tool strip.
+      // An unsent conversation has no empty inline usage ring. Its real
+      // details/settings entry remains in the + tray tested below.
       final appBarTop = tester.getTopLeft(find.byType(AppBar)).dy;
       final appBarBottom = tester.getBottomLeft(find.byType(AppBar)).dy;
-      final contextCenter = tester
-          .getCenter(find.byKey(const ValueKey('chat-context-usage')))
-          .dy;
-      expect(contextCenter, greaterThan(appBarTop));
-      expect(contextCenter, lessThan(appBarBottom));
 
       // Mode chips stay on the strip; tools/MCP live in the “+” tray.
-      expect(find.byTooltip('思考与搜索'), findsOneWidget);
+      expect(
+        find
+            .byWidgetPredicate(
+              (w) => w is Text && w.data?.contains(' · 思考：') == true,
+            )
+            .hitTestable(),
+        findsOneWidget,
+      );
       expect(
         find.byKey(const ValueKey('chat-work-mode-switch')),
         findsOneWidget,
@@ -301,16 +309,33 @@ void main() {
       expect(find.byKey(const ValueKey('composer-plus-tray')), findsOneWidget);
       expect(find.text('上传文件'), findsOneWidget);
       expect(find.text('上传图片'), findsOneWidget);
-      expect(find.text('图片'), findsOneWidget);
-      expect(find.text('联网·自动'), findsOneWidget);
-      expect(find.text('配图·自动'), findsNothing);
-      await tester.tap(find.text('图片'));
-      await tester.pumpAndSettle();
       expect(find.text('图片生成'), findsOneWidget);
+      expect(find.text('会话操作'), findsOneWidget);
+      expect(find.text('配图·自动'), findsNothing);
+      final usage = find.byKey(const ValueKey('work-context-details'));
+      await tester.ensureVisible(usage);
+      await tester.pumpAndSettle();
+      expect(find.text('上下文与用量'), findsOneWidget);
+      await tester.tap(usage);
+      await tester.pumpAndSettle();
+      expect(find.text('上下文与用量'), findsNWidgets(2));
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('composer-plus-tray')), findsOneWidget);
+
+      final imageAction = find
+          .ancestor(of: find.text('图片生成'), matching: find.byType(InkWell))
+          .first;
+      await tester.ensureVisible(imageAction);
+      await tester.pumpAndSettle();
+      await tester.tap(imageAction);
+      await tester.pumpAndSettle();
+      expect(find.widgetWithText(ListTile, '图片生成'), findsOneWidget);
       expect(find.text('回答配图'), findsOneWidget);
       expect(find.text('自动配图'), findsOneWidget);
       await tester.ensureVisible(find.text('关闭配图'));
-      await tester.tap(find.text('关闭配图'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(ListTile, '关闭配图'));
       await tester.pumpAndSettle();
       final container = ProviderScope.containerOf(
         tester.element(find.byType(ChatPage)),
@@ -323,46 +348,43 @@ void main() {
         container.read(settingsControllerProvider).requireValue.imageGenMode,
         ImageGenMode.off,
       );
-
-      const filterKeys = [
-        ValueKey('conversation-mode-filter-all'),
-        ValueKey('conversation-mode-filter-chat'),
-      ];
+      final conversationAction = find
+          .ancestor(of: find.text('会话操作'), matching: find.byType(InkWell))
+          .first;
+      await tester.ensureVisible(conversationAction);
+      await tester.pumpAndSettle();
+      await tester.tap(conversationAction);
+      await tester.pumpAndSettle();
+      final conversationId = container
+          .read(chatControllerProvider)
+          .requireValue
+          .currentId!;
+      final before =
+          (container.read(sessionPolicyProvider)[conversationId] ??
+                  const SessionPolicy())
+              .network;
+      final network = find.widgetWithText(SwitchListTile, '允许联网检索');
+      expect(tester.widget<SwitchListTile>(network).value, before);
+      await tester.tap(network);
+      await tester.pumpAndSettle();
       expect(
-        find.byKey(const ValueKey('conversation-mode-filter')),
+        container.read(sessionPolicyProvider)[conversationId]!.network,
+        !before,
+      );
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey('chat-work-mode-switch')),
         findsOneWidget,
       );
-      final filterRects = [
-        for (final key in filterKeys) tester.getRect(find.byKey(key)),
-      ];
-      expect(
-        filterRects.map((rect) => rect.top).toSet(),
-        hasLength(1),
-        reason: '两个会话筛选项应保持在同一行',
-      );
-      for (final rect in filterRects.skip(1)) {
-        expect(
-          rect.width,
-          closeTo(filterRects.first.width, 0.01),
-          reason: '两个会话筛选项应等宽',
-        );
-      }
-      expect(
-        find.byKey(const ValueKey('conversation-mode-filter-story')),
-        findsNothing,
-      );
-      expect(
-        find.byKey(const ValueKey('conversation-mode-filter-ensemble')),
-        findsNothing,
-      );
-      expect(
-        find.byKey(const ValueKey('conversation-mode-filter-study')),
-        findsNothing,
-      );
+      expect(tester.takeException(), isNull);
     },
   );
 
   testWidgets('narrow phone layout does not overflow', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final prefs = await SharedPreferences.getInstance();
     tester.view.physicalSize = const Size(360, 480);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -371,6 +393,7 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          sharedPrefsProvider.overrideWithValue(prefs),
           desktopWorkspaceHostProvider.overrideWithValue(
             desktop_stub.createDesktopWorkspaceHost(),
           ),

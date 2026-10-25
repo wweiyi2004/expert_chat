@@ -1,9 +1,12 @@
+import 'package:expert_chat/core/desktop_providers.dart';
+import 'package:expert_chat/domain/desktop/workspace_host_stub.dart'
+    as desktop_stub;
 import 'dart:async';
 import 'package:dio/dio.dart';
 import 'package:drift/native.dart';
 import 'package:expert_chat/core/providers.dart';
 import 'package:expert_chat/data/db/app_database.dart';
-import 'package:expert_chat/data/prompt_presets.dart';
+import 'package:expert_chat/data/settings_storage_keys.dart';
 import 'package:expert_chat/domain/llm/llm_provider.dart';
 import 'package:expert_chat/state/chat_controller.dart';
 import 'package:expert_chat/state/settings_controller.dart';
@@ -15,13 +18,7 @@ import 'widget_test.dart' show FakeSettings, InMemoryRepo;
 class _Settings extends FakeSettings {
   @override
   Future<SettingsState> build() async => (await super.build()).copyWith(
-    promptPresets: const PromptPresets(
-      activeId: 'a',
-      items: [
-        PromptPreset(id: 'a', name: 'A', prompt: 'PRESET_A'),
-        PromptPreset(id: 'b', name: 'B', prompt: 'PRESET_B'),
-      ],
-    ),
+    workAgentInstructions: 'MODEL_INSTRUCTIONS_A',
   );
 }
 
@@ -55,7 +52,7 @@ class _Llm implements LlmProvider {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   test(
-    'switching preset and navigating away never replaces the active stream context',
+    'editable model instructions apply next turn without replacing the active stream context',
     () async {
       SharedPreferences.setMockInitialValues({});
       final prefs = await SharedPreferences.getInstance();
@@ -64,6 +61,9 @@ void main() {
       final container = ProviderContainer(
         overrides: [
           appDatabaseProvider.overrideWithValue(db),
+          desktopWorkspaceHostProvider.overrideWithValue(
+            desktop_stub.createDesktopWorkspaceHost(),
+          ),
           sharedPrefsProvider.overrideWithValue(prefs),
           conversationRepositoryProvider.overrideWithValue(InMemoryRepo()),
           settingsControllerProvider.overrideWith(_Settings.new),
@@ -72,23 +72,32 @@ void main() {
       );
       addTearDown(() async {
         container.dispose();
-        await llm.first.close();
+        unawaited(llm.first.close());
         await db.close();
       });
       await container.read(chatControllerProvider.future);
       final chat = container.read(chatControllerProvider.notifier);
+      chat.setWorkMode(true);
       chat.applyComposerPrefs(
         searchMode: SearchMode.off,
         imageGenMode: ImageGenMode.off,
         reasoningEffort: ReasoningEffort.high,
       );
       final sent = chat.sendMessage('first');
-      await llm.entered.future;
-      expect(llm.requests.single.any((m) => m.content == 'PRESET_A'), true);
+      await llm.entered.future.timeout(
+        const Duration(seconds: 2),
+        onTimeout: () => throw StateError('initial request never entered'),
+      );
+      expect(
+        llm.requests.single.any(
+          (m) => m.content.contains('MODEL_INSTRUCTIONS_A'),
+        ),
+        true,
+      );
       chat.reportChatVisible(false);
       await container
           .read(settingsControllerProvider.notifier)
-          .selectPromptPreset('b');
+          .setWorkAgentInstructions('MODEL_INSTRUCTIONS_B');
       llm.first.add(const ChatChunk(contentDelta: 'background tokens'));
       await Future<void>.delayed(Duration.zero);
       chat.reportChatVisible(true);
@@ -106,16 +115,38 @@ void main() {
       );
       llm.first.add(const ChatChunk(finishReason: 'stop'));
       await llm.first.close();
-      expect(await sent, true);
-      expect(await chat.sendMessage('second'), true);
-      expect(llm.requests.length, 2);
-      expect(llm.requests.last.any((m) => m.content == 'PRESET_B'), true);
-      expect(llm.requests.last.any((m) => m.content == 'PRESET_A'), false);
       expect(
-        PromptPresets.decode(
-          prefs.getString(PromptPresets.storageKey),
-        ).activeId,
-        'b',
+        await sent.timeout(
+          const Duration(seconds: 2),
+          onTimeout: () => throw StateError('first stream did not finish'),
+        ),
+        true,
+      );
+      expect(
+        await chat
+            .sendMessage('second')
+            .timeout(
+              const Duration(seconds: 2),
+              onTimeout: () => throw StateError('second stream did not finish'),
+            ),
+        true,
+      );
+      expect(llm.requests.length, 2);
+      expect(
+        llm.requests.last.any(
+          (m) => m.content.contains('MODEL_INSTRUCTIONS_B'),
+        ),
+        true,
+      );
+      expect(
+        llm.requests.last.any(
+          (m) => m.content.contains('MODEL_INSTRUCTIONS_A'),
+        ),
+        false,
+      );
+      expect(
+        prefs.getString(kSettingsWorkAgentInstructions),
+        'MODEL_INSTRUCTIONS_B',
       );
     },
   );

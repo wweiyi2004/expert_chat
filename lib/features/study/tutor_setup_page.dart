@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -44,7 +45,7 @@ class _TutorSetupPageState extends ConsumerState<TutorSetupPage> {
   Future<void> _start() async {
     final topic = _topic.text.trim();
     if (topic.isEmpty) {
-      ScaffoldMessenger.of(
+      AppToastMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('请先填写学习主题')));
       return;
@@ -65,7 +66,7 @@ class _TutorSetupPageState extends ConsumerState<TutorSetupPage> {
       Navigator.of(context).popUntil((route) => route.isFirst);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
+      AppToastMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('无法开始：$e')));
     } finally {

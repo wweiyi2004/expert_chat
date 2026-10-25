@@ -173,11 +173,12 @@ void main() {
     );
     addTearDown(container.dispose);
     await container.read(chatControllerProvider.future);
+    container.read(chatControllerProvider.notifier).setWorkMode(false);
     return container;
   }
 
   test(
-    'switching conversations and stopping waits for old stream cleanup',
+    'stopping the origin waits for cleanup while a new conversation can run',
     () async {
       final llm = _DelayedStreamCleanupLlm();
       final c = await setup(llm, _Search());
@@ -191,12 +192,15 @@ void main() {
       final nextId = c.read(chatControllerProvider).requireValue.currentId;
       expect(nextId, isNot(originId));
       var stopped = false;
-      final stopping = ctrl.stopAndWait().then((_) => stopped = true);
+      final stopping = ctrl
+          .stopAndWait(conversationId: originId)
+          .then((_) => stopped = true);
       await llm.cleanupStarted.future;
       llm.source.add(const ChatChunk(contentDelta: '迟到的数据'));
       await Future<void>.delayed(Duration.zero);
       expect(stopped, isFalse);
-      expect(await ctrl.sendMessage('过早的新问题'), isFalse);
+      expect(await ctrl.sendMessage('独立新会话的问题'), isTrue);
+      expect(stopped, isFalse);
       llm.cleanupReleased.complete();
       await stopping;
       await first;
@@ -382,7 +386,10 @@ void main() {
       final ctrl = c.read(chatControllerProvider.notifier);
       final sent = ctrl.sendMessage('整理资料');
       await llm.entered.future;
+      await tester
+          .pump(); // Deliver the queued reasoning chunk before advancing its timer.
       await tester.pump(const Duration(seconds: 31));
+      await tester.pump();
       await sent;
       expect(llm.calls, hasLength(2));
       expect(
@@ -410,6 +417,7 @@ void main() {
     final ctrl = c.read(chatControllerProvider.notifier);
     final sent = ctrl.sendMessage('整理资料');
     await llm.entered.future;
+    await tester.pump();
     await tester.pump(const Duration(seconds: 31));
     expect(llm.calls, hasLength(2));
     await tester.pump(const Duration(seconds: 21));
@@ -426,7 +434,10 @@ void main() {
       final media = FakeMediaProvider(failuresRemaining: 1);
       final llm = FakeLlmProvider(const [ChatChunk(contentDelta: '优化后的森林插画')]);
       final c = await setup(llm, _Search(), media: media);
-      final ctrl = c.read(chatControllerProvider.notifier)..toggleDeepThink();
+      final ctrl = c.read(chatControllerProvider.notifier);
+      if (!c.read(chatControllerProvider).requireValue.deepThink) {
+        ctrl.toggleDeepThink();
+      }
       await ctrl.generateImage('森林');
       final convo = c.read(chatControllerProvider).requireValue.current!;
       final source = convo.activePath.last;

@@ -1,4 +1,6 @@
+import 'package:expert_chat/core/app_toast.dart';
 import '../workbench_split_view.dart';
+import '../../../core/prototype_widgets.dart';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -22,7 +24,11 @@ class GitWorkspacePage extends StatefulWidget {
     this.embedded = false,
     this.gitAvailable = true,
     this.onOpenFile,
+    this.initialView = 0,
+    this.compactHeader = false,
   });
+  final int initialView;
+  final bool compactHeader;
   final String workspaceName;
   final String rootPath;
   final WorkspaceFileTool callFileTool;
@@ -46,13 +52,14 @@ class _GitWorkspacePageState extends State<GitWorkspacePage> {
   String _preview = '';
   bool _previewLoading = false;
   bool _creating = false;
-  int _view = 0;
+  late int _view;
   int _previewEpoch = 0;
   int _directoryEpoch = 0;
 
   @override
   void initState() {
     super.initState();
+    _view = widget.initialView.clamp(0, 3);
     _initialize();
   }
 
@@ -126,15 +133,18 @@ class _GitWorkspacePageState extends State<GitWorkspacePage> {
       if (!mounted || epoch != _directoryEpoch) return;
       setState(() {
         _directories[path] = entries;
-        if (value is Map && value['truncated'] == true)
+        if (value is Map && value['truncated'] == true) {
           _filesError = '目录 $path 项目较多，仅显示前 1000 项。';
+        }
       });
     } catch (error) {
-      if (mounted && epoch == _directoryEpoch)
+      if (mounted && epoch == _directoryEpoch) {
         setState(() => _filesError = '$error');
+      }
     } finally {
-      if (mounted && epoch == _directoryEpoch)
+      if (mounted && epoch == _directoryEpoch) {
         setState(() => _loading.remove(path));
+      }
     }
   }
 
@@ -159,14 +169,17 @@ class _GitWorkspacePageState extends State<GitWorkspacePage> {
                 }),
               )
               as Map<String, dynamic>;
-      if (mounted && epoch == _previewEpoch)
+      if (mounted && epoch == _previewEpoch) {
         setState(() => _preview = value['content'] as String);
+      }
     } catch (error) {
-      if (mounted && epoch == _previewEpoch)
+      if (mounted && epoch == _previewEpoch) {
         setState(() => _preview = '无法预览：$error');
+      }
     } finally {
-      if (mounted && epoch == _previewEpoch)
+      if (mounted && epoch == _previewEpoch) {
         setState(() => _previewLoading = false);
+      }
     }
   }
 
@@ -180,8 +193,9 @@ class _GitWorkspacePageState extends State<GitWorkspacePage> {
     for (final path in _expanded.toList()) {
       _loadDirectory(path);
     }
-    if (widget.onOpenFile == null && _previewPath != null)
+    if (widget.onOpenFile == null && _previewPath != null) {
       _openFile(_previewPath!);
+    }
   }
 
   Future<void> _createWorktree() async {
@@ -256,15 +270,16 @@ class _GitWorkspacePageState extends State<GitWorkspacePage> {
     try {
       await git.createWorktree(branch);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppToastMessenger.of(context).showSnackBar(
         SnackBar(content: Text('已创建：${git.worktreeTarget(branch)}')),
       );
       _refresh();
     } catch (error) {
-      if (mounted)
-        ScaffoldMessenger.of(
+      if (mounted) {
+        AppToastMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text('$error')));
+      }
     } finally {
       if (mounted) setState(() => _creating = false);
     }
@@ -276,29 +291,39 @@ class _GitWorkspacePageState extends State<GitWorkspacePage> {
     final body = Column(
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(8, 4, 8, 4),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
           child: Row(
             children: [
-              PopupMenuButton<int>(
-                tooltip: '切换文件与 Git 视图',
-                initialValue: _view,
-                onSelected: (value) => setState(() => _view = value),
-                itemBuilder: (_) => [
-                  for (var i = 0; i < labels.length; i++)
-                    PopupMenuItem(value: i, child: Text(labels[i])),
-                ],
-                child: Padding(
-                  padding: const EdgeInsets.all(8),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(labels[_view]),
-                      const Icon(Icons.expand_more, size: 18),
-                    ],
+              if (!widget.compactHeader || widget.initialView != 0)
+                PopupMenuButton<int>(
+                  tooltip: '切换文件与 Git 视图',
+                  initialValue: _view,
+                  onSelected: (value) => setState(() => _view = value),
+                  itemBuilder: (_) => [
+                    for (
+                      var i = widget.compactHeader ? 1 : 0;
+                      i < labels.length;
+                      i++
+                    )
+                      PopupMenuItem(value: i, child: Text(labels[i])),
+                  ],
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 6,
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          labels[_view],
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                        const Icon(Icons.expand_more, size: 14),
+                      ],
+                    ),
                   ),
                 ),
-              ),
-              const SizedBox(width: 8),
               Expanded(
                 child: Tooltip(
                   message: widget.rootPath,
@@ -306,14 +331,18 @@ class _GitWorkspacePageState extends State<GitWorkspacePage> {
                     widget.rootPath,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.bodySmall,
+                    style: TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 11.5,
+                      color: PrototypeColors.of(context).muted,
+                    ),
                   ),
                 ),
               ),
-              IconButton(
+              PrototypeIconButton(
                 tooltip: '刷新工作区',
+                icon: Icons.refresh,
                 onPressed: _refresh,
-                icon: const Icon(Icons.refresh, size: 19),
               ),
             ],
           ),
@@ -344,16 +373,19 @@ class _GitWorkspacePageState extends State<GitWorkspacePage> {
       FutureBuilder<GitWorkspaceSnapshot>(
         future: _snapshot,
         builder: (context, snapshot) {
-          if (snapshot.connectionState != ConnectionState.done)
+          if (snapshot.connectionState != ConnectionState.done) {
             return const Center(child: CircularProgressIndicator());
-          if (snapshot.hasError)
+          }
+          if (snapshot.hasError) {
             return _notice(
               '${snapshot.error}',
               retry: () => setState(_loadSnapshot),
             );
+          }
           final data = snapshot.requireData;
-          if (!data.isRepository)
+          if (!data.isRepository) {
             return _notice(data.message ?? '当前目录不是 Git 仓库。');
+          }
           return builder(data);
         },
       );
@@ -380,7 +412,16 @@ class _GitWorkspacePageState extends State<GitWorkspacePage> {
         rows.add(
           ListTile(
             dense: true,
-            contentPadding: EdgeInsets.only(left: 12 + depth * 14, right: 8),
+            visualDensity: const VisualDensity(vertical: -4),
+            minTileHeight: MediaQuery.sizeOf(context).width < 840 ? 44 : 34,
+            minLeadingWidth: 14,
+            horizontalTitleGap: 8,
+            titleTextStyle: TextStyle(
+              fontSize: 12,
+              fontFamily: 'monospace',
+              color: PrototypeColors.of(context).ink,
+            ),
+            contentPadding: EdgeInsets.only(left: 14 + depth * 14, right: 10),
             selected: path == _previewPath,
             leading: Icon(
               entry.directory
@@ -388,7 +429,7 @@ class _GitWorkspacePageState extends State<GitWorkspacePage> {
                         ? Icons.folder_open
                         : Icons.folder_outlined)
                   : Icons.insert_drive_file_outlined,
-              size: 18,
+              size: 14,
             ),
             title: Text(
               entry.name,
@@ -408,8 +449,10 @@ class _GitWorkspacePageState extends State<GitWorkspacePage> {
                 setState(() {
                   if (!_expanded.remove(path)) _expanded.add(path);
                 });
-                if (_expanded.contains(path) && !_directories.containsKey(path))
+                if (_expanded.contains(path) &&
+                    !_directories.containsKey(path)) {
                   _loadDirectory(path);
+                }
               } else {
                 _openFile(path);
               }
@@ -616,8 +659,9 @@ class _GitDiffViewState extends State<_GitDiffView> {
   Widget build(BuildContext context) => FutureBuilder<String>(
     future: _diff,
     builder: (context, snapshot) {
-      if (snapshot.connectionState != ConnectionState.done)
+      if (snapshot.connectionState != ConnectionState.done) {
         return const Center(child: CircularProgressIndicator());
+      }
       if (snapshot.hasError) return Center(child: Text('${snapshot.error}'));
       return _SourceView(
         text: snapshot.data!.isEmpty ? '文件没有文本差异。' : snapshot.data!,

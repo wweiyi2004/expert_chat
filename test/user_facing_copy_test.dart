@@ -23,6 +23,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'widget_test.dart' show FakeSettings, InMemoryRepo;
 
@@ -88,11 +89,14 @@ Future<void> _pumpPage(
 }) async {
   await tester.binding.setSurfaceSize(Size(width, 800));
   addTearDown(() => tester.binding.setSurfaceSize(null));
+  SharedPreferences.setMockInitialValues({});
+  final prefs = await SharedPreferences.getInstance();
   final db = AppDatabase(NativeDatabase.memory());
   final library = _Library(db);
   final container = ProviderContainer(
     overrides: [
       appDatabaseProvider.overrideWithValue(db),
+      sharedPrefsProvider.overrideWithValue(prefs),
       libraryRepositoryProvider.overrideWithValue(library),
       generationRepositoryProvider.overrideWithValue(
         _Generations(db, library, records),
@@ -122,11 +126,11 @@ void main() {
     'project introduction is concise and document limits remain available',
     (tester) async {
       await _pumpPage(tester, const ProjectsPage());
-      expect(find.text('集中管理项目会话、说明和资料。'), findsOneWidget);
+      expect(find.text('集中管理资料集会话、说明和资料。'), findsOneWidget);
       expect(find.textContaining('向量库'), findsNothing);
-      await tester.tap(find.byTooltip('新建项目'));
+      await tester.tap(find.byTooltip('新建资料集'));
       await tester.pumpAndSettle();
-      expect(find.text('项目说明'), findsOneWidget);
+      expect(find.text('资料集说明'), findsOneWidget);
       expect(find.textContaining('发送给模型'), findsOneWidget);
       expect(find.text('选择素材库文档（最多 20 份）'), findsOneWidget);
       expect(find.textContaining('32000'), findsNothing);

@@ -1,3 +1,5 @@
+import 'preview_viewport.dart';
+
 /// Network policy used by generated-page previews.
 ///
 /// Inline CSS and JavaScript remain available for interactive mockups, while
@@ -43,8 +45,8 @@ const htmlPreviewHostContentSecurityPolicy =
 /// `allow-popups`, downloads and top navigation. The inner CSP is injected at
 /// the start of `<head>` so content cannot load remote dependencies before the
 /// policy is active.
-String buildSandboxedHtmlPreview(String html) {
-  final protected = _injectPreviewPolicy(html);
+String buildSandboxedHtmlPreview(String html, {bool fitToWindow = false}) {
+  final protected = _injectPreviewPolicy(html, fitToWindow: fitToWindow);
   final srcdoc = _escapeAttribute(protected);
   final frameCsp = _escapeAttribute(htmlPreviewContentSecurityPolicy);
   final hostCsp = _escapeAttribute(htmlPreviewHostContentSecurityPolicy);
@@ -61,6 +63,7 @@ String buildSandboxedHtmlPreview(String html) {
   html,body{width:100%;height:100%;margin:0;padding:0;overflow:hidden;}
   iframe{display:block;width:100%;height:100%;border:0;background:white;}
 </style>
+<script>window.addEventListener('message',function(e){if(e.source===parent && e.data && e.data.type==='expert-preview-scale'){document.querySelector('iframe')?.contentWindow.postMessage(e.data,'*');}});</script>
 </head>
 <body>
 <iframe
@@ -74,13 +77,14 @@ String buildSandboxedHtmlPreview(String html) {
 ''';
 }
 
-String _injectPreviewPolicy(String html) {
-  const policy =
+String _injectPreviewPolicy(String html, {bool fitToWindow = false}) {
+  final policy =
       '''
 <meta http-equiv="Content-Security-Policy"
       content="$htmlPreviewContentSecurityPolicy"/>
 <meta http-equiv="x-dns-prefetch-control" content="off"/>
 <meta name="referrer" content="no-referrer"/>
+${fitToWindow ? '<script>$previewAutoFitScript</script>' : ''}
 ''';
   final source = html.trim();
   final headEnd = _firstTagOutsideMarkup(source, 'head');

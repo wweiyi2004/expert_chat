@@ -13,6 +13,7 @@ import 'context_prefs.dart';
 import 'gateway_config.dart';
 import 'media_api_config.dart';
 import 'provider_profile.dart';
+import 'model_service_credential_snapshot.dart';
 import 'task_budget_prefs.dart';
 import 'ui_prefs.dart';
 import 'settings_state.dart';
@@ -160,8 +161,18 @@ class SettingsStorage {
     }
 
     activeId ??= profiles.first.id;
-    final apiKey =
+    var apiKey =
         await secure.read(key: providerApiKeyStorageKey(activeId)) ?? '';
+    final activeBinding = await secure.read(
+      key: providerCredentialBindingStorageKey(activeId),
+    );
+    final activeDescriptor = profiles.firstWhere(
+      (profile) => profile.id == activeId,
+    );
+    if (activeBinding != null &&
+        activeBinding != modelCredentialBinding(activeDescriptor, apiKey)) {
+      apiKey = '';
+    }
     var searchApiKey = await secure.read(
       key: kSettingsDeepSeekSearchApiKeySecure,
     );
@@ -170,11 +181,12 @@ class SettingsStorage {
         prefs.getString(kSettingsSearchBackend) ==
             SearchBackend.deepseek.wire) {
       searchApiKey = await secure.read(key: kSettingsSearchApiKeySecure);
-      if (searchApiKey != null)
+      if (searchApiKey != null) {
         await secure.write(
           key: kSettingsDeepSeekSearchApiKeySecure,
           value: searchApiKey,
         );
+      }
     }
     final visionApiKey =
         await secure.read(key: kSettingsVisionApiKeySecure) ?? '';

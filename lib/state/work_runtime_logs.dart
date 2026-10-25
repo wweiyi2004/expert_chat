@@ -128,8 +128,9 @@ class WorkRuntimeLogs extends Notifier<List<WorkRuntimeLogEntry>> {
   Future<void> _enqueueSave(String snapshot) {
     _pending = _pending
         .then((_) async {
-          if (!await _prefs.setString(storageKey, snapshot))
+          if (!await _prefs.setString(storageKey, snapshot)) {
             throw StateError('log persistence failed');
+          }
         })
         .catchError((Object _) {
           debugPrint('Unable to persist runtime diagnostics');

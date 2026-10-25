@@ -134,8 +134,9 @@ class ReasoningTranslation
     if (!visible) {
       job.timer?.cancel();
       job.timer = null;
-    } else
+    } else {
       _schedule(job);
+    }
   }
 
   void stop(String conversationId, String messageId) {
@@ -176,8 +177,9 @@ class ReasoningTranslation
         !job.visible ||
         job.running ||
         job.error != null ||
-        job.timer != null)
+        job.timer != null) {
       return;
+    }
     job.timer = Timer(
       immediately ? Duration.zero : const Duration(milliseconds: 800),
       () {
@@ -189,8 +191,9 @@ class ReasoningTranslation
 
   void _publish(_TranslationJob job) {
     if (!ref.mounted ||
-        !identical(_jobs[key(job.conversationId, job.messageId)], job))
+        !identical(_jobs[key(job.conversationId, job.messageId)], job)) {
       return;
+    }
     state = {
       ...state,
       key(job.conversationId, job.messageId): ReasoningTranslationState(
@@ -230,8 +233,9 @@ class ReasoningTranslation
       useChoiceOverride: job.modelChoice.isNotEmpty,
       choiceOverride: job.modelChoice.isEmpty ? null : job.modelChoice,
     );
-    if (job.modelChoice.isNotEmpty && config.model != job.modelChoice)
+    if (job.modelChoice.isNotEmpty && config.model != job.modelChoice) {
       throw StateError('所选翻译模型不可用');
+    }
     if (!config.isReady) throw StateError('请先配置翻译模型服务');
     return config.copyWith(
       serverWebSearch: false,
@@ -260,8 +264,9 @@ class ReasoningTranslation
       final config = await _config(job);
       if (!current()) return;
       final configKey = reasoningTranslationCacheKey('', config);
-      if (job.configKey.isNotEmpty && job.configKey != configKey)
+      if (job.configKey.isNotEmpty && job.configKey != configKey) {
         job.pieces.clear();
+      }
       job.configKey = configKey;
       job.actualModel = config.model;
       for (var i = 0; i < job.sources.length && current() && job.visible; i++) {
@@ -312,16 +317,16 @@ class ReasoningTranslation
           if (cached != null) {
             translated = cached.text;
             job.actualModel = cached.model;
-          } else if (original.trim().isEmpty || original.length > 6000)
+          } else if (original.trim().isEmpty || original.length > 6000) {
             translated = original;
-          else {
+          } else {
             final protected = ProtectedReasoningText(original);
             var actualConfig = config;
             if (protected.text.trim().startsWith('⟦EC_') &&
                 protected.originals.length == 1 &&
-                protected.text.trim() == protected.originals.keys.single)
+                protected.text.trim() == protected.originals.keys.single) {
               translated = original;
-            else {
+            } else {
               final result = await _translate(job, config, protected, token);
               translated = result.text;
               actualConfig = result.config;
@@ -340,17 +345,19 @@ class ReasoningTranslation
           }
           if (!current() ||
               i >= job.sources.length ||
-              !job.sources[i].startsWith(source.substring(0, end)))
+              !job.sources[i].startsWith(source.substring(0, end))) {
             return;
+          }
           (job.pieces[i] ??= []).add(_Piece(end, translated));
           _publish(job);
         }
       }
     } catch (error) {
-      if (current())
+      if (current()) {
         job.error = error is StateError
-            ? '${error.message}'
+            ? error.message
             : '翻译请求失败，原文已保留；可重试或更换模型';
+      }
     } finally {
       if (identical(job.token, token)) {
         job.running = false;
@@ -358,10 +365,14 @@ class ReasoningTranslation
       }
       if (ref.mounted) {
         _publish(job);
-        if (job.revision != revision && job.enabled)
+        if (job.revision != revision && job.enabled) {
           _schedule(job);
-        else if (needsTail && job.enabled && job.visible && job.error == null)
+        } else if (needsTail &&
+            job.enabled &&
+            job.visible &&
+            job.error == null) {
           _schedule(job);
+        }
       }
     }
   }
@@ -385,8 +396,9 @@ class ReasoningTranslation
     var actualConfig = config;
     void log(String status, [Object? error]) {
       if (!ref.mounted ||
-          !identical(_jobs[key(job.conversationId, job.messageId)], job))
+          !identical(_jobs[key(job.conversationId, job.messageId)], job)) {
         return;
+      }
       try {
         ref
             .read(workRuntimeLogsProvider.notifier)
@@ -486,11 +498,12 @@ class ReasoningTranslation
         toolCall |= chunk.toolCalls?.isNotEmpty ?? false;
         finish = chunk.finishReason ?? finish;
       }
-      if (timedOut)
+      if (timedOut) {
         throw TimeoutException(
           'Translation request timeout',
           const Duration(seconds: 120),
         );
+      }
       if (requestToken.isCancelled) throw requestToken.cancelError!;
       if (toolCall || finish != 'stop' || output.toString().trim().isEmpty) {
         throw StateError('模型未返回完整译文，原文已保留');
@@ -539,8 +552,9 @@ class ReasoningTranslation
     for (final entry in rows.take(256)) {
       if (entry.value.at.isBefore(
         DateTime.now().subtract(const Duration(days: 30)),
-      ))
+      )) {
         continue;
+      }
       final row = <String, Object>{
         'key': entry.key,
         'text': entry.value.text,

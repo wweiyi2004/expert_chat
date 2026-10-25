@@ -105,14 +105,47 @@ class WorkHookRuntime extends ChangeNotifier {
   List<WorkHookRecord> get records => List.unmodifiable(_records.values);
   String? boundRoot(String conversationId) => _bindings[conversationId]?.root;
 
+  /// Manual execution uses the same bound launcher and permissions as a file
+  /// event. It cannot run an unbound, disabled, busy or settling workspace.
+  String? runUnavailableReason(String id) {
+    final r = _records[id];
+    if (_disposed || r == null) return 'Hook 不可用';
+    if (!r.definition.enabled) return '请先启用 Hook';
+    final binding = _bindings[r.definition.conversationId];
+    if (binding == null || binding.root != r.definition.root) {
+      return '等待原会话授权匹配的本机工作区';
+    }
+    if (_records.values.any(
+      (other) =>
+          other.definition.root == r.definition.root &&
+          (other.launching || other.processId != null),
+    )) {
+      return '该工作区已有 Hook 正在执行';
+    }
+    if (_settle[r.definition.root]?.isAfter(DateTime.now()) ?? false) {
+      return '等待上次执行结束后的防抖间隔';
+    }
+    return null;
+  }
+
+  Future<void> runNow(String id) async {
+    final reason = runUnavailableReason(id);
+    if (reason != null) throw StateError(reason);
+    await _trigger(_records[id]!);
+    final record = _records[id];
+    if (record?.error.isNotEmpty == true) throw StateError(record!.error);
+  }
+
   Future<void> save(WorkHookDefinition definition) async {
-    if (definition.command.trim().isEmpty || definition.root.trim().isEmpty)
+    if (definition.command.trim().isEmpty || definition.root.trim().isEmpty) {
       throw const FormatException('目录和命令不能为空');
+    }
     final path = definition.watchPath.replaceAll('\\', '/');
     if (path.startsWith('/') ||
         path.split('/').contains('..') ||
-        path.contains(':'))
+        path.contains(':')) {
       throw const FormatException('监控路径须为工作区内相对路径');
+    }
     final definitions = [
       for (final r in _records.values)
         if (r.definition.id != definition.id) r.definition,
@@ -192,8 +225,9 @@ class WorkHookRuntime extends ChangeNotifier {
                   (other.launching || other.processId != null),
             ) ||
             (_settle[d.root]?.isAfter(DateTime.now()) ?? false) ||
-            (r.suppressUntil?.isAfter(DateTime.now()) ?? false))
+            (r.suppressUntil?.isAfter(DateTime.now()) ?? false)) {
           return;
+        }
         final parts = path.split('/');
         if (parts.any(
           (p) => const {
@@ -203,16 +237,19 @@ class WorkHookRuntime extends ChangeNotifier {
             'build',
             '.next',
             '.worktrees',
+            '.expert-agent-worktrees',
           }.contains(p),
-        ))
+        )) {
           return;
+        }
         final watched = d.watchPath
             .replaceAll('\\', '/')
             .replaceAll(RegExp(r'/+$'), '');
         if (watched.isNotEmpty &&
             path != watched &&
-            !path.startsWith('$watched/'))
+            !path.startsWith('$watched/')) {
           return;
+        }
         r.pendingPaths.add(path);
         r.debounce?.cancel();
         r.debounce = Timer(
@@ -242,9 +279,11 @@ class WorkHookRuntime extends ChangeNotifier {
               (other.launching || other.processId != null),
         ) ||
         (_settle[r.definition.root]?.isAfter(DateTime.now()) ?? false) ||
-        !r.definition.enabled)
+        !r.definition.enabled) {
       return;
+    }
     r.launching = true;
+    r.error = '';
     r.lastTriggeredAt = DateTime.now();
     r.pendingPaths.clear();
     r.status = '请求执行配置命令';

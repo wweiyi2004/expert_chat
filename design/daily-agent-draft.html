@@ -1,0 +1,597 @@
+<title>日常 Agent 设计稿</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700;900&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: 说明文档 + 嵌入式原型。桌面原型在横向可滚动的画框里，手机原型三台并排、窄屏自动换行。
+   色彩语义：靛蓝 = 助手 / 主操作（沿用现有 seed #4D6BFE），琥珀 = 触发，青绿 = 工具，红 = 需要确认。 */
+:root {
+  --bg: #F4F5F8; --surface: #FFFFFF; --panel: #EEF0F5; --line: #DDE1E9;
+  --ink: #141821; --muted: #5C6574; --faint: #8A92A0;
+  --accent: #4D6BFE; --accent-ink: #FFFFFF; --accent-soft: #E7ECFF;
+  --trigger: #B86E00; --trigger-soft: #FFF1D9;
+  --tool: #0C8573; --tool-soft: #DCF3EE;
+  --ask: #C2412D; --ask-soft: #FDE8E4;
+  --ok: #1F8A4C; --shadow: 0 1px 2px rgba(20,24,33,.06), 0 8px 24px rgba(20,24,33,.06);
+  --font-body: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --r-sm: 8px; --r-md: 12px; --r-lg: 18px;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0D0F13; --surface: #15181F; --panel: #1B1F28; --line: #2A2F3B;
+  --ink: #E8EBF1; --muted: #9BA3B2; --faint: #6D7585;
+  --accent: #7D93FF; --accent-ink: #0D0F13; --accent-soft: #222A4A;
+  --trigger: #F0AA40; --trigger-soft: #3A2A10;
+  --tool: #3FC6AF; --tool-soft: #11322D;
+  --ask: #F27A64; --ask-soft: #3B1C17;
+  --ok: #4CC27E; --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
+  color-scheme: dark;
+} }
+:root[data-theme="dark"] {
+  --bg: #0D0F13; --surface: #15181F; --panel: #1B1F28; --line: #2A2F3B;
+  --ink: #E8EBF1; --muted: #9BA3B2; --faint: #6D7585;
+  --accent: #7D93FF; --accent-ink: #0D0F13; --accent-soft: #222A4A;
+  --trigger: #F0AA40; --trigger-soft: #3A2A10;
+  --tool: #3FC6AF; --tool-soft: #11322D;
+  --ask: #F27A64; --ask-soft: #3B1C17;
+  --ok: #4CC27E; --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink); font-family: var(--font-body);
+  font-size: 15px; line-height: 1.65;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 40px 80px;
+}
+.wrap { max-width: 1240px; margin: 0 auto; display: flex; flex-direction: column; gap: 64px; }
+h1, h2, h3 { text-wrap: balance; margin: 0; line-height: 1.25; }
+h1 { font-size: clamp(32px, 5vw, 52px); font-weight: 900; letter-spacing: -.01em; }
+h2 { font-size: 24px; font-weight: 700; }
+h3 { font-size: 16px; font-weight: 700; }
+p { margin: 0; }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; color: var(--muted); text-transform: uppercase; }
+.lede { font-size: 18px; color: var(--muted); max-width: 40em; }
+.section-head { display: flex; flex-direction: column; gap: 8px; margin-bottom: 24px; max-width: 46em; }
+.section-head p { color: var(--muted); }
+code, .mono { font-family: var(--font-mono); font-size: .88em; }
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* hero */
+.hero { display: flex; flex-direction: column; gap: 20px; }
+.principles { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 16px; margin-top: 8px; }
+.principle { border-top: 2px solid var(--ink); padding-top: 12px; display: flex; flex-direction: column; gap: 4px; }
+.principle p { color: var(--muted); font-size: 14px; }
+@media (max-width: 720px) { .principles { grid-template-columns: 1fr; } }
+
+/* block model */
+.chain { display: flex; align-items: stretch; gap: 0; flex-wrap: wrap; }
+.blk { flex: 1 1 200px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); padding: 16px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.blk .tag { align-self: flex-start; font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
+.blk p { font-size: 13px; color: var(--muted); }
+.blk ul { margin: 4px 0 0; padding-left: 18px; font-size: 13px; }
+.arrow { display: flex; align-items: center; justify-content: center; width: 28px; color: var(--faint); font-size: 18px; }
+@media (max-width: 860px) { .arrow { width: 100%; height: 24px; transform: rotate(90deg); } }
+.t-trigger { background: var(--trigger-soft); color: var(--trigger); }
+.t-agent { background: var(--accent-soft); color: var(--accent); }
+.t-tool { background: var(--tool-soft); color: var(--tool); }
+.t-out { background: var(--panel); color: var(--muted); }
+.t-ask { background: var(--ask-soft); color: var(--ask); }
+.guard { margin-top: 12px; border: 1px dashed var(--line); border-radius: var(--r-md); padding: 12px 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+
+/* frames */
+.frame-scroll { overflow-x: auto; padding-bottom: 8px; }
+.tabs { display: inline-flex; gap: 4px; background: var(--panel); padding: 4px; border-radius: 999px; margin-bottom: 16px; }
+.tabs button { border: 0; background: transparent; padding: 6px 16px; border-radius: 999px; cursor: pointer; color: var(--muted); font-size: 14px; }
+.tabs button[aria-selected="true"] { background: var(--surface); color: var(--ink); box-shadow: var(--shadow); font-weight: 500; }
+.desk { width: 1200px; height: 740px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); display: grid; grid-template-columns: 232px 1fr 300px; overflow: hidden; font-size: 13.5px; }
+.side { background: var(--panel); padding: 14px 10px; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.space { display: flex; align-items: center; gap: 8px; padding: 4px 6px; font-weight: 700; }
+.avatar { width: 26px; height: 26px; border-radius: 8px; background: var(--ink); color: var(--surface); display: grid; place-items: center; font-size: 12px; font-weight: 700; flex: none; }
+.search { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 6px 10px; color: var(--faint); display: flex; justify-content: space-between; }
+.nav { display: flex; flex-direction: column; gap: 2px; }
+.nav a { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: var(--r-sm); color: var(--ink); text-decoration: none; }
+.nav a.on { background: var(--surface); font-weight: 500; }
+.nav .count { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+.nav .count.hot { color: var(--ask); }
+.ico { width: 16px; text-align: center; color: var(--muted); flex: none; }
+.grp { font-size: 11.5px; color: var(--faint); padding: 0 8px; letter-spacing: .04em; display: flex; justify-content: space-between; }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.side-foot { margin-top: auto; display: flex; justify-content: space-between; padding: 0 8px; color: var(--muted); font-size: 13px; }
+
+.main { display: flex; flex-direction: column; min-width: 0; border-right: 1px solid var(--line); }
+.topbar { display: flex; align-items: center; gap: 10px; padding: 12px 20px; border-bottom: 1px solid var(--line); }
+.topbar .ttl { font-weight: 700; }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 12px; border: 1px solid var(--line); background: var(--surface); white-space: nowrap; }
+.chip.agent { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+.chip.trig { background: var(--trigger-soft); color: var(--trigger); border-color: transparent; }
+.chip.tool { background: var(--tool-soft); color: var(--tool); border-color: transparent; }
+.spacer { flex: 1; }
+.thread { flex: 1; overflow: hidden; padding: 20px 0; display: flex; flex-direction: column; gap: 14px; }
+.col { width: 100%; max-width: 640px; margin: 0 auto; padding: 0 20px; display: flex; flex-direction: column; gap: 14px; }
+.u { align-self: flex-end; background: var(--panel); padding: 8px 14px; border-radius: 16px 16px 4px 16px; max-width: 80%; }
+.who { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.timeline { display: flex; flex-direction: column; gap: 2px; border-left: 2px solid var(--line); padding-left: 12px; margin-left: 4px; }
+.step { display: flex; gap: 8px; font-size: 12.5px; color: var(--muted); align-items: baseline; }
+.step b { color: var(--ink); font-weight: 500; }
+.step .ok { color: var(--ok); }
+.plan { display: grid; grid-template-columns: 56px 1fr; gap: 4px 12px; font-size: 13.5px; }
+.plan .tm { font-family: var(--font-mono); color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.approve { border: 1px solid var(--ask); background: var(--ask-soft); border-radius: var(--r-md); padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+.approve .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.approve small { color: var(--muted); }
+.btn { border: 1px solid var(--line); background: var(--surface); border-radius: var(--r-sm); padding: 5px 12px; font-size: 12.5px; cursor: pointer; }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 500; }
+.composer { margin: 0 auto 16px; width: calc(100% - 40px); max-width: 640px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--shadow); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.composer .ph { color: var(--faint); padding: 2px 4px; }
+.composer .bar { display: flex; align-items: center; gap: 6px; }
+.send { width: 30px; height: 30px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); display: grid; place-items: center; font-weight: 700; flex: none; }
+.slash { display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin: 0 auto; max-width: 640px; width: calc(100% - 40px); padding: 0 4px 8px; }
+.slash span { font-family: var(--font-mono); }
+
+.insp { padding: 16px; display: flex; flex-direction: column; gap: 16px; overflow: hidden; min-width: 0; }
+.insp-head { display: flex; align-items: center; gap: 10px; }
+.big-dot { width: 32px; height: 32px; border-radius: 10px; background: var(--accent-soft); color: var(--accent); display: grid; place-items: center; font-weight: 700; flex: none; }
+.subtabs { display: flex; gap: 14px; border-bottom: 1px solid var(--line); font-size: 13px; }
+.subtabs span { padding-bottom: 6px; color: var(--muted); }
+.subtabs span.on { color: var(--ink); border-bottom: 2px solid var(--ink); font-weight: 500; }
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field > label, .field > .lbl { font-size: 11.5px; color: var(--faint); letter-spacing: .04em; }
+.box { border: 1px solid var(--line); border-radius: var(--r-sm); padding: 7px 10px; background: var(--surface); font-size: 13px; }
+.perm { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13px; }
+.tri { display: inline-flex; background: var(--panel); border-radius: 7px; padding: 2px; }
+.tri button { border: 0; background: transparent; font-size: 11.5px; padding: 2px 7px; border-radius: 5px; cursor: pointer; color: var(--muted); }
+.tri button[aria-pressed="true"][data-v="auto"] { background: var(--tool-soft); color: var(--tool); font-weight: 500; }
+.tri button[aria-pressed="true"][data-v="ask"] { background: var(--ask-soft); color: var(--ask); font-weight: 500; }
+.tri button[aria-pressed="true"][data-v="off"] { background: var(--surface); color: var(--ink); font-weight: 500; box-shadow: 0 0 0 1px var(--line); }
+.hint { font-size: 12px; color: var(--muted); }
+
+/* skill editor */
+.canvas { flex: 1; padding: 24px; display: flex; flex-direction: column; gap: 0; align-items: center; overflow: hidden; background-image: radial-gradient(var(--line) 1px, transparent 1px); background-size: 18px 18px; }
+.node { width: 440px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; box-shadow: var(--shadow); }
+.node .nh { display: flex; align-items: center; gap: 8px; }
+.node .nh .tag { font-size: 11.5px; font-weight: 700; padding: 1px 8px; border-radius: 999px; }
+.node .body { font-size: 13px; color: var(--muted); }
+.node .tpl { font-family: var(--font-mono); font-size: 12px; background: var(--panel); border-radius: 6px; padding: 6px 8px; color: var(--ink); white-space: pre-wrap; }
+.link { width: 2px; height: 22px; background: var(--line); }
+.addstep { font-size: 12.5px; color: var(--accent); border: 1px dashed var(--accent); border-radius: 999px; padding: 4px 14px; background: var(--surface); }
+.log { font-family: var(--font-mono); font-size: 11.5px; background: var(--panel); border-radius: var(--r-sm); padding: 10px; display: flex; flex-direction: column; gap: 3px; color: var(--muted); }
+.log .k { color: var(--ok); }
+
+/* phones */
+.phones { display: flex; gap: 28px; flex-wrap: wrap; justify-content: center; }
+.phone-wrap { display: flex; flex-direction: column; gap: 10px; align-items: center; }
+.phone-cap { font-size: 13px; color: var(--muted); text-align: center; max-width: 300px; }
+.phone-cap b { color: var(--ink); display: block; }
+.phone { width: 300px; max-width: 100%; height: 620px; border-radius: 34px; border: 8px solid var(--ink); background: var(--surface); overflow: hidden; display: flex; flex-direction: column; font-size: 13px; position: relative; }
+.status { display: flex; justify-content: space-between; padding: 8px 18px 4px; font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+.pbar { display: flex; align-items: center; gap: 8px; padding: 6px 14px 10px; }
+.pbar .ttl { font-weight: 700; font-size: 15px; }
+.pbody { flex: 1; padding: 0 14px; display: flex; flex-direction: column; gap: 12px; overflow: hidden; }
+.card { background: var(--panel); border-radius: var(--r-md); padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+.card .ch { display: flex; justify-content: space-between; align-items: center; font-weight: 500; }
+.card .ch small { color: var(--muted); font-weight: 400; font-size: 11.5px; }
+.rline { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+.rline .tm { font-family: var(--font-mono); color: var(--muted); font-size: 11.5px; width: 38px; font-variant-numeric: tabular-nums; }
+.pill { margin-left: auto; font-size: 11px; padding: 1px 8px; border-radius: 999px; white-space: nowrap; }
+.p-ok { background: var(--tool-soft); color: var(--tool); }
+.p-wait { background: var(--trigger-soft); color: var(--trigger); }
+.p-ask { background: var(--ask-soft); color: var(--ask); }
+.grid6 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.sk { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 8px 6px; text-align: center; font-size: 12px; display: flex; flex-direction: column; gap: 2px; align-items: center; }
+.sk i { font-style: normal; font-size: 16px; }
+.sk.add { border-style: dashed; color: var(--accent); border-color: var(--accent); }
+.pcomp { margin: 8px 12px 6px; border: 1px solid var(--line); border-radius: 999px; padding: 7px 8px 7px 14px; display: flex; align-items: center; gap: 8px; color: var(--faint); box-shadow: var(--shadow); background: var(--surface); }
+.pcomp .send { width: 28px; height: 28px; margin-left: auto; }
+.tabbar { display: grid; grid-template-columns: repeat(4, 1fr); border-top: 1px solid var(--line); padding: 6px 0 14px; font-size: 11px; color: var(--muted); text-align: center; }
+.tabbar .on { color: var(--accent); font-weight: 700; }
+.vstep { display: flex; gap: 10px; }
+.vstep .rail { display: flex; flex-direction: column; align-items: center; }
+.vstep .rail .n { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 700; flex: none; }
+.vstep .rail .ln { flex: 1; width: 2px; background: var(--line); min-height: 14px; }
+.vstep .c { padding-bottom: 12px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.vstep .c small { color: var(--muted); }
+
+/* layers table */
+.tbl-scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; min-width: 680px; font-size: 14px; }
+th, td { text-align: left; padding: 12px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 12px; color: var(--faint); font-weight: 500; letter-spacing: .04em; }
+td:first-child { font-weight: 700; white-space: nowrap; }
+td .mono { color: var(--muted); }
+
+.map { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 12px 32px; }
+.map div { display: flex; flex-direction: column; gap: 2px; border-left: 2px solid var(--line); padding-left: 12px; min-width: 0; }
+.map div span { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+@media (max-width: 720px) { .map { grid-template-columns: 1fr; } }
+.note { font-size: 12.5px; color: var(--faint); margin-top: 8px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="wrap">
+
+<header class="hero">
+  <span class="eyebrow">设计稿 v0.1 · 2026-10-24 · 手机 + 电脑</span>
+  <h1>日常 Agent</h1>
+  <p class="lede">一个帮你处理日常琐事的 Agent：订票、记账、写周报、查资料。它能做什么，由你用几块积木拼出来，而不是由开发者预先写死。</p>
+  <div class="principles">
+    <div class="principle"><h3>一个入口</h3><p>聊天、工作、学习、创作都放在同一个对话里。区别在于对话里挂了哪个助手、哪些技能，不靠切换模式。</p></div>
+    <div class="principle"><h3>能力是积木</h3><p>触发、助手、技能、输出四种积木，组合起来就是一条自动化。所有积木都能复制、改动、导出分享。</p></div>
+    <div class="principle"><h3>你定规矩</h3><p>每个工具都有三档权限：自动、询问、禁止。确认时可以顺手改成以后自动，权限越用越贴合你的习惯。</p></div>
+  </div>
+</header>
+
+<section>
+  <div class="section-head">
+    <span class="eyebrow">能力模型</span>
+    <h2>所有自定义都落在四种积木上</h2>
+    <p>用户不需要理解 MCP、system prompt、subagent 这些概念。在界面上只看到四种颜色的积木，颜色在整个 App 里含义固定。</p>
+  </div>
+  <div class="chain">
+    <div class="blk"><span class="tag t-trigger">触发</span><h3>什么时候开始</h3><ul><li>我发消息</li><li>定时：每周日 20:00</li><li>分享到 App：图片、链接</li><li>通知、位置、文件变化</li></ul></div>
+    <div class="arrow">→</div>
+    <div class="blk"><span class="tag t-agent">助手</span><h3>谁来做</h3><ul><li>模型 + 备用模型</li><li>性格与说话方式</li><li>可用的工具和技能</li><li>记忆范围</li></ul></div>
+    <div class="arrow">→</div>
+    <div class="blk"><span class="tag t-tool">技能 / 工具</span><h3>怎么做</h3><ul><li>内置：日历、文件、浏览器</li><li>连接：MCP、HTTP API</li><li>技能：多步配方，可用 /命令调用</li></ul></div>
+    <div class="arrow">→</div>
+    <div class="blk"><span class="tag t-out">输出</span><h3>结果去哪</h3><ul><li>回复到对话</li><li>写入笔记、表格</li><li>推送通知</li><li>首页小组件</li></ul></div>
+  </div>
+  <div class="guard"><span class="chip">权限</span>横跨所有积木：每个工具 <span class="chip tool">自动</span><span class="chip" style="background:var(--ask-soft);color:var(--ask);border-color:transparent">询问</span><span class="chip">禁止</span>，还可以设金额、频率、路径上限。</div>
+</section>
+
+<section>
+  <div class="section-head">
+    <span class="eyebrow">电脑端 · 1200 × 740</span>
+    <h2>三栏：导航 · 对话 · 当前助手</h2>
+    <p>右栏不放日志，放的是当前助手的配置，改完立即生效。自定义就在用户正在用的地方完成，不用跑去设置页。右栏的权限按钮可以点。</p>
+  </div>
+  <div class="tabs" role="tablist">
+    <button role="tab" aria-selected="true" data-view="chat" id="tab-chat">对话工作台</button>
+    <button role="tab" aria-selected="false" data-view="skill" id="tab-skill">技能编辑器</button>
+  </div>
+  <div class="frame-scroll">
+
+  <!-- desktop: chat -->
+  <div class="desk" data-panel="chat">
+    <aside class="side">
+      <div class="space"><span class="avatar">W</span>我的空间 <span style="color:var(--faint)">▾</span></div>
+      <div class="search"><span>搜索对话、技能…</span><span class="mono">⌘K</span></div>
+      <nav class="nav">
+        <a href="#" onclick="return false"><span class="ico">◐</span>今日</a>
+        <a href="#" class="on" onclick="return false"><span class="ico">✎</span>对话</a>
+        <a href="#" onclick="return false"><span class="ico">⟳</span>自动化<span class="count hot">2 待确认</span></a>
+        <a href="#" onclick="return false"><span class="ico">▦</span>技能库<span class="count">18</span></a>
+        <a href="#" onclick="return false"><span class="ico">▤</span>资料</a>
+      </nav>
+      <div class="grp"><span>助手</span><span>＋</span></div>
+      <nav class="nav">
+        <a href="#" class="on" onclick="return false"><span class="dot" style="background:var(--accent)"></span>管家</a>
+        <a href="#" onclick="return false"><span class="dot" style="background:var(--tool)"></span>研究员</a>
+        <a href="#" onclick="return false"><span class="dot" style="background:var(--trigger)"></span>记账员</a>
+        <a href="#" onclick="return false"><span class="dot" style="background:var(--muted)"></span>代码搭档</a>
+      </nav>
+      <div class="grp"><span>最近</span></div>
+      <nav class="nav">
+        <a href="#" class="on" onclick="return false">周末去杭州的安排</a>
+        <a href="#" onclick="return false">整理 10 月账单</a>
+        <a href="#" onclick="return false">论文第三章修改意见</a>
+        <a href="#" onclick="return false">给爸妈买体检套餐</a>
+      </nav>
+      <div class="side-foot"><span>⚙ 设置</span><span>同步于 2 分钟前</span></div>
+    </aside>
+
+    <div class="main">
+      <div class="topbar">
+        <span class="ttl">周末去杭州的安排</span>
+        <span class="chip agent">● 管家</span>
+        <span class="chip tool">+ 研究员</span>
+        <span class="spacer"></span>
+        <span class="chip">deepseek-v4.1 · 思考：标准</span>
+        <span class="chip">⋯</span>
+      </div>
+      <div class="thread">
+        <div class="col">
+          <div class="u">帮我安排周六去杭州一日游，预算 800，高铁票提醒加到日历里</div>
+          <div class="who"><span class="dot" style="background:var(--accent)"></span>管家 · 调用了 3 个工具，用时 6.2s</div>
+          <div class="timeline">
+            <div class="step"><span class="ok">✓</span><b>12306</b>查询上海虹桥 → 杭州东 · 找到 4 班</div>
+            <div class="step"><span class="ok">✓</span><b>日历</b>读取周六 · 09:00–21:00 空闲</div>
+            <div class="step"><span class="ok">✓</span><b>研究员</b>汇总西湖周边路线 · 引用 5 个网页</div>
+          </div>
+          <p>按预算排了一版，交通约 ¥146，餐饮门票约 ¥420，留了 ¥230 余量：</p>
+          <div class="plan">
+            <span class="tm">08:12</span><span>G7311 虹桥 → 杭州东，二等座 ¥73</span>
+            <span class="tm">09:40</span><span>北山街步行到断桥，避开苏堤人流高峰</span>
+            <span class="tm">12:00</span><span>知味观（孤山路店），人均 ¥80</span>
+            <span class="tm">14:00</span><span>灵隐寺 + 飞来峰，门票 ¥75</span>
+            <span class="tm">18:36</span><span>G7362 返程 ¥73</span>
+          </div>
+          <div class="approve">
+            <div class="row"><span class="chip" style="background:var(--surface);color:var(--ask);border-color:var(--ask)">需要你确认</span><b>在日历里创建 2 个事件</b></div>
+            <small>「出发 G7311 · 07:30 提醒」「返程 G7362 · 18:00 提醒」，写入「个人」日历</small>
+            <div class="row">
+              <button class="btn primary" type="button">创建</button>
+              <button class="btn" type="button">改一下</button>
+              <span class="spacer"></span>
+              <label class="hint"><input type="checkbox" id="always-cal"> 以后创建日历事件不再询问</label>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="slash"><span>/订票提醒</span>·<span>/记一笔</span>·<span>/周报</span>·<span>/翻译</span>·<span>@研究员</span></div>
+      <div class="composer">
+        <div class="ph">继续说，或输入 / 调用技能、@ 叫其他助手</div>
+        <div class="bar">
+          <span class="chip">＋ 附件</span>
+          <span class="chip agent">@ 管家</span>
+          <span class="chip">/ 技能</span>
+          <span class="spacer"></span>
+          <span class="chip" title="上下文 18% · 本次 ¥0.04">◔ 18%</span>
+          <span class="send">↑</span>
+        </div>
+      </div>
+    </div>
+
+    <aside class="insp">
+      <div class="insp-head"><span class="big-dot">管</span><div><b>管家</b><div class="hint">默认助手 · 3 个对话在用</div></div></div>
+      <div class="subtabs"><span class="on">配置</span><span>记忆</span><span>运行记录</span></div>
+      <div class="field"><span class="lbl">模型</span><div class="box">deepseek-v4.1 <span class="hint">失败时 → claude-sonnet-5-5</span></div></div>
+      <div class="field"><span class="lbl">说话方式</span><div class="box" style="color:var(--muted)">简洁、先给结论；涉及花钱时列出明细；不用表情符号。</div></div>
+      <div class="field">
+        <span class="lbl">工具权限</span>
+        <div class="perm"><span>日历</span><span class="tri" data-tri><button data-v="auto" type="button">自动</button><button data-v="ask" aria-pressed="true" type="button">询问</button><button data-v="off" type="button">禁止</button></span></div>
+        <div class="perm"><span>12306 查询</span><span class="tri" data-tri><button data-v="auto" aria-pressed="true" type="button">自动</button><button data-v="ask" type="button">询问</button><button data-v="off" type="button">禁止</button></span></div>
+        <div class="perm"><span>浏览器</span><span class="tri" data-tri><button data-v="auto" aria-pressed="true" type="button">自动</button><button data-v="ask" type="button">询问</button><button data-v="off" type="button">禁止</button></span></div>
+        <div class="perm"><span>本地文件</span><span class="tri" data-tri><button data-v="auto" type="button">自动</button><button data-v="ask" aria-pressed="true" type="button">询问</button><button data-v="off" type="button">禁止</button></span></div>
+        <div class="perm"><span>支付</span><span class="tri" data-tri><button data-v="auto" type="button">自动</button><button data-v="ask" type="button">询问</button><button data-v="off" aria-pressed="true" type="button">禁止</button></span></div>
+        <span class="hint">+ 连接新工具（MCP / HTTP / 快捷指令）</span>
+      </div>
+      <div class="field"><span class="lbl">记忆范围</span><div class="box">旅行偏好、家庭成员、常用地址</div></div>
+      <div class="field"><span class="lbl">可调用的助手</span><div style="display:flex;gap:6px;flex-wrap:wrap"><span class="chip tool">研究员</span><span class="chip trig">记账员</span><span class="chip">＋</span></div></div>
+    </aside>
+  </div>
+
+  <!-- desktop: skill editor -->
+  <div class="desk" data-panel="skill" hidden>
+    <aside class="side">
+      <div class="space"><span class="avatar">W</span>我的空间 <span style="color:var(--faint)">▾</span></div>
+      <div class="search"><span>搜索技能…</span><span class="mono">⌘K</span></div>
+      <nav class="nav">
+        <a href="#" onclick="return false"><span class="ico">◐</span>今日</a>
+        <a href="#" onclick="return false"><span class="ico">✎</span>对话</a>
+        <a href="#" onclick="return false"><span class="ico">⟳</span>自动化</a>
+        <a href="#" class="on" onclick="return false"><span class="ico">▦</span>技能库<span class="count">18</span></a>
+      </nav>
+      <div class="grp"><span>我的技能</span><span>＋</span></div>
+      <nav class="nav">
+        <a href="#" class="on" onclick="return false"><span class="dot" style="background:var(--trigger)"></span>周报</a>
+        <a href="#" onclick="return false"><span class="dot" style="background:var(--trigger)"></span>拍照记账</a>
+        <a href="#" onclick="return false"><span class="dot" style="background:var(--muted)"></span>订票提醒</a>
+        <a href="#" onclick="return false"><span class="dot" style="background:var(--muted)"></span>论文翻译对照</a>
+      </nav>
+      <div class="grp"><span>社区导入</span></div>
+      <nav class="nav">
+        <a href="#" onclick="return false"><span class="dot" style="background:var(--muted)"></span>快递追踪</a>
+        <a href="#" onclick="return false"><span class="dot" style="background:var(--muted)"></span>每日新闻简报</a>
+      </nav>
+      <div class="side-foot"><span>⚙ 设置</span><span>导入 .skill</span></div>
+    </aside>
+    <div class="main">
+      <div class="topbar">
+        <span class="ttl">周报</span>
+        <span class="chip mono">/周报</span>
+        <span class="chip trig">每周日 20:00</span>
+        <span class="spacer"></span>
+        <span class="chip">导出</span>
+        <span class="btn primary">保存</span>
+      </div>
+      <div class="canvas">
+        <div class="node">
+          <div class="nh"><span class="tag t-trigger">触发</span><b>定时</b><span class="spacer"></span><span class="hint">也可以手动 /周报</span></div>
+          <div class="body">每周日 20:00 · 手机在充电时才运行</div>
+        </div>
+        <div class="link"></div>
+        <div class="node">
+          <div class="nh"><span class="tag t-tool">工具</span><b>收集材料</b></div>
+          <div class="body">日历「本周」· 待办「已完成」· 笔记「工作/」下 7 天内改过的文件</div>
+        </div>
+        <div class="link"></div>
+        <div class="node">
+          <div class="nh"><span class="tag t-agent">助手</span><b>研究员</b><span class="spacer"></span><span class="hint">思考：高</span></div>
+          <div class="tpl">按「完成 / 进行中 / 下周计划」三段写本周周报。
+材料：{{calendar}} {{todos}} {{notes}}
+每段不超过 5 条，量化的结果写数字。</div>
+        </div>
+        <div class="link"></div>
+        <div class="node">
+          <div class="nh"><span class="tag t-ask">询问</span><b>发出前给我看一眼</b></div>
+          <div class="body">推送通知，点开后可以改；30 分钟没处理就只保存草稿</div>
+        </div>
+        <div class="link"></div>
+        <div class="node">
+          <div class="nh"><span class="tag t-out">输出</span><b>写入笔记 + 首页小组件</b></div>
+          <div class="body mono">笔记/周报/2026-W43.md</div>
+        </div>
+        <div class="link"></div>
+        <span class="addstep">＋ 添加一步</span>
+      </div>
+    </div>
+    <aside class="insp">
+      <div class="insp-head"><span class="big-dot" style="background:var(--trigger-soft);color:var(--trigger)">▶</span><div><b>测试运行</b><div class="hint">用上周的数据跑一遍，不会真的发出</div></div></div>
+      <button class="btn primary" type="button" style="align-self:flex-start">用 W42 数据试跑</button>
+      <div class="log">
+        <span><span class="k">✓</span> 触发 · 手动</span>
+        <span><span class="k">✓</span> 日历 · 14 个事件</span>
+        <span><span class="k">✓</span> 待办 · 9 项已完成</span>
+        <span><span class="k">✓</span> 笔记 · 6 个文件</span>
+        <span><span class="k">✓</span> 研究员 · 1,820 tokens · ¥0.03</span>
+        <span>… 等待确认（测试中自动跳过）</span>
+        <span><span class="k">✓</span> 输出 · 草稿已生成</span>
+      </div>
+      <div class="field"><span class="lbl">这个技能会用到的权限</span>
+        <div class="perm"><span>读取日历、待办</span><span class="pill p-ok">自动</span></div>
+        <div class="perm"><span>写入笔记</span><span class="pill p-ok">自动</span></div>
+        <div class="perm"><span>推送通知</span><span class="pill p-ask">询问</span></div>
+      </div>
+      <div class="field"><span class="lbl">分享</span><div class="box">导出为 <span class="mono">周报.skill</span>，不包含你的数据和密钥</div></div>
+    </aside>
+  </div>
+
+  </div>
+  <p class="note">在窄屏上，画框可以左右滑动查看。</p>
+</section>
+
+<section>
+  <div class="section-head">
+    <span class="eyebrow">手机端 · 三个关键屏</span>
+    <h2>首页可以自己排，输入框始终贴底</h2>
+    <p>手机端用来接收和确认：看今天跑了什么、批准待办、随手发一句或拍一张。复杂的搭建也能在手机上做，用竖向步骤列表代替电脑上的画布。</p>
+  </div>
+  <div class="phones">
+
+    <div class="phone-wrap">
+      <div class="phone">
+        <div class="status"><span>9:41</span><span>5G ▮▮▮</span></div>
+        <div class="pbar"><div><div class="hint">周四 · 10 月 24 日</div><div class="ttl">早上好</div></div><span class="spacer"></span><span class="chip">编辑首页</span></div>
+        <div class="pbody">
+          <div class="card" style="background:var(--ask-soft)">
+            <div class="ch"><span style="color:var(--ask)">2 件事等你确认</span><small>全部查看 ›</small></div>
+            <div class="rline">创建杭州行程日历事件<span class="pill p-ask">管家</span></div>
+            <div class="rline">记一笔：盒马 ¥236.5<span class="pill p-ask">记账员</span></div>
+          </div>
+          <div class="card">
+            <div class="ch">今天的自动化<small>4 条</small></div>
+            <div class="rline"><span class="tm">07:30</span>早间简报<span class="pill p-ok">已完成</span></div>
+            <div class="rline"><span class="tm">08:05</span>快递到站提醒<span class="pill p-ok">已完成</span></div>
+            <div class="rline"><span class="tm">18:00</span>下班路况<span class="pill p-wait">待运行</span></div>
+            <div class="rline"><span class="tm">22:00</span>今日记账汇总<span class="pill p-wait">待运行</span></div>
+          </div>
+          <div class="ch" style="display:flex;justify-content:space-between;font-weight:500">快捷技能<small class="hint">长按排序</small></div>
+          <div class="grid6">
+            <div class="sk"><i>¥</i>记一笔</div>
+            <div class="sk"><i>⎙</i>拍照翻译</div>
+            <div class="sk"><i>⇄</i>订票提醒</div>
+            <div class="sk"><i>☰</i>周报</div>
+            <div class="sk"><i>⌂</i>快递</div>
+            <div class="sk add"><i>＋</i>新技能</div>
+          </div>
+        </div>
+        <div class="pcomp"><span>问点什么，或输入 /技能</span><span class="send">🎙</span></div>
+        <div class="tabbar"><span class="on">今日</span><span>对话</span><span>自动化</span><span>我的</span></div>
+      </div>
+      <p class="phone-cap"><b>今日</b>首页由小组件组成：待确认、自动化、快捷技能、某个技能的输出（比如周报）都可以加上来。</p>
+    </div>
+
+    <div class="phone-wrap">
+      <div class="phone">
+        <div class="status"><span>9:41</span><span>5G ▮▮▮</span></div>
+        <div class="pbar"><span>☰</span><span class="spacer"></span><span class="chip agent">● 管家 ▾</span><span class="spacer"></span><span>✎</span></div>
+        <div class="pbody">
+          <div class="u" style="font-size:13px">帮我安排周六去杭州一日游，预算 800</div>
+          <div class="timeline">
+            <div class="step"><span class="ok">✓</span><b>12306</b>找到 4 班</div>
+            <div class="step"><span class="ok">✓</span><b>日历</b>周六空闲</div>
+            <div class="step"><span class="ok">✓</span><b>研究员</b>5 个来源</div>
+          </div>
+          <p>按预算排了一版，交通 ¥146、餐饮门票 ¥420：</p>
+          <div class="plan" style="grid-template-columns:44px 1fr;font-size:12.5px">
+            <span class="tm">08:12</span><span>G7311 → 杭州东</span>
+            <span class="tm">09:40</span><span>北山街 → 断桥</span>
+            <span class="tm">12:00</span><span>知味观 ¥80</span>
+            <span class="tm">14:00</span><span>灵隐寺 ¥75</span>
+          </div>
+        </div>
+        <div class="approve" style="margin:0 12px;padding:10px 12px">
+          <b style="font-size:13px">创建 2 个日历事件？</b>
+          <div class="row"><button class="btn" type="button" style="flex:1">改一下</button><button class="btn primary" type="button" style="flex:1">创建</button></div>
+        </div>
+        <div class="pcomp"><span>＋</span><span>继续说…</span><span class="send">🎙</span></div>
+        <div class="tabbar"><span>今日</span><span class="on">对话</span><span>自动化</span><span>我的</span></div>
+      </div>
+      <p class="phone-cap"><b>对话</b>点标题切换助手和模型。审批卡固定在输入框上方，两个按钮都够大，单手就能点。</p>
+    </div>
+
+    <div class="phone-wrap">
+      <div class="phone">
+        <div class="status"><span>9:41</span><span>5G ▮▮▮</span></div>
+        <div class="pbar"><span>‹</span><span class="ttl">拍照记账</span><span class="spacer"></span><span class="chip">试跑</span></div>
+        <div class="pbody" style="gap:0">
+          <div class="vstep"><div class="rail"><span class="n t-trigger">1</span><span class="ln"></span></div><div class="c"><b>分享图片到 App</b><small>或在相机里点「记一笔」</small></div></div>
+          <div class="vstep"><div class="rail"><span class="n t-agent">2</span><span class="ln"></span></div><div class="c"><b>记账员识别小票</b><small>视觉模型 · 商户、金额、分类</small></div></div>
+          <div class="vstep"><div class="rail"><span class="n t-ask">3</span><span class="ln"></span></div><div class="c"><b>超过 ¥200 时问我</b><small>¥200 以下自动入账</small></div></div>
+          <div class="vstep"><div class="rail"><span class="n t-tool">4</span><span class="ln"></span></div><div class="c"><b>写入 账本.csv</b><small class="mono">资料/记账/2026-10.csv</small></div></div>
+          <div class="vstep"><div class="rail"><span class="n t-out">5</span></div><div class="c"><b>更新首页「本月支出」</b><small>小组件 · 柱状图</small></div></div>
+          <div style="border:1px dashed var(--accent);color:var(--accent);border-radius:999px;text-align:center;padding:6px;margin:6px 0 14px">＋ 添加一步</div>
+          <div class="card">
+            <div class="ch">也可以用一句话描述<small>AI 帮你搭</small></div>
+            <div class="hint">「每次拍小票就记账，超过 200 问我，月底发我一份汇总」</div>
+          </div>
+        </div>
+        <div class="tabbar"><span>今日</span><span>对话</span><span class="on">自动化</span><span>我的</span></div>
+      </div>
+      <p class="phone-cap"><b>搭技能</b>在手机上用竖向步骤列表，和电脑画布是同一份数据。不想自己拼，就用一句话描述，让 AI 生成初稿。</p>
+    </div>
+
+  </div>
+</section>
+
+<section>
+  <div class="section-head">
+    <span class="eyebrow">自定义的层次</span>
+    <h2>同一个 App，深浅三层</h2>
+    <p>自定义能力强，不等于第一眼就看到所有开关。每一层都能从上一层自然点进去，普通用户永远不会被迫看到 JSON。</p>
+  </div>
+  <div class="tbl-scroll">
+    <table>
+      <thead><tr><th>层次</th><th>谁会用</th><th>能改什么</th><th>入口</th></tr></thead>
+      <tbody>
+        <tr><td>随手调</td><td>所有人</td><td>首页小组件排序、快捷技能、主题和字号、审批时点「以后不再询问」</td><td>长按、审批卡、首页「编辑」</td></tr>
+        <tr><td>拼积木</td><td>愿意折腾的人</td><td>新建助手（性格、模型、工具、记忆）、技能步骤、定时和分享触发、权限上限</td><td>右栏配置、技能编辑器、一句话生成</td></tr>
+        <tr><td>写代码</td><td>开发者</td><td>接 MCP / HTTP 工具、技能里插脚本步骤、导入导出 <span class="mono">.skill</span>、Hook、远程电脑执行</td><td>设置 › 连接、技能步骤「脚本」</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <div class="section-head">
+    <span class="eyebrow">落地到现有代码</span>
+    <h2>大部分能力已经有了，主要是重新组织</h2>
+  </div>
+  <div class="map">
+    <div><b>助手</b><span>由 <code>subagent_role.dart</code>、<code>agent_defaults.dart</code> 合并而来，升级成可见、可编辑的对象</span></div>
+    <div><b>工具 / 连接</b><span><code>domain/mcp/</code>、<code>workspace_tools.dart</code>、Android 本机控制，统一成三档权限</span></div>
+    <div><b>导航</b><span>用 <code>ShellTab</code> 的六个页签换成「今日 · 对话 · 自动化 · 技能库」；学习、创作、科研变成预置的助手和技能</span></div>
+    <div><b>运行记录</b><span><code>workbench/logs</code>、<code>changes</code>、<code>git</code> 放进右栏「运行记录」，不再是独立页面</span></div>
+    <div><b>触发 / 自动化</b><span>新增模块，可以从 <code>work_hook_runtime.dart</code> 和远程任务的事件续传起步</span></div>
+    <div><b>权限</b><span>现在的「请求批准」下拉框拆成按工具的三档开关，审批卡里可以直接改</span></div>
+  </div>
+</section>
+
+</div>
+
+<script>
+document.querySelectorAll('.tabs [role=tab]').forEach(function (tab) {
+  tab.addEventListener('click', function () {
+    var view = tab.dataset.view;
+    document.querySelectorAll('.tabs [role=tab]').forEach(function (t) {
+      t.setAttribute('aria-selected', String(t === tab));
+    });
+    document.querySelectorAll('[data-panel]').forEach(function (p) {
+      p.hidden = p.dataset.panel !== view;
+    });
+  });
+});
+document.querySelectorAll('[data-tri]').forEach(function (group) {
+  group.querySelectorAll('button').forEach(function (b) {
+    if (!b.hasAttribute('aria-pressed')) b.setAttribute('aria-pressed', 'false');
+    b.addEventListener('click', function () {
+      group.querySelectorAll('button').forEach(function (x) {
+        x.setAttribute('aria-pressed', String(x === b));
+      });
+    });
+  });
+});
+</script>

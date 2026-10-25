@@ -59,7 +59,7 @@ class _AnsweredQuestions extends StatelessWidget {
     } catch (_) {
       /* Older activity records can omit the question arguments. */
     }
-    if (answers is Map)
+    if (answers is Map) {
       for (final entry in answers.entries) {
         final value = entry.value;
         if (value is Map) {
@@ -75,6 +75,7 @@ class _AnsweredQuestions extends StatelessWidget {
           );
         }
       }
+    }
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: ExpansionTile(

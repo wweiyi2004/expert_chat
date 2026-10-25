@@ -1,3 +1,5 @@
+import 'package:expert_chat/core/app_toast.dart';
+import 'preview_zoom_control.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -43,6 +45,7 @@ class _HtmlPreviewPageState extends State<HtmlPreviewPage> {
   late List<HtmlSnippet> _rendered;
   late TextEditingController _source;
   bool _editing = false;
+  double? _zoom;
   bool _phoneWidth = false;
   double _deviceWidth = 390;
   int _revision = 0;
@@ -95,7 +98,7 @@ class _HtmlPreviewPageState extends State<HtmlPreviewPage> {
   Future<void> _copy() async {
     await Clipboard.setData(ClipboardData(text: _source.text));
     if (mounted) {
-      ScaffoldMessenger.of(
+      AppToastMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('已复制源码')));
     }
@@ -174,6 +177,11 @@ class _HtmlPreviewPageState extends State<HtmlPreviewPage> {
                       }
                     },
                   ),
+                  if (!_editing)
+                    PreviewZoomControl(
+                      zoom: _zoom,
+                      onChanged: (value) => setState(() => _zoom = value),
+                    ),
                   if (compact)
                     IconButton.filledTonal(
                       key: const ValueKey('preview-run'),
@@ -289,11 +297,16 @@ class _HtmlPreviewPageState extends State<HtmlPreviewPage> {
                                 child:
                                     widget.surfaceBuilder?.call(
                                       context,
-                                      buildSandboxedHtmlPreview(_current.html),
+                                      buildSandboxedHtmlPreview(
+                                        _current.html,
+                                        fitToWindow: true,
+                                      ),
                                     ) ??
                                     LocalHtmlSurface(
+                                      zoom: _zoom,
                                       document: buildSandboxedHtmlPreview(
                                         _current.html,
+                                        fitToWindow: true,
                                       ),
                                     ),
                               ),

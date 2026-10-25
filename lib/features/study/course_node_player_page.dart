@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -100,7 +101,7 @@ class _CourseNodePlayerPageState extends ConsumerState<CourseNodePlayerPage> {
       setState(() => _explain = text);
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
+      AppToastMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('重新讲解失败：$error')));
     } finally {
@@ -118,7 +119,7 @@ class _CourseNodePlayerPageState extends ConsumerState<CourseNodePlayerPage> {
     } catch (error) {
       if (!mounted) return;
       setState(() => _mastery = previous);
-      ScaffoldMessenger.of(
+      AppToastMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('保存掌握度失败：$error')));
     }
@@ -146,7 +147,7 @@ class _CourseNodePlayerPageState extends ConsumerState<CourseNodePlayerPage> {
       );
       await controller.addCards(cards);
       if (!mounted) return;
-      ScaffoldMessenger.of(
+      AppToastMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('已生成 ${cards.length} 张复习卡')));
     } catch (error) {
@@ -220,7 +221,7 @@ class _CourseNodePlayerPageState extends ConsumerState<CourseNodePlayerPage> {
       if (!mounted) return;
       if (!allCorrect) {
         setState(() {});
-        ScaffoldMessenger.of(context).showSnackBar(
+        AppToastMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('尚未全部正确。可改答案后再次提交；错题已记入错题本。')),
         );
         return;
@@ -230,7 +231,7 @@ class _CourseNodePlayerPageState extends ConsumerState<CourseNodePlayerPage> {
       setState(() => _step = 2);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
+      AppToastMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('批改失败：$e')));
     } finally {

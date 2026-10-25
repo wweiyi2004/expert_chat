@@ -1,4 +1,7 @@
 import 'dart:io';
+import 'package:expert_chat/state/work_rounds.dart';
+import 'package:expert_chat/state/session_policy.dart';
+import 'package:expert_chat/state/work_changes.dart';
 import 'dart:ui' as ui;
 import 'package:drift/native.dart';
 import 'package:expert_chat/core/providers.dart';
@@ -51,6 +54,14 @@ Future<void> capture(WidgetTester tester, String name) async {
   });
 }
 
+class _EmptyChanges extends WorkChanges {
+  @override
+  List<WorkFileChange> build() {
+    ready = Future.value();
+    return const [];
+  }
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(() async {
@@ -71,7 +82,7 @@ void main() {
   });
 
   testWidgets(
-    'desktop project tree, centered composer, collapse and mode switching preserve the draft',
+    'desktop project tree, workspace toolbar, collapse and mode switching preserve the draft',
     (tester) async {
       tester.view.physicalSize = const Size(1440, 900);
       tester.view.devicePixelRatio = 1;
@@ -131,6 +142,7 @@ void main() {
       final container = ProviderContainer(
         overrides: [
           sharedPrefsProvider.overrideWithValue(prefs),
+          workChangesProvider.overrideWith(_EmptyChanges.new),
           appDatabaseProvider.overrideWithValue(db),
           conversationRepositoryProvider.overrideWithValue(repo),
           libraryFileStoreProvider.overrideWithValue(
@@ -172,32 +184,29 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      Future<void> filter(bool work) async {
-        await tester.tap(
-          find.byKey(
-            ValueKey(work ? 'sidebar-filter-work' : 'sidebar-filter-chat'),
-          ),
-        );
-        await tester.pumpAndSettle();
-      }
-
-      expect(find.text('梳理项目结构'), findsNothing);
-      await filter(true);
-      expect(find.byKey(const ValueKey('desktop-nav-chat')), findsOneWidget);
+      expect(find.byKey(const ValueKey('desktop-nav-chat')), findsNothing);
       expect(
-        find.byKey(const ValueKey('desktop-project-workspace-project-one')),
+        find.byKey(const ValueKey('sidebar-group-work-project-one')),
         findsOneWidget,
       );
       expect(find.text('梳理项目结构'), findsOneWidget);
-      expect(find.text('设计资料'), findsNothing);
-      await filter(false);
-      expect(find.text('设计资料'), findsOneWidget);
+      expect(find.text('设计资料'), findsNothing, reason: '空资料集不占侧栏分组');
+      expect(
+        (await container.read(projectRepositoryProvider).list()).any(
+          (p) => p.name == '设计资料',
+        ),
+        isTrue,
+      );
       expect(find.text('今天想完成什么？'), findsOneWidget);
       final input = tester.getRect(
         find.byKey(const ValueKey('composer-input-box')),
       );
-      expect(input.bottom, lessThan(740));
-      expect(input.width, lessThanOrEqualTo(880));
+      expect(
+        input.bottom,
+        closeTo(900 - 14, 1),
+        reason: 'HTML welcome uses the same fixed bottom composer',
+      );
+      expect(input.width, 700);
       await capture(tester, 'welcome');
       await tester.enterText(
         find.byKey(const ValueKey('composer-text-field')),
@@ -218,9 +227,9 @@ void main() {
         find.byKey(const ValueKey('desktop-project-conversations')),
         findsNothing,
       );
-      await tester.tap(find.byTooltip('展开侧边栏'));
+      await tester.tap(find.byTooltip('展开侧栏'));
       await tester.pumpAndSettle();
-      expect(find.text('梳理项目结构'), findsNothing);
+      expect(find.text('梳理项目结构'), findsOneWidget);
       await tester.tap(
         find.descendant(
           of: find.byKey(const ValueKey('chat-work-mode-switch')),
@@ -242,7 +251,13 @@ void main() {
             .workMode,
         isFalse,
       );
-      expect(find.text('E:/App/desktop-workspaces/default'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('chat-composer')),
+          matching: find.byTooltip('E:/App/desktop-workspaces/default'),
+        ),
+        findsOneWidget,
+      );
       expect(
         tester
             .widget<TextField>(
@@ -252,13 +267,33 @@ void main() {
             .text,
         '',
       );
-      expect(
-        tester.getTopLeft(find.byKey(const ValueKey('chat-workspace-bar'))).dy,
-        greaterThan(
-          tester
-              .getBottomLeft(find.byKey(const ValueKey('composer-input-box')))
-              .dy,
+      final workspaceRect = tester.getRect(
+        find.descendant(
+          of: find.byKey(const ValueKey('chat-composer')),
+          matching: find.byKey(const ValueKey('chat-workspace-bar')),
         ),
+      );
+      final composerRect = tester.getRect(
+        find.byKey(const ValueKey('composer-input-box')),
+      );
+      expect(
+        workspaceRect.bottom,
+        lessThanOrEqualTo(composerRect.top),
+        reason: '窄工作pane的位置/权限在输入边框上方',
+      );
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('composer-context-row')),
+          matching: find.byKey(const ValueKey('chat-workspace-bar')),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('composer-input-box')),
+          matching: find.byKey(const ValueKey('composer-permission')),
+        ),
+        findsNothing,
       );
       container.read(workSessionInsightsProvider.notifier).request(
         workConversationId,
@@ -285,10 +320,13 @@ void main() {
             ),
           );
       await tester.pumpAndSettle();
-      expect(find.text('缓存 80.0%'), findsOneWidget);
-      expect(find.text('USD 0.0100'), findsOneWidget);
+
       await capture(tester, 'work');
       await tester.tap(find.byKey(const ValueKey('work-context-details')));
+      await tester.pumpAndSettle();
+      expect(find.text('缓存命中 80.0%'), findsOneWidget);
+      expect(find.text('费用 USD 0.0100'), findsOneWidget);
+      await tester.tap(find.text('查看实际请求消息与工具'));
       await tester.pumpAndSettle();
       expect(find.text('最近一次请求的上下文'), findsOneWidget);
       await tester.tap(find.text('1. system'));
@@ -299,7 +337,7 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('composer-plus-button')));
       await tester.pumpAndSettle();
       await capture(tester, 'attachment-tray');
-      await tester.tap(find.byKey(const ValueKey('composer-plus-button')));
+      await tester.binding.handlePopRoute();
       await tester.pumpAndSettle();
       tester.view.physicalSize = const Size(900, 650);
       await tester.pumpAndSettle();
@@ -307,7 +345,6 @@ void main() {
       await capture(tester, 'compact');
       tester.view.physicalSize = const Size(1440, 900);
       await tester.pumpAndSettle();
-      await filter(true);
       await tester.tap(find.text('梳理项目结构'));
       await tester.pumpAndSettle();
       expect(
@@ -346,19 +383,72 @@ void main() {
         )[chatState.currentId],
         isNull,
       );
-      await filter(true);
       await tester.tap(find.text('梳理项目结构'));
       await tester.pumpAndSettle();
       themeMode.value = ThemeMode.dark;
       await tester.pumpAndSettle();
       await capture(tester, 'dark');
+      await tester.tap(find.byKey(const ValueKey('work-round-toggle')));
+      await tester.pumpAndSettle();
+      container
+          .read(workRoundsProvider.notifier)
+          .start('project-chat', 'layout-fixture', const SessionPolicy());
+      container
+          .read(workRoundsProvider.notifier)
+          .update('project-chat', 'layout-fixture', (p) => p.copyWith(used: 4));
+      for (final width in [360, 390, 1280, 1440]) {
+        tester.view.physicalSize = Size(width.toDouble(), 900);
+        for (final mode in [ThemeMode.light, ThemeMode.dark]) {
+          themeMode.value = mode;
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 350));
+          // AnimatedTheme completes first; Material's inherited text style then
+          // starts its own transition. Finish that second animation before a
+          // screenshot, while leaving the live execution spinner running.
+          await tester.pump(const Duration(milliseconds: 250));
+          await tester.pump();
+          final header = find.byKey(const ValueKey('html-chat-header'));
+          final headerTitle = find.descendant(
+            of: header,
+            matching: find.text('梳理项目结构'),
+          );
+          expect(headerTitle, findsWidgets);
+          for (final element
+              in find
+                  .descendant(of: headerTitle, matching: find.byType(RichText))
+                  .evaluate()) {
+            final text = element.widget as RichText;
+            expect(
+              text.text.style?.color,
+              Theme.of(element).colorScheme.onSurface,
+              reason: '$width ${mode.name} inherited conversation title',
+            );
+          }
+          expect(
+            tester.takeException(),
+            isNull,
+            reason: '$width ${mode.name} work conversation',
+          );
+          await capture(tester, 'work-$width-${mode.name}');
+        }
+      }
+      container
+          .read(workRoundsProvider.notifier)
+          .update(
+            'project-chat',
+            'layout-fixture',
+            (p) => p.copyWith(active: false),
+          );
+      tester.view.physicalSize = const Size(1440, 900);
+      await tester.pumpAndSettle();
+
       expect(tester.takeException(), isNull);
       themeMode.value = ThemeMode.light;
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const ValueKey('desktop-nav-tools')));
+      await tester.tap(find.byKey(const ValueKey('sidebar-automation')));
       await tester.pumpAndSettle();
-      expect(container.read(shellTabProvider), ShellTab.tools);
-      await tester.tap(find.byKey(const ValueKey('desktop-nav-chat')));
+      expect(container.read(shellTabProvider), ShellTab.automation);
+      await tester.tap(find.byTooltip('回到对话'));
       await tester.pumpAndSettle();
       expect(
         container.read(chatControllerProvider).requireValue.currentId,
@@ -369,7 +459,12 @@ void main() {
         'project-one',
       );
       expect(tester.takeException(), isNull);
-      await tester.tap(find.byTooltip('在项目中新建会话').first);
+      await tester.tap(
+        find.descendant(
+          of: find.byKey(const ValueKey('sidebar-group-work-project-one')),
+          matching: find.byTooltip('在此分组新建'),
+        ),
+      );
       await tester.pumpAndSettle();
       final projectConversationId = container
           .read(chatControllerProvider)
@@ -399,9 +494,11 @@ void main() {
       );
       expect(
         container.read(chatControllerProvider).requireValue.current!.workMode,
-        isTrue,
+        isFalse,
       );
-      await tester.tap(find.byKey(const ValueKey('desktop-nav-tools')));
+      await tester.tap(find.text('设置'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('连接'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('电脑工作区'));
       await tester.pumpAndSettle();
@@ -419,9 +516,10 @@ void main() {
       await tester.pumpAndSettle();
       await tester.pageBack();
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const ValueKey('desktop-nav-chat')));
+      await tester.tap(find.byTooltip('回到对话'));
       await tester.pumpAndSettle();
-      expect(find.text('新增项目'), findsOneWidget);
+      expect((await host.list()).any((w) => w.name == '新增项目'), isTrue);
+      expect(find.text('新增项目'), findsNothing, reason: '无会话的工作区分组按规范隐藏');
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());
     },

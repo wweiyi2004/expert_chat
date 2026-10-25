@@ -6,14 +6,18 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 enum ShellTab {
   chat,
   tools,
+  automation,
+  resources,
   terminal,
   study,
   studio,
   settings;
 
   String get label => switch (this) {
-    ShellTab.chat => '会话',
+    ShellTab.chat => '对话',
     ShellTab.tools => '工具',
+    ShellTab.automation => '自动化',
+    ShellTab.resources => '资料库',
     ShellTab.terminal => '科研工作区',
     ShellTab.study => '学习',
     ShellTab.studio => '创作',
@@ -23,6 +27,8 @@ enum ShellTab {
   IconData get icon => switch (this) {
     ShellTab.chat => Icons.forum_outlined,
     ShellTab.tools => Icons.extension_outlined,
+    ShellTab.automation => Icons.bolt_outlined,
+    ShellTab.resources => Icons.folder_copy_outlined,
     ShellTab.terminal => Icons.terminal_rounded,
     ShellTab.study => Icons.school_outlined,
     ShellTab.studio => Icons.menu_book_outlined,
@@ -32,6 +38,8 @@ enum ShellTab {
   IconData get selectedIcon => switch (this) {
     ShellTab.chat => Icons.forum,
     ShellTab.tools => Icons.extension_outlined,
+    ShellTab.automation => Icons.bolt_outlined,
+    ShellTab.resources => Icons.folder_copy_outlined,
     ShellTab.terminal => Icons.terminal,
     ShellTab.study => Icons.school,
     ShellTab.studio => Icons.menu_book,
@@ -39,10 +47,16 @@ enum ShellTab {
   };
 
   /// Primary navigation stays compact while optional pages keep their state.
-  static const navigation = [ShellTab.chat, ShellTab.tools, ShellTab.settings];
+  static const navigation = [
+    ShellTab.chat,
+    ShellTab.automation,
+    ShellTab.resources,
+    ShellTab.settings,
+  ];
 
   ShellTab get navigationTab => switch (this) {
-    ShellTab.terminal || ShellTab.study || ShellTab.studio => ShellTab.tools,
+    ShellTab.terminal || ShellTab.tools => ShellTab.settings,
+    ShellTab.study || ShellTab.studio => ShellTab.resources,
     _ => this,
   };
 
@@ -55,6 +69,8 @@ enum ShellTab {
     bool creationModeEnabled = true,
   }) => [
     ShellTab.chat,
+    ShellTab.automation,
+    ShellTab.resources,
     ShellTab.tools,
     if (researchModeEnabled) ShellTab.terminal,
     if (studyModeEnabled) ShellTab.study,

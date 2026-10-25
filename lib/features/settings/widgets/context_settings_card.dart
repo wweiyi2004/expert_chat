@@ -99,8 +99,9 @@ class ContextSettingsCard extends StatelessWidget {
                   ),
               ],
               onChanged: (value) {
-                if (value != null)
+                if (value != null) {
                   onChanged(prefs.copyWith(maxOutputTokens: value));
+                }
               },
             ),
             const SizedBox(height: 8),

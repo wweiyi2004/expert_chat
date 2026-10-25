@@ -13,7 +13,7 @@ Future<Map<String, String>> authorizeLoopback(
   final result = Completer<Map<String, String>>();
   // Cancellation can arrive while the browser launcher is still pending.
   unawaited(
-    result.future.then<void>((_) {}, onError: (Object _, StackTrace __) {}),
+    result.future.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
   );
   final subscription = server.listen((request) async {
     final values = request.uri.queryParameters;
@@ -30,8 +30,9 @@ Future<Map<String, String>> authorizeLoopback(
       '<!doctype html><meta charset="utf-8"><title>Expert Chat</title><p>已收到登录结果，请返回 Expert Chat。</p>',
     );
     await request.response.close();
-    if (!result.isCompleted)
+    if (!result.isCompleted) {
       result.complete({...values, 'redirect_uri': callback});
+    }
   });
   token.whenCancel.then((error) {
     if (!result.isCompleted) result.completeError(error);
@@ -41,8 +42,9 @@ Future<Map<String, String>> authorizeLoopback(
     if (!await launchUrl(
       authorize(callback),
       mode: LaunchMode.externalApplication,
-    ))
+    )) {
       throw StateError('无法打开登录浏览器');
+    }
     return await result.future.timeout(const Duration(minutes: 5));
   } finally {
     await subscription.cancel();

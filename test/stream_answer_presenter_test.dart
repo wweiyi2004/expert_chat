@@ -21,6 +21,33 @@ class _ThinkingClock implements Stopwatch {
 }
 
 void main() {
+  test(
+    'tool rounds preserve published non-reasoning prose and separate later output',
+    () {
+      final buffer = StreamAnswerBuffer();
+      final snapshots = <StreamAnswerSnapshot>[];
+      final presenter = StreamAnswerPresenter(
+        buffer: buffer,
+        focusOf: () => StreamUiFocus.content,
+        onPublish: snapshots.add,
+        onCheckpoint: () {},
+      );
+      addTearDown(presenter.dispose);
+      presenter.addContent('先检查实际文件。');
+      presenter.flush(publishAll: true);
+      buffer.finishToolRound();
+      presenter.flush(publishAll: true);
+      expect(snapshots.last.content, '先检查实际文件。');
+      buffer
+          .finishToolRound(); // A tool-only response adds no blank paragraphs.
+      presenter.addContent('检查完成，结果如下。');
+      presenter.flush(publishAll: true);
+      expect(snapshots.last.content, '先检查实际文件。\n\n检查完成，结果如下。');
+      expect(snapshots.every((s) => s.content.startsWith('先检查实际文件。')), isTrue);
+      expect(buffer.reasoning, isEmpty);
+    },
+  );
+
   test('thinking time accumulates across rounds and excludes tool waiting', () {
     final clock = _ThinkingClock();
     final buffer = StreamAnswerBuffer(thinkingClock: clock);

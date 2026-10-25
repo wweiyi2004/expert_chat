@@ -6,6 +6,7 @@ import 'package:expert_chat/domain/llm/deepseek_balance_client.dart';
 import 'package:expert_chat/domain/llm/llm_provider.dart';
 import 'package:expert_chat/domain/llm/model_usage_store.dart';
 import 'package:expert_chat/features/settings/settings_page.dart';
+import 'package:expert_chat/features/settings/widgets/model_settings_widgets.dart';
 import 'package:expert_chat/state/settings_controller.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -68,6 +69,12 @@ void main() {
     );
     await tester.tap(find.text('模型'));
     await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('DeepSeek 余额'),
+      250,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
     expect(find.text('DeepSeek 余额'), findsOneWidget);
     expect(find.text('¥110.00'), findsOneWidget);
     expect(find.text('¥100.00'), findsOneWidget);
@@ -78,16 +85,15 @@ void main() {
   testWidgets('non-DeepSeek settings hide the balance card', (tester) async {
     SharedPreferences.setMockInitialValues({});
     final prefs = await SharedPreferences.getInstance();
+    final client = _FakeBalanceClient(
+      const DeepSeekBalance(isAvailable: true, infos: []),
+    );
     final container = ProviderContainer(
       overrides: [
         sharedPrefsProvider.overrideWithValue(prefs),
         settingsControllerProvider.overrideWith(_OtherSettingsController.new),
         modelUsageStoreProvider.overrideWith((ref) => ModelUsageStore(prefs)),
-        deepSeekBalanceClientProvider.overrideWithValue(
-          _FakeBalanceClient(
-            const DeepSeekBalance(isAvailable: true, infos: []),
-          ),
-        ),
+        deepSeekBalanceClientProvider.overrideWithValue(client),
       ],
     );
     addTearDown(container.dispose);
@@ -99,8 +105,15 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-
+    await tester.tap(find.text('模型'));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.byType(ModelUsageCard),
+      250,
+      scrollable: find.byType(Scrollable).first,
+    );
     expect(find.text('DeepSeek 余额'), findsNothing);
+    expect(client.fetchCount, 0);
   });
 }
 

@@ -33,8 +33,10 @@ class _Settings extends SettingsController {
       ),
     ],
     activeProfileId: 'gemini',
+    selectedModel: 'gemini-3.1-pro',
     apiKey: 'synthetic-key',
-    searchBackend: SearchBackend.duckduckgo,
+    searchBackend: SearchBackend.deepseek,
+    searchApiKey: 'fixture-official-search-key',
     imageGenMode: ImageGenMode.off,
   );
 }

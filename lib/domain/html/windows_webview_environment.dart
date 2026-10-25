@@ -4,8 +4,9 @@ import 'package:webview_windows/webview_windows.dart';
 Future<void>? _environment;
 Future<void> ensureWindowsWebviewEnvironment() => _environment ??=
     (() async {
-      if (await WebviewController.getWebViewVersion() == null)
+      if (await WebviewController.getWebViewVersion() == null) {
         throw StateError('请安装 Microsoft Edge WebView2 Runtime 后使用内嵌浏览器。');
+      }
       final folder = await getApplicationSupportDirectory();
       await folder.create(recursive: true);
       await WebviewController.initializeEnvironment(

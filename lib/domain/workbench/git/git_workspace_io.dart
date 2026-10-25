@@ -129,12 +129,18 @@ class _LocalGit implements GitWorkspaceService {
     for (var i = 0; i < records.length; i++) {
       final record = records[i];
       if (record.length < 4) continue;
-      changes.add(GitChange(record.substring(3), record[0], record[1]));
+      if (!record
+          .substring(3)
+          .replaceAll(r'\', '/')
+          .startsWith('.expert-agent-worktrees/')) {
+        changes.add(GitChange(record.substring(3), record[0], record[1]));
+      }
       if (record[0] == 'R' ||
           record[0] == 'C' ||
           record[1] == 'R' ||
-          record[1] == 'C')
+          record[1] == 'C') {
         i++;
+      }
     }
     final branchResult = await _run([
       'symbolic-ref',
@@ -244,8 +250,9 @@ class _LocalGit implements GitWorkspaceService {
 
   @override
   Future<String> commitDiff(String id) async {
-    if (!RegExp(r'^[0-9a-fA-F]{7,64}$').hasMatch(id))
+    if (!RegExp(r'^[0-9a-fA-F]{7,64}$').hasMatch(id)) {
       throw const GitWorkspaceException('无效的提交 ID');
+    }
     await authorize(false);
     return _checked([
       'show',
@@ -275,8 +282,9 @@ class _LocalGit implements GitWorkspaceService {
   Future<void> createWorktree(String branch) async {
     final target = worktreeTarget(branch);
     await authorize(true);
-    if (!await _repository())
+    if (!await _repository()) {
       throw const GitWorkspaceException('当前目录不是 Git 仓库。');
+    }
     if (await FileSystemEntity.type(target, followLinks: false) !=
         FileSystemEntityType.notFound) {
       throw const GitWorkspaceException('目标路径已经存在，请选择新的分支名称。');

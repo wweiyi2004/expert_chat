@@ -1,3 +1,4 @@
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:expert_chat/core/providers.dart';
 import 'package:expert_chat/data/character_repository.dart';
 import 'package:expert_chat/data/conversation_repository.dart';
@@ -145,7 +146,13 @@ class _PanelSwitchHostState extends State<_PanelSwitchHost> {
   }
 }
 
+late SharedPreferences _testPreferences;
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  setUp(() async {
+    SharedPreferences.setMockInitialValues({});
+    _testPreferences = await SharedPreferences.getInstance();
+  });
   test('clearing author note preserves the original story premise', () {
     const previous =
         'AI 扮演全部角色，用户是导演。\n\n'
@@ -202,6 +209,7 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          sharedPrefsProvider.overrideWithValue(_testPreferences),
           conversationRepositoryProvider.overrideWithValue(repo),
           characterRepositoryProvider.overrideWithValue(
             _MemoryCharacterRepository(),
@@ -261,6 +269,7 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          sharedPrefsProvider.overrideWithValue(_testPreferences),
           conversationRepositoryProvider.overrideWithValue(
             _MemoryConversationRepository([convo]),
           ),
@@ -327,6 +336,7 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          sharedPrefsProvider.overrideWithValue(_testPreferences),
           conversationRepositoryProvider.overrideWithValue(
             _MemoryConversationRepository([convo]),
           ),
@@ -371,6 +381,7 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          sharedPrefsProvider.overrideWithValue(_testPreferences),
           conversationRepositoryProvider.overrideWithValue(
             _MemoryConversationRepository([convo]),
           ),

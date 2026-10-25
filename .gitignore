@@ -109,3 +109,6 @@ server/.venv*/
 
 # Cloudflare CLI runtime cache
 /.wrangler/
+
+# Generated Android native build cache in vendored plugin.
+/third_party/flutter_pty2/android/.cxx/

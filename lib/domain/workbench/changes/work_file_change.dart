@@ -18,9 +18,18 @@ class WorkFileChange {
     this.assistantId = '',
     this.beforeKnown = true,
     this.deliveryHash,
+    this.roundId = '',
+    this.artifactManifest,
+    this.recreateNewFile = false,
+    this.textSnapshot = true,
+    this.deleted = false,
   });
 
+  /// Ephemeral user restore intent; never persisted or imported/replayed.
+  final bool recreateNewFile;
   final String id;
+  final String roundId;
+  final Map<String, dynamic>? artifactManifest;
   final String conversationId;
   final String assistantId;
   final bool beforeKnown;
@@ -28,7 +37,9 @@ class WorkFileChange {
   final String scope;
   final String path;
   final String? before;
-  final String after;
+  final String? after;
+  final bool textSnapshot;
+  final bool deleted;
   final String? beforeHash;
   final String afterHash;
   final DateTime updatedAt;
@@ -39,8 +50,9 @@ class WorkFileChange {
   final String? deliveryHash;
   bool get isDelivery => !reverted && deliveryHash == afterHash;
 
-  bool get isNew => beforeKnown && before == null;
-  bool get canRestore => beforeKnown && !isNew && !reverted && before != after;
+  bool get isNew => textSnapshot && !deleted && beforeKnown && before == null;
+  bool get canRestore =>
+      textSnapshot && !deleted && beforeKnown && !reverted && before != after;
 
   String get targetLabel {
     if (!target.startsWith('{')) return target;
@@ -54,8 +66,31 @@ class WorkFileChange {
     }
   }
 
+  WorkFileChange requestNewFileRecreation() => WorkFileChange(
+    id: id,
+    conversationId: conversationId,
+    assistantId: assistantId,
+    target: target,
+    scope: scope,
+    path: path,
+    before: before,
+    after: after,
+    textSnapshot: textSnapshot,
+    deleted: deleted,
+    beforeHash: beforeHash,
+    afterHash: afterHash,
+    updatedAt: updatedAt,
+    reverted: reverted,
+    beforeKnown: beforeKnown,
+    roundId: roundId,
+    artifactManifest: artifactManifest,
+    recreateNewFile: true,
+  );
+
   WorkFileChange withReverted() => WorkFileChange(
     id: id,
+    roundId: roundId,
+    artifactManifest: artifactManifest,
     conversationId: conversationId,
     assistantId: assistantId,
     beforeKnown: beforeKnown,
@@ -64,6 +99,8 @@ class WorkFileChange {
     path: path,
     before: before,
     after: after,
+    textSnapshot: textSnapshot,
+    deleted: deleted,
     beforeHash: beforeHash,
     afterHash: afterHash,
     updatedAt: updatedAt,
@@ -72,6 +109,8 @@ class WorkFileChange {
 
   WorkFileChange withDelivery(bool selected) => WorkFileChange(
     id: id,
+    roundId: roundId,
+    artifactManifest: artifactManifest,
     conversationId: conversationId,
     assistantId: assistantId,
     beforeKnown: beforeKnown,
@@ -80,6 +119,8 @@ class WorkFileChange {
     path: path,
     before: before,
     after: after,
+    textSnapshot: textSnapshot,
+    deleted: deleted,
     beforeHash: beforeHash,
     afterHash: afterHash,
     updatedAt: updatedAt,
@@ -89,6 +130,8 @@ class WorkFileChange {
 
   Map<String, Object?> toJson() => {
     'id': id,
+    'roundId': roundId,
+    if (artifactManifest != null) 'artifactManifest': artifactManifest,
     'conversationId': conversationId,
     'assistantId': assistantId,
     'beforeKnown': beforeKnown,
@@ -97,6 +140,8 @@ class WorkFileChange {
     'path': path,
     'before': before,
     'after': after,
+    'textSnapshot': textSnapshot,
+    'deleted': deleted,
     'beforeHash': beforeHash,
     'afterHash': afterHash,
     'updatedAt': updatedAt.toIso8601String(),
@@ -106,6 +151,10 @@ class WorkFileChange {
 
   factory WorkFileChange.fromJson(Map<String, dynamic> json) => WorkFileChange(
     id: json['id'] as String,
+    roundId: json['roundId'] as String? ?? '',
+    artifactManifest: json['artifactManifest'] is Map
+        ? Map<String, dynamic>.from(json['artifactManifest'] as Map)
+        : null,
     conversationId: json['conversationId'] as String,
     assistantId: json['assistantId'] as String? ?? '',
     beforeKnown: json['beforeKnown'] as bool? ?? true,
@@ -113,7 +162,9 @@ class WorkFileChange {
     scope: json['scope'] as String,
     path: json['path'] as String,
     before: json['before'] as String?,
-    after: json['after'] as String,
+    after: json['after'] as String?,
+    textSnapshot: json['textSnapshot'] != false,
+    deleted: json['deleted'] == true,
     beforeHash: json['beforeHash'] as String?,
     afterHash: json['afterHash'] as String,
     updatedAt: DateTime.parse(json['updatedAt'] as String),
@@ -139,7 +190,7 @@ List<WorkFileChange> finalDeliveryFiles(
   return latest.values.where((file) => file.isDelivery).toList();
 }
 
-/// Must write [WorkFileChange.before] through the target's ordinary permission
-/// checks, supplying [WorkFileChange.afterHash] as expected_sha256. Throw if the
+/// Must restore [WorkFileChange.before], or delete an originally new file,
+/// through ordinary target permissions and exact [WorkFileChange.afterHash]. Throw if the
 /// target is unavailable, permission is denied, or the file has changed.
 typedef WorkChangeRestore = Future<void> Function(WorkFileChange change);

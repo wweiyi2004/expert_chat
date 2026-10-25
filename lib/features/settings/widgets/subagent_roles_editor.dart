@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
@@ -5,6 +6,7 @@ import '../../../data/subagent_role.dart';
 import '../../../state/settings_controller.dart';
 import '../../../state/work_agents.dart';
 import '../../../state/model_service_routing.dart';
+import 'role_evolution_panel.dart';
 
 class SubagentRolesEditor extends ConsumerWidget {
   const SubagentRolesEditor({super.key});
@@ -40,35 +42,41 @@ class SubagentRolesEditor extends ConsumerWidget {
           '派工时由模型按“何时选用”自动分配角色，再使用该角色的系统指令和模型执行。孙代理同样按任务分配。角色指令修改在下一完整工具轮生效，模型绑定用于新任务。',
         ),
         const SizedBox(height: 12),
-        DropdownButtonFormField<String>(
-          key: ValueKey('role-router-${settings.subagentRouterModel}'),
-          initialValue: settings.subagentRouterModel,
-          isExpanded: true,
-          decoration: const InputDecoration(
-            labelText: '角色分配模型',
-            border: OutlineInputBorder(),
+        const RoleEvolutionPanel(),
+        const SizedBox(height: 16),
+        KeyedSubtree(
+          key: const ValueKey('role-router-field'),
+          child: DropdownButtonFormField<String>(
+            key: ValueKey('role-router-${settings.subagentRouterModel}'),
+            initialValue: settings.subagentRouterModel,
+            isExpanded: true,
+            decoration: const InputDecoration(
+              labelText: '角色分配模型',
+              border: OutlineInputBorder(),
+            ),
+            items: [
+              const DropdownMenuItem(value: '', child: Text('跟随当前主模型')),
+              for (final model in routingModels.where((m) => m.isNotEmpty))
+                DropdownMenuItem(
+                  value: model,
+                  child: Text(model, overflow: TextOverflow.ellipsis),
+                ),
+            ],
+            onChanged: (value) async {
+              if (value == null) return;
+              try {
+                await ref
+                    .read(settingsControllerProvider.notifier)
+                    .setSubagentRouterModel(value);
+              } catch (error) {
+                if (context.mounted) {
+                  AppToastMessenger.of(
+                    context,
+                  ).showSnackBar(SnackBar(content: Text('$error')));
+                }
+              }
+            },
           ),
-          items: [
-            const DropdownMenuItem(value: '', child: Text('跟随当前主模型')),
-            for (final model in routingModels.where((m) => m.isNotEmpty))
-              DropdownMenuItem(
-                value: model,
-                child: Text(model, overflow: TextOverflow.ellipsis),
-              ),
-          ],
-          onChanged: (value) async {
-            if (value == null) return;
-            try {
-              await ref
-                  .read(settingsControllerProvider.notifier)
-                  .setSubagentRouterModel(value);
-            } catch (error) {
-              if (context.mounted)
-                ScaffoldMessenger.of(
-                  context,
-                ).showSnackBar(SnackBar(content: Text('$error')));
-            }
-          },
         ),
         const SizedBox(height: 12),
         for (final role in roles)
@@ -114,10 +122,11 @@ class SubagentRolesEditor extends ConsumerWidget {
                             ),
                           ]);
                     } catch (error) {
-                      if (context.mounted)
-                        ScaffoldMessenger.of(
+                      if (context.mounted) {
+                        AppToastMessenger.of(
                           context,
                         ).showSnackBar(SnackBar(content: Text('$error')));
+                      }
                     }
                   },
           ),
@@ -199,19 +208,39 @@ class _RoleCardState extends State<_RoleCard> {
     margin: const EdgeInsets.only(bottom: 10),
     clipBehavior: Clip.antiAlias,
     child: ExpansionTile(
+      key: ValueKey('subagent-role-header-${widget.role.id}'),
+      dense: false,
+      minTileHeight: 0,
+      tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       initiallyExpanded: widget.role.name == '新角色',
       leading: Icon(
         _enabled ? Icons.hub_outlined : Icons.pause_circle_outline,
         size: 21,
       ),
-      title: Text('${widget.role.name}${_dirty ? ' · 未保存' : ''}'),
-      subtitle: Text(
-        widget.role.when.isEmpty ? '填写适用任务和指令' : widget.role.when,
-        maxLines: 2,
-        overflow: TextOverflow.ellipsis,
+      title: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '${widget.role.name}${_dirty ? ' · 未保存' : ''}',
+            key: ValueKey('subagent-role-title-${widget.role.id}'),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            widget.role.when.isEmpty ? '填写适用任务和指令' : widget.role.when,
+            key: ValueKey('subagent-role-description-${widget.role.id}'),
+            style:
+                ListTileTheme.of(context).subtitleTextStyle ??
+                Theme.of(context).textTheme.bodySmall,
+          ),
+        ],
       ),
       childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
       children: [
+        if (widget.role.source.isNotEmpty)
+          SelectableText(
+            'v${widget.role.version} · ${widget.role.source}\n所需工具：${widget.role.requiredTools.join(', ')}\n验收：${widget.role.validation.isEmpty ? '用户已修改，旧验收失效' : widget.role.validation}',
+          ),
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
           title: const Text('启用此角色'),
@@ -225,6 +254,7 @@ class _RoleCardState extends State<_RoleCard> {
           decoration: const InputDecoration(labelText: '名称'),
           onChanged: (_) => setState(() {}),
         ),
+        const SizedBox(height: 16),
         TextField(
           controller: _when,
           readOnly: _saving,
@@ -233,11 +263,12 @@ class _RoleCardState extends State<_RoleCard> {
           maxLength: 600,
           decoration: const InputDecoration(
             labelText: '何时选用',
+            alignLabelWithHint: true,
             hintText: '例如：检查实现缺陷、审计安全性、给出代码评审意见',
           ),
           onChanged: (_) => setState(() {}),
         ),
-        const SizedBox(height: 10),
+        const SizedBox(height: 16),
         DropdownButtonFormField<String>(
           initialValue: _model,
           isExpanded: true,

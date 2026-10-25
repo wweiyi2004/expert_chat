@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'package:flutter/material.dart';
 
 import 'package:uuid/uuid.dart';
@@ -41,7 +42,7 @@ class ChatSkillsEditor extends StatelessWidget {
                         item.id != skill.id && item.fallback && item.enabled,
                   );
                   if (!otherFallback) {
-                    ScaffoldMessenger.of(context).showSnackBar(
+                    AppToastMessenger.of(context).showSnackBar(
                       const SnackBar(content: Text('至少保留一个回退任务类型')),
                     );
                     return;
@@ -140,18 +141,35 @@ class _ChatSkillCardState extends State<_ChatSkillCard> {
   Widget build(BuildContext context) {
     final skill = widget.skill;
     return Card(
+      key: ValueKey('chat-skill-card-${skill.id}'),
       clipBehavior: Clip.antiAlias,
       child: ExpansionTile(
-        title: Text(skill.name.isEmpty ? '未命名' : skill.name),
-        subtitle: Text(
-          skill.when.isEmpty ? skill.prefix : skill.when,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
+        dense: false,
+        minTileHeight: 0,
+        tilePadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        title: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              skill.name.isEmpty ? '未命名' : skill.name,
+              key: ValueKey('chat-skill-title-${skill.id}'),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              skill.when.isEmpty ? skill.prefix : skill.when,
+              key: ValueKey('chat-skill-description-${skill.id}'),
+              style:
+                  ListTileTheme.of(context).subtitleTextStyle ??
+                  Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
         ),
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
             Switch.adaptive(
+              key: ValueKey('chat-skill-enabled-${skill.id}'),
               value: skill.enabled,
               onChanged: (value) => _emit(enabled: value),
             ),

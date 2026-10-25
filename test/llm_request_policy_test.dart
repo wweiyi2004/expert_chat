@@ -41,6 +41,32 @@ void main() {
     expect(selected.model, 'o1');
     expect(selected.capabilities.supportsTools, isFalse);
     expect(selected.baseUrl, other.baseUrl);
+    expect(
+      LlmRequestPolicy.selectModel(
+        selected: other,
+        reasonerModel: 'o1',
+        thinking: true,
+        selectedExplicitly: true,
+      ),
+      same(other),
+    );
+    expect(
+      LlmRequestPolicy.selectModel(
+        selected: other,
+        reasonerModel: 'unconfigured-alias',
+        thinking: true,
+      ),
+      same(other),
+    );
+    final grok = other.copyWith(model: 'grok-4.3');
+    expect(
+      LlmRequestPolicy.selectModel(
+        selected: grok,
+        reasonerModel: 'o1',
+        thinking: true,
+      ),
+      same(grok),
+    );
   });
 
   test(
@@ -60,39 +86,59 @@ void main() {
     },
   );
 
-  test('manual then saved choices precede the DeepSeek prose default', () {
-    ReasoningEffort effort({
-      LlmConfig config = deepseek,
-      bool saved = false,
-      bool prose = true,
-      bool work = false,
-      ReasoningEffort? manual,
-    }) => LlmRequestPolicy.selectEffort(
-      config: config,
-      savedEffort: ReasoningEffort.high,
-      hasSavedOverride: saved,
-      proseTask: prose,
-      workMode: work,
-      manualEffort: manual,
-    );
-    expect(effort(), ReasoningEffort.low);
-    expect(effort(saved: true), ReasoningEffort.high);
-    expect(
-      effort(saved: true, manual: ReasoningEffort.max),
-      ReasoningEffort.max,
-    );
-    expect(effort(prose: false), ReasoningEffort.high);
-    expect(effort(work: true), ReasoningEffort.high);
-    expect(
-      effort(
-        config: deepseek.copyWith(
-          baseUrl: 'https://example.com',
-          model: 'gpt-4o',
+  test(
+    'High default and explicit effort choices do not depend on task style',
+    () {
+      ReasoningEffort effort({
+        LlmConfig config = deepseek,
+        bool saved = false,
+        bool prose = true,
+        bool work = false,
+        ReasoningEffort? manual,
+        ReasoningEffort savedEffort = ReasoningEffort.high,
+      }) => LlmRequestPolicy.selectEffort(
+        config: config,
+        savedEffort: savedEffort,
+        hasSavedOverride: saved,
+        proseTask: prose,
+        workMode: work,
+        manualEffort: manual,
+      );
+      expect(effort(), ReasoningEffort.high);
+      expect(
+        effort(saved: true, savedEffort: ReasoningEffort.low),
+        ReasoningEffort.low,
+      );
+      expect(
+        effort(saved: true, savedEffort: ReasoningEffort.max),
+        ReasoningEffort.max,
+      );
+      expect(
+        effort(
+          saved: true,
+          savedEffort: ReasoningEffort.low,
+          manual: ReasoningEffort.high,
         ),
-      ),
-      ReasoningEffort.high,
-    );
-  });
+        ReasoningEffort.high,
+      );
+      expect(effort(saved: true), ReasoningEffort.high);
+      expect(
+        effort(saved: true, manual: ReasoningEffort.max),
+        ReasoningEffort.max,
+      );
+      expect(effort(prose: false), ReasoningEffort.high);
+      expect(effort(work: true), ReasoningEffort.high);
+      expect(
+        effort(
+          config: deepseek.copyWith(
+            baseUrl: 'https://example.com',
+            model: 'gpt-4o',
+          ),
+        ),
+        ReasoningEffort.high,
+      );
+    },
+  );
 
   LlmRoundRequest round({
     int index = 0,

@@ -1,3 +1,4 @@
+import 'package:expert_chat/state/session_policy.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
@@ -182,6 +183,10 @@ class _DesktopSettings extends _Settings {
   Future<SettingsState> build() async {
     final base = await super.build();
     return base.copyWith(
+      profiles: [
+        for (final p in base.profiles)
+          p.copyWith(models: [...p.models, KnownModels.vision]),
+      ],
       selectedModel: KnownModels.vision,
       gateway: base.gateway.copyWith(
         customMcpServers: const [
@@ -514,6 +519,12 @@ void main() {
       );
       addTearDown(container.dispose);
       await container.read(chatControllerProvider.future);
+      final controller = container.read(chatControllerProvider.notifier);
+      controller.setWorkMode(false);
+      final id = container.read(chatControllerProvider).requireValue.currentId!;
+      await container
+          .read(sessionPolicyProvider.notifier)
+          .save(id, const SessionPolicy(approval: WorkApprovalMode.full));
       return container;
     }
 
@@ -546,6 +557,16 @@ void main() {
             [
               ChatChunk(
                 toolCalls: [
+                  _call(
+                    'tool_registry_request',
+                    '{"tools":["get_window_state","click"]}',
+                  ),
+                ],
+              ),
+            ],
+            [
+              ChatChunk(
+                toolCalls: [
                   _call('get_window_state', '{"pid":123,"window_id":456}'),
                 ],
               ),
@@ -565,27 +586,33 @@ void main() {
         );
         final c = await setup(llm, settingsBuilder: _DesktopSettings.new);
         final ctrl = c.read(chatControllerProvider.notifier);
-        ctrl.newConversation();
+        ctrl.newConversation(workMode: false);
         ctrl.setWorkMode(true);
         ctrl.setCustomMcpServerIds(['desktop']);
+        await c
+            .read(sessionPolicyProvider.notifier)
+            .save(
+              c.read(chatControllerProvider).requireValue.currentId!,
+              const SessionPolicy(approval: WorkApprovalMode.full),
+            );
         await ctrl.sendMessage('在测试窗口完成操作');
         expect(client.requests.map((r) => r.name), [
           'get_window_state',
           'click',
         ]);
         expect(
-          llm.calls[1].where(
-            (m) => m.isToolImageObservation && m.hasImageParts,
-          ),
-          hasLength(1),
-        );
-        expect(
           llm.calls[2].where(
             (m) => m.isToolImageObservation && m.hasImageParts,
           ),
           hasLength(1),
         );
-        expect(llm.calls[2].any((m) => m.content.contains('旧截图已移出')), isTrue);
+        expect(
+          llm.calls[3].where(
+            (m) => m.isToolImageObservation && m.hasImageParts,
+          ),
+          hasLength(1),
+        );
+        expect(llm.calls[3].any((m) => m.content.contains('旧截图已移出')), isTrue);
         expect(
           c
               .read(chatControllerProvider)
@@ -599,21 +626,45 @@ void main() {
       },
     );
 
-    test('ordinary chat does not expose desktop tools', () async {
-      final llm = FakeLlmProvider([const ChatChunk(contentDelta: '你好')]);
-      final c = await setup(llm, settingsBuilder: _DesktopSettings.new);
-      final ctrl = c.read(chatControllerProvider.notifier);
-      ctrl.newConversation();
-      ctrl.setCustomMcpServerIds(['desktop']);
-      await ctrl.sendMessage('你好');
-      expect(client.requests, isEmpty);
-      expect(
-        llm.toolCalls
-            .expand((tools) => tools ?? <ToolSpec>[])
-            .any((t) => t.name == 'click'),
-        isFalse,
-      );
-    });
+    test(
+      'ordinary chat does not implicitly expose unselected desktop tools',
+      () async {
+        final llm = FakeLlmProvider([const ChatChunk(contentDelta: '你好')]);
+        final c = await setup(llm, settingsBuilder: _DesktopSettings.new);
+        final ctrl = c.read(chatControllerProvider.notifier);
+        ctrl.newConversation(workMode: false);
+        await ctrl.sendMessage('你好');
+        expect(client.requests, isEmpty);
+        expect(
+          llm.toolCalls
+              .expand((tools) => tools ?? <ToolSpec>[])
+              .any((t) => t.name == 'click'),
+          isFalse,
+        );
+      },
+    );
+
+    test(
+      'ordinary chat explicitly selected desktop MCP uses normal permission admission',
+      () async {
+        final llm = llmFor(
+          _call('get_window_state', '{"pid":123,"window_id":456}'),
+        );
+        final c = await setup(llm, settingsBuilder: _DesktopSettings.new);
+        final ctrl = c.read(chatControllerProvider.notifier);
+        ctrl.setCustomMcpServerIds(['desktop']);
+        await ctrl.sendMessage('观察已授权测试窗口');
+        expect(
+          c.read(chatControllerProvider).requireValue.current!.workMode,
+          isFalse,
+        );
+        expect(
+          llm.toolCalls.first!.any((t) => t.name == 'get_window_state'),
+          isTrue,
+        );
+        expect(client.requests.single.name, 'get_window_state');
+      },
+    );
 
     test(
       'failed document steps retain diagnostics and cannot be replayed by retry',
@@ -669,9 +720,9 @@ void main() {
               .read(chatControllerProvider)
               .requireValue
               .currentId;
-          ctrl.newConversation();
+          ctrl.newConversation(workMode: false);
           final nextId = c.read(chatControllerProvider).requireValue.currentId;
-          if (stop) ctrl.stop();
+          if (stop) ctrl.stop(conversationId: originId);
           released.complete();
           await sending;
           final state = c.read(chatControllerProvider).requireValue;

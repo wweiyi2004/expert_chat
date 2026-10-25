@@ -6,12 +6,17 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:path/path.dart' as p;
 import 'package:uuid/uuid.dart';
 import 'research_files.dart';
+import 'research_safe_save.dart';
 
 /// Each operation captures the authenticated connection and owns its SFTP
 /// channel. File errors never tear down the interactive terminal.
-class SshResearchFiles implements ResearchFiles, ResearchBinaryFiles {
+class SshResearchFiles
+    implements ResearchFiles, ResearchBinaryFiles, ResearchRecoveryFiles {
   SshResearchFiles(this.client);
   final SSHClient client;
+  final _recoveryPaths = <String, String>{};
+  @override
+  String? recoveryPathFor(String path) => _recoveryPaths[path];
   static const _timeout = Duration(seconds: 30);
   static const maxTextBytes = 1024 * 1024;
   static final _downloadTargets = <String>{};
@@ -93,8 +98,9 @@ class SshResearchFiles implements ResearchFiles, ResearchBinaryFiles {
       _withSftp((s) async {
         final attributes = await s.stat(path).timeout(_timeout);
         if (attributes.isDirectory ||
-            (attributes.size ?? maxBytes + 1) > maxBytes)
+            (attributes.size ?? maxBytes + 1) > maxBytes) {
           throw StateError('图片预览最多支持 8 MiB');
+        }
         final file = await s.open(path).timeout(_timeout);
         try {
           final bytes = await file
@@ -115,6 +121,11 @@ class SshResearchFiles implements ResearchFiles, ResearchBinaryFiles {
     String content, {
     required String original,
   }) => _withSftp((s) async {
+    // This operation owns its SFTP channel. dartssh2 exposes the negotiated
+    // extension map and consults it on every rename. Disable its automatic
+    // clobbering extension on this private channel to force SFTP v3 RENAME.
+    final handshake = await s.handshake.timeout(_timeout);
+    disableClobberingSftpRename(handshake.extensions);
     final data = Uint8List.fromList(utf8.encode(content));
     if (data.length > maxTextBytes) throw StateError('文本超过 1 MB');
     if (await _read(s, path) != original) {
@@ -144,8 +155,16 @@ class SshResearchFiles implements ResearchFiles, ResearchBinaryFiles {
             .setStat(temp, SftpFileAttrs(mode: attrs.mode))
             .timeout(_timeout);
       }
-      if (await _read(s, path) != original) throw StateError('远端文件已变化，未覆盖');
-      await s.rename(temp, path).timeout(_timeout);
+      final recovery = '$path.expert-chat-recovery-${const Uuid().v4()}';
+      _recoveryPaths[path] = await publishSftpRecovery(
+        path: path,
+        staged: temp,
+        recovery: recovery,
+        original: original,
+        read: (value) => _read(s, value),
+        rename: (source, destination) =>
+            s.rename(source, destination).timeout(_timeout),
+      );
       created = false;
     } finally {
       if (created) {

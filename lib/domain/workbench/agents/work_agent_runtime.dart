@@ -1,3 +1,5 @@
+import '../../chat/request_transport_adaptation.dart';
+import '../changes/review_path_identity.dart';
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
@@ -6,6 +8,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
 import '../../../data/models.dart';
+import '../../../data/work_runtime_log.dart';
 import '../../../data/subagent_role.dart';
 import 'agent_instructions.dart';
 import '../../context/context_window_manager.dart';
@@ -67,6 +70,23 @@ typedef WorkAgentModelResolver =
 
 /// Immutable capabilities captured from the owning session. Descendants cannot
 /// replace its executor, workspace, permission checks or model-service resolver.
+class WorkAgentIsolation {
+  const WorkAgentIsolation(
+    this.target,
+    this.artifactPrefix, {
+    this.recoveryMetadata = const {},
+  });
+  final Map<String, dynamic> recoveryMetadata;
+  final String target, artifactPrefix;
+}
+
+class WorkAgentRoleTrial {
+  const WorkAgentRoleTrial(this.candidateId, this.version, this.role);
+  final String candidateId;
+  final int version;
+  final SubagentRole role;
+}
+
 class WorkAgentEnvironment {
   const WorkAgentEnvironment({
     required this.provider,
@@ -84,7 +104,32 @@ class WorkAgentEnvironment {
     this.roles = const [],
     this.selectRole,
     this.onRuntimeLog,
+    this.takeToolObservations,
+    this.resolveRoleTrial,
+    this.onRoleTrialCompleted,
+    this.prepareIsolation,
+    this.restoreIsolation,
+    this.prepareTools,
+    this.beforeRound,
+    this.takeTaskTool,
+    this.takeTaskSearch,
+    this.onChildExecution,
   });
+  final List<LlmRequestMessage> Function(String agentId, String callId)?
+  takeToolObservations;
+  final Future<void> Function(WorkAgentRecord record)? beforeRound;
+  final bool Function()? takeTaskTool;
+  final bool Function()? takeTaskSearch;
+  final void Function(bool active)? onChildExecution;
+  final List<ToolSpec> Function(List<ToolSpec> catalog, String agentId)?
+  prepareTools;
+  final Future<WorkAgentIsolation> Function(WorkAgentRecord record)?
+  prepareIsolation;
+  final Future<WorkAgentIsolation> Function(WorkAgentRecord record)?
+  restoreIsolation;
+  final WorkAgentRoleTrial Function(String candidateId)? resolveRoleTrial;
+  final void Function(WorkAgentRecord record, WorkAgentRoleTrial trial)?
+  onRoleTrialCompleted;
   final LlmProvider provider;
   final LlmConfig config;
   final List<ToolSpec> tools;
@@ -144,6 +189,12 @@ class WorkAgentRecord {
   WorkAgentStatus status = WorkAgentStatus.queued;
   String model = 'Auto', output = '', activity = '排队中';
   final List<String> logs = [], files = [];
+  String auxiliaryActivity = '';
+  bool isolated = false;
+  WorkAgentIsolation? isolation;
+  WorkAgentRoleTrial? roleTrial;
+  List<String> ownedPaths = const [];
+  bool readOnly = false;
   final List<LlmRequestMessage> context = [];
   final Queue<String> mailbox = Queue();
   int childrenCreated = 0,
@@ -154,6 +205,7 @@ class WorkAgentRecord {
   double? cost;
   String? currency;
   bool restored = false;
+  bool resumeRequiresReconciliation = false;
   CancelToken token = CancelToken();
   LlmConfig? resolvedConfig;
   SubagentRole? role;
@@ -182,6 +234,15 @@ class WorkAgentRecord {
     ),
     'rounds': rounds,
     'context_tokens': contextTokens,
+    'owned_paths': ownedPaths,
+    'auxiliary_activity': auxiliaryActivity,
+    'read_only': readOnly,
+    'isolated': isolated,
+    if (isolation != null) 'isolation_target': isolation!.target,
+    if (isolation != null) 'artifact_prefix': isolation!.artifactPrefix,
+    if (isolation != null) 'isolation_recovery': isolation!.recoveryMetadata,
+    if (roleTrial != null) 'candidate_id': roleTrial!.candidateId,
+    if (roleTrial != null) 'candidate_version': roleTrial!.version,
     'input_tokens': inputTokens,
     'output_tokens': outputTokens,
     'files': files,
@@ -208,9 +269,77 @@ class WorkAgentEvent {
 /// Cooperative scheduler: waiting parents release a slot so a full queue cannot
 /// deadlock recursive work. Every child uses a separate model transcript.
 class WorkAgentRuntime extends ChangeNotifier {
+  WorkAgentRuntime({this.persistJournal});
+  final Future<void> Function(List<Map<String, dynamic>> rows)? persistJournal;
+  Future<void> _pendingPersistence = Future.value();
+  Object? persistenceError;
+  Future<void> flushJournal() {
+    final snapshot = journal();
+    final operation = _pendingPersistence.catchError((Object _) {}).then((
+      _,
+    ) async {
+      try {
+        await persistJournal?.call(snapshot);
+        persistenceError = null;
+      } catch (error) {
+        persistenceError = error;
+        rethrow;
+      }
+    });
+    _pendingPersistence = operation;
+    return operation;
+  }
+
+  Future<void> activateRestoredRoot({
+    required String rootId,
+    required WorkAgentEnvironment environment,
+    required Future<void> Function(WorkAgentRecord record) validate,
+  }) async {
+    final root = _require(rootId);
+    if (!root.external || !root.restored) throw StateError('根任务不是待恢复状态');
+    await validate(root);
+    root.environment = environment;
+    root.restored = false;
+    root.token = CancelToken();
+    root.status = WorkAgentStatus.waiting;
+    root.activity = '用户已重新核验根任务；历史子任务等待分别恢复';
+    try {
+      await flushJournal();
+    } catch (_) {
+      root.restored = true;
+      rethrow;
+    }
+    _notify();
+  }
+
+  Future<void> resumeRestoredChildUsingRoot({
+    required String agentId,
+    required String rootId,
+    required String reconciliation,
+    required Future<void> Function(WorkAgentRecord record) validate,
+  }) async {
+    final child = _require(agentId), root = _require(rootId);
+    if (!root.external ||
+        root.restored ||
+        root.token.isCancelled ||
+        _rootId(child) != rootId ||
+        child.conversationId != root.conversationId ||
+        child.taskId != root.taskId) {
+      throw StateError('请先显式恢复原根任务及其工作区授权');
+    }
+    await resumeRestoredChild(
+      agentId: agentId,
+      environment: root.environment,
+      reconciliation: reconciliation,
+      validate: validate,
+    );
+  }
+
   final Map<String, WorkAgentRecord> _records = {};
   final Queue<String> _queue = Queue();
   final Set<String> _running = {};
+  final Set<String> _modelActive = {};
+  final Map<String, Completer<void>> _modelWaiters = {};
   final Set<String> _rootActive = {};
   final Map<String, Completer<void>> _rootWaiters = {};
   final Map<String, LlmUsage?> _rootUsage = {};
@@ -284,7 +413,9 @@ class WorkAgentRuntime extends ChangeNotifier {
             parameters: {
               'type': 'object',
               'properties': {
-                'task': {'type': 'string'},
+                ...Map<String, dynamic>.from(
+                  tool.parameters['properties'] as Map,
+                ),
                 'model': {
                   'type': 'string',
                   'enum': [
@@ -300,6 +431,41 @@ class WorkAgentRuntime extends ChangeNotifier {
         else
           tool,
     ];
+  }
+
+  void setBoundaryPaused(String id, bool paused) {
+    final record = _require(id);
+    if (record.terminal) return;
+    record.status = paused ? WorkAgentStatus.waiting : WorkAgentStatus.running;
+    record.activity = paused ? '已在完整轮次边界暂停；等待用户继续' : '继续模型执行';
+    _notify();
+  }
+
+  String rootIdFor(String id) => _rootId(_require(id));
+  void restoreRootIdleStatus(
+    String id,
+    WorkAgentStatus previous,
+    String activity,
+  ) {
+    if (_disposed) return;
+    final record = _records[id];
+    if (record == null ||
+        !record.external ||
+        record.token.isCancelled ||
+        _rootActive.contains(id) ||
+        _rootWaiters.containsKey(id)) {
+      return;
+    }
+    if ({
+          WorkAgentStatus.completed,
+          WorkAgentStatus.failed,
+          WorkAgentStatus.interrupted,
+        }.contains(previous) &&
+        record.status == WorkAgentStatus.waiting) {
+      record.status = previous;
+      record.activity = activity;
+      _notify();
+    }
   }
 
   void recordRootRequest(
@@ -374,7 +540,12 @@ class WorkAgentRuntime extends ChangeNotifier {
   /// Roots and descendants share the same scheduler. Call before each external
   /// root model request, then release in finally; waiting/tool phases hold no
   /// model slot. Each independent root has its own concurrency budget.
-  Future<void> acquireRootSlot(String rootId, CancelToken token) async {
+  final _auxiliaryRoots = <String>{};
+  Future<void> acquireRootSlot(
+    String rootId,
+    CancelToken token, {
+    bool auxiliary = false,
+  }) async {
     final root = _require(rootId);
     if (!root.external || root.restored) throw StateError('不是当前根任务');
     if (token.isCancelled) throw token.cancelError!;
@@ -383,8 +554,13 @@ class WorkAgentRuntime extends ChangeNotifier {
     if (existing != null) return existing.future;
     final ready = Completer<void>();
     _rootWaiters[rootId] = ready;
-    root.status = WorkAgentStatus.queued;
-    root.activity = '等待本任务模型执行名额';
+    if (auxiliary) {
+      _auxiliaryRoots.add(rootId);
+      root.auxiliaryActivity = '等待辅助验收模型名额';
+    } else {
+      root.status = WorkAgentStatus.queued;
+      root.activity = '等待本任务模型执行名额';
+    }
     _queue.add(rootId);
     _notify();
     _drain();
@@ -407,7 +583,9 @@ class WorkAgentRuntime extends ChangeNotifier {
   void releaseRootSlot(String rootId) {
     if (!_rootActive.remove(rootId)) return;
     final r = _records[rootId];
-    if (r != null && !r.terminal) {
+    final auxiliary = _auxiliaryRoots.remove(rootId);
+    if (r != null) r.auxiliaryActivity = '';
+    if (r != null && !r.terminal && !auxiliary) {
       r.status = WorkAgentStatus.waiting;
       r.activity = '主会话工具 / 等待事件';
     }
@@ -421,21 +599,161 @@ class WorkAgentRuntime extends ChangeNotifier {
     root.environment = environment;
   }
 
+  bool _isAncestor(String possible, String childId) {
+    var parent = _records[childId]?.parentId;
+    while (parent != null) {
+      if (parent == possible) return true;
+      parent = _records[parent]?.parentId;
+    }
+    return false;
+  }
+
+  WorkAgentIsolation? inheritedIsolation(String id) {
+    var current = _records[id];
+    while (current != null) {
+      if (current.isolation != null) return current.isolation;
+      current = current.parentId == null ? null : _records[current.parentId];
+    }
+    return null;
+  }
+
+  String _ownedPath(String value) {
+    final normalized = value
+        .replaceAll(r'\', '/')
+        .replaceAll(RegExp(r'/+$'), '')
+        .toLowerCase();
+    if (normalized.isEmpty ||
+        normalized.startsWith('/') ||
+        normalized.contains(':') ||
+        normalized.split('/').any((p) => p == '..' || p == '.')) {
+      throw const FormatException('职责路径必须是规范的工作区相对路径');
+    }
+    return normalized;
+  }
+
+  bool _pathsOverlap(String a, String b) =>
+      a == b || a.startsWith('$b/') || b.startsWith('$a/');
+  void authorizeScopedFileWrite(
+    String agentId,
+    String target,
+    String scope,
+    String path,
+  ) {
+    final agent = _require(agentId);
+    if (!agent.external && scope != 'root') {
+      throw StateError('共享子代理职责仅适用于 root scope，不能通过别名目录扩大文件职责');
+    }
+    if (!agent.external) {
+      authorizeFileWrite(agentId, path);
+      return;
+    }
+    final location = reviewPhysicalPath(target, scope, path);
+    if (location == null) {
+      if (scope == 'root') {
+        authorizeFileWrite(agentId, path);
+      } else {
+        throw StateError('无法核验原目录映射的文件职责');
+      }
+      return;
+    }
+    if (location.rootRelative != null) {
+      authorizeFileWrite(agentId, location.rootRelative!);
+    }
+  }
+
+  void authorizeFileWrite(String agentId, String path) {
+    final agent = _require(agentId);
+    final normalized = _ownedPath(path);
+    if (agent.readOnly) throw StateError('当前子代理为只读职责，不可修改文件');
+    if (agent.isolated) return;
+    if (!agent.external &&
+        (agent.ownedPaths.isEmpty ||
+            !agent.ownedPaths.any(
+              (p) => normalized == p || normalized.startsWith('$p/'),
+            ))) {
+      throw StateError('文件不在子代理声明职责中：$path');
+    }
+    for (final other in _records.values.where(
+      (r) =>
+          r.id != agentId &&
+          !r.isolated &&
+          !_isAncestor(r.id, agentId) &&
+          !r.terminal &&
+          r.conversationId == agent.conversationId,
+    )) {
+      if (other.ownedPaths.any((p) => _pathsOverlap(p, normalized))) {
+        throw StateError('文件由代理 ${other.id} 负责，集成前请等待其完成：$path');
+      }
+    }
+  }
+
   String spawn({
     required String parentId,
     required String task,
     String? model,
+    String? candidateId,
+    List<String> ownedPaths = const [],
+    bool readOnly = false,
+    bool isolated = false,
+    bool requireOwnership = false,
   }) {
     final parent = _require(parentId);
+    if (_require(_rootId(parent)).token.isCancelled) {
+      throw StateError('根任务已停止，请在会话新建工作，不复用已取消的任务谱系');
+    }
+    if (isolated && readOnly) {
+      throw StateError('隔离写入任务须明确 read_only=false；只读任务不创建工作树');
+    }
+    if (parent.readOnly && !readOnly) throw StateError('只读子代理不能创建可写后代');
+    final normalized = ownedPaths.map(_ownedPath).toSet().toList();
+    if (ownedPaths.length > 64) throw const FormatException('文件职责最多 64 项');
+    if (requireOwnership && !readOnly && !isolated && normalized.isEmpty) {
+      throw const FormatException('共享写入任务须声明 owned_paths，或请求 isolated=true');
+    }
+    if (!parent.external &&
+        !parent.isolated &&
+        !readOnly &&
+        !isolated &&
+        parent.ownedPaths.isNotEmpty &&
+        normalized.any(
+          (path) => !parent.ownedPaths.any(
+            (p) => path == p || path.startsWith('$p/'),
+          ),
+        )) {
+      throw StateError('后代文件职责不能超过父代理职责');
+    }
+    if (normalized.isNotEmpty && !readOnly && !isolated) {
+      for (final existing in _records.values.where(
+        (r) => !r.terminal && r.conversationId == parent.conversationId,
+      )) {
+        if (existing.id == parentId ||
+            _isAncestor(existing.id, parentId) ||
+            existing.isolated) {
+          continue;
+        }
+        for (final path in normalized) {
+          if (existing.ownedPaths.any((claim) => _pathsOverlap(path, claim))) {
+            throw StateError('文件职责与代理 ${existing.id} 冲突：$path');
+          }
+        }
+      }
+    }
+    final trial = candidateId == null
+        ? null
+        : parent.environment.resolveRoleTrial?.call(candidateId);
+    if (candidateId != null && trial == null) throw StateError('候选角色不可用');
     if (parent.restored) throw StateError('历史代理已中断，请在新回合创建任务');
     if (parent.status == WorkAgentStatus.cancelled) throw StateError('父任务已取消');
     if (task.trim().isEmpty) throw const FormatException('子任务不能为空');
-    if (parent.depth >= parent.limits.maxDepth)
+    if (parent.depth >= parent.limits.maxDepth) {
       throw StateError('已达到最大递归深度 ${parent.limits.maxDepth}（根为 0）');
-    if (parent.childrenCreated >= parent.limits.maxChildren)
+    }
+    if (parent.childrenCreated >= parent.limits.maxChildren) {
       throw StateError('已达到直属子任务累计上限 ${parent.limits.maxChildren}');
+    }
     final requestedModel = model?.trim() ?? '';
-    if (parent.environment.selectRole != null &&
+    if (trial == null &&
+        parent.environment.selectRole != null &&
         !parent.environment.roles.any(
           (r) =>
               r.enabled &&
@@ -447,7 +765,7 @@ class WorkAgentRuntime extends ChangeNotifier {
       throw StateError('没有启用且模型可用的子代理角色，请在设置中配置角色库');
     }
     final pool = parent.environment.allowedModels;
-    if (pool.isEmpty) throw StateError('子代理模型池为空，请用户在子代理设置中加入模型');
+    if (pool.isEmpty) throw StateError('子代理模型池为空，请在设置 → 助手与技能 → 子代理可用模型中加入模型');
     if (requestedModel.isNotEmpty &&
         requestedModel.toLowerCase() != 'auto' &&
         !pool.any((m) => m.model == requestedModel)) {
@@ -472,6 +790,16 @@ class WorkAgentRuntime extends ChangeNotifier {
                   requestedModel.toLowerCase() != 'auto'
               ? requestedModel
               : 'Auto';
+    child
+      ..isolated = isolated
+      ..roleTrial = trial
+      ..ownedPaths = normalized
+      ..readOnly = readOnly;
+    if (trial != null) {
+      child.role = trial.role;
+      child.roleReason = '候选角色试用 v${trial.version}';
+      if (trial.role.model.isNotEmpty) child.model = trial.role.model;
+    }
     parent.childrenCreated++;
     _records[id] = child;
     child.context.addAll([
@@ -490,6 +818,9 @@ class WorkAgentRuntime extends ChangeNotifier {
 
   void followup(String id, String text) {
     final r = _require(id);
+    if (_require(_rootId(r)).token.isCancelled) {
+      throw StateError('根任务已停止，请在会话新建工作；保留当前输入');
+    }
     if (r.restored) throw StateError('历史代理上下文未恢复，请创建新任务');
     if (r.status == WorkAgentStatus.cancelled) throw StateError('代理已取消，请创建新任务');
     if (text.trim().isEmpty) return;
@@ -512,17 +843,47 @@ class WorkAgentRuntime extends ChangeNotifier {
 
   void _cancel(String id, {required bool subtree, required bool report}) {
     final r = _require(id);
-    if (r.status == WorkAgentStatus.cancelled ||
-        (r.terminal && !_childrenActive(id)))
+    final auxiliaryOnly =
+        r.external &&
+        r.terminal &&
+        !_childrenActive(id) &&
+        (_auxiliaryRoots.contains(id) || _rootWaiters.containsKey(id));
+    if (auxiliaryOnly) {
+      r.token.cancel('辅助验收已停止');
+      r.auxiliaryActivity = '';
+      _auxiliaryRoots.remove(id);
+      _rootActive.remove(id);
+      final waiter = _rootWaiters.remove(id);
+      if (waiter != null && !waiter.isCompleted) {
+        waiter.completeError(StateError('辅助验收已停止'));
+      }
+      _queue.removeWhere((queued) => queued == id);
+      r.environment.onCancelRoot?.call();
+      _notify();
+      _drain();
       return;
+    }
+    if (r.external && r.terminal && !_childrenActive(id) && !auxiliaryOnly) {
+      r.token.cancel('已关闭已完成任务的后续辅助请求');
+      r.environment.onCancelRoot?.call();
+      _notify();
+      return;
+    }
+    if (r.status == WorkAgentStatus.cancelled ||
+        (r.terminal && !_childrenActive(id))) {
+      return;
+    }
     r.status = WorkAgentStatus.cancelled;
     r.activity = '已取消';
     r.token.cancel('代理已取消');
     if (r.external) r.environment.onCancelRoot?.call();
     _rootActive.remove(id);
+    _auxiliaryRoots.remove(id);
+    r.auxiliaryActivity = '';
     final waiting = _rootWaiters.remove(id);
-    if (waiting != null && !waiting.isCompleted)
+    if (waiting != null && !waiting.isCompleted) {
       waiting.completeError(StateError('根任务已取消'));
+    }
     _queue.removeWhere((v) => v == id);
     if (subtree) {
       for (final c in _records.values.where((c) => c.parentId == id).toList()) {
@@ -548,20 +909,105 @@ class WorkAgentRuntime extends ChangeNotifier {
           'taskId': r.taskId,
           'external': r.external,
           'limits': r.limits.toJson(),
-          'output': r.output.length > 8000
-              ? r.output.substring(r.output.length - 8000)
-              : r.output,
-          'logs': r.logs.reversed
-              .take(12)
-              .map(
-                (line) => line.length > 2000 ? line.substring(0, 2000) : line,
-              )
-              .toList()
-              .reversed
-              .toList(),
+          'task': _journalText(r, r.task),
+          'role_reason': _journalText(r, r.roleReason),
+          'activity': _journalText(r, r.activity),
+          'output': _journalText(r, r.output),
+          'resume_reconciliation':
+              r.resumeRequiresReconciliation ||
+              !r.terminal ||
+              r.context.any((m) => m.toolCalls.isNotEmpty),
+          'transcript': [
+            for (final m
+                in r.context
+                    .where((m) => m.role != MessageRole.system)
+                    .toList()
+                    .reversed
+                    .take(80)
+                    .toList()
+                    .reversed)
+              {
+                'role': m.role.name,
+                // Tool bodies, arguments, hidden reasoning and native provider
+                // payloads are not durable recovery material.
+                'content': m.role == MessageRole.tool
+                    ? '[工具结果未持久化；恢复前核验真实文件与外部副作用]'
+                    : _journalText(r, m.content),
+                if (m.toolCalls.isNotEmpty)
+                  'tool_names': m.toolCalls.map((c) => c.name).toList(),
+              },
+          ],
+          'mailbox': r.mailbox.map((v) => _journalText(r, v)).toList(),
+          'logs': <String>[],
         },
       )
       .toList();
+
+  String _journalText(WorkAgentRecord r, String text) => sanitizeRuntimeLogText(
+    text,
+    secrets: [r.environment.config.apiKey, r.resolvedConfig?.apiKey ?? ''],
+  );
+
+  /// Explicit user recovery only. The host must re-open the original workspace,
+  /// check current parent grants/identity and inspect uncertain side effects.
+  /// Validation runs before the old record gains an executor; no autoplay.
+  Future<void> resumeRestoredChild({
+    required String agentId,
+    required WorkAgentEnvironment environment,
+    required String reconciliation,
+    required Future<void> Function(WorkAgentRecord record) validate,
+  }) async {
+    final r = _require(agentId);
+    if (!r.restored || r.external) throw StateError('仅可显式恢复历史子代理');
+    if (r.context.isEmpty) throw StateError('缺少恢复上下文，请创建新任务');
+    if (reconciliation.trim().isEmpty) {
+      throw StateError('必须核验工作区、父权限与未知副作用并提供恢复说明');
+    }
+    if (environment.allowedModels.isEmpty ||
+        (r.model != 'Auto' &&
+            !environment.allowedModels.any((m) => m.model == r.model))) {
+      throw StateError('历史模型不在当前授权模型池内');
+    }
+    final roleId = r.role?.id;
+    final currentRole = roleId == null
+        ? null
+        : environment.roles
+              .where((v) => v.id == roleId && v.enabled)
+              .firstOrNull;
+    if (roleId != null && currentRole == null) throw StateError('历史角色已移除或禁用');
+    await validate(r);
+    WorkAgentIsolation? restoredIsolation;
+    if (r.isolated && (r.isolation != null || r.rounds > 0)) {
+      final restore = environment.restoreIsolation;
+      if (restore == null ||
+          r.isolation == null ||
+          r.isolation!.recoveryMetadata.isEmpty) {
+        throw StateError('历史隔离元数据缺失或宿主不支持核验，不能恢复执行');
+      }
+      restoredIsolation = await restore(r);
+    }
+    if (_disposed || !r.restored) throw StateError('恢复状态已改变');
+    r.environment = environment;
+    r.role = currentRole;
+    if (restoredIsolation != null) r.isolation = restoredIsolation;
+    r.restored = false;
+    r.resumeRequiresReconciliation = false;
+    r.token = CancelToken();
+    r.context.insert(
+      0,
+      LlmRequestMessage(
+        role: MessageRole.system,
+        content: environment.guidance,
+      ),
+    );
+    try {
+      await flushJournal();
+    } catch (_) {
+      r.restored = true;
+      rethrow;
+    }
+    followup(r.id, '用户显式恢复。旧工具结果与原生推理未重放；先核验当前状态，避免重复外部副作用。\n$reconciliation');
+  }
 
   void restoreJournal(List<Map<String, dynamic>> rows) {
     for (final j in rows.reversed) {
@@ -608,16 +1054,44 @@ class WorkAgentRuntime extends ChangeNotifier {
               ..contextTokens = (j['context_tokens'] as num?)?.toInt() ?? 0
               ..inputTokens = (j['input_tokens'] as num?)?.toInt() ?? 0
               ..outputTokens = (j['output_tokens'] as num?)?.toInt() ?? 0;
+        r.isolated = j['isolated'] == true;
+        if (j['isolation_target'] is String && j['artifact_prefix'] is String) {
+          r.isolation = WorkAgentIsolation(
+            j['isolation_target'] as String,
+            j['artifact_prefix'] as String,
+            recoveryMetadata: Map<String, dynamic>.from(
+              j['isolation_recovery'] as Map? ?? {},
+            ),
+          );
+        }
+        r.readOnly = j['read_only'] == true;
+        r.ownedPaths = (j['owned_paths'] as List? ?? []).cast<String>();
+        r.resumeRequiresReconciliation = j['resume_reconciliation'] != false;
+        for (final item in j['transcript'] as List? ?? []) {
+          if (item is! Map || item['content'] is! String) continue;
+          // Recovery uses a visible transcript, never incomplete native tool
+          // frames that could cause accidental replay after a crash.
+          r.context.add(
+            LlmRequestMessage(
+              role: MessageRole.user,
+              content:
+                  '[历史 ${item['role']}] ${item['content']}'
+                  '${item['tool_names'] == null ? '' : " [曾请求工具：${item['tool_names']}]"}',
+            ),
+          );
+        }
         r.cost = (j['cost'] as num?)?.toDouble();
-        if (j['role_id'] is String)
+        if (j['role_id'] is String) {
           r.role = SubagentRole(
             id: j['role_id'] as String,
             name: j['role_name'] as String? ?? '',
             when: '',
             instructions: '',
           );
+        }
         r.roleReason = j['role_reason'] as String? ?? '';
         r.currency = j['currency'] as String?;
+        r.mailbox.addAll((j['mailbox'] as List? ?? []).cast<String>());
         r.files.addAll((j['files'] as List? ?? []).cast<String>());
         r.logs.addAll((j['logs'] as List? ?? []).cast<String>());
         _records[r.id] = r;
@@ -678,7 +1152,7 @@ class WorkAgentRuntime extends ChangeNotifier {
   }
 
   void _log(WorkAgentRecord r, String text) {
-    r.logs.add(text.length > 12000 ? text.substring(0, 12000) : text);
+    r.logs.add(_journalText(r, text));
     if (r.logs.length > 120) r.logs.removeAt(0);
   }
 
@@ -692,18 +1166,34 @@ class WorkAgentRuntime extends ChangeNotifier {
       final r = _records[id];
       if (r == null ||
           r.status == WorkAgentStatus.cancelled ||
-          _running.contains(id))
+          (_running.contains(id) && !_modelWaiters.containsKey(id))) {
         continue;
-      if (_runningForRoot(_rootId(r)) >= r.limits.maxConcurrent.clamp(1, 16)) {
+      }
+      if ((r.external || _modelWaiters.containsKey(id)) &&
+          _runningForRoot(_rootId(r)) >= r.limits.maxConcurrent.clamp(1, 16)) {
         _queue.addLast(id);
+        continue;
+      }
+      final modelReady = _modelWaiters.remove(id);
+      if (modelReady != null) {
+        if (!modelReady.isCompleted && !r.token.isCancelled) {
+          _modelActive.add(id);
+          r.status = WorkAgentStatus.running;
+          r.environment.onChildExecution?.call(true);
+          modelReady.complete();
+        }
         continue;
       }
       if (r.external) {
         final ready = _rootWaiters.remove(id);
         if (ready == null || ready.isCompleted) continue;
         _rootActive.add(id);
-        r.status = WorkAgentStatus.running;
-        r.activity = '主模型执行中';
+        if (_auxiliaryRoots.contains(id)) {
+          r.auxiliaryActivity = '辅助模型验收中';
+        } else {
+          r.status = WorkAgentStatus.running;
+          r.activity = '主模型执行中';
+        }
         ready.complete();
         _notify();
         continue;
@@ -734,9 +1224,37 @@ class WorkAgentRuntime extends ChangeNotifier {
     return current.id;
   }
 
-  int _runningForRoot(String rootId) => [..._running, ..._rootActive]
+  int _runningForRoot(String rootId) => [..._modelActive, ..._rootActive]
       .where((id) => _records[id] != null && _rootId(_records[id]!) == rootId)
       .length;
+
+  Future<void> _acquireModelSlot(WorkAgentRecord r) async {
+    if (r.token.isCancelled) throw r.token.cancelError!;
+    final ready = Completer<void>();
+    r.status = WorkAgentStatus.queued;
+    _modelWaiters[r.id] = ready;
+    _queue.add(r.id);
+    _drain();
+    try {
+      await Future.any([
+        ready.future,
+        r.token.whenCancel.then<void>((_) => throw r.token.cancelError!),
+      ]);
+      if (r.token.isCancelled) throw r.token.cancelError!;
+    } catch (_) {
+      _modelWaiters.remove(r.id);
+      _queue.removeWhere((id) => id == r.id);
+      _releaseModelSlot(r.id);
+      rethrow;
+    }
+  }
+
+  void _releaseModelSlot(String id) {
+    if (_modelActive.remove(id)) {
+      _records[id]?.environment.onChildExecution?.call(false);
+    }
+    _drain();
+  }
 
   Future<void> _run(WorkAgentRecord r) async {
     Stopwatch? requestElapsed;
@@ -744,19 +1262,47 @@ class WorkAgentRuntime extends ChangeNotifier {
     r.activity = '选择模型';
     _notify();
     try {
+      await flushJournal();
+      await r.environment.beforeRound?.call(r);
+      if (r.token.isCancelled) return;
+      if (r.isolated && r.isolation == null) {
+        final prepare = r.environment.prepareIsolation;
+        if (prepare == null) throw StateError('当前宿主不支持独立工作树');
+        r.activity = '准备隔离工作树';
+        _notify();
+        await flushJournal();
+        r.isolation = await prepare(r);
+        await flushJournal();
+        r.context.insert(
+          0,
+          LlmRequestMessage(
+            role: MessageRole.system,
+            content:
+                '独立工作树：${r.isolation!.target}。向主代理报告文件使用前缀 ${r.isolation!.artifactPrefix}/。不自动合并/推送。',
+          ),
+        );
+      }
       if (r.role == null && r.environment.selectRole != null) {
         r.activity = '按任务分配角色';
         _notify();
-        final assignment = await r.environment.selectRole!(
-          r.task,
-          r.model == 'Auto' ? null : r.model,
-          r.token,
-        );
+        await flushJournal();
+        await _acquireModelSlot(r);
+        late SubagentAssignment assignment;
+        try {
+          assignment = await r.environment.selectRole!(
+            r.task,
+            r.model == 'Auto' ? null : r.model,
+            r.token,
+          );
+        } finally {
+          _releaseModelSlot(r.id);
+        }
         if (r.token.isCancelled) return;
         if (!r.environment.allowedModels.any(
           (m) => m.model == assignment.model,
-        ))
+        )) {
           throw StateError('角色分配返回池外模型');
+        }
         r.role = assignment.role;
         r.roleReason = assignment.reason;
         r.model = assignment.model;
@@ -773,6 +1319,22 @@ class WorkAgentRuntime extends ChangeNotifier {
       for (var step = 0; step <= r.environment.maxRounds; step++) {
         if (r.token.isCancelled) return;
         final wrappingUp = step == r.environment.maxRounds;
+        await r.environment.beforeRound?.call(r);
+        if (r.token.isCancelled) return;
+        if (r.resolvedConfig != null && !identical(r.resolvedConfig, config)) {
+          final next = r.resolvedConfig!;
+          final adapted = adaptHistoryForTransport(
+            r.context,
+            previous: config,
+            next: next,
+          );
+          r.context
+            ..clear()
+            ..addAll(adapted);
+          config = next;
+          r.model = config.model;
+        }
+
         while (r.mailbox.isNotEmpty) {
           r.context.add(
             LlmRequestMessage(
@@ -782,12 +1344,13 @@ class WorkAgentRuntime extends ChangeNotifier {
           );
         }
         r.rounds++;
-        if (r.role != null)
+        if (r.role != null) {
           AgentInstructions.replace(
             r.context,
             r.role!.instructions,
             subagent: true,
           );
+        }
         final prepared = r.environment.prepareMessages?.call(
           List.of(r.context),
           config,
@@ -819,85 +1382,100 @@ class WorkAgentRuntime extends ChangeNotifier {
           null,
           0,
         );
-        await for (final chunk in r.environment.provider.streamChat(
-          config: config,
-          messages: [
-            ...r.context,
-            LlmRequestMessage(
-              role: MessageRole.system,
-              content:
-                  '${guidanceFor(r.id)}\n本次子任务工具轮预算 ${r.environment.maxRounds}，剩余 ${r.environment.maxRounds - step} 轮。'
-                  '${wrappingUp
-                      ? '工具已关闭。现在用正文汇报已完成内容、证据、已交付文件和未完成项，不要再请求任何工具。'
-                      : r.environment.maxRounds - step <= 4
-                      ? '即将达到本次预算，请停止扩展审计范围，优先写入交付文件并总结；未覆盖的范围明确说明。'
-                      : ''}',
-            ),
-          ],
-          tools: wrappingUp
-              ? null
-              : [
-                  ...r.environment.tools.where(
-                    (t) => !toolNames.contains(t.name),
-                  ),
-                  ...toolsFor(r.id),
-                ],
-          thinking: r.environment.thinking,
-          reasoningEffort: r.environment.reasoningEffort,
-          cancelToken: r.token,
-        )) {
-          if (r.token.isCancelled) {
-            r.environment.onRuntimeLog?.call(
-              r.id,
-              'request',
-              'cancelled',
-              config,
-              null,
-              requestElapsed.elapsedMilliseconds,
-            );
-            return;
+        await flushJournal();
+        await _acquireModelSlot(r);
+        try {
+          await for (final chunk in r.environment.provider.streamChat(
+            config: config,
+            messages: [
+              ...r.context,
+              LlmRequestMessage(
+                role: MessageRole.system,
+                content:
+                    '${guidanceFor(r.id)}\n本次子任务工具轮预算 ${r.environment.maxRounds}，剩余 ${r.environment.maxRounds - step} 轮。'
+                    '${wrappingUp
+                        ? '工具已关闭。现在用正文汇报已完成内容、证据、已交付文件和未完成项，不要再请求任何工具。'
+                        : r.environment.maxRounds - step <= 4
+                        ? '即将达到本次预算，请停止扩展审计范围，优先写入交付文件并总结；未覆盖的范围明确说明。'
+                        : ''}',
+              ),
+            ],
+            tools: wrappingUp
+                ? null
+                : r.environment.prepareTools?.call([
+                        ...r.environment.tools.where(
+                          (t) => !toolNames.contains(t.name),
+                        ),
+                        ...toolsFor(r.id),
+                      ], r.id) ??
+                      [
+                        ...r.environment.tools.where(
+                          (t) => !toolNames.contains(t.name),
+                        ),
+                        ...toolsFor(r.id),
+                      ],
+            thinking: r.environment.thinking,
+            reasoningEffort: r.environment.reasoningEffort,
+            cancelToken: r.token,
+          )) {
+            if (r.token.isCancelled) {
+              r.environment.onRuntimeLog?.call(
+                r.id,
+                'request',
+                'cancelled',
+                config,
+                null,
+                requestElapsed.elapsedMilliseconds,
+              );
+              return;
+            }
+            if (!firstResponse &&
+                (chunk.contentDelta != null ||
+                    chunk.reasoningDelta != null ||
+                    chunk.toolCalls != null ||
+                    chunk.finishReason != null ||
+                    chunk.usage != null)) {
+              firstResponse = true;
+              r.environment.onRuntimeLog?.call(
+                r.id,
+                'request',
+                'response_started',
+                config,
+                null,
+                requestElapsed.elapsedMilliseconds,
+              );
+            }
+            text.write(textFilter.add(chunk.contentDelta ?? ''));
+            reasoning.write(chunk.reasoningDelta ?? '');
+            finishReason = chunk.finishReason ?? finishReason;
+            if (chunk.actualConfig != null) {
+              config = chunk.actualConfig!.copyWith(
+                reasoningGuardEnabled: false,
+              );
+              r.resolvedConfig = config;
+              r.model = config.model;
+              r.environment.onRuntimeLog?.call(
+                r.id,
+                'request',
+                'routed',
+                config,
+                null,
+                requestElapsed.elapsedMilliseconds,
+              );
+            }
+            if (chunk.responseOutputItems != null) {
+              native = chunk.responseOutputItems!;
+            }
+            for (final call in chunk.toolCalls ?? <ToolCall>[]) {
+              (calls[call.index] ??= ToolCallDraft(call.index)).merge(call);
+            }
+            // Usage chunks describe cumulative request counters, not deltas.
+            requestUsage = chunk.usage ?? requestUsage;
+            if (text.isNotEmpty) r.output = text.toString();
+            _notifyStreamSoon();
           }
-          if (!firstResponse &&
-              (chunk.contentDelta != null ||
-                  chunk.reasoningDelta != null ||
-                  chunk.toolCalls != null ||
-                  chunk.finishReason != null ||
-                  chunk.usage != null)) {
-            firstResponse = true;
-            r.environment.onRuntimeLog?.call(
-              r.id,
-              'request',
-              'response_started',
-              config,
-              null,
-              requestElapsed.elapsedMilliseconds,
-            );
-          }
-          text.write(textFilter.add(chunk.contentDelta ?? ''));
-          reasoning.write(chunk.reasoningDelta ?? '');
-          finishReason = chunk.finishReason ?? finishReason;
-          if (chunk.actualConfig != null) {
-            config = chunk.actualConfig!.copyWith(reasoningGuardEnabled: false);
-            r.resolvedConfig = config;
-            r.model = config.model;
-            r.environment.onRuntimeLog?.call(
-              r.id,
-              'request',
-              'routed',
-              config,
-              null,
-              requestElapsed.elapsedMilliseconds,
-            );
-          }
-          if (chunk.responseOutputItems != null)
-            native = chunk.responseOutputItems!;
-          for (final call in chunk.toolCalls ?? <ToolCall>[]) {
-            (calls[call.index] ??= ToolCallDraft(call.index)).merge(call);
-          }
-          // Usage chunks describe cumulative request counters, not deltas.
-          requestUsage = chunk.usage ?? requestUsage;
-          if (text.isNotEmpty) r.output = text.toString();
-          _notifyStreamSoon();
+        } finally {
+          _releaseModelSlot(r.id);
         }
         r.environment.onRuntimeLog?.call(
           r.id,
@@ -948,6 +1526,7 @@ class WorkAgentRuntime extends ChangeNotifier {
               responseOutputItems: complete.isEmpty ? native : const [],
             ),
           );
+          await flushJournal();
           _report(r);
           _notify();
           return;
@@ -974,17 +1553,27 @@ class WorkAgentRuntime extends ChangeNotifier {
           }
           r.status = WorkAgentStatus.completed;
           r.activity = '完成';
+          await flushJournal();
           _report(r);
           _notify();
           return;
         }
+        final batchObservations = <LlmRequestMessage>[];
         for (final call in complete) {
           if (r.token.isCancelled) return;
           r.activity = '工具 · ${call.name}';
-          _log(r, '${call.name} ${call.argumentsJson}');
+          _log(r, '工具请求：${call.name}');
           _notify();
+          await flushJournal();
           String result;
           try {
+            if (r.environment.takeTaskTool?.call() == false) {
+              throw StateError('共享任务工具预算已用尽');
+            }
+            if ((call.name ?? '').contains('search') &&
+                r.environment.takeTaskSearch?.call() == false) {
+              throw StateError('共享任务搜索预算已用尽');
+            }
             final args = Map<String, dynamic>.from(
               jsonDecode(call.argumentsJson) as Map,
             );
@@ -1004,14 +1593,15 @@ class WorkAgentRuntime extends ChangeNotifier {
                     receipt['path'] == args['path'] &&
                     receipt['sha256'] is String &&
                     (receipt['sha256'] as String).isNotEmpty &&
-                    !r.files.contains(args['path']))
+                    !r.files.contains(args['path'])) {
                   r.files.add(args['path'] as String);
+                }
               } catch (_) {}
             }
           } catch (error) {
             result = '工具执行失败：$error';
           }
-          _log(r, result);
+          _log(r, '工具返回：${call.name}（${result.length} 字符）');
           r.context.add(
             LlmRequestMessage(
               role: MessageRole.tool,
@@ -1021,7 +1611,13 @@ class WorkAgentRuntime extends ChangeNotifier {
               toolCallId: call.id,
             ),
           );
+          await flushJournal();
+          batchObservations.addAll(
+            r.environment.takeToolObservations?.call(r.id, call.id ?? '') ??
+                const [],
+          );
         }
+        r.context.addAll(batchObservations);
       }
       throw StateError('子代理达到 ${r.environment.maxRounds} 轮执行上限；可发送后续指令继续');
     } catch (error) {
@@ -1047,8 +1643,17 @@ class WorkAgentRuntime extends ChangeNotifier {
   }
 
   void _report(WorkAgentRecord r) {
+    if (r.roleTrial case final trial?) {
+      r.environment.onRoleTrialCompleted?.call(r, trial);
+    }
+    final isolation = inheritedIsolation(r.id);
+    final files = [
+      for (final path in r.files)
+        isolation == null ? path : '${isolation.artifactPrefix}/$path',
+    ];
     final content =
-        '子代理 ${r.id}（${r.role?.name ?? '通用执行'}，${r.status.name}，${r.model}）\n任务：${r.task}\n${r.output}\n文件：${r.files.join(', ')}';
+        '子代理 ${r.id}（${r.role?.name ?? '通用执行'}，${r.status.name}，${r.model}）\n任务：${r.task}\n${r.output}\n执行目标：${isolation?.target ?? '继承共享工作区'}\n文件：${files.join(', ')}'
+        '${isolation == null ? '' : '\n独立树文件未自动整合。请先从上述父工作区相对前缀读取、验收，再按隔离基线版本整合。'}';
     var parent = _records[r.parentId];
     while (parent != null &&
         parent.status == WorkAgentStatus.cancelled &&
@@ -1074,7 +1679,7 @@ class WorkAgentRuntime extends ChangeNotifier {
     String content, {
     bool explicitFollowup = false,
   }) {
-    if (!_disposed)
+    if (!_disposed) {
       _events.add(
         WorkAgentEvent(
           id: 'agent_event_${_sequence++}',
@@ -1086,6 +1691,7 @@ class WorkAgentRuntime extends ChangeNotifier {
           explicitFollowup: explicitFollowup,
         ),
       );
+    }
   }
 
   static const toolNames = {
@@ -1104,6 +1710,21 @@ class WorkAgentRuntime extends ChangeNotifier {
         'properties': {
           'task': {'type': 'string'},
           'model': {'type': 'string'},
+          'candidate_id': {'type': 'string'},
+          'isolated': {
+            'type': 'boolean',
+            'description': '为写入/构建任务建立授权根目录下的独立 Git 工作树；创建须经现有批准；不自动合并/推送。',
+          },
+          'owned_paths': {
+            'type': 'array',
+            'items': {'type': 'string'},
+            'maxItems': 64,
+          },
+          'read_only': {
+            'type': 'boolean',
+            'description':
+                '缺省只读。写入任务须明确 false 并声明无冲突 owned_paths；共享工作区子代理不可运行任意命令。',
+          },
         },
         'required': ['task'],
         'additionalProperties': false,
@@ -1151,16 +1772,26 @@ class WorkAgentRuntime extends ChangeNotifier {
     Map<String, dynamic> args,
   ) async {
     final caller = _require(callerId);
-    if (name == 'work_spawn_agent')
+    if (name == 'work_spawn_agent') {
+      if (args.containsKey('read_only') && args['read_only'] is! bool ||
+          args.containsKey('isolated') && args['isolated'] is! bool) {
+        throw const FormatException('read_only/isolated 必须为布尔值');
+      }
       return jsonEncode({
         'agent_id': spawn(
           parentId: callerId,
           task: args['task'] as String,
           model: args['model'] as String?,
+          candidateId: args['candidate_id'] as String?,
+          isolated: args['isolated'] == true,
+          requireOwnership: true,
+          ownedPaths: (args['owned_paths'] as List? ?? []).cast<String>(),
+          readOnly: args['read_only'] != false,
         ),
         'status': 'queued',
         'capacity': capacity(callerId),
       });
+    }
     bool descendant(WorkAgentRecord r) {
       var p = r.parentId;
       while (p != null) {
@@ -1170,7 +1801,7 @@ class WorkAgentRuntime extends ChangeNotifier {
       return false;
     }
 
-    if (name == 'work_list_agents')
+    if (name == 'work_list_agents') {
       return jsonEncode({
         'capacity': capacity(callerId),
         'agents': _records.values
@@ -1178,9 +1809,11 @@ class WorkAgentRuntime extends ChangeNotifier {
             .map((r) => r.toJson())
             .toList(),
       });
+    }
     final target = _require(args['agent_id'] as String);
-    if (!descendant(target) || target.conversationId != caller.conversationId)
+    if (!descendant(target) || target.conversationId != caller.conversationId) {
       throw StateError('只能管理自己的子代理');
+    }
     if (name == 'work_followup_agent') {
       followup(target.id, args['message'] as String);
       return '已发送后续任务';

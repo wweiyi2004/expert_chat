@@ -3,6 +3,7 @@ import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:expert_chat/core/providers.dart';
 import 'package:expert_chat/data/db/app_database.dart' hide Conversation;
 import 'package:expert_chat/data/drift_conversation_repository.dart';
@@ -85,10 +86,13 @@ void main() {
       (tester) async {
         await tester.binding.setSurfaceSize(const Size(360, 720));
         addTearDown(() => tester.binding.setSurfaceSize(null));
+        SharedPreferences.setMockInitialValues({});
+        final prefs = await SharedPreferences.getInstance();
         final db = AppDatabase(NativeDatabase.memory());
         final container = ProviderContainer(
           overrides: [
             appDatabaseProvider.overrideWithValue(db),
+            sharedPrefsProvider.overrideWithValue(prefs),
             conversationRepositoryProvider.overrideWithValue(InMemoryRepo()),
             settingsControllerProvider.overrideWith(FakeSettings.new),
           ],

@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'media_api_config.dart';
 
 /// Portable API / settings snapshot for moving a fill-in config between devices.
+/// Conversation task journals and acceptance evidence are business data carried
+/// only by FullBackupService, never by this API configuration bundle.
 ///
 /// The file contains secrets (API keys, gateway tokens). Keep exports out of
 /// git — see `.gitignore` (`expert-chat-settings.json`, `config/*.json`).

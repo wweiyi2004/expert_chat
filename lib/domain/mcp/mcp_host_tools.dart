@@ -44,6 +44,8 @@ abstract final class McpHostTools {
   static const expertChatServerId = 'expert-chat';
 
   static const internalNames = {
+    'coding_copy_file',
+    'coding_delete_file_if_current',
     'begin_upload',
     'append_upload',
     'finish_upload',
@@ -57,6 +59,28 @@ abstract final class McpHostTools {
   };
 
   static const reservedNames = {
+    'work_memory_checkpoint',
+    'work_memory_recall',
+    'work_history',
+    'work_integrate_agent_file',
+    'coding_artifact_manifest',
+    'device_observe',
+    'device_action',
+    'work_ask_user',
+    'work_spawn_agent',
+    'work_list_agents',
+    'work_followup_agent',
+    'work_cancel_agent',
+    'work_start_process',
+    'work_list_processes',
+    'work_process_status',
+    'work_stop_process',
+    'work_restart_process',
+    'math_calculate',
+    'role_library_search',
+    'role_propose',
+    'tool_registry_search',
+    'tool_registry_request',
     'work_run_command',
     'work_deliver_files',
     'web_search',
@@ -96,11 +120,12 @@ abstract final class McpHostTools {
     final used = <String>{...reservedNames};
     final out = <RoutedMcpTool>[];
     for (final tool in documentTools) {
-      if (tool.name.isEmpty) continue;
-      used.add(tool.name);
+      if (tool.name.isEmpty || isInternal(tool.name)) continue;
+      final exposed = _uniqueName(tool.name, 'expert_chat', used);
+      used.add(exposed);
       out.add(
         RoutedMcpTool(
-          exposedName: tool.name,
+          exposedName: exposed,
           originalName: tool.name,
           serverId: null,
           tool: tool,
@@ -110,7 +135,7 @@ abstract final class McpHostTools {
     for (final server in customServers) {
       if (!server.enabled || !server.toolsDiscovered) continue;
       for (final tool in server.tools) {
-        if (tool.name.isEmpty) continue;
+        if (tool.name.isEmpty || isInternal(tool.name)) continue;
         if (server.computerUse &&
             !ComputerUsePolicy.allowedTools.contains(tool.name)) {
           continue;

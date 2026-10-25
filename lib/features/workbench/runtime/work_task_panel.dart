@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../state/work_task_runtime.dart';
+import 'task_control_panel.dart';
 
 /// Fits either the workbench detail pane or a modal sheet on smaller screens.
 class WorkTaskPanel extends ConsumerWidget {
@@ -15,81 +16,20 @@ class WorkTaskPanel extends ConsumerWidget {
         .watch(workTaskRuntimeProvider)
         .where((r) => r.conversationId == conversationId)
         .toList();
-    if (records.isEmpty) {
-      return const Center(child: Text('开始工作后，这里会显示任务状态和命令日志'));
-    }
-    return ListView.separated(
+    return ListView(
       padding: const EdgeInsets.all(16),
-      itemCount: records.length,
-      separatorBuilder: (_, _) => const SizedBox(height: 12),
-      itemBuilder: (context, index) => _TaskCard(record: records[index]),
-    );
-  }
-}
-
-class WorkTaskStatusBar extends ConsumerWidget {
-  const WorkTaskStatusBar({super.key, required this.conversationId});
-
-  final String conversationId;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final records = ref
-        .watch(workTaskRuntimeProvider)
-        .where((r) => r.conversationId == conversationId)
-        .toList();
-    if (records.isEmpty) return const SizedBox.shrink();
-    final active = records.where((r) => r.status.isActive).toList();
-    final record = active.isNotEmpty ? active.first : records.first;
-    final theme = Theme.of(context);
-    return Material(
-      color: theme.colorScheme.surfaceContainerLow,
-      borderRadius: BorderRadius.circular(12),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(12),
-        onTap: () => showModalBottomSheet<void>(
-          context: context,
-          isScrollControlled: true,
-          showDragHandle: true,
-          constraints: const BoxConstraints(maxWidth: 960),
-          builder: (context) => SizedBox(
-            height: MediaQuery.sizeOf(context).height * .7,
-            child: Column(
-              children: [
-                const Padding(
-                  padding: EdgeInsets.fromLTRB(16, 0, 16, 12),
-                  child: Text('任务与命令日志'),
-                ),
-                Expanded(child: WorkTaskPanel(conversationId: conversationId)),
-              ],
-            ),
+      children: [
+        TaskControlPanel(conversationId: conversationId),
+        if (records.isEmpty)
+          const Padding(
+            padding: EdgeInsets.all(16),
+            child: Text('开始工作后，这里会显示任务状态和命令日志'),
           ),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          child: Row(
-            children: [
-              _TaskStatusIcon(status: record.status),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  '${record.stopRequested ? '正在停止' : record.status.label} · ${record.detail ?? record.title}',
-                  style: theme.textTheme.bodySmall,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              if (active.length > 1)
-                Text(
-                  '${active.length} 项运行中',
-                  style: theme.textTheme.labelSmall,
-                ),
-              const SizedBox(width: 6),
-              const Icon(Icons.chevron_right, size: 18),
-            ],
-          ),
-        ),
-      ),
+        for (final record in records) ...[
+          const SizedBox(height: 12),
+          _TaskCard(record: record),
+        ],
+      ],
     );
   }
 }
@@ -164,7 +104,7 @@ class _TaskCard extends ConsumerWidget {
             ),
             const SizedBox(height: 6),
             Text(
-              '${record.status.label} · $time'
+              '${record.status == WorkTaskStatus.completed ? (record.exitCode == null ? '答复已结束' : '工具已结束') : record.status.label} · $time'
               '${record.exitCode == null ? '' : ' · 退出码 ${record.exitCode}'}',
               style: theme.textTheme.bodySmall,
             ),

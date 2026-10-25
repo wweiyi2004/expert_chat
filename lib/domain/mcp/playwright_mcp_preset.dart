@@ -4,6 +4,26 @@ import '../../data/mcp_process_config.dart';
 /// user's browser. Discovery fetches the package into npm's ordinary cache.
 abstract final class PlaywrightMcpPreset {
   static const package = '@playwright/mcp@0.0.83';
+
+  /// Also normalizes saved older presets. Upstream command-idle timers do not
+  /// observe human interaction and must not close a manually held browser.
+  static List<String> runtimeArguments(McpProcessConfig config) {
+    final result = <String>[];
+    for (var i = 0; i < config.arguments.length; i++) {
+      final argument = config.arguments[i];
+      if (argument == '--idle-timeout') {
+        if (i + 1 < config.arguments.length &&
+            !config.arguments[i + 1].startsWith('--')) {
+          i++;
+        }
+        continue;
+      }
+      if (argument.startsWith('--idle-timeout=')) continue;
+      result.add(argument);
+    }
+    return [...result, '--idle-timeout', '0'];
+  }
+
   static McpProcessConfig config({
     bool windows = false,
     bool headless = false,
@@ -18,7 +38,9 @@ abstract final class PlaywrightMcpPreset {
       '--image-responses',
       'allow',
       '--idle-timeout',
-      '300000',
+      // The pinned server resets this timer only on MCP commands; human input
+      // cannot keep it alive. Explicit stop/delete/teardown owns the lifecycle.
+      '0',
       if (headless) '--headless',
     ],
     sessionScoped: true,

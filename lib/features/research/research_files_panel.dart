@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/app_toast.dart';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
@@ -41,7 +42,7 @@ class _ResearchFilesPanelState extends ConsumerState<ResearchFilesPanel> {
       await work();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
+        AppToastMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text('$e')));
       }
@@ -397,7 +398,7 @@ class _RemoteEditorState extends ConsumerState<_RemoteEditor> {
   Future<void> _save() async {
     if (ref.read(researchTerminalProvider).connectionGeneration !=
         widget.generation) {
-      ScaffoldMessenger.of(
+      AppToastMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('连接已变化，请重新打开文件')));
       return;
@@ -408,13 +409,19 @@ class _RemoteEditorState extends ConsumerState<_RemoteEditor> {
       await widget.files.saveText(widget.file.path, content, original: _saved);
       if (mounted) {
         setState(() => _saved = content);
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('已保存到远程主机')));
+        AppToastMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              widget.files is ResearchRecoveryFiles
+                  ? '已保存；原版本保留：${(widget.files as ResearchRecoveryFiles).recoveryPathFor(widget.file.path)}'
+                  : '已保存到远程主机',
+            ),
+          ),
+        );
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
+        AppToastMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text('$e')));
       }

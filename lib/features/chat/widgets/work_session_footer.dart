@@ -1,22 +1,15 @@
+import '../../../core/application_surface.dart';
 import 'dart:convert';
-import '../../../state/model_context.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../../../core/desktop_providers.dart';
-import '../../../domain/context/context_window_manager.dart';
+import '../../../state/model_context.dart';
 import '../../../state/settings_controller.dart';
 import '../../../state/work_session_insights.dart';
-import 'chat_workspace_options.dart';
-import 'execution_ring.dart';
+import '../../../domain/context/context_window_manager.dart';
 import '../../../state/model_pricing.dart';
-import '../../../state/session_policy.dart';
-import 'model_pricing_dialog.dart';
-import '../../workbench/workspace_workbench_page.dart';
-import '../../../state/work_task_runtime.dart';
-import '../../../state/work_approvals.dart';
-import '../../../state/work_questions.dart';
-import '../../../state/work_rounds.dart';
 import '../../../state/chat_controller.dart';
+import '../../settings/settings_page.dart';
+import '../../shell/conversation_return_scope.dart';
 
 class WorkSessionFooter extends ConsumerWidget {
   const WorkSessionFooter({
@@ -34,197 +27,136 @@ class WorkSessionFooter extends ConsumerWidget {
     final insight = ref.watch(
       workSessionInsightsProvider.select((s) => s[conversationId]),
     );
-    final currentSettings = ref.watch(settingsControllerProvider).value;
+    final settings = ref.watch(settingsControllerProvider).value;
+    final report = ref.watch(
+      chatControllerProvider.select(
+        (s) => s.value?.contextReports[conversationId],
+      ),
+    );
     final budget =
         insight?.contextBudgetTokens ??
-        (currentSettings == null
+        report?.inputBudgetTokens ??
+        (settings == null
             ? 0
             : effectiveContextPrefs(
-                currentSettings,
-                currentSettings.config,
+                settings,
+                settings.config,
               ).inputBudgetTokens);
     final tokens = insight == null
-        ? 0
+        ? report?.sentTokens ?? 0
         : const ContextWindowManager().estimateMessagesTokens(
                 insight.messages,
               ) +
               const ContextWindowManager().estimateTextTokens(
                 jsonEncode(insight.tools.map((t) => t.toJson()).toList()),
               );
-    // Keep the reported ratio visible while subsequent requests are running.
-    final cacheRate = insight?.cacheHitRate;
-    final cache = cacheRate != null
-        ? '${(cacheRate * 100).toStringAsFixed(1)}%${insight!.cacheComplete ? '' : '*'}'
-        : insight?.requests.values.any((u) => u != null) == true
-        ? '未提供'
-        : '待统计';
+    final fraction = budget <= 0 ? 0.0 : (tokens / budget).clamp(0.0, 1.0);
+    final estimate = insight == null
+        ? null
+        : estimateWorkCost(insight, ref.watch(modelPricingProvider));
+    final cache = insight?.cacheHitRate;
     final cost = insight?.cost;
-    final rates = ref.watch(modelPricingProvider);
-    final estimate = insight == null ? null : estimateWorkCost(insight, rates);
-    final settings = ref.watch(settingsControllerProvider).value;
-    final taskStatus = ref.watch(
-      workTaskRuntimeProvider.select(
-        (records) => records
-            .where((r) => r.conversationId == conversationId)
-            .firstOrNull
-            ?.status,
-      ),
-    );
-    final awaitingApproval = ref.watch(
-      workApprovalsProvider.select(
-        (requests) => requests.any((r) => r.conversationId == conversationId),
-      ),
-    );
-    final running = ref.watch(
-      chatControllerProvider.select(
-        (value) => value.value?.isConversationRunning(conversationId) ?? false,
-      ),
-    );
-    final phase = ref.watch(
-      workRoundsProvider.select(
-        (states) => (
-          states[conversationId]?.reviewing ?? false,
-          states[conversationId]?.finishing ?? false,
-        ),
-      ),
-    );
-    final awaitingAnswer = ref
-        .watch(workQuestionsProvider)
-        .any((q) => q.conversationId == conversationId);
-    final checkpoint = ref
-        .watch(chatControllerProvider)
-        .value
-        ?.sessionCheckpoints[conversationId];
-    final waiting = checkpoint?.status == SessionExecutionStatus.waiting;
-    final statusLabel = awaitingAnswer
-        ? '等待回答'
-        : awaitingApproval
-        ? '等待批准'
-        : running
-        ? phase.$1
-              ? '评估续轮'
-              : phase.$2
-              ? '收尾中'
-              : '执行中'
-        : waiting
-        ? '等待后台任务'
-        : checkpoint?.status == SessionExecutionStatus.failed
-        ? '执行失败'
-        : checkpoint?.status == SessionExecutionStatus.cancelled
-        ? '已停止'
-        : checkpoint?.status == SessionExecutionStatus.completed
-        ? '已完成'
-        : taskStatus?.label ?? '就绪';
     final pending = ref
         .watch(chatControllerProvider)
         .value
         ?.pendingSessionConfigurations[conversationId];
-    final colors = Theme.of(context).colorScheme;
-    final statusColor = awaitingAnswer || awaitingApproval
-        ? (Theme.of(context).brightness == Brightness.dark
-              ? Colors.orange.shade300
-              : Colors.orange.shade800)
-        : checkpoint?.status == SessionExecutionStatus.failed
-        ? colors.error
-        : !running && checkpoint?.status == SessionExecutionStatus.completed
-        ? (Theme.of(context).brightness == Brightness.dark
-              ? Colors.green.shade300
-              : Colors.green.shade700)
-        : colors.primary;
-    final metrics = Wrap(
-      spacing: 6,
-      runSpacing: 6,
-      crossAxisAlignment: WrapCrossAlignment.center,
-      children: [
-        _SessionMetric(
-          key: const ValueKey('work-context-details'),
-          icon: Icons.data_usage_rounded,
-          label: insight == null
-              ? '上下文 · 待发送'
-              : '上下文 ${_tokens(tokens)} / ${_tokens(budget)}',
-          onTap: () => _showContext(context, insight, budget, tokens),
+    return Tooltip(
+      message: '上下文用量 · ${(fraction * 100).round()}%',
+      child: IconButton(
+        key: const ValueKey('work-context-details'),
+        constraints: BoxConstraints.tightFor(
+          width: MediaQuery.sizeOf(context).width < 840 ? 44 : 28,
+          height: MediaQuery.sizeOf(context).width < 840 ? 44 : 28,
         ),
-        _SessionMetric(
-          icon: Icons.bolt_rounded,
-          label: '缓存 $cache',
-          tooltip:
-              '缓存命中率。已有 ${insight?.cacheReportedRequests ?? 0}/${insight?.requests.length ?? 0} 次请求返回统计；* 表示数据尚未齐全，缺失数据不按零计算。',
+        padding: EdgeInsets.zero,
+        style: IconButton.styleFrom(
+          minimumSize: Size.square(
+            MediaQuery.sizeOf(context).width < 840 ? 44 : 28,
+          ),
+          maximumSize: Size.square(
+            MediaQuery.sizeOf(context).width < 840 ? 44 : 28,
+          ),
+          padding: EdgeInsets.zero,
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
         ),
-        _SessionMetric(
-          icon: Icons.toll_outlined,
-          label: cost != null
-              ? '${insight!.currency} ${cost.toStringAsFixed(4)}'
-              : estimate != null
-              ? '${estimate.complete ? '估算' : '已知用量'} ≈${estimate.currency} ${estimate.amount.toStringAsFixed(4)}'
-              : '费用 · 设置单价',
-          tooltip: '配置模型单价；估算仅包含已知用量。',
-          onTap: () => showModelPricing(context, ref, {
-            ...?insight?.pricingKeys.values,
-            if (settings != null)
-              modelPricingKey(
-                settings.baseUrl,
-                insight?.model.isNotEmpty == true
-                    ? insight!.model
-                    : settings.model,
-              ),
-          }),
-        ),
-        _SessionMetric(
-          key: const ValueKey('open-workbench'),
-          icon: Icons.circle,
-          leading: running || waiting
-              ? ExecutionRing(size: 12, color: statusColor)
-              : null,
-          label: statusLabel,
-          color: statusColor,
-          onTap: !workMode
-              ? null
-              : () => Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) =>
-                        WorkspaceWorkbenchPage(conversationId: conversationId),
+        onPressed: () => showModalBottomSheet<void>(
+          context: context,
+          showDragHandle: true,
+          isScrollControlled: true,
+          builder: (sheet) => SafeArea(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text('上下文与用量', style: Theme.of(sheet).textTheme.titleMedium),
+                  const SizedBox(height: 16),
+                  Text(
+                    '上下文 ${_tokens(tokens)} / ${_tokens(budget)} · ${(fraction * 100).round()}%',
                   ),
-                ),
-        ),
-        if (pending?.queued ?? false)
-          _SessionMetric(
-            icon: Icons.schedule_rounded,
-            label: '设置待生效',
-            color: colors.tertiary,
-            tooltip: '${pending!.labels.join('、')}将在当前完整工具轮结束后生效',
+                  Text(
+                    '丢弃消息 ${report?.droppedMessages ?? 0} 条${report?.summaryInjected == true ? ' · 已注入摘要' : ''}',
+                  ),
+                  Text(
+                    cache == null
+                        ? '缓存命中：${insight?.requests.values.any((u) => u != null) == true ? '未提供' : '待统计'}'
+                        : '缓存命中 ${(cache * 100).toStringAsFixed(1)}%${insight!.cacheComplete ? '' : '（统计尚未齐全）'}',
+                  ),
+                  Text(
+                    cost != null
+                        ? '费用 ${insight!.currency} ${cost.toStringAsFixed(4)}'
+                        : estimate != null
+                        ? '${estimate.complete ? '估算费用' : '已知用量估算'} ≈${estimate.currency} ${estimate.amount.toStringAsFixed(4)}'
+                        : '费用：未提供；设置单价后可估算已知用量',
+                  ),
+                  if (report != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Text(report.userFacingNote),
+                    ),
+                  if (pending?.queued ?? false)
+                    Text('设置待生效：${pending!.labels.join('、')}将在当前完整工具轮结束后生效'),
+                  const SizedBox(height: 12),
+                  TextButton.icon(
+                    onPressed: () {
+                      Navigator.pop(sheet);
+                      _showContext(context, insight, budget, tokens);
+                    },
+                    icon: const Icon(Icons.data_object),
+                    label: const Text('查看实际请求消息与工具'),
+                  ),
+                  TextButton.icon(
+                    onPressed: () {
+                      Navigator.pop(sheet);
+                      Navigator.of(context).push(
+                        applicationSurfaceRoute<void>(
+                          context,
+                          (_) => const SettingsPage(
+                            initialCategory: SettingsCategory.model,
+                          ),
+                          protectRoot: false,
+                          settings: const RouteSettings(
+                            name: conversationSettingsRouteName,
+                          ),
+                        ),
+                      );
+                    },
+                    icon: const Icon(Icons.tune),
+                    label: const Text('用量与单价 · 前往设置 › 模型'),
+                  ),
+                ],
+              ),
+            ),
           ),
-      ],
-    );
-    final supported =
-        workMode &&
-        (ref.watch(desktopWorkspaceHostProvider).supported ||
-            (ref
-                    .watch(sessionPolicyProvider)[conversationId]
-                    ?.sshProfileId
-                    .isNotEmpty ??
-                false));
-    return Padding(
-      key: const ValueKey('work-session-footer'),
-      padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
-      child: Container(
-        padding: const EdgeInsets.all(8),
-        decoration: BoxDecoration(
-          color: colors.surfaceContainerLow,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(
-            color: colors.outlineVariant.withValues(alpha: .5),
-          ),
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (supported) ...[
-              ChatWorkspaceBar(conversationId: conversationId, busy: busy),
-              const SizedBox(height: 4),
-            ],
-            metrics,
-          ],
+        icon: SizedBox.square(
+          dimension: 16,
+          child: CircularProgressIndicator(
+            value: fraction,
+            strokeWidth: 2,
+            backgroundColor: Theme.of(context).colorScheme.outlineVariant,
+          ),
         ),
       ),
     );
@@ -329,61 +261,5 @@ class WorkSessionFooter extends ConsumerWidget {
         ),
       ),
     );
-  }
-}
-
-class _SessionMetric extends StatelessWidget {
-  const _SessionMetric({
-    super.key,
-    required this.icon,
-    required this.label,
-    this.tooltip,
-    this.onTap,
-    this.color,
-    this.leading,
-  });
-  final IconData icon;
-  final String label;
-  final String? tooltip;
-  final VoidCallback? onTap;
-  final Color? color;
-  final Widget? leading;
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    final foreground = color ?? colors.onSurfaceVariant;
-    final pill = Material(
-      color: color?.withValues(alpha: .09) ?? colors.surface,
-      borderRadius: BorderRadius.circular(9),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(9),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              leading ??
-                  Icon(
-                    icon,
-                    size: icon == Icons.circle ? 7 : 13,
-                    color: foreground,
-                  ),
-              const SizedBox(width: 5),
-              Flexible(
-                child: Text(
-                  label,
-                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    fontSize: 11,
-                    color: foreground,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-    return tooltip == null ? pill : Tooltip(message: tooltip!, child: pill);
   }
 }

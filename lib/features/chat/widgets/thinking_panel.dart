@@ -5,6 +5,7 @@ import '../../../data/models.dart';
 import '../../../domain/chat/thinking_timeline.dart';
 import 'work_round_activity.dart';
 import 'command_activity_dialog.dart';
+import 'tool_activity_details.dart';
 import 'thinking_translation_host.dart';
 
 /// Collapsible DeepSeek-style thinking chain: prose with a left bar, tool
@@ -61,7 +62,23 @@ class _ThinkingPanelState extends State<ThinkingPanel>
       vsync: this,
       duration: const Duration(milliseconds: 900),
     );
-    if (widget.isStreaming) _pulse.repeat(reverse: true);
+  }
+
+  void _syncPulse() {
+    if (widget.isStreaming &&
+        !MediaQuery.disableAnimationsOf(context) &&
+        !widget.workMode) {
+      if (!_pulse.isAnimating) _pulse.repeat(reverse: true);
+    } else {
+      _pulse.stop();
+      _pulse.value = 0;
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _syncPulse();
   }
 
   @override
@@ -73,6 +90,10 @@ class _ThinkingPanelState extends State<ThinkingPanel>
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _followScheduled = false;
         if (!mounted || !_timelineScroll.hasClients || !_followTimeline) return;
+        if (MediaQuery.disableAnimationsOf(context)) {
+          _timelineScroll.jumpTo(_timelineScroll.position.maxScrollExtent);
+          return;
+        }
         _timelineScroll.animateTo(
           _timelineScroll.position.maxScrollExtent,
           duration: const Duration(milliseconds: 240),
@@ -87,9 +108,8 @@ class _ThinkingPanelState extends State<ThinkingPanel>
         setState(() => _expanded = false);
         widget.onExpandedChanged?.call(false);
       }
-    } else if (!old.isStreaming && widget.isStreaming) {
-      _pulse.repeat(reverse: true);
     }
+    _syncPulse();
   }
 
   @override
@@ -602,23 +622,10 @@ class _ToolStepNodeState extends State<_ToolStepNode> {
                           activity,
                           title: '运行命令',
                         )
-                      : showDialog<void>(
-                          context: context,
-                          builder: (dialog) => AlertDialog(
-                            title: const Text('步骤结果'),
-                            content: SizedBox(
-                              width: 600,
-                              child: SingleChildScrollView(
-                                child: SelectableText(activity.resultText!),
-                              ),
-                            ),
-                            actions: [
-                              TextButton(
-                                onPressed: () => Navigator.pop(dialog),
-                                child: const Text('关闭'),
-                              ),
-                            ],
-                          ),
+                      : showToolActivityDetails(
+                          context,
+                          activity,
+                          title: '步骤详情',
                         ),
                   child: const Text('查看结果'),
                 ),

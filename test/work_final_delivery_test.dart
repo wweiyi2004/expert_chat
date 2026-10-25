@@ -3,7 +3,6 @@ import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:expert_chat/domain/workbench/changes/work_file_change.dart';
 import 'package:expert_chat/domain/workbench/changes/delivery_snapshot.dart';
 import 'package:expert_chat/state/work_changes.dart';
 
@@ -130,6 +129,107 @@ void main() {
         } finally {
           restored.dispose();
         }
+      } finally {
+        container.dispose();
+        PathProviderPlatform.instance = original;
+        await temporary.delete(recursive: true);
+      }
+    },
+  );
+  test(
+    'isolated and parent aliases invalidate the same physical delivery and parent directory manifest',
+    () async {
+      final temporary = await Directory.systemTemp.createTemp(
+        'delivery-alias-',
+      );
+      final original = PathProviderPlatform.instance;
+      PathProviderPlatform.instance = _TemporaryPaths(temporary.path);
+      final container = ProviderContainer();
+      try {
+        final store = container.read(workChangesProvider.notifier);
+        await store.ready;
+        final parent = jsonEncode({
+          'kind': 'local',
+          'workspaceId': 'p',
+          'root': 'C:/fixture',
+          'scopes': {'root': 'C:/fixture'},
+        });
+        final child = jsonEncode({
+          ...jsonDecode(parent) as Map,
+          'pathPrefix': '.expert-agent-worktrees/child',
+        });
+        Future<void> publish(
+          String target,
+          String path,
+          String hash, {
+          Map<String, dynamic>? manifest,
+        }) async {
+          await store.record(
+            conversationId: 'c',
+            assistantId: 'a',
+            target: target,
+            path: path,
+            after: '',
+            afterHash: hash,
+            textSnapshot: false,
+            artifactManifest: manifest,
+          );
+          await store.registerDeliveries(
+            conversationId: 'c',
+            assistantId: 'a',
+            target: target,
+            scope: 'root',
+            verifiedFiles: {path: hash},
+          );
+        }
+
+        await publish(parent, '.expert-agent-worktrees/child/file.txt', 'v1');
+        await store.record(
+          conversationId: 'c',
+          assistantId: 'a',
+          target: child,
+          path: 'file.txt',
+          after: 'new',
+          afterHash: 'v2',
+        );
+        expect(
+          container.read(workChangesProvider).where((e) => e.isDelivery),
+          isEmpty,
+        );
+        await publish(child, 'file.txt', 'v2');
+        await store.record(
+          conversationId: 'c',
+          assistantId: 'a',
+          target: parent,
+          path: '.expert-agent-worktrees/child/file.txt',
+          after: 'third',
+          afterHash: 'v3',
+        );
+        expect(
+          container.read(workChangesProvider).where((e) => e.isDelivery),
+          isEmpty,
+        );
+        await publish(
+          parent,
+          '.expert-agent-worktrees/child/dist',
+          'directory-v1',
+          manifest: {'kind': 'directory'},
+        );
+        await store.record(
+          conversationId: 'c',
+          assistantId: 'a',
+          target: child,
+          path: 'dist/new.bin',
+          after: '',
+          afterHash: 'binary-v2',
+          textSnapshot: false,
+        );
+        expect(
+          container.read(workChangesProvider).where((e) => e.isDelivery),
+          isEmpty,
+        );
+        expect(container.read(workChangesProvider).last.target, child);
+        expect(container.read(workChangesProvider).last.path, 'dist/new.bin');
       } finally {
         container.dispose();
         PathProviderPlatform.instance = original;

@@ -69,6 +69,38 @@ List<String> contents(PreparedRequestContext value) =>
     value.messages.map((m) => m.content).toList();
 
 void main() {
+  test(
+    'Chinese task receives language guidance while stored reasoning stays raw',
+    () {
+      final original = Conversation(
+        messages: [
+          ChatMessage(id: 'u', role: MessageRole.user, content: '请用英文解释这个中文问题'),
+          ChatMessage(
+            id: 'a',
+            parentId: 'u',
+            role: MessageRole.assistant,
+            content: '',
+            reasoning: 'original English reasoning',
+          ),
+        ],
+      );
+      final result = builder.prepare(
+        conversation: original,
+        assistantId: 'a',
+        contextPrefs: noTrimming,
+      );
+      expect(
+        contents(result),
+        contains(RequestContextBuilder.chineseTaskLanguageHint),
+      );
+      expect(
+        RequestContextBuilder.chineseTaskLanguageHint,
+        contains('除非用户明确要求其他语言'),
+      );
+      expect(original.messages.last.reasoning, 'original English reasoning');
+    },
+  );
+
   test('work mode carries execution guidance even without tools', () {
     final result = builder.prepare(
       conversation: conversation().copyWith(workMode: true),

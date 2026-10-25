@@ -1,3 +1,5 @@
+import 'package:expert_chat/state/work_memory.dart';
+import 'package:expert_chat/state/work_operation_journal.dart';
 import 'dart:convert';
 
 import 'package:expert_chat/features/workbench/logs/work_runtime_logs_panel.dart';
@@ -40,7 +42,15 @@ void main() {
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.reset);
       final container = ProviderContainer(
-        overrides: [workRuntimeLogsProvider.overrideWith(_Logs.new)],
+        overrides: [
+          workRuntimeLogsProvider.overrideWith(_Logs.new),
+          workMemoryProvider.overrideWithValue(
+            WorkMemory(read: () => null, write: (s) async => true),
+          ),
+          workOperationJournalProvider.overrideWithValue(
+            WorkOperationJournal(read: () => null, write: (s) async => true),
+          ),
+        ],
       );
       addTearDown(container.dispose);
       final logs = container.read(workRuntimeLogsProvider.notifier) as _Logs;
@@ -53,8 +63,9 @@ void main() {
       tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
         SystemChannels.platform,
         (call) async {
-          if (call.method == 'Clipboard.setData')
+          if (call.method == 'Clipboard.setData') {
             clipboard = (call.arguments as Map)['text'] as String;
+          }
           return null;
         },
       );
@@ -97,7 +108,15 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
     final container = ProviderContainer(
-      overrides: [workRuntimeLogsProvider.overrideWith(_Logs.new)],
+      overrides: [
+        workRuntimeLogsProvider.overrideWith(_Logs.new),
+        workMemoryProvider.overrideWithValue(
+          WorkMemory(read: () => null, write: (s) async => true),
+        ),
+        workOperationJournalProvider.overrideWithValue(
+          WorkOperationJournal(read: () => null, write: (s) async => true),
+        ),
+      ],
     );
     addTearDown(container.dispose);
     final logs = container.read(workRuntimeLogsProvider.notifier) as _Logs;

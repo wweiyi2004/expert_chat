@@ -24,6 +24,9 @@ mixin ChatGeneration on ChatStreaming {
     CharacterCard? ensembleSpeaker,
     bool forceDocumentEdit = false,
     ChatMessage? recoverySource,
+    String priorExecutionEvidence = '',
+    int? oneTimeWorkRounds,
+    List<_SessionEvent> injectedEvents = const [],
   }) async {
     // The conversation was deleted while this turn was preflighting (awaiting
     // settings). Abandon the turn: re-inserting [working] here would resurrect
@@ -56,11 +59,31 @@ mixin ChatGeneration on ChatStreaming {
       serverWebSearch: false,
       forceServerWebSearch: false,
     );
+    final workTaskCore = working.workMode ? _run?.core : null;
+    if (workTaskCore case final core?) {
+      if (core.target.isEmpty) core.target = await _taskTarget(working.id);
+      final acceptance = ref.read(taskAcceptanceProvider.notifier);
+      await acceptance.freeze(
+        core.rootId,
+        acceptance.draftCriteriaForConversation(working.id),
+        conversationId: working.id,
+        requireExisting:
+            core.resumeRequired ||
+            core.lineage.isNotEmpty ||
+            core.agentTaskId != null,
+      );
+    }
     _run?.taskId = assistantId;
-    if (_run case final agentRun?) agentRun.agentTaskId ??= assistantId;
+    if (_run case final agentRun?) {
+      agentRun.agentTaskId ??= assistantId;
+      if (agentRun.originatingUserGoal.isEmpty) {
+        agentRun.originatingUserGoal = searchQuery;
+      }
+    }
     _run?.acceptedTaskIds.add(assistantId);
-    if (_run case final run?)
+    if (_run case final run?) {
       _checkpointSession(run, SessionExecutionStatus.running, '模型与工作区已确定');
+    }
     final sessionPolicy = _policyFor(working.id);
     final enableWorkspace =
         working.workMode &&
@@ -72,7 +95,7 @@ mixin ChatGeneration on ChatStreaming {
     final selectedWorkspaceId = enableWorkspace
         ? _run?.configuration?.workspaceId
         : null;
-    final searchMode = sessionPolicy.network ? SearchMode.auto : SearchMode.off;
+    final searchMode = sessionPolicy.network ? _s.searchMode : SearchMode.off;
     final searchAllowed =
         recoverySource == null &&
         searchMode != SearchMode.off &&
@@ -254,11 +277,18 @@ mixin ChatGeneration on ChatStreaming {
     // still recoverable on the next launch.
     try {
       await _persistence.persistById(working.id);
+      if (_run != null && injectedEvents.isNotEmpty) {
+        await _ackSessionEvents(_run!, injectedEvents);
+      }
     } catch (e) {
       // Don't crash the send action on a transient local-storage failure. The
       // final/checkpoint writes will retry through the serialized queue, while
       // the user gets a visible diagnostic instead of losing the live reply.
       _setScopedError('本地保存失败：$e', convoId: working.id);
+      if (injectedEvents.isNotEmpty) {
+        _run?.core?.resumeRequired = true;
+        rethrow;
+      }
     }
 
     // Freeze memory before search/tool awaits, using the originating project.
@@ -650,7 +680,7 @@ mixin ChatGeneration on ChatStreaming {
             vision: preVisionNote,
             tools: toolHint,
             recovery: recoverySource == null
-                ? ''
+                ? priorExecutionEvidence
                 : RequestContextBuilder.savedResultsPrompt(recoverySource),
           ),
         );
@@ -694,7 +724,7 @@ mixin ChatGeneration on ChatStreaming {
     }
     final turnEffort = LlmRequestPolicy.selectEffort(
       config: config,
-      savedEffort: settings.reasoningEffort,
+      savedEffort: _run?.configuration?.effort ?? _s.reasoningEffort,
       hasSavedOverride: settings.hasReasoningEffortOverride,
       proseTask: contextResult.proseTask,
       workMode: working.workMode,
@@ -734,8 +764,18 @@ mixin ChatGeneration on ChatStreaming {
       workMode: working.workMode,
       enableWorkspace: enableWorkspace,
       selectedWorkspaceId: selectedWorkspaceId,
+      oneTimeWorkRounds: oneTimeWorkRounds,
     );
 
+    if (ref.mounted && succeeded && working.workMode && _run?.core != null) {
+      await ref.read(taskAcceptanceProvider.notifier).update(
+        _run!.core!.rootId,
+        (task) {
+          task.replyComplete = true;
+          task.toolsComplete = !_hasPendingSessionWork(_run!);
+        },
+      );
+    }
     unawaited(
       GenerationNotify.onGenerationEnd(
         sessionId: _run?.conversationId,

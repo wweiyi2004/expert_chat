@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/prototype_widgets.dart';
 import 'package:drift/native.dart';
 import 'package:expert_chat/core/providers.dart';
 import 'package:expert_chat/data/db/app_database.dart';
@@ -57,11 +58,15 @@ void main() {
   test('optional destinations share one primary navigation item', () {
     expect(ShellTab.navigation, [
       ShellTab.chat,
-      ShellTab.tools,
+      ShellTab.automation,
+      ShellTab.resources,
       ShellTab.settings,
     ]);
     for (final tab in [ShellTab.study, ShellTab.studio, ShellTab.terminal]) {
-      expect(tab.navigationTab, ShellTab.tools);
+      expect(
+        tab.navigationTab,
+        tab == ShellTab.terminal ? ShellTab.settings : ShellTab.resources,
+      );
     }
   });
 
@@ -91,6 +96,10 @@ void main() {
 
     try {
       await container.read(chatControllerProvider.future);
+      final draftConversationId = container
+          .read(chatControllerProvider)
+          .requireValue
+          .currentId!;
       await tester.pumpWidget(
         UncontrolledProviderScope(
           container: container,
@@ -115,7 +124,15 @@ void main() {
       );
       final sendRect = tester.getRect(find.byTooltip('发送'));
       expect(editorRect.width, greaterThan(240));
-      expect(sendRect.right, greaterThanOrEqualTo(editorRect.right));
+      expect(sendRect.center.dx, greaterThan(editorRect.center.dx));
+      expect(
+        sendRect.right,
+        lessThanOrEqualTo(
+          tester
+              .getRect(find.byKey(const ValueKey('composer-input-box')))
+              .right,
+        ),
+      );
       expect(sendRect.bottom, lessThanOrEqualTo(480));
       expect(tester.takeException(), isNull);
       tester.view.resetViewInsets();
@@ -124,7 +141,9 @@ void main() {
 
       await tester.tap(find.byTooltip('Open navigation menu'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('工具'));
+      await tester.tap(find.text('设置'));
+      await settle();
+      await tester.tap(find.text('外观与数据'));
       await settle();
       expect(
         tester
@@ -139,10 +158,22 @@ void main() {
         isFalse,
       );
       expect(find.text('进入学习中心'), findsNothing);
+      await tester.scrollUntilVisible(
+        find.byKey(const ValueKey('feature-module-学习模式')),
+        300,
+        maxScrolls: 100,
+        scrollable: find
+            .descendant(
+              of: find.byKey(const ValueKey('settings-appearanceData')),
+              matching: find.byType(Scrollable),
+            )
+            .first,
+      );
+      await settle();
       await tester.tap(
         find.descendant(
-          of: find.widgetWithText(Card, '学习模式'),
-          matching: find.byType(Switch),
+          of: find.byKey(const ValueKey('feature-module-学习模式')),
+          matching: find.byType(PrototypeSwitch),
         ),
       );
       await settle();
@@ -153,11 +184,27 @@ void main() {
       expect(container.read(shellTabProvider), ShellTab.study);
       await tester.tap(find.byTooltip('返回工具'));
       await settle();
-      await tester.ensureVisible(find.widgetWithText(Card, '创作模式'));
+      expect(container.read(shellTabProvider), ShellTab.resources);
+      await tester.tap(find.byTooltip('打开侧边栏'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('设置'));
+      await settle();
+      await tester.scrollUntilVisible(
+        find.byKey(const ValueKey('feature-module-创作模式')),
+        300,
+        maxScrolls: 100,
+        scrollable: find
+            .descendant(
+              of: find.byKey(const ValueKey('settings-appearanceData')),
+              matching: find.byType(Scrollable),
+            )
+            .first,
+      );
+      await settle();
       await tester.tap(
         find.descendant(
-          of: find.widgetWithText(Card, '创作模式'),
-          matching: find.byType(Switch),
+          of: find.byKey(const ValueKey('feature-module-创作模式')),
+          matching: find.byType(PrototypeSwitch),
         ),
       );
       await settle();
@@ -167,10 +214,12 @@ void main() {
       expect(container.read(shellTabProvider), ShellTab.studio);
       await tester.binding.handlePopRoute();
       await settle();
-      expect(container.read(shellTabProvider), ShellTab.tools);
+      expect(container.read(shellTabProvider), ShellTab.resources);
       await tester.tap(find.byTooltip('打开侧边栏'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('会话'));
+      await tester.tap(
+        find.byKey(ValueKey('conversation-row-$draftConversationId')),
+      );
       await settle();
       expect(
         tester

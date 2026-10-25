@@ -16,6 +16,16 @@ import '../data/gateway_config.dart';
 import '../data/media_api_config.dart';
 import '../data/provider_profile.dart';
 import '../data/settings_bundle.dart';
+import '../data/capability_settings_bundle.dart';
+import '../data/model_service_credential_snapshot.dart';
+import '../domain/llm/model_credentials_unavailable.dart';
+import 'model_service_routing.dart';
+import 'model_route_groups.dart';
+import 'tool_registry_settings.dart';
+import 'supervisor_settings.dart';
+import 'role_evolution.dart';
+import 'role_validation_settings.dart';
+import 'model_service_credentials.dart' show explicitCredentialEpochProvider;
 import '../data/task_budget_prefs.dart';
 import '../data/ui_prefs.dart';
 import '../domain/llm/llm_provider.dart';
@@ -132,24 +142,132 @@ class SettingsController extends AsyncNotifier<SettingsState> {
   }
 
   final Map<String, Future<void>> _profileKeyWrites = {};
+  Future<void> _profileMutationTail = Future<void>.value();
+  final _incoherentProfiles = <String>{};
+
+  Future<T> _queueProfileMutation<T>(Future<T> Function() operation) {
+    final pending = _profileMutationTail.then((_) => operation());
+    _profileMutationTail = pending.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    return pending;
+  }
+
+  Future<void> waitForProfileMutations() => _profileMutationTail;
+
+  Future<ModelServiceCredentialSnapshot> readCurrentProfileCredentials(
+    String id,
+  ) async {
+    await future;
+    while (true) {
+      final pending = _profileMutationTail;
+      await pending;
+      if (!ref.mounted) throw StateError('模型设置已释放');
+      if (_incoherentProfiles.contains(id)) {
+        throw const ModelCredentialsUnavailable(
+          'credential_save_requires_repair',
+        );
+      }
+      final profile = _current.profiles.where((p) => p.id == id).firstOrNull;
+      if (profile == null) {
+        throw const ModelCredentialsUnavailable('channel_removed');
+      }
+      final storage = ref.read(secureStorageProvider);
+      final key = await storage.read(key: providerApiKeyStorageKey(id)) ?? '';
+      final binding = await storage.read(
+        key: providerCredentialBindingStorageKey(id),
+      );
+      if (!ref.mounted) throw StateError('模型设置已释放');
+      final current = _current.profiles.where((p) => p.id == id).firstOrNull;
+      if (!identical(pending, _profileMutationTail) ||
+          current?.toJson().toString() != profile.toJson().toString()) {
+        continue;
+      }
+      if (binding != null && binding != modelCredentialBinding(profile, key)) {
+        throw const ModelCredentialsUnavailable(
+          'credential_descriptor_binding_mismatch',
+        );
+      }
+      return ModelServiceCredentialSnapshot(
+        profile: profile,
+        apiKey: key,
+        epoch: ref.read(explicitCredentialEpochProvider)[id] ?? 0,
+      );
+    }
+  }
 
   Future<void> setProfileApiKey(String profileId, String apiKey) async {
     if (!ref.mounted || !_current.profiles.any((p) => p.id == profileId)) {
       return;
     }
+    final expectedProfile = _current.profiles.firstWhere(
+      (profile) => profile.id == profileId,
+    );
     final storage = ref.read(secureStorageProvider);
-    if (_current.active?.id == profileId) {
-      state = AsyncData(_current.copyWith(apiKey: apiKey));
-    }
     final previous = _profileKeyWrites[profileId] ?? Future<void>.value();
-    final write = previous
-        .catchError((Object _) {})
-        .then(
-          (_) => storage.write(
-            key: providerApiKeyStorageKey(profileId),
-            value: apiKey,
-          ),
+    final write = _queueProfileMutation(() async {
+      await previous.catchError((Object _) {});
+      final profile = _current.profiles
+          .where((p) => p.id == profileId)
+          .firstOrNull;
+      if (profile == null) {
+        throw const ModelCredentialsUnavailable('channel_removed');
+      }
+      if (modelCredentialBinding(profile, '') !=
+          modelCredentialBinding(expectedProfile, '')) {
+        throw const ModelCredentialsUnavailable(
+          'channel_changed_before_key_save',
         );
+      }
+      final priorKey = await storage.read(
+        key: providerApiKeyStorageKey(profileId),
+      );
+      final priorBinding = await storage.read(
+        key: providerCredentialBindingStorageKey(profileId),
+      );
+      try {
+        await storage.write(
+          key: providerCredentialBindingStorageKey(profileId),
+          value: modelCredentialBinding(profile, apiKey),
+        );
+        await storage.write(
+          key: providerApiKeyStorageKey(profileId),
+          value: apiKey,
+        );
+        _incoherentProfiles.remove(profileId);
+        if (ref.mounted) {
+          if (_current.active?.id == profileId) {
+            state = AsyncData(_current.copyWith(apiKey: apiKey));
+          }
+          ref.read(explicitCredentialEpochProvider.notifier).bump(profileId);
+        }
+      } catch (_) {
+        try {
+          if (priorKey == null) {
+            await storage.delete(key: providerApiKeyStorageKey(profileId));
+          } else {
+            await storage.write(
+              key: providerApiKeyStorageKey(profileId),
+              value: priorKey,
+            );
+          }
+          if (priorBinding == null) {
+            await storage.delete(
+              key: providerCredentialBindingStorageKey(profileId),
+            );
+          } else {
+            await storage.write(
+              key: providerCredentialBindingStorageKey(profileId),
+              value: priorBinding,
+            );
+          }
+        } catch (_) {
+          _incoherentProfiles.add(profileId);
+        }
+        rethrow;
+      }
+    });
     _profileKeyWrites[profileId] = write;
     try {
       await write;
@@ -528,8 +646,9 @@ class SettingsController extends AsyncNotifier<SettingsState> {
         .setString(kSettingsWorkAgentInstructions, text)) {
       throw StateError('工作主代理系统指令保存失败');
     }
-    if (ref.mounted)
+    if (ref.mounted) {
       state = AsyncData(_current.copyWith(workAgentInstructions: text));
+    }
   }
 
   Future<void> setSubagentInstructions(String value) async {
@@ -540,11 +659,37 @@ class SettingsController extends AsyncNotifier<SettingsState> {
         .setString(kSettingsSubagentInstructions, text)) {
       throw StateError('子代理系统指令保存失败');
     }
-    if (ref.mounted)
+    if (ref.mounted) {
       state = AsyncData(_current.copyWith(subagentInstructions: text));
+    }
   }
 
-  Future<void> setSubagentRoles(List<SubagentRole> roles) async {
+  Future<void> _roleWriteTail = Future<void>.value();
+  Future<T> _queueRoleWrite<T>(Future<T> Function() operation) {
+    final pending = _roleWriteTail.then((_) => operation());
+    _roleWriteTail = pending.then<void>((_) {}, onError: (Object _) {});
+    return pending;
+  }
+
+  Future<void> setSubagentRoles(List<SubagentRole> roles) {
+    final snapshot = List<SubagentRole>.of(roles);
+    return _queueRoleWrite(() => _saveSubagentRoles(snapshot));
+  }
+
+  /// Automatic promotion reads the newest library only after earlier user
+  /// writes finish. It cannot replace an existing role with the same identity.
+  Future<bool> appendValidatedRoleIfAbsent(
+    SubagentRole role, {
+    bool Function()? stillValid,
+  }) => _queueRoleWrite(() async {
+    if (!ref.mounted || stillValid?.call() == false) return false;
+    final current = _current.effectiveSubagentRoles;
+    if (current.any((item) => item.id == role.id)) return false;
+    await _saveSubagentRoles([...current, role]);
+    return true;
+  });
+
+  Future<void> _saveSubagentRoles(List<SubagentRole> roles) async {
     if (roles.length > 40 ||
         roles.any(
           (r) =>
@@ -554,28 +699,33 @@ class SettingsController extends AsyncNotifier<SettingsState> {
         )) {
       throw const FormatException('最多 40 个角色；角色名称不能为空，单个指令最多 24000 字符');
     }
-    if (roles.map((r) => r.id).toSet().length != roles.length)
+    if (roles.map((r) => r.id).toSet().length != roles.length) {
       throw const FormatException('角色标识重复');
+    }
     if (!await ref
         .read(sharedPrefsProvider)
         .setString(
           kSettingsSubagentRoles,
           jsonEncode(roles.map((r) => r.toJson()).toList()),
-        ))
+        )) {
       throw StateError('角色库保存失败');
-    if (ref.mounted)
+    }
+    if (ref.mounted) {
       state = AsyncData(
         _current.copyWith(subagentRoles: List.unmodifiable(roles)),
       );
+    }
   }
 
   Future<void> setSubagentRouterModel(String model) async {
     if (!await ref
         .read(sharedPrefsProvider)
-        .setString(kSettingsSubagentRouterModel, model))
+        .setString(kSettingsSubagentRouterModel, model)) {
       throw StateError('分配模型保存失败');
-    if (ref.mounted)
+    }
+    if (ref.mounted) {
       state = AsyncData(_current.copyWith(subagentRouterModel: model));
+    }
   }
 
   Future<void> _presetWriteTail = Future<void>.value();
@@ -804,7 +954,10 @@ class SettingsController extends AsyncNotifier<SettingsState> {
   }
 
   /// Save a service without changing the currently selected model.
-  Future<void> saveModelService(ProviderProfile profile, String apiKey) async {
+  Future<void> saveModelService(ProviderProfile profile, String apiKey) =>
+      _queueProfileMutation(() => _saveModelService(profile, apiKey));
+
+  Future<void> _saveModelService(ProviderProfile profile, String apiKey) async {
     final profiles = [
       for (final current in _current.profiles)
         if (current.id == profile.id) profile else current,
@@ -812,23 +965,59 @@ class SettingsController extends AsyncNotifier<SettingsState> {
         profile,
     ];
     final storage = ref.read(secureStorageProvider);
+    final prefs = ref.read(sharedPrefsProvider);
     final key = providerApiKeyStorageKey(profile.id);
+    final bindingKey = providerCredentialBindingStorageKey(profile.id);
     final previousKey = await storage.read(key: key);
+    final previousBinding = await storage.read(key: bindingKey);
+    final previousProfiles = prefs.getString(kSettingsProfiles);
     try {
-      await storage.write(key: key, value: apiKey.trim());
-      await SettingsStorage.writeProfiles(
-        ref.read(sharedPrefsProvider),
-        profiles,
+      // Bind destination and credential before exposing either half to readers.
+      // This encrypted binding also fails closed after an interrupted save.
+      await storage.write(
+        key: bindingKey,
+        value: modelCredentialBinding(profile, apiKey.trim()),
       );
-    } catch (_) {
-      if (previousKey == null) {
-        await storage.delete(key: key);
-      } else {
-        await storage.write(key: key, value: previousKey);
+      await storage.write(key: key, value: apiKey.trim());
+      if (!await prefs.setString(
+        kSettingsProfiles,
+        jsonEncode(profiles.map((p) => p.toJson()).toList()),
+      )) {
+        throw StateError('模型服务配置保存失败');
       }
+    } catch (_) {
+      var repaired = true;
+      try {
+        if (previousKey == null) {
+          await storage.delete(key: key);
+        } else {
+          await storage.write(key: key, value: previousKey);
+        }
+      } catch (_) {
+        repaired = false;
+      }
+      try {
+        if (previousBinding == null) {
+          await storage.delete(key: bindingKey);
+        } else {
+          await storage.write(key: bindingKey, value: previousBinding);
+        }
+      } catch (_) {
+        repaired = false;
+      }
+      try {
+        final restored = previousProfiles == null
+            ? await prefs.remove(kSettingsProfiles)
+            : await prefs.setString(kSettingsProfiles, previousProfiles);
+        if (!restored) repaired = false;
+      } catch (_) {
+        repaired = false;
+      }
+      if (!repaired) _incoherentProfiles.add(profile.id);
       rethrow;
     }
-    if (ref.mounted)
+    _incoherentProfiles.remove(profile.id);
+    if (ref.mounted) {
       state = AsyncData(
         _current.copyWith(
           profiles: profiles,
@@ -837,17 +1026,14 @@ class SettingsController extends AsyncNotifier<SettingsState> {
               : _current.apiKey,
         ),
       );
+    }
   }
 
   /// Switch the active profile, loading its stored key.
   Future<void> selectProfile(String id) async {
     if (!_current.profiles.any((p) => p.id == id)) return;
-    await _profileKeyWrites[id];
-    final key =
-        await ref
-            .read(secureStorageProvider)
-            .read(key: providerApiKeyStorageKey(id)) ??
-        '';
+    final coherent = await readCurrentProfileCredentials(id);
+    final key = coherent.apiKey;
     state = AsyncData(
       _current.copyWith(activeProfileId: id, apiKey: key, selectedModel: null),
     );
@@ -942,16 +1128,16 @@ class SettingsController extends AsyncNotifier<SettingsState> {
 
   /// Snapshot of API endpoints, keys, gateway, and related prefs as pretty JSON.
   Future<String> exportSettingsJson() async {
+    await _roleWriteTail;
+    await waitForProfileMutations();
     final prefs = ref.read(sharedPrefsProvider);
     final secure = ref.read(secureStorageProvider);
     final current = _current;
 
     final profiles = <Map<String, dynamic>>[];
     for (final profile in current.profiles) {
-      final key = profile.id == current.activeProfileId
-          ? current.apiKey
-          : await secure.read(key: providerApiKeyStorageKey(profile.id)) ?? '';
-      profiles.add({...profile.toJson(), 'apiKey': key});
+      final coherent = await readCurrentProfileCredentials(profile.id);
+      profiles.add({...coherent.profile.toJson(), 'apiKey': coherent.apiKey});
     }
 
     final ttsProfiles = <String, dynamic>{};
@@ -977,6 +1163,7 @@ class SettingsController extends AsyncNotifier<SettingsState> {
 
     return SettingsBundle.encode({
       'profiles': profiles,
+      'capabilitySettings': CapabilitySettingsBundle.read(prefs),
       'activeProfileId': current.activeProfileId,
       'selectedModel': current.selectedModel,
       'themeMode': current.themeMode.name,
@@ -1034,13 +1221,17 @@ class SettingsController extends AsyncNotifier<SettingsState> {
   /// Replace local API/settings from an exported JSON snapshot, then reload.
   Future<void> importSettingsJson(String raw) async {
     final json = SettingsBundle.decode(raw);
-    await _persistImportedSettings(json);
+    await _queueProfileMutation(() => _persistImportedSettings(json));
     if (!ref.mounted) return;
     ref.invalidateSelf();
     await future;
   }
 
   Future<void> _persistImportedSettings(Map<String, dynamic> json) async {
+    final capabilityValues = CapabilitySettingsBundle.validate(
+      json['capabilitySettings'],
+    );
+    await _roleWriteTail;
     final prefs = ref.read(sharedPrefsProvider);
     final secure = ref.read(secureStorageProvider);
 
@@ -1062,8 +1253,15 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       if (profiles.isNotEmpty) {
         final oldIds = {for (final profile in _current.profiles) profile.id};
         final newIds = {for (final profile in profiles) profile.id};
+        for (final profile in profiles) {
+          await secure.write(
+            key: providerCredentialBindingStorageKey(profile.id),
+            value: modelCredentialBinding(profile, keys[profile.id] ?? ''),
+          );
+        }
         for (final id in oldIds.difference(newIds)) {
           await secure.delete(key: providerApiKeyStorageKey(id));
+          await secure.delete(key: providerCredentialBindingStorageKey(id));
         }
         await SettingsStorage.writeProfiles(prefs, profiles);
         for (final profile in profiles) {
@@ -1211,16 +1409,25 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     }
     if (json['subagentRoles'] is List) {
       final roles = SubagentRole.decode(jsonEncode(json['subagentRoles']))!;
-      await prefs.setString(
-        kSettingsSubagentRoles,
-        jsonEncode(roles.map((r) => r.toJson()).toList()),
-      );
+      final imported = {for (final role in roles) role.id: role};
+      final defaults = {
+        for (final role in SubagentRole.defaults()) role.id: role,
+      };
+      final local = _current.effectiveSubagentRoles;
+      for (final role in local) {
+        if (defaults[role.id]?.toJson().toString() !=
+            role.toJson().toString()) {
+          imported[role.id] = role;
+        }
+      }
+      await setSubagentRoles(imported.values.toList());
     }
-    if (json['subagentRouterModel'] is String)
+    if (json['subagentRouterModel'] is String) {
       await prefs.setString(
         kSettingsSubagentRouterModel,
         json['subagentRouterModel'] as String,
       );
+    }
     final ui = SettingsBundle.asMap(json['ui']);
     if (ui != null) {
       await prefs.setString(
@@ -1377,6 +1584,30 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     await writeFlag(kSettingsResearchModeEnabled, json['researchModeEnabled']);
     await writeFlag(kSettingsStudyModeEnabled, json['studyModeEnabled']);
     await writeFlag(kSettingsCreationModeEnabled, json['creationModeEnabled']);
+    final changedCapabilities = await CapabilitySettingsBundle.apply(
+      prefs,
+      capabilityValues,
+    );
+    if (ref.mounted) {
+      if (changedCapabilities.contains('modelServicePriorities')) {
+        ref.invalidate(modelServiceRoutingProvider);
+      }
+      if (changedCapabilities.contains('modelRouteGroups.v1')) {
+        ref.invalidate(modelRouteGroupsProvider);
+      }
+      if (changedCapabilities.contains('trustedToolRegistry.v1')) {
+        ref.invalidate(toolRegistrySettingsProvider);
+      }
+      if (changedCapabilities.contains('taskSupervisor.v1')) {
+        ref.invalidate(supervisorSettingsProvider);
+      }
+      if (changedCapabilities.contains('roleEvolution.v1')) {
+        ref.invalidate(roleEvolutionProvider);
+      }
+      if (changedCapabilities.contains('roleValidation.v1')) {
+        ref.invalidate(roleValidationSettingsProvider);
+      }
+    }
   }
 }
 

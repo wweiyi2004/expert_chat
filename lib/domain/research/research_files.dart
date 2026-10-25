@@ -22,6 +22,12 @@ abstract interface class ResearchBinaryFiles {
   Future<List<int>> readBytes(String path, {int maxBytes = 8 * 1024 * 1024});
 }
 
+/// Successful safe saves may retain an inode that a concurrent editor still
+/// owns. Surface its exact recovery location; never clean it automatically.
+abstract interface class ResearchRecoveryFiles {
+  String? recoveryPathFor(String path);
+}
+
 abstract interface class ResearchFilesHost {
   ResearchFiles get files;
 }

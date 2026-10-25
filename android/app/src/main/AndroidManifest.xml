@@ -24,6 +24,12 @@
         android:roundIcon="@mipmap/ic_expert_chat"
         android:allowBackup="false"
         android:fullBackupContent="false">
+        <receiver android:name=".DeviceAgentStopReceiver" android:exported="false" />
+        <service android:name=".DeviceAgentService" android:exported="true"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter><action android:name="android.accessibilityservice.AccessibilityService" /></intent-filter>
+            <meta-data android:name="android.accessibilityservice" android:resource="@xml/device_agent" />
+        </service>
         <service
             android:name=".GenerationService"
             android:exported="false"
@@ -107,6 +113,10 @@
 
          In particular, this is used by the Flutter engine in io.flutter.plugin.text.ProcessTextPlugin. -->
     <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>

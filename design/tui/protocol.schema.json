@@ -1,0 +1,275 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Expert TUI Bridge v1",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/request"
+    },
+    {
+      "$ref": "#/$defs/response"
+    },
+    {
+      "$ref": "#/$defs/event"
+    }
+  ],
+  "$defs": {
+    "request": {
+      "type": "object",
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "method": {
+          "type": "string",
+          "minLength": 1
+        },
+        "params": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    "response": {
+      "type": "object",
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "result": {
+          "type": "object"
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "retryable": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "retryable"
+          ]
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "ok"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "ok": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "result"
+            ],
+            "not": {
+              "required": [
+                "error"
+              ]
+            }
+          },
+          "else": {
+            "required": [
+              "error"
+            ],
+            "not": {
+              "required": [
+                "result"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "event": {
+      "type": "object",
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "const": "event"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "event": {
+          "enum": [
+            "snapshot",
+            "round.started",
+            "round.ended",
+            "assistant.delta",
+            "thinking.started",
+            "thinking.ended",
+            "step.started",
+            "step.updated",
+            "step.ended",
+            "agent.updated",
+            "approval.requested",
+            "changes.updated",
+            "request.retry",
+            "request.error",
+            "context.updated"
+          ]
+        },
+        "data": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "v",
+        "type",
+        "seq",
+        "session_id",
+        "event",
+        "data"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "event": {
+                "const": "snapshot"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/snapshot"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "snapshot": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "startup": {
+          "type": "object"
+        },
+        "messages": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "approvals": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "questions": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "changes": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "agents": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "queued": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "workspaces": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "sessions": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "required": [
+        "session",
+        "startup",
+        "messages",
+        "steps",
+        "approvals",
+        "questions",
+        "changes",
+        "agents",
+        "queued",
+        "models",
+        "workspaces",
+        "sessions"
+      ]
+    }
+  }
+}

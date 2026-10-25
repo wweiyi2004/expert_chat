@@ -179,6 +179,14 @@ impl App {
         }
     }
     pub fn apply_snapshot(&mut self, snapshot: Value) {
+        let selected_agent = if self.view == View::Agents {
+            let agents = items(&self.snapshot, "agents");
+            agents
+                .get(self.selected % agents.len().max(1))
+                .map(|a| a["id"].clone())
+        } else {
+            None
+        };
         if self.snapshot["session"]["id"] != snapshot["session"]["id"] {
             self.welcome_seen = false;
             self.history.clear();
@@ -207,6 +215,13 @@ impl App {
         if old != new {
             self.approval_collapsed = false;
             self.rejection = false;
+        }
+        if let Some(id) = selected_agent
+            && let Some(index) = items(&snapshot, "agents")
+                .iter()
+                .position(|a| a["id"] == id)
+        {
+            self.selected = index;
         }
         self.snapshot = snapshot;
         self.retry = None;
@@ -690,7 +705,13 @@ impl App {
             KeyCode::Enter if self.view == View::Agents => {
                 let list = items(&self.snapshot, "agents");
                 if !list.is_empty() {
-                    self.notice = text(&list[self.selected % list.len()], "output").into();
+                    let agent = &list[self.selected % list.len()];
+                    let task = text(agent, "task");
+                    self.notice = if task.is_empty() {
+                        text(agent, "output").into()
+                    } else {
+                        format!("{task}\n{}", text(agent, "output"))
+                    };
                 }
             }
             KeyCode::Char('m') if self.view == View::Agents => {

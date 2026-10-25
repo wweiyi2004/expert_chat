@@ -926,12 +926,13 @@ fn full_view(f: &mut Frame, a: &App, area: Rect) {
         for (i, agent) in agents.iter().enumerate() {
             lines.push(line(
                 format!(
-                    " {} {} {}  {}  {}  {}",
+                    " {} {}{} {}  {}  {}  {}",
                     if i == a.selected % agents.len().max(1) {
                         glyph(a, "›", ">")
                     } else {
                         " "
                     },
+                    agent_tree_prefix(agents, i, a.ascii),
                     state_icon(a, text(agent, "status")),
                     text(agent, "name"),
                     text(agent, "model"),
@@ -1142,21 +1143,24 @@ pub fn draw(f: &mut Frame, a: &App) {
     if a.sidebar && area.width >= 140 {
         main_area.width = area.width - 44;
         let right = Rect::new(area.x + main_area.width, area.y, 44, record_h);
-        let mut lines = vec![line("│ 任务树", t.muted)];
-        for agent in items(&a.snapshot, "agents") {
+        let edge = glyph(a, "│", "|");
+        let mut lines = vec![line(format!("{edge} 任务树"), t.muted)];
+        let agents = items(&a.snapshot, "agents");
+        for (index, agent) in agents.iter().enumerate() {
             lines.push(line(
                 format!(
-                    "│ {} {}",
+                    "{edge} {}{} {}",
+                    agent_tree_prefix(agents, index, a.ascii),
                     state_icon(a, text(agent, "status")),
                     text(agent, "name")
                 ),
                 t.muted,
             ));
         }
-        lines.push(line("│ 改动", t.muted));
+        lines.push(line(format!("{edge} 改动"), t.muted));
         for c in items(&a.snapshot, "changes") {
             lines.push(line(
-                format!("│ {} {}", text(c, "kind"), text(c, "path")),
+                format!("{edge} {} {}", text(c, "kind"), text(c, "path")),
                 t.muted,
             ));
         }
@@ -1905,4 +1909,56 @@ fn change_counts(v: &Value, a: &App) -> String {
         out.push(format!("{}{n}", glyph(a, "−", "-")));
     }
     out.join(" ")
+}
+
+/// Preserve backend preorder so visible rows and enter/m/x select the same IDs.
+/// Missing parents are roots; malformed cycles are bounded by visited indices.
+fn agent_tree_prefix(agents: &[Value], index: usize, ascii: bool) -> String {
+    let Some(_) = agents.get(index) else {
+        return String::new();
+    };
+    let mut ancestry = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut current = index;
+    while seen.insert(current) {
+        let Some(parent_id) = agents[current]["parent_id"].as_str() else {
+            break;
+        };
+        let Some(parent) = agents
+            .iter()
+            .position(|agent| text(agent, "id") == parent_id)
+        else {
+            break;
+        };
+        if seen.contains(&parent) {
+            break;
+        }
+        ancestry.push(current);
+        current = parent;
+    }
+    ancestry.reverse();
+    let mut prefix = String::new();
+    for (depth, &child) in ancestry.iter().enumerate() {
+        let has_next = agents
+            .iter()
+            .skip(child + 1)
+            .any(|candidate| candidate["parent_id"] == agents[child]["parent_id"]);
+        if depth + 1 == ancestry.len() {
+            prefix.push_str(match (ascii, has_next) {
+                (true, true) => "+- ",
+                (true, false) => "`- ",
+                (false, true) => "├ ",
+                (false, false) => "└ ",
+            });
+        } else {
+            prefix.push_str(if has_next {
+                if ascii { "|  " } else { "│ " }
+            } else if ascii {
+                "   "
+            } else {
+                "  "
+            });
+        }
+    }
+    prefix
 }

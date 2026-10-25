@@ -425,13 +425,18 @@ void main() {
       await llm.request(0);
       final runtime = container.read(workAgentsProvider);
       final parent = runtime.records.singleWhere((a) => a.external);
-      runtime.spawn(
+      final childId = runtime.spawn(
         parentId: parent.id,
         task: '准备修改 child.txt',
         readOnly: false,
         ownedPaths: ['child.txt'],
       );
       await llm.request(1);
+      final tree = (await call('agents.list'))['agents'] as List;
+      expect((tree.first as Map)['id'], parent.id);
+      expect((tree.first as Map)['name'], '主代理');
+      expect((tree[1] as Map)['id'], childId);
+      expect((tree[1] as Map)['parent_id'], parent.id);
       await call('mode.set', {'mode': 'plan'});
       await llm.tools(1, [
         (
@@ -464,6 +469,37 @@ void main() {
       );
     },
   );
+  test(
+    'waiting for a child remains active and rejects target changes',
+    () async {
+      await call('message.send', {'text': '等待子代理结果'});
+      await llm.request(0);
+      final runtime = container.read(workAgentsProvider);
+      final parent = runtime.records.singleWhere((a) => a.external);
+      runtime.spawn(parentId: parent.id, task: '只读检查', readOnly: true);
+      await llm.request(1);
+      await llm.finish(0);
+      final controller = container.read(chatControllerProvider.notifier);
+      await until(() => !controller.isConversationRunning(id));
+      final snapshot = await call('snapshot.get');
+      final session = snapshot['session'] as Map;
+      expect(session['status'], 'running');
+      await expectLater(call('task.resume'), throwsA(isA<BridgeFailure>()));
+      await expectLater(
+        call('workspace.set', {'workspace_id': session['workspace_id']}),
+        throwsA(isA<BridgeFailure>()),
+      );
+      await expectLater(
+        call('message.send', {'text': '不能启动第二个任务'}),
+        throwsA(isA<BridgeFailure>()),
+      );
+      final queued = await call('queue.add', {'text': '继续保持只读'});
+      expect(queued['id'], isNotEmpty);
+      await call('task.stop');
+      await until(() => !controller.isConversationRunning(id));
+    },
+  );
+
   test(
     'shared controller workflow: queue, write, command approval, diff, stop, resume and acceptance',
     () async {
@@ -586,6 +622,15 @@ void main() {
       expect(
         ((await bridge.snapshot(id))['session'] as Map)['request_count'],
         greaterThanOrEqualTo(6),
+      );
+      final finalTree = (await call('agents.list'))['agents'] as List;
+      expect(
+        finalTree.where((row) => (row as Map)['parent_id'] == null).length,
+        1,
+      );
+      expect(
+        (finalTree.first as Map)['id'],
+        controller.taskSnapshotFor(id)?['agentRootId'],
       );
     },
   );

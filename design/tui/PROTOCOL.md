@@ -72,7 +72,7 @@ hello 必须首个请求，5 秒内完成，返回 `{protocol:1,server_id,pid,ca
   approvals:[{id,tool,arguments,target,reason,diff:[]}],
   questions:[{id,questions:[{id,question,options:[],multiple,required}]}],
   changes:[{id,path,kind,added,removed,diff:[],summary,round_id,message_id}],
-  agents:[{id,parent_id,name,model,status,activity,elapsed_ms,output}],
+  agents:[{id,parent_id,name,model,status,activity,elapsed_ms,output,task?,depth?}],
   queued:[{id,text,status}],
   models:[{choice,id,source_id,source,efforts:[],thinking_supported}],
   workspaces:[{id,name,path,access,remote}],
@@ -83,6 +83,8 @@ hello 必须首个请求，5 秒内完成，返回 `{protocol:1,server_id,pid,ca
 Session.status：idle/running/approval/retrying/waiting_acceptance/accepted/stopped/failed。
 Step.status：queued/running/approval/done/failed/stopped。Agent.status：queued/running/waiting/completed/failed/cancelled/interrupted。
 mode work/plan；permission request/assisted/full；effort 使用后端实际 wire 值，不能统一给所有模型虚构五挡。
+
+agents 按父节点先于子节点的深度优先顺序输出；有当前任务根身份时只返回该根的树。task/depth 是可选只读元信息；客户端以 parent_id 绘制层级，并在快照排序变化时保持选中的 agent id。
 
 ## 增量事件
 

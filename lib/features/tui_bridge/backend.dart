@@ -94,7 +94,10 @@ class ControllerBridgeBackend implements BridgeBackend {
   }
 
   void _idle(String id) {
-    if (controller.isConversationRunning(id) || _resuming.contains(id)) {
+    if (controller.isConversationRunning(id) ||
+        _resuming.contains(id) ||
+        state.sessionCheckpoints[id]?.status ==
+            SessionExecutionStatus.waiting) {
       throw const BridgeFailure('busy', '任务运行中不能执行此操作');
     }
   }
@@ -196,25 +199,54 @@ class ControllerBridgeBackend implements BridgeBackend {
     return result;
   }
 
-  List<Map<String, Object?>> _agents(String id) => [
-    for (final a
-        in container
-            .read(workAgentsProvider)
-            .records
-            .where((a) => a.conversationId == id))
-      {
-        'id': a.id,
-        'parent_id': a.parentId,
-        'name': a.role?.name ?? a.task,
-        'model': a.model,
-        'status': a.status.name,
-        'activity': a.activity,
-        'elapsed_ms': a.terminal
-            ? null
-            : DateTime.now().difference(a.createdAt).inMilliseconds,
-        'output': a.output,
-      },
-  ];
+  List<Map<String, Object?>> _agents(String id) {
+    final records = container
+        .read(workAgentsProvider)
+        .records
+        .where((a) => a.conversationId == id)
+        .toList();
+    final byId = {for (final a in records) a.id: a};
+    final ordered = <WorkAgentRecord>[];
+    final seen = <String>{};
+    void visit(WorkAgentRecord agent) {
+      if (!seen.add(agent.id)) return;
+      ordered.add(agent);
+      for (final child in records.where((a) => a.parentId == agent.id)) {
+        visit(child);
+      }
+    }
+
+    final currentRoot = controller.taskSnapshotFor(id)?['agentRootId'];
+    if (currentRoot is String && currentRoot.isNotEmpty) {
+      final root = byId[currentRoot];
+      if (root != null) visit(root);
+    } else {
+      for (final root in records.where((a) => !byId.containsKey(a.parentId))) {
+        visit(root);
+      }
+      for (final remaining in records) {
+        visit(remaining);
+      }
+    }
+    return [
+      for (final a in ordered)
+        {
+          'id': a.id,
+          'parent_id': a.parentId,
+          'name': a.external ? '主代理' : a.role?.name ?? '子代理',
+          'task': a.task,
+          'depth': a.depth,
+          'model': a.model,
+          'status': a.status.name,
+          'activity': a.activity,
+          'elapsed_ms': a.terminal
+              ? null
+              : DateTime.now().difference(a.createdAt).inMilliseconds,
+          'output': a.output,
+        },
+    ];
+  }
+
   Map<String, Object?> _change(WorkFileChange change) {
     final lines = change.textSnapshot && change.beforeKnown
         ? buildLineDiff(change.before, change.after ?? '')
@@ -270,8 +302,12 @@ class ControllerBridgeBackend implements BridgeBackend {
         .any((a) => a.conversationId == c.id)) {
       return 'approval';
     }
-    if (controller.isConversationRunning(c.id)) return 'running';
     final checkpoint = state.sessionCheckpoints[c.id];
+    if (controller.isConversationRunning(c.id) ||
+        _resuming.contains(c.id) ||
+        checkpoint?.status == SessionExecutionStatus.waiting) {
+      return 'running';
+    }
     if (checkpoint?.status == SessionExecutionStatus.cancelled ||
         checkpoint?.status == SessionExecutionStatus.interrupted) {
       return 'stopped';
@@ -369,7 +405,9 @@ class ControllerBridgeBackend implements BridgeBackend {
               'id': c.id,
               'title': c.title,
               'status': _status(c),
-              'phase': state.sessionCheckpoints[c.id]?.phase,
+              'phase': _resuming.contains(c.id)
+                  ? '正在恢复任务'
+                  : state.sessionCheckpoints[c.id]?.phase,
               'round': progress?.used,
               'round_limit': progress?.limit,
               'elapsed_ms': runtime == null

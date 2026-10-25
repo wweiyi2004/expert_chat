@@ -40,8 +40,9 @@ class TuiSnapshotEvidence {
       ? args['scope'] as String
       : '';
   static String? _hash(Object? value) {
-    if (value is! String || !RegExp(r'^[a-fA-F0-9]{64}$').hasMatch(value))
+    if (value is! String || !RegExp(r'^[a-fA-F0-9]{64}$').hasMatch(value)) {
       return null;
+    }
     return value.toLowerCase();
   }
 
@@ -79,24 +80,28 @@ class TuiSnapshotEvidence {
             source.status != SearchActivityStatus.done ||
             source.finishedAt == null ||
             cutoff == null ||
-            source.finishedAt!.isAfter(cutoff))
+            source.finishedAt!.isAfter(cutoff)) {
           continue;
+        }
         if (source.toolName != 'coding_read_file' &&
-            source.toolName != 'coding_write_file')
+            source.toolName != 'coding_write_file') {
           continue;
+        }
         final args = _object(source.toolArguments),
             receipt = _object(source.resultText);
         if (args == null ||
             receipt == null ||
             !_location(args, receipt, path, scope) ||
             _hash(receipt['sha256']) != hash ||
-            args['encoding'] == 'base64')
+            args['encoding'] == 'base64') {
           continue;
+        }
         final content = source.toolName == 'coding_read_file'
             ? receipt['content']
             : args['content'];
-        if (content is String && _matchesText(content, hash))
+        if (content is String && _matchesText(content, hash)) {
           return (known: true, text: content);
+        }
       }
     }
     // A stored text snapshot can also supply the exact expected bytes. Never
@@ -106,8 +111,9 @@ class TuiSnapshotEvidence {
           messageId != null && change.assistantId != messageId ||
           change.scope != scope ||
           _path(change.path) != path ||
-          !change.textSnapshot)
+          !change.textSnapshot) {
         continue;
+      }
       if (_hash(change.afterHash) == hash && _matchesText(change.after, hash)) {
         return (known: true, text: change.after);
       }
@@ -126,17 +132,20 @@ class TuiSnapshotEvidence {
   ) {
     const unknown = <String, Object?>{'added': null, 'removed': null};
     if (activity.toolName != 'coding_write_file' ||
-        activity.status != SearchActivityStatus.done)
+        activity.status != SearchActivityStatus.done) {
       return unknown;
+    }
     final args = _object(activity.toolArguments),
         receipt = _object(activity.resultText);
-    if (args == null || receipt == null || args['content'] is! String)
+    if (args == null || receipt == null || args['content'] is! String) {
       return unknown;
+    }
     final path = _path(args['path']), hash = _hash(receipt['sha256']);
     if (path == null ||
         !_location(args, receipt, path, _scope(args)) ||
-        !_matchesText(args['content'] as String, hash))
+        !_matchesText(args['content'] as String, hash)) {
       return unknown;
+    }
     final before = _before(
       expected: args['expected_sha256'],
       path: path,
@@ -155,8 +164,9 @@ class TuiSnapshotEvidence {
 
   List<String> approvalDiff(PendingWorkApproval request) {
     if (request.conversationId != conversationId ||
-        request.tool != 'coding_write_file')
+        request.tool != 'coding_write_file') {
       return [];
+    }
     final args = _object(request.arguments);
     if (args == null ||
         args['content'] is! String ||

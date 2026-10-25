@@ -25,7 +25,7 @@ SearchActivity read(
   toolArguments: jsonEncode({
     'path': path,
     'scope': scope,
-    if (encoding != null) 'encoding': encoding,
+    'encoding': ?encoding,
   }),
   resultText: jsonEncode({
     'path': path,

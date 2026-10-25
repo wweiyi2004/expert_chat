@@ -82,6 +82,8 @@ fn run() -> Result<()> {
             std::env::var("COLORTERM").as_deref(),
             Ok("truecolor" | "24bit")
         ),
+        color256: std::env::var_os("WT_SESSION").is_some()
+            || std::env::var("TERM").is_ok_and(|term| term.contains("256color")),
         light: expert_tui::theme::light(args.theme.as_deref()),
         reduce_motion: std::env::var_os("EXPERT_REDUCE_MOTION").is_some()
             || std::env::var("TERM").as_deref() == Ok("dumb")

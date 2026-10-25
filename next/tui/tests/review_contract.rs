@@ -70,6 +70,25 @@ fn no_color_never_emits_colored_cells_even_with_truecolor_requested() {
 }
 
 #[test]
+fn windows_terminal_palette_support_can_show_pet_without_truecolor_override() {
+    let mut a = app("welcome");
+    a.color256 = true;
+    assert!(ui::pet_visible(&a, 80, 24));
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|f| ui::draw(f, &a)).unwrap();
+    assert!(
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .any(|cell| matches!(cell.fg, Color::Indexed(_)))
+    );
+    a.no_color = true;
+    assert!(!ui::pet_visible(&a, 80, 24));
+}
+
+#[test]
 fn failed_tool_keeps_exit_evidence_instead_of_a_successful_fold() {
     let a = app("failed");
     for width in [40, 60, 80] {

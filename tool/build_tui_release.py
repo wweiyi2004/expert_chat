@@ -71,16 +71,33 @@ def main():
         return
     manifest = load_freeze()
     if args.action == "validate":
-        checks = [
-            run("final-flutter-analyze", FLUTTER + ["analyze", "--no-pub"]),
-            run("final-flutter-tests", FLUTTER + ["test", "--no-pub", "--reporter", "expanded"]),
+        checks = []
+        prior_file = OUT / "validation-sources.json"
+        prior_result = OUT / "validation.json"
+        def flutter_inputs(values):
+            return {p: v for p, v in values.items() if p.startswith(("lib/", "test/", "integration_test/", "assets/", "third_party/", "android/", "windows/")) or "/" not in p}
+        if prior_file.exists() and prior_result.exists():
+            prior = json.loads(prior_file.read_text(encoding="utf-8"))
+            previous = json.loads(prior_result.read_text(encoding="utf-8"))
+            if previous["manifest_sha256"] == digest(prior_file) and flutter_inputs(prior) == flutter_inputs(manifest):
+                checks = [{**item, "reused_unchanged_flutter_inputs": True, "validated_manifest_sha256": previous["manifest_sha256"]}
+                          for item in previous["checks"] if item["label"] in {"final-flutter-analyze", "final-flutter-tests"} and item["exit_code"] == 0]
+                assert len(checks) == 2
+                print("Reusing passed Flutter checks: all Flutter source, tests, assets and platform inputs are byte-identical", flush=True)
+        if not checks:
+            checks = [
+                run("final-flutter-analyze", FLUTTER + ["analyze", "--no-pub"]),
+                run("final-flutter-tests", FLUTTER + ["test", "--no-pub", "--reporter", "expanded"]),
+            ]
+        checks.extend([
             run("final-cargo-build", ["cargo", "build", "--manifest-path", "next/Cargo.toml", "--locked"]),
             run("final-cargo-tests", ["cargo", "test", "--manifest-path", "next/Cargo.toml", "--locked"]),
             run("final-cargo-clippy", ["cargo", "clippy", "--manifest-path", "next/Cargo.toml", "--locked", "--all-targets", "--", "-D", "warnings"]),
             run("final-native-single-instance", ["python", "tool/test_tui_single_instance.py"]),
-        ]
+        ])
         load_freeze()
         write("validation.json", {"manifest_sha256": digest(OUT / "sources.json"), "checks": checks})
+        write("validation-sources.json", manifest)
         return
     validation = json.loads((OUT / "validation.json").read_text(encoding="utf-8"))
     assert validation["manifest_sha256"] == digest(OUT / "sources.json"), "Validate this exact freeze first"

@@ -235,10 +235,7 @@ pub fn pet_visible(a: &App, w: u16, h: u16) -> bool {
         && a.scroll == 0
         && w >= 80
         && h >= 20
-        && (a.truecolor
-            || std::env::var("TERM")
-                .unwrap_or_default()
-                .contains("256color"))
+        && (a.truecolor || a.color256)
         && !a.ascii
         && !a.no_color
         && a.ambiguous_width == 1

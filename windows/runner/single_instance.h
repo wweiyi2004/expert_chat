@@ -16,19 +16,22 @@ class SingleInstance {
   SingleInstance(const SingleInstance&) = delete;
   SingleInstance& operator=(const SingleInstance&) = delete;
 
-  Result Acquire(DWORD startup_wait_ms = 5000);
+  Result Acquire(DWORD startup_wait_ms = 5000, bool enable_tui = false);
   bool AttachWindow(HWND window);
   UINT activation_message() const { return activation_message_; }
   DWORD error() const { return error_; }
   static UINT DefaultActivationMessage();
+  static UINT DefaultTuiEnableMessage();
 
  private:
   HWND FindExistingWindow();
   void Activate(HWND window);
+  void EnableTui(HWND window);
   std::wstring mutex_name_;
   std::wstring property_name_;
   bool detect_legacy_;
   UINT activation_message_ = 0;
+  UINT tui_enable_message_ = 0;
   HANDLE mutex_ = nullptr;
   HWND window_ = nullptr;
   DWORD error_ = ERROR_SUCCESS;

@@ -5,7 +5,12 @@
 
 namespace {
 UINT activation = 0;
+UINT tui_enable = 0;
 LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM w, LPARAM l) {
+  if (message == tui_enable) {
+    std::cout << "tui_enabled_hidden=" << !IsWindowVisible(window) << std::endl;
+    return 0;
+  }
   if (message == activation) {
     ShowWindow(window, SW_RESTORE);
     std::cout << "activated" << std::endl;
@@ -26,7 +31,8 @@ int wmain(int argc, wchar_t** argv) {
     if (!collision) return 91;
   }
   SingleInstance guard(identity);
-  const auto result = guard.Acquire(argc > 3 ? _wtoi(argv[3]) : 2000);
+  const auto result = guard.Acquire(argc > 3 ? _wtoi(argv[3]) : 2000,
+                                    mode == L"tui");
   if (mode == L"collision") {
     CloseHandle(collision);
     return result == SingleInstance::Result::error ? 0 : 92;
@@ -47,6 +53,7 @@ int wmain(int argc, wchar_t** argv) {
   }
   if (argc > 4) Sleep(_wtoi(argv[4]));
   activation = guard.activation_message();
+  tui_enable = RegisterWindowMessageW((identity + L".enable-tui.v1").c_str());
   WNDCLASSW window_class{};
   window_class.lpfnWndProc = WindowProc;
   window_class.hInstance = GetModuleHandleW(nullptr);

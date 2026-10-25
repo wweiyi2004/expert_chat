@@ -15,8 +15,9 @@ constexpr UINT kTrayExit = 1002;
 
 #include "flutter/generated_plugin_registrant.h"
 
-FlutterWindow::FlutterWindow(const flutter::DartProject& project)
-    : project_(project) {}
+FlutterWindow::FlutterWindow(const flutter::DartProject& project,
+                             bool tui_enabled, bool background)
+    : project_(project), tui_enabled_(tui_enabled), background_(background) {}
 
 FlutterWindow::~FlutterWindow() {}
 
@@ -38,6 +39,28 @@ bool FlutterWindow::OnCreate() {
   RegisterPlugins(flutter_controller_->engine());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
   AddTrayIcon();
+  tui_channel_ =
+      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+          flutter_controller_->engine()->messenger(), "expert_chat/tui_bridge",
+          &flutter::StandardMethodCodec::GetInstance());
+  tui_channel_->SetMethodCallHandler(
+      [this](const auto& call, auto result) {
+        if (call.method_name() == "getLaunchOptions") {
+          result->Success(flutter::EncodableValue(flutter::EncodableMap{
+              {flutter::EncodableValue("enabled"),
+               flutter::EncodableValue(tui_enabled_)},
+              {flutter::EncodableValue("background"),
+               flutter::EncodableValue(background_)}}));
+        } else if (call.method_name() == "show") {
+          RestoreFromTray();
+          result->Success();
+        } else if (call.method_name() == "disabled") {
+          tui_enabled_ = false;
+          result->Success();
+        } else {
+          result->NotImplemented();
+        }
+      });
   generation_channel_ =
       std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
           flutter_controller_->engine()->messenger(), "expert_chat/generation",
@@ -56,7 +79,9 @@ bool FlutterWindow::OnCreate() {
       });
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
-    this->Show();
+    // Remain reachable if the taskbar is unavailable; otherwise TUI launch
+    // does not flash or steal focus from the terminal.
+    if (!background_ || !tray_available_) this->Show();
   });
 
   // Flutter can complete the first frame before the "show window" callback is
@@ -71,6 +96,7 @@ void FlutterWindow::OnDestroy() {
   RemoveTrayIcon();
   SetThreadExecutionState(ES_CONTINUOUS);
   generation_channel_ = nullptr;
+  tui_channel_ = nullptr;
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }
@@ -109,6 +135,13 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
+  if (message == SingleInstance::DefaultTuiEnableMessage()) {
+    // Retain this flag even before Dart registers its handler. Its initial
+    // getLaunchOptions query closes the startup race.
+    tui_enabled_ = true;
+    if (tui_channel_) tui_channel_->InvokeMethod("enable", nullptr);
+    return 0;
+  }
   if (message == SingleInstance::DefaultActivationMessage()) {
     RestoreFromTray();
     return 0;

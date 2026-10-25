@@ -3,6 +3,7 @@
 namespace {
 constexpr wchar_t kIdentity[] = L"com.wweiyi.expert_chat";
 constexpr wchar_t kActivateSuffix[] = L".activate.v1";
+constexpr wchar_t kTuiEnableSuffix[] = L".enable-tui.v1";
 
 bool IsLegacyAppWindow(HWND window) {
   wchar_t class_name[128]{};
@@ -34,7 +35,9 @@ SingleInstance::SingleInstance(std::wstring identity, bool detect_legacy)
       property_name_(identity + L".main-window.v1"),
       detect_legacy_(detect_legacy),
       activation_message_(RegisterWindowMessageW(
-          (identity + kActivateSuffix).c_str())) {}
+          (identity + kActivateSuffix).c_str())),
+      tui_enable_message_(RegisterWindowMessageW(
+          (identity + kTuiEnableSuffix).c_str())) {}
 
 SingleInstance::~SingleInstance() {
   if (window_ && IsWindow(window_)) {
@@ -46,6 +49,12 @@ SingleInstance::~SingleInstance() {
 UINT SingleInstance::DefaultActivationMessage() {
   static const UINT message = RegisterWindowMessageW(
       (std::wstring(kIdentity) + kActivateSuffix).c_str());
+  return message;
+}
+
+UINT SingleInstance::DefaultTuiEnableMessage() {
+  static const UINT message = RegisterWindowMessageW(
+      (std::wstring(kIdentity) + kTuiEnableSuffix).c_str());
   return message;
 }
 
@@ -84,8 +93,17 @@ void SingleInstance::Activate(HWND window) {
   SetForegroundWindow(window);
 }
 
-SingleInstance::Result SingleInstance::Acquire(DWORD startup_wait_ms) {
-  if (!activation_message_) {
+void SingleInstance::EnableTui(HWND window) {
+  // A fixed, argument-free request: it cannot execute a command or grant a
+  // workspace. Authentication is established separately by the Dart bridge.
+  DWORD_PTR ignored = 0;
+  SendMessageTimeoutW(window, tui_enable_message_, 0, 0,
+                      SMTO_ABORTIFHUNG | SMTO_BLOCK, 1000, &ignored);
+}
+
+SingleInstance::Result SingleInstance::Acquire(DWORD startup_wait_ms,
+                                              bool enable_tui) {
+  if (!activation_message_ || !tui_enable_message_) {
     error_ = GetLastError();
     return Result::error;
   }
@@ -101,7 +119,8 @@ SingleInstance::Result SingleInstance::Acquire(DWORD startup_wait_ms) {
     return result;
   };
   if (HWND existing = FindExistingWindow()) {
-    Activate(existing);
+    if (enable_tui) EnableTui(existing);
+    else Activate(existing);
     return secondary(Result::activated_existing);
   }
   if (create_error != ERROR_ALREADY_EXISTS) return Result::primary;
@@ -112,7 +131,8 @@ SingleInstance::Result SingleInstance::Acquire(DWORD startup_wait_ms) {
   do {
     Sleep(25);
     if (HWND existing = FindExistingWindow()) {
-      Activate(existing);
+      if (enable_tui) EnableTui(existing);
+      else Activate(existing);
       return secondary(Result::activated_existing);
     }
   } while (GetTickCount64() < deadline);

@@ -732,6 +732,7 @@ mixin ChatTools on ChatMutations {
       return _SessionConfiguration(
         policy: configuration.policy.copyWith(
           network: configuration.policy.network && desired.policy.network,
+          planOnly: configuration.policy.planOnly || desired.policy.planOnly,
           approval: approval,
         ),
         workspaceId: configuration.workspaceId,
@@ -763,6 +764,7 @@ mixin ChatTools on ChatMutations {
     final rootTaskId = _run?.agentTaskId ?? assistantId;
     final ownerRun = _run;
     final environment = WorkAgentEnvironment(
+      allowTool: (name) => _planAllowsTool(convoId, name),
       takeTaskTool: () {
         final allowed =
             ownerRun?.execution.budget?.takeTool(resumeRoot: false) ?? false;
@@ -1010,6 +1012,7 @@ mixin ChatTools on ChatMutations {
                   'work_start_process',
                   'work_restart_process',
                 }.contains(tool.name) &&
+                _planAllowsTool(convoId, tool.name) &&
                 (!readOnly ||
                     _readOnlyCapabilityAllowed(tool.name, null, childSettings)))
               if (readOnly && tool.name == 'device_action')
@@ -1051,6 +1054,8 @@ mixin ChatTools on ChatMutations {
         return registry.visibleTools;
       },
       prepareIsolation: (record) async {
+        if (!_planAllowsTool(convoId, 'work_run_command'))
+          throw StateError('计划模式不能创建独立工作树');
         final inherited = childConfiguration();
         final run = _SessionRun(convoId)
           ..configuration = inherited
@@ -1484,6 +1489,12 @@ mixin ChatTools on ChatMutations {
           ownerAgentId: ownerAgentId,
           hookId: hookId,
           execute: (processToken, onOutput) async {
+            if (!_planAllowsTool(convoId, 'work_run_command')) {
+              return const WorkProcessResult(
+                cancelled: true,
+                output: '计划模式禁止执行后台命令',
+              );
+            }
             var processConfiguration = configuration;
             if (!firstExecution) {
               final desired = _desiredConfiguration(convoId);
@@ -1555,6 +1566,12 @@ mixin ChatTools on ChatMutations {
                 await ref
                     .read(workChangesProvider.notifier)
                     .commandStarted(convoId, assistantId, session.changeTarget);
+                if (!_planAllowsTool(convoId, 'work_run_command')) {
+                  return const WorkProcessResult(
+                    cancelled: true,
+                    output: '计划模式禁止执行后台命令',
+                  );
+                }
                 return await WorkProcessRuntime.executeInSession(
                   session,
                   command,
@@ -1673,6 +1690,9 @@ mixin ChatTools on ChatMutations {
           requestIdentity: requestIdentity,
           token: cancelToken,
           operation: () async {
+            if (!_planAllowsTool(convoId, call.name)) {
+              return '计划模式只允许明确只读工具；此操作未执行。请提供计划或等待用户切换工作模式。';
+            }
             if (allowedToolNames != null &&
                 !allowedToolNames.contains(call.name)) {
               return '当前完整工具轮未开放此工具，未执行。请使用本轮列出的能力。';
@@ -1738,10 +1758,21 @@ mixin ChatTools on ChatMutations {
                   settings: settings,
                   token: cancelToken,
                 )) {
-              return '用户未批准此操作，未执行。不要改写参数或换用其他工具绕过此决定。';
+              final reason = ref
+                  .read(workApprovalsProvider.notifier)
+                  .takeDenial(
+                    convoId,
+                    call.name ?? '工具',
+                    call.argumentsJson,
+                    workspaceSession?.target ?? '会话连接的外部工具',
+                  );
+              return '用户未批准此操作，未执行。${reason == null ? '' : '拒绝原因：$reason。'}不要改写参数或换用其他工具绕过此决定。';
             }
             if (_execution.isCancelled || cancelToken.isCancelled) {
               return '操作已取消，未执行。';
+            }
+            if (!_planAllowsTool(convoId, call.name)) {
+              return '计划模式已生效，此操作未执行。';
             }
             final capabilityResult = await _executeCapabilityTool(
               call,
@@ -2151,6 +2182,32 @@ mixin ChatTools on ChatMutations {
     }
   }
 
+  bool _planAllowsTool(String conversation, String? name) {
+    final desired = ref.read(sessionPolicyProvider)[conversation];
+    if (!(desired?.planOnly ?? false) && !(_policyFor(conversation).planOnly))
+      return true;
+    return const {
+      'work_ask_user',
+      'coding_workspace_info',
+      'coding_list_directory',
+      'coding_read_file',
+      'coding_artifact_manifest',
+      'math_calculate',
+      'web_search',
+      'fetch_url',
+      'inspect_document',
+      'device_observe',
+      'work_list_processes',
+      'work_process_status',
+      'work_memory_recall',
+      'work_history',
+      'role_library_search',
+      'tool_registry_search',
+      'work_list_agents',
+      'work_agent_status',
+    }.contains(name);
+  }
+
   Future<bool> _approveWorkTool(
     ToolCall call, {
     required String convoId,
@@ -2159,6 +2216,7 @@ mixin ChatTools on ChatMutations {
     required SettingsState settings,
     required CancelToken token,
   }) async {
+    if (!_planAllowsTool(convoId, call.name)) return false;
     const reads = {
       'work_ask_user',
       ...WorkAgentRuntime.toolNames,
@@ -2183,6 +2241,10 @@ mixin ChatTools on ChatMutations {
     };
     if (reads.contains(call.name)) return true;
     final policy = _policyFor(convoId);
+    if (ref
+        .read(workApprovalsProvider.notifier)
+        .isAllowed(convoId, call.name ?? '工具', call.argumentsJson, target))
+      return true;
     if (policy.approval == WorkApprovalMode.full) return true;
     var reason = call.name == 'work_run_command' ? '命令以系统账号权限运行；工作目录不是沙箱。' : '';
     if (policy.approval == WorkApprovalMode.assisted) {

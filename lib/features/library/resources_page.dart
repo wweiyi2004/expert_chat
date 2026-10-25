@@ -21,6 +21,17 @@ import '../story/ensemble_setup_page.dart';
 import '../story/studio_page.dart';
 import 'generation_history_page.dart';
 
+/// Shared navigation target, including requests from the terminal bridge.
+final resourceTabProvider = NotifierProvider<ResourceTabController, String>(
+  ResourceTabController.new,
+);
+
+class ResourceTabController extends Notifier<String> {
+  @override
+  String build() => 'sets';
+  void select(String tab) => state = tab;
+}
+
 final _resourceSetsProvider =
     FutureProvider.autoDispose<
       ({List<Project> projects, Map<String, int> counts})
@@ -44,7 +55,9 @@ class ResourcesPage extends ConsumerStatefulWidget {
 }
 
 class _ResourcesPageState extends ConsumerState<ResourcesPage> {
-  String _tab = 'sets';
+  String get _tab => ref.read(resourceTabProvider);
+  set _tab(String value) =>
+      ref.read(resourceTabProvider.notifier).select(value);
   Future<void> _manage({String? id, bool create = false}) async {
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
@@ -69,6 +82,7 @@ class _ResourcesPageState extends ConsumerState<ResourcesPage> {
       Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => page));
   @override
   Widget build(BuildContext context) {
+    ref.watch(resourceTabProvider);
     final c = PrototypeColors.of(context);
     final phone = MediaQuery.sizeOf(context).width < 840;
     final settings = ref.watch(settingsControllerProvider).value;

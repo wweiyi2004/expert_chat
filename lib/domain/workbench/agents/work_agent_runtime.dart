@@ -114,9 +114,11 @@ class WorkAgentEnvironment {
     this.takeTaskTool,
     this.takeTaskSearch,
     this.onChildExecution,
+    this.allowTool,
   });
   final List<LlmRequestMessage> Function(String agentId, String callId)?
   takeToolObservations;
+  final bool Function(String tool)? allowTool;
   final Future<void> Function(WorkAgentRecord record)? beforeRound;
   final bool Function()? takeTaskTool;
   final bool Function()? takeTaskSearch;
@@ -1567,6 +1569,9 @@ class WorkAgentRuntime extends ChangeNotifier {
           await flushJournal();
           String result;
           try {
+            if (r.environment.allowTool?.call(call.name ?? '') == false) {
+              throw StateError('当前会话计划模式禁止此工具，未执行');
+            }
             if (r.environment.takeTaskTool?.call() == false) {
               throw StateError('共享任务工具预算已用尽');
             }

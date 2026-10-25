@@ -64,6 +64,13 @@ class SessionPolicyControls extends ConsumerWidget {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        if (workMode)
+          SwitchListTile(
+            title: const Text('计划模式'),
+            subtitle: const Text('仅允许明确只读工具；禁止文件写入、命令、设备操作和未知外部工具。'),
+            value: policy.planOnly,
+            onChanged: (value) => save(policy.copyWith(planOnly: value)),
+          ),
         SwitchListTile(
           title: const Text('允许联网检索'),
           subtitle: const Text('由 AI 按需搜索；关闭后不提供网页检索工具。'),
@@ -215,7 +222,7 @@ class ComposerPermissionControl extends ConsumerWidget {
         key: const ValueKey('composer-permission'),
         plain: plain,
         icon: Icons.shield_outlined,
-        label: policy.approval.label,
+        label: '${policy.planOnly ? '计划模式 · ' : ''}${policy.approval.label}',
         onPressed: () => showComposerPopover<void>(
           anchor,
           width: 420,

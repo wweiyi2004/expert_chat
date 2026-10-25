@@ -578,6 +578,9 @@ abstract class _ChatControllerBase extends AsyncNotifier<ChatState> {
       );
       return false;
     }
+    if (run.userCancelled || run.execution.isActive || !ref.mounted) {
+      return false;
+    }
     run.core!.resumeRequired = false;
     run.awaitingEvents = true;
     _sessionFailures.remove(conversationId);
@@ -1824,7 +1827,82 @@ class ChatController extends _ChatControllerBase
         ChatMedia,
         ChatTurns,
         ChatSessions,
-        ChatTaskRecovery {}
+        ChatTaskRecovery {
+  bool thinkingForSession(String id) => _composerThinking[id] ?? true;
+  String? errorForSession(String id) =>
+      _sessionFailures[id]?.message ??
+      (_rawState.errorConvoId == id ? _rawState.error : null);
+  ReasoningEffort effortForSession(String id) =>
+      _composerEffort[id] ?? ReasoningEffort.high;
+
+  /// External callers carry explicit identity through all asynchronous work.
+  Future<bool> sendToSession(
+    String id,
+    String text, {
+    List<Attachment> attachments = const [],
+  }) => _inSession(() async {
+    try {
+      final accepted = await sendMessage(text, attachments: attachments);
+      if (!accepted && errorForSession(id) == null) {
+        _setScopedError('终端消息未开始执行，请检查会话状态后重试。', convoId: id);
+      }
+      return accepted;
+    } catch (_) {
+      if (ref.mounted) {
+        _setScopedError('终端请求执行失败，请在 GUI 检查此会话的任务记录。', convoId: id);
+      }
+      return false;
+    }
+  }, conversationId: id);
+
+  void reportExternalFailure(String id, String message) => _withSession(() {
+    if (ref.mounted) _setScopedError(message, convoId: id);
+  }, conversationId: id);
+
+  Future<void> loadSession(String id) =>
+      _inSession(() => _ensureConversationLoaded(id), conversationId: id);
+
+  Future<String> createWorkSession({String? title}) async {
+    final fresh = Conversation(workMode: true, title: title ?? '新工作会话');
+    _set(_s.copyWith(conversations: [fresh, ..._s.conversations]));
+    await _persistence.persistById(fresh.id);
+    return fresh.id;
+  }
+
+  Future<String> withdrawWorkRequirement(String id, String queuedId) =>
+      _inSession(() async {
+        final text = await ref
+            .read(workTaskSteeringProvider)
+            .withdraw(id, queuedId);
+        final conversation = _s.conversations.firstWhere((c) => c.id == id);
+        final prefix = '【运行中补充 #$queuedId】';
+        final updated = conversation.copyWith(
+          messages: [
+            for (final message in conversation.messages)
+              if (message.role == MessageRole.user &&
+                  message.content.startsWith(prefix))
+                message.copyWith(content: '【已撤回补充 #$queuedId】此要求已撤回，不得执行。')
+              else
+                message,
+          ],
+        );
+        _set(_s.copyWith(conversations: _replace(updated)));
+        await _persistence.persistById(id);
+        return text;
+      }, conversationId: id);
+
+  void configureSessionThinking(
+    String id,
+    bool thinking,
+    ReasoningEffort effort,
+  ) => _withSession(() {
+    _composerThinking[id] = thinking;
+    _composerEffort[id] = effort;
+    if (_rawState.currentId == id) {
+      _set(_s.copyWith(deepThink: thinking, reasoningEffort: effort));
+    }
+  }, conversationId: id);
+}
 
 final chatControllerProvider = AsyncNotifierProvider<ChatController, ChatState>(
   ChatController.new,

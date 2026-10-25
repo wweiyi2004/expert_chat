@@ -870,6 +870,7 @@ mixin ChatSessions on ChatTurns {
   }
 
   Future<void> deleteConversation(String id) async {
+    ref.read(workApprovalsProvider.notifier).revokeSession(id);
     // Deleting the conversation that is currently streaming: abort the stream
     // first, WITHOUT persisting it (a late save would resurrect the row).
     if (_sessionRuns.containsKey(id)) stop(persist: false, conversationId: id);

@@ -114,6 +114,21 @@ class TaskSteeringStore {
     if (prepared.isNotEmpty) await _save(conversation, next);
     return prepared;
   });
+
+  /// Serialized with consumption: only a still queued entry can be withdrawn.
+  Future<String> withdraw(String conversation, String id) =>
+      _transaction(conversation, () async {
+        final records = snapshot(conversation);
+        final entry = records.where((e) => e['id'] == id).firstOrNull;
+        if (entry == null || entry['status'] != 'queued') {
+          throw StateError('补充要求已消费或不存在，不能撤回');
+        }
+        await _save(conversation, [
+          for (final value in records)
+            if (value['id'] == id) {...value, 'status': 'withdrawn'} else value,
+        ]);
+        return entry['text'] as String;
+      });
   String instructions(String conversation, String task) =>
       snapshot(conversation)
           .where((e) => e['task'] == task && e['status'] == 'context_prepared')

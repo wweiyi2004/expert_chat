@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/providers.dart';
+import 'work_approvals.dart';
 
 /// Device-local grants do not travel in exported chats or imported backups.
 final conversationWorkspaceBindingsProvider =
@@ -33,7 +34,14 @@ class ConversationWorkspaceBindings extends Notifier<Map<String, String>> {
       if (!await prefs.setString(storageKey, jsonEncode(next))) {
         throw StateError('工作区选择未保存，请重试。');
       }
-      if (ref.mounted) state = Map.unmodifiable(next);
+      if (ref.mounted) {
+        if (state[conversationId] != workspaceId) {
+          ref
+              .read(workApprovalsProvider.notifier)
+              .revokeSession(conversationId);
+        }
+        state = Map.unmodifiable(next);
+      }
     });
     // Keep later user changes possible after a failed save; the caller still
     // receives the original failed operation.
@@ -61,7 +69,14 @@ class ConversationWorkspaceBindings extends Notifier<Map<String, String>> {
           .setString(storageKey, jsonEncode(next))) {
         throw StateError('工作区选择未保存，请重试。');
       }
-      if (ref.mounted) state = Map.unmodifiable(next);
+      if (ref.mounted) {
+        if (state[conversationId] != workspaceId) {
+          ref
+              .read(workApprovalsProvider.notifier)
+              .revokeSession(conversationId);
+        }
+        state = Map.unmodifiable(next);
+      }
       return true;
     });
     _pending = operation.then<void>((_) {}, onError: (Object _) {});

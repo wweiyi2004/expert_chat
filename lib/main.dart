@@ -19,8 +19,9 @@ import 'features/shell/app_shell.dart';
 import 'features/shell/conversation_return_scope.dart';
 import 'features/shell/startup_error_app.dart';
 import 'state/settings_controller.dart';
+import 'features/tui_bridge/bridge_host.dart';
 
-Future<void> main() async {
+Future<void> main(List<String> args) async {
   if (!kIsWeb &&
       defaultTargetPlatform == TargetPlatform.windows &&
       !const bool.fromEnvironment('EXPERT_CHAT_WINDOWS_SEMANTICS')) {
@@ -71,7 +72,10 @@ Future<void> main() async {
           sharedPrefsProvider.overrideWithValue(prefs),
           appDatabaseProvider.overrideWithValue(db),
         ],
-        child: const ExpertChatApp(),
+        child: TuiBridgeHost(
+          enabled: args.contains('--tui-bridge'),
+          child: const ExpertChatApp(),
+        ),
       ),
     );
   } catch (e, st) {

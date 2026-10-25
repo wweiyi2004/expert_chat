@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/providers.dart';
+import 'work_approvals.dart';
 
 enum WorkApprovalMode {
   request('请求批准'),
@@ -23,12 +24,14 @@ class SessionPolicy {
     this.roundExtension = 12,
     this.roundReviewAhead = 2,
     this.autoExtendRounds = true,
+    this.planOnly = false,
   });
   final bool archived, network;
   final WorkApprovalMode approval;
   final String reviewerModel, sshProfileId, remoteRoot;
   final int toolRounds, roundExtension, roundReviewAhead;
   final bool autoExtendRounds;
+  final bool planOnly;
   SessionPolicy copyWith({
     bool? archived,
     bool? network,
@@ -40,6 +43,7 @@ class SessionPolicy {
     int? roundExtension,
     int? roundReviewAhead,
     bool? autoExtendRounds,
+    bool? planOnly,
   }) => SessionPolicy(
     archived: archived ?? this.archived,
     network: network ?? this.network,
@@ -51,6 +55,7 @@ class SessionPolicy {
     roundExtension: roundExtension ?? this.roundExtension,
     roundReviewAhead: roundReviewAhead ?? this.roundReviewAhead,
     autoExtendRounds: autoExtendRounds ?? this.autoExtendRounds,
+    planOnly: planOnly ?? this.planOnly,
   );
   Map<String, dynamic> toJson() => {
     'archived': archived,
@@ -63,6 +68,7 @@ class SessionPolicy {
     'roundExtension': roundExtension,
     'roundReviewAhead': roundReviewAhead,
     'autoExtendRounds': autoExtendRounds,
+    'planOnly': planOnly,
   };
   factory SessionPolicy.fromJson(Map<String, dynamic> j) => SessionPolicy(
     archived: j['archived'] == true,
@@ -85,6 +91,7 @@ class SessionPolicy {
       1000,
     ),
     autoExtendRounds: j['autoExtendRounds'] != false,
+    planOnly: j['planOnly'] == true,
   );
 }
 
@@ -120,6 +127,9 @@ class SessionPolicies extends Notifier<Map<String, SessionPolicy>> {
         throw StateError('会话设置未保存');
       }
       if (ref.mounted) state = next;
+      for (final id in updates.keys) {
+        ref.read(workApprovalsProvider.notifier).revokeSession(id);
+      }
     });
     _pending = save.catchError((Object _) {});
     return save;

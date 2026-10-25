@@ -791,7 +791,16 @@ mixin ChatStreaming on ChatTools {
                   : 0,
             ),
           );
-        final outgoingMessages = roundContext.messages;
+        final outgoingMessages = [
+          ...roundContext.messages,
+          if (_policyFor(convoId).planOnly ||
+              (ref.read(sessionPolicyProvider)[convoId]?.planOnly ?? false))
+            const LlmRequestMessage(
+              role: MessageRole.system,
+              content:
+                  '当前为计划模式。只读取信息并提出计划，不写文件、不运行命令、不操作设备、不创建子任务。执行层会阻止有副作用和未知工具。',
+            ),
+        ];
         _recordContextReport(convoId, roundContext.report, accumulate: true);
         if (settings.context.enabled &&
             roundContext.report.sentTokens >
@@ -814,7 +823,9 @@ mixin ChatStreaming on ChatTools {
           taskToolRegistry.applyBoundary();
         }
         final visibleToolSpecs =
-            taskToolRegistry?.visibleTools ?? activeToolSpecs;
+            (taskToolRegistry?.visibleTools ?? activeToolSpecs)
+                .where((tool) => _planAllowsTool(convoId, tool.name))
+                .toList();
         final request = LlmRequestPolicy.forRound(
           config: config,
           thinking: thinking,

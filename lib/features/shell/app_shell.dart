@@ -25,6 +25,8 @@ import '../library/resources_page.dart';
 import 'automation_page.dart';
 import 'return_to_conversation.dart';
 import '../../core/prototype_widgets.dart';
+import '../tui_bridge/gui_navigation.dart';
+import '../workbench/workspace_workbench_page.dart';
 
 /// Root chrome: 会话 / 工具 / 设置.
 ///
@@ -51,6 +53,23 @@ class _AppShellState extends ConsumerState<AppShell>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    ref.listenManual(tuiGuiNavigationProvider, (previous, next) {
+      if (next == null) return;
+      scheduleMicrotask(() {
+        if (!mounted) return;
+        unawaited(
+          Navigator.of(context).push<void>(
+            MaterialPageRoute<void>(
+              builder: (_) => WorkspaceWorkbenchPage(
+                conversationId: next.file.conversationId,
+                initialTab: 3,
+                initialDelivery: next.file,
+              ),
+            ),
+          ),
+        );
+      });
+    });
     ref.listenManual(shellTabProvider, (previous, next) {
       // Provider changes can originate in a popup dismissal or a layout pass.
       scheduleMicrotask(() {

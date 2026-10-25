@@ -66,6 +66,7 @@ class _SessionConfiguration {
         settings?.subagentRouterModel != other.settings?.subagentRouterModel)
       '子代理角色',
     if (policy.network != other.policy.network ||
+        policy.planOnly != other.policy.planOnly ||
         policy.approval != other.policy.approval ||
         policy.reviewerModel != other.policy.reviewerModel)
       '权限',

@@ -72,7 +72,10 @@ class SettingsState {
     this.gatewayLegacyToken = '',
     this.gatewayAuthSession,
     this.gatewayTokenProvider,
+    this.asrEnabled = true,
     this.customMcpTokens = const {},
+    this.customMcpEnvironments = const {},
+    this.customMcpHeaders = const {},
     this.memoryEnabled = false,
     this.researchModeEnabled = false,
     this.studyModeEnabled = true,
@@ -165,7 +168,10 @@ class SettingsState {
   final Future<String> Function()? gatewayTokenProvider;
 
   /// Bearer tokens for [GatewayConfig.customMcpServers], keyed by server id.
+  final bool asrEnabled;
   final Map<String, String> customMcpTokens;
+  final Map<String, Map<String, String>> customMcpEnvironments,
+      customMcpHeaders;
 
   /// Local Markdown long-term memory. Off by default until the user opts in.
   final bool memoryEnabled;
@@ -252,14 +258,19 @@ class SettingsState {
     if (serverId == null) return gatewayConnection;
     for (final server in gateway.customMcpServers) {
       if (server.id == serverId) {
-        return gateway.connectionForCustom(
-          server,
-          customMcpTokens[server.id] ?? '',
-        );
+        return connectionForCustom(server);
       }
     }
     return gatewayConnection;
   }
+
+  GatewayConnection connectionForCustom(CustomMcpServer server) =>
+      gateway.connectionForCustom(
+        server,
+        customMcpTokens[server.id] ?? '',
+        headers: customMcpHeaders[server.id] ?? const {},
+        environment: customMcpEnvironments[server.id] ?? const {},
+      );
 
   GatewayConnection get gatewayConnection => GatewayConnection(
     config: gateway,
@@ -277,7 +288,7 @@ class SettingsState {
   bool get imageGenerationConfigured =>
       imageGenerationApi.isConfiguredWith(imageGenerationApiKey);
   bool get ttsConfigured => ttsApi.isConfiguredWith(ttsApiKey);
-  bool get asrConfigured => asrApi.isConfiguredWith(asrApiKey);
+  bool get asrConfigured => asrEnabled && asrApi.isConfiguredWith(asrApiKey);
 
   ProviderProfile? get active {
     if (profiles.isEmpty) return null;
@@ -375,7 +386,10 @@ class SettingsState {
     String? gatewayLegacyToken,
     Object? gatewayAuthSession = unchanged,
     Future<String> Function()? gatewayTokenProvider,
+    bool? asrEnabled,
     Map<String, String>? customMcpTokens,
+    Map<String, Map<String, String>>? customMcpEnvironments,
+    Map<String, Map<String, String>>? customMcpHeaders,
     bool? memoryEnabled,
     TaskBudgetPrefs? taskBudget,
     bool? researchModeEnabled,
@@ -428,7 +442,10 @@ class SettingsState {
         ? this.gatewayAuthSession
         : gatewayAuthSession as GatewayAuthSession?,
     gatewayTokenProvider: gatewayTokenProvider ?? this.gatewayTokenProvider,
+    asrEnabled: asrEnabled ?? this.asrEnabled,
     customMcpTokens: customMcpTokens ?? this.customMcpTokens,
+    customMcpEnvironments: customMcpEnvironments ?? this.customMcpEnvironments,
+    customMcpHeaders: customMcpHeaders ?? this.customMcpHeaders,
     memoryEnabled: memoryEnabled ?? this.memoryEnabled,
     taskBudget: taskBudget ?? this.taskBudget,
     researchModeEnabled: researchModeEnabled ?? this.researchModeEnabled,

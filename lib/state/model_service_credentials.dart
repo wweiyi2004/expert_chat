@@ -21,6 +21,7 @@ bool modelServiceDescriptorMatches(
   ModelServiceCredentialSnapshot current,
 ) {
   final profile = current.profile;
+  if (!profile.enabled) return false;
   return profile.baseUrl.replaceFirst(RegExp(r'/+$'), '') ==
           config.baseUrl.replaceFirst(RegExp(r'/+$'), '') &&
       profile.authMode == config.authMode &&

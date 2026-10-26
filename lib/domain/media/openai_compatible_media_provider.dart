@@ -1020,6 +1020,78 @@ class OpenAiCompatibleMediaProvider {
     return 'data:$normalizedMime;base64,${base64Encode(bytes)}';
   }
 
+  /// Shared file-ASR dispatch. MiMo retains its existing chat-audio protocol;
+  /// standard Whisper/transcribe services use the multipart transcription API.
+  Future<String> transcribeSpeech({
+    required MediaApiConfig config,
+    required String apiKey,
+    required Uint8List audioBytes,
+    required String mimeType,
+    String filename = 'audio.wav',
+    String language = 'auto',
+    CancelToken? cancelToken,
+  }) async {
+    if (config.model.toLowerCase().contains('mimo')) {
+      return transcribeMimoSpeech(
+        config: config,
+        apiKey: apiKey,
+        audioBytes: audioBytes,
+        mimeType: mimeType,
+        language: language,
+        cancelToken: cancelToken,
+      );
+    }
+    _ensureConfigured(config, apiKey, '语音识别');
+    if (config.isGeminiNative) {
+      throw const FormatException(
+        '文件语音识别需要 MiMo 或 OpenAI 兼容 audio/transcriptions 接口',
+      );
+    }
+    if (audioBytes.isEmpty || audioBytes.length > _maxAudioBytes) {
+      throw const FormatException('音频必须非空且不超过25 MB');
+    }
+    final form = FormData.fromMap({
+      'model': config.model.trim(),
+      'response_format': 'json',
+      if (language.trim().isNotEmpty && language != 'auto')
+        'language': language.trim(),
+      'file': MultipartFile.fromBytes(
+        audioBytes,
+        filename: filename,
+        contentType: DioMediaType.parse(_audioMimeType(mimeType)),
+      ),
+    });
+    try {
+      final response = await _dio.post<dynamic>(
+        _endpoint(config.openAiCompatibleBaseUrl, 'audio/transcriptions'),
+        data: form,
+        cancelToken: cancelToken,
+        options: Options(
+          headers: {
+            'Authorization': 'Bearer ${apiKey.trim()}',
+            'Accept': 'application/json',
+          },
+        ),
+      );
+      final raw = response.data is String
+          ? jsonDecode(response.data as String)
+          : response.data;
+      final text = raw is Map ? raw['text'] : null;
+      if (text is! String || text.trim().isEmpty) {
+        throw const FormatException(
+          '语音识别接口未返回JSON text，请核对ASR模型和audio/transcriptions端点',
+        );
+      }
+      return text.trim();
+    } on DioException catch (error) {
+      if (CancelToken.isCancel(error)) rethrow;
+      final code = error.response?.statusCode;
+      throw FormatException(
+        '文件语音识别请求失败${code == null ? '' : '（HTTP $code）'}，请核对Base URL、密钥和ASR模型；非MiMo服务需要audio/transcriptions接口',
+      );
+    }
+  }
+
   /// Sends a recorded WAV (or another supported audio MIME type) to MiMo ASR
   /// and returns the transcript contained in `choices[0].message.content`.
   Future<String> transcribeMimoSpeech({

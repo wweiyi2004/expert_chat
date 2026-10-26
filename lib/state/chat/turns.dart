@@ -4,6 +4,7 @@ mixin ChatTurns on ChatMedia {
   void stop({bool persist = true, String? conversationId}) => _withSession(() {
     final stoppingId = conversationId ?? _run?.conversationId ?? _s.currentId;
     _compactionTokens[stoppingId]?.cancel('用户已停止上下文整理');
+    _titleTokens[stoppingId]?.cancel('用户已停止自动标题');
     final streamingId = _s.streamingConvoId;
     final stoppedRun = _run;
     final onlyAuxiliary =
@@ -301,6 +302,7 @@ mixin ChatTurns on ChatMedia {
     int? oneTimeWorkRounds,
   }) => _inSession(() async {
     final trimmed = text.trim();
+    _titleTokens[_s.currentId]?.cancel('新的用户消息优先');
     if (_compactingSessions.contains(_s.currentId)) return false;
     if ((trimmed.isEmpty && attachments.isEmpty) ||
         _s.isStreaming ||
@@ -362,7 +364,12 @@ mixin ChatTurns on ChatMedia {
           ? trimmed
           : (attachments.isNotEmpty ? attachments.first.name : '新对话');
       final working = convo.copyWith(
-        title: isFirst ? truncateTitle(titleSeed) : convo.title,
+        title:
+            isFirst &&
+                (_manualTitleRevisions[convo.id] ?? 0) == 0 &&
+                const {'新对话', '新工作会话', '新会话', ''}.contains(convo.title)
+            ? truncateTitle(titleSeed.split(RegExp(r'[\r\n]')).first)
+            : convo.title,
         messages: [...convo.messages, userMsg, assistantMsg],
         activeChildren: activeChildrenAfterAppending(
           convo.activeChildren,

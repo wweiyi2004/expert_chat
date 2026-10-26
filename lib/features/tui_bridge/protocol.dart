@@ -12,6 +12,10 @@ abstract interface class BridgeBackend {
   Future<Map<String, Object?>> snapshot(String? session);
 }
 
+abstract interface class BridgeClientLifecycle {
+  void releaseClient(String scope);
+}
+
 String requiredString(Map<String, dynamic> params, String name) {
   final value = params[name];
   if (value is! String || value.trim().isEmpty) {

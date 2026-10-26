@@ -18,12 +18,14 @@ class ProviderProfile {
     List<String>? models,
     this.apiFormat = LlmApiFormat.auto,
     this.authMode = 'apiKey',
+    this.enabled = true,
     this.modelLimits = const {},
   }) : id = id ?? _uuid.v4(),
        models = models ?? const [];
 
   final String id;
   final String authMode;
+  final bool enabled;
   final Map<String, ModelTokenLimits> modelLimits;
 
   /// User-facing label, e.g. "DeepSeek" or "My OpenAI".
@@ -56,10 +58,12 @@ class ProviderProfile {
     List<String>? models,
     LlmApiFormat? apiFormat,
     String? authMode,
+    bool? enabled,
     Map<String, ModelTokenLimits>? modelLimits,
   }) => ProviderProfile(
     id: id,
     authMode: authMode ?? this.authMode,
+    enabled: enabled ?? this.enabled,
     modelLimits: modelLimits ?? this.modelLimits,
     name: name ?? this.name,
     baseUrl: baseUrl ?? this.baseUrl,
@@ -71,6 +75,7 @@ class ProviderProfile {
 
   Map<String, dynamic> toJson() => {
     'id': id,
+    if (!enabled) 'enabled': false,
     if (authMode != 'apiKey') 'authMode': authMode,
     'name': name,
     'baseUrl': baseUrl,
@@ -87,6 +92,7 @@ class ProviderProfile {
   factory ProviderProfile.fromJson(Map<String, dynamic> json) =>
       ProviderProfile(
         id: json['id'] as String?,
+        enabled: json['enabled'] != false,
         authMode: json['authMode'] as String? ?? 'apiKey',
         name: json['name'] as String? ?? '未命名',
         baseUrl: json['baseUrl'] as String? ?? '',

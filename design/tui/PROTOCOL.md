@@ -54,8 +54,25 @@ hello 必须首个请求，5 秒内完成，返回 `{protocol:1,server_id,pid,ca
 | files.list | session_id,query? | files:[{path,kind}]；从授权工具会话列出，不能随意遍历本机 |
 | gui.open | session_id?,page?:session/settings/library/media,change_id? | accepted，唤起同一 GUI |
 | bridge.stop | {} | accepted，仅关闭桥接，不停止任务 |
+| settings.get | session_id? | providers、mcp、asr、schema；密钥只返回存在标记，env/header只返回键名 |
+| provider.save | id?,name,api_format,base_url,models,chat_model?,reasoner_model?,api_key?,enabled? | accepted,id 与更新后的设置；空/缺省 key 保留，clear_key:true 才清除 |
+| provider.remove | id,confirmed:true | accepted 与更新设置 |
+| provider.scan | id | models 与更新设置，使用所选来源发现模型 |
+| provider.enable | id,enabled | accepted 与更新设置 |
+| mcp.save | id?,name,transport:stdio/http,command?,args?,working_directory?,env?,base_url?,headers?,token?,enabled? | accepted,id 与更新设置；敏感字段缺省保留，配置保存不启动程序 |
+| mcp.remove | id,confirmed:true | accepted 与更新设置 |
+| mcp.scan | id,confirmed:true | 更新后的工具信息；stdio扫描会启动已配置程序，需独立确认 |
+| mcp.enable | id,enabled | accepted 与更新设置 |
+| mcp.bind | session_id,id,selected,confirmed:true | accepted,selected；显式修改本会话选用的MCP列表，运行中拒绝 |
+| asr.save | base_url,model,api_key?,enabled?,clear_key? | accepted 与更新设置；复用共享ASR配置及安全存储 |
+| attachment.import | session_id,path:绝对路径,confirmed:true | attachment:{token,name,mime,size,kind,preview,warnings}，同连接/会话作用域，不把大媒体放入WS请求 |
+| attachment.cancel | session_id | accepted；取消本连接在该会话的导入，不影响任务和其他连接 |
 
 图片剪贴板/附件不通过任意 path 让服务器读文件；允许有大小限制的显式附件内容对象 `{name,mime,data_base64}`，校验类型和体积。跨平台剪贴板不可用时说明并提供文件入口，不假装粘贴成功。
+
+用户本轮明确要求本机文件导入后，增加独立的 `attachment.import`：只用于用户选择/拖放/粘贴的普通文件，必须显式confirmed，服务端校验类型与大小，返回不可猜测token。连接scope由服务器生成并覆盖客户端输入；message.send可传`attachments:[{token}]`，仅该连接与会话可解析，断连取消导入并释放token。旧小体积base64仍兼容。上限：文档10MiB、图5MiB、音频25MiB、视频100MiB；每消息最多8个原始附件。音频走共享MiMo或OpenAI兼容ASR；视频仅本机ffmpeg前60秒最多3个640px关键帧，不读取音轨，限制协议/解封装器、处理时限和临时目录。
+
+原生设置表单不把密钥写进会话正文或日志；API Key、MCP env/header/token仍由共享安全存储管理。新增配置/修改配置/删除/扫描不绕过GUI既有权限和会话选用边界。`/settings`、`/skin`均为TUI原生界面，替代先前通用跳GUI设置的行为；官方OAuth浏览器授权流程仍可按既有入口处理。
 
 ## 唯一状态快照
 

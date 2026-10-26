@@ -17,6 +17,47 @@ pub struct PendingInput {
     pub draft: Draft,
     pub question_state: Option<(usize, serde_json::Map<String, Value>)>,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormKind {
+    Settings,
+    Provider,
+    Mcp,
+    Skin,
+    Asr,
+}
+#[derive(Clone)]
+pub struct FormField {
+    pub key: String,
+    pub label: String,
+    pub value: String,
+    pub secret: bool,
+    pub editable: bool,
+}
+impl std::fmt::Debug for FormField {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FormField")
+            .field("key", &self.key)
+            .field("value", &if self.secret { "[masked]" } else { &self.value })
+            .finish()
+    }
+}
+#[derive(Debug, Clone)]
+pub struct TerminalForm {
+    pub kind: FormKind,
+    pub title: String,
+    pub fields: Vec<FormField>,
+    pub selected: usize,
+    pub editing: bool,
+    pub notice: String,
+    pub items: Vec<Value>,
+    pub item_selected: usize,
+}
+#[derive(Debug, Clone, Copy)]
+pub struct CommandSpec {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub usage: &'static str,
+}
 
 pub fn text<'a>(v: &'a Value, key: &str) -> &'a str {
     v[key].as_str().unwrap_or("")
@@ -24,10 +65,44 @@ pub fn text<'a>(v: &'a Value, key: &str) -> &'a str {
 pub fn items<'a>(v: &'a Value, key: &str) -> &'a [Value] {
     v[key].as_array().map(Vec::as_slice).unwrap_or(&[])
 }
-#[derive(Debug, Clone, PartialEq)]
+pub fn model_source_key(model: &Value) -> &str {
+    if text(model, "source") == "路由组" || text(model, "source_id").is_empty() {
+        text(model, "source")
+    } else {
+        text(model, "source_id")
+    }
+}
+pub fn current_model(model: &Value, session: &Value) -> bool {
+    if !session["model_choice"].is_null() && model["choice"] == session["model_choice"] {
+        return true;
+    }
+    if text(session, "model_choice").starts_with("__") {
+        return false;
+    }
+    text(model, "id") == text(session, "model")
+        && (text(session, "model_source_id").is_empty()
+            || model["source_id"] == session["model_source_id"])
+}
+#[derive(Clone, PartialEq)]
 pub struct Command {
     pub method: String,
     pub params: Value,
+}
+impl std::fmt::Debug for Command {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut params = self.params.clone();
+        if let Some(map) = params.as_object_mut() {
+            for key in ["api_key", "token", "headers", "env"] {
+                if map.contains_key(key) {
+                    map.insert(key.into(), json!("[masked]"));
+                }
+            }
+        }
+        f.debug_struct("Command")
+            .field("method", &self.method)
+            .field("params", &params)
+            .finish()
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
@@ -70,6 +145,7 @@ pub struct App {
     pub truecolor: bool,
     pub color256: bool,
     pub light: bool,
+    pub terminal_light: Option<bool>,
     pub reduce_motion: bool,
     pub ambiguous_width: u8,
     pub pet: crate::pet::Pet,
@@ -109,6 +185,19 @@ pub struct App {
     pub preferred_column: Option<usize>,
     pub pending_compactions: Vec<Command>,
     pub viewport: (u16, u16),
+    pub form: Option<TerminalForm>,
+    pub recent_selected: Option<usize>,
+    pub recent_confirm: Option<String>,
+    pub outbox: Vec<Command>,
+    pub attachment_targets: Vec<(Command, Option<String>)>,
+    pub file_picker_requested: bool,
+    pub skin: String,
+    pub background: Option<String>,
+    pub accent: Option<String>,
+    pub code_style: String,
+    pub form_confirm: Option<String>,
+    pub form_revision: u64,
+    pub pending_form: Option<(u64, Command)>,
 }
 impl Default for App {
     fn default() -> Self {
@@ -136,6 +225,7 @@ impl Default for App {
             truecolor: false,
             color256: false,
             light: false,
+            terminal_light: None,
             reduce_motion: false,
             ambiguous_width: 1,
             pet: Default::default(),
@@ -175,10 +265,712 @@ impl Default for App {
             preferred_column: None,
             pending_compactions: vec![],
             viewport: (80, 24),
+            form: None,
+            recent_selected: None,
+            recent_confirm: None,
+            outbox: vec![],
+            attachment_targets: vec![],
+            file_picker_requested: false,
+            skin: "terminal".into(),
+            form_confirm: None,
+            form_revision: 0,
+            pending_form: None,
+            background: None,
+            accent: None,
+            code_style: "auto".into(),
         }
     }
 }
 impl App {
+    pub fn recent_sessions(&self) -> Vec<Value> {
+        items(&self.snapshot, "sessions")
+            .iter()
+            .filter(|s| {
+                s["id"] != self.snapshot["session"]["id"]
+                    && s["empty"] != true
+                    && (self.snapshot["session"]["workspace_id"].is_null()
+                        || s["workspace_id"] == self.snapshot["session"]["workspace_id"])
+            })
+            .take(3)
+            .cloned()
+            .collect()
+    }
+    fn move_recent(&mut self, direction: i32) {
+        let len = self.recent_sessions().len();
+        if len == 0 {
+            return;
+        }
+        self.recent_selected = Some(match self.recent_selected {
+            None => {
+                if direction < 0 {
+                    len - 1
+                } else {
+                    0
+                }
+            }
+            Some(i) => {
+                if direction < 0 {
+                    i.saturating_sub(1)
+                } else {
+                    (i + 1).min(len - 1)
+                }
+            }
+        });
+        self.recent_confirm = None;
+    }
+    fn activate_recent(&mut self) -> Vec<Command> {
+        let Some(item) = self
+            .recent_selected
+            .and_then(|i| self.recent_sessions().get(i).cloned())
+        else {
+            return vec![];
+        };
+        let id = text(&item, "id").to_owned();
+        if self.recent_confirm.as_deref() == Some(&id) {
+            self.recent_confirm = None;
+            return vec![Command {
+                method: "session.open".into(),
+                params: json!({"session_id":id}),
+            }];
+        }
+        self.recent_confirm = Some(id);
+        self.notice = "再次按 Enter 或再次点击该会话确认进入；Esc 取消".into();
+        vec![]
+    }
+    pub fn click_recent(&mut self, index: usize) -> Vec<Command> {
+        if self.recent_selected != Some(index) {
+            self.recent_selected = Some(index);
+            self.recent_confirm = None;
+        }
+        self.activate_recent()
+    }
+    pub fn import_paths(&mut self, paths: Vec<std::path::PathBuf>) -> Vec<Command> {
+        let mut commands = vec![];
+        for path in paths {
+            match crate::attachment::import_params(&path) {
+                Ok(params) => {
+                    let c = self.command("attachment.import", params);
+                    self.attachment_targets
+                        .push((c.clone(), self.agent_message_id.clone()));
+                    commands.push(c);
+                }
+                Err(error) => self.notice = format!("无法附加文件：{error}"),
+            }
+        }
+        if !commands.is_empty() {
+            self.notice = format!("正在导入 {} 个附件…", commands.len());
+        }
+        commands
+    }
+    fn field(key: &str, label: &str, value: &str, secret: bool, editable: bool) -> FormField {
+        FormField {
+            key: key.into(),
+            label: label.into(),
+            value: value.into(),
+            secret,
+            editable,
+        }
+    }
+    pub fn panel_rows(&self) -> Vec<String> {
+        self.form
+            .as_ref()
+            .map(|f| f.fields.iter().map(|field| field.label.clone()).collect())
+            .unwrap_or_default()
+    }
+    pub fn open_settings(&mut self) -> Vec<Command> {
+        self.drawer = None;
+        self.view = View::Chat;
+        self.rebuild_settings();
+        vec![self.command("settings.get", json!({}))]
+    }
+    fn rebuild_settings(&mut self) {
+        let mut fields = vec![Self::field(
+            "provider.new",
+            "＋ 添加模型来源",
+            "",
+            false,
+            false,
+        )];
+        for (i, p) in items(&self.snapshot["settings"], "providers")
+            .iter()
+            .enumerate()
+        {
+            fields.push(Self::field(
+                &format!("provider.{i}"),
+                &format!("模型来源 · {}", text(p, "name")),
+                "",
+                false,
+                false,
+            ));
+        }
+        fields.push(Self::field("mcp.new", "＋ 添加 MCP 服务", "", false, false));
+        for (i, m) in items(&self.snapshot["settings"], "mcp").iter().enumerate() {
+            fields.push(Self::field(
+                &format!("mcp.{i}"),
+                &format!("MCP · {}", text(m, "name")),
+                "",
+                false,
+                false,
+            ));
+        }
+        fields.push(Self::field("skin", "终端皮肤", "", false, false));
+        fields.push(Self::field(
+            "asr",
+            "语音识别 · 音频附件转写",
+            "",
+            false,
+            false,
+        ));
+        fields.push(Self::field(
+            "attach",
+            "添加文件、图片、视频或音频",
+            "",
+            false,
+            false,
+        ));
+        self.form_revision = self.form_revision.wrapping_add(1);
+        self.form = Some(TerminalForm {
+            kind: FormKind::Settings,
+            title: "终端设置".into(),
+            fields,
+            selected: 0,
+            editing: false,
+            notice: "↑↓ 选择 · Enter 打开 · Esc 返回".into(),
+            items: vec![],
+            item_selected: 0,
+        });
+    }
+    fn edit_provider(&mut self, item: Value) {
+        let models = items(&item, "models")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join(",");
+        let fields = vec![
+            Self::field("id", "来源 ID", text(&item, "id"), false, false),
+            Self::field("name", "名称", text(&item, "name"), false, true),
+            Self::field(
+                "api_format",
+                "协议 auto/openAiCompatible/openAiResponses/anthropicMessages/geminiNative",
+                item["api_format"].as_str().unwrap_or("auto"),
+                false,
+                true,
+            ),
+            Self::field(
+                "auth_mode",
+                "认证 apiKey/none",
+                item["auth_mode"].as_str().unwrap_or("apiKey"),
+                false,
+                true,
+            ),
+            Self::field("base_url", "API 地址", text(&item, "base_url"), false, true),
+            Self::field("models", "模型 ID（逗号分隔）", &models, false, true),
+            Self::field(
+                "chat_model",
+                "默认模型",
+                text(&item, "chat_model"),
+                false,
+                true,
+            ),
+            Self::field(
+                "reasoner_model",
+                "推理模型",
+                text(&item, "reasoner_model"),
+                false,
+                true,
+            ),
+            Self::field("api_key", "API Key（留空保留原密钥）", "", true, true),
+            Self::field(
+                "enabled",
+                "启用 true/false",
+                if item["enabled"] == false {
+                    "false"
+                } else {
+                    "true"
+                },
+                false,
+                true,
+            ),
+            Self::field("__save", "保存来源", "", false, false),
+            Self::field("__scan", "发现模型（保存后可用）", "", false, false),
+            Self::field("__remove", "删除来源（需二次确认）", "", false, false),
+        ];
+        self.form_revision = self.form_revision.wrapping_add(1);
+        self.form = Some(TerminalForm {
+            kind: FormKind::Provider,
+            title: "模型来源".into(),
+            fields,
+            selected: 1,
+            editing: true,
+            notice: "Tab/↑↓ 切字段 · Ctrl+U 清字段 · Enter 下一项/执行 · Esc 返回".into(),
+            items: vec![item],
+            item_selected: 0,
+        });
+    }
+    fn edit_mcp(&mut self, item: Value) {
+        let args = items(&item, "args")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let fields = vec![
+            Self::field("id", "服务 ID", text(&item, "id"), false, false),
+            Self::field("name", "名称", text(&item, "name"), false, true),
+            Self::field(
+                "transport",
+                "传输 stdio/http",
+                item["transport"].as_str().unwrap_or("stdio"),
+                false,
+                true,
+            ),
+            Self::field("command", "程序", text(&item, "command"), false, true),
+            Self::field("args", "参数（每行一个）", &args, false, true),
+            Self::field(
+                "working_directory",
+                "工作目录",
+                text(&item, "working_directory"),
+                false,
+                true,
+            ),
+            Self::field(
+                "base_url",
+                "HTTP 地址",
+                text(&item, "base_url"),
+                false,
+                true,
+            ),
+            Self::field("env", "环境变量 JSON（留空保留）", "", true, true),
+            Self::field("headers", "HTTP 头 JSON（留空保留）", "", true, true),
+            Self::field("token", "访问令牌（留空保留）", "", true, true),
+            Self::field(
+                "enabled",
+                "启用 true/false",
+                if item["enabled"] == false {
+                    "false"
+                } else {
+                    "true"
+                },
+                false,
+                true,
+            ),
+            Self::field("__save", "保存 MCP 服务", "", false, false),
+            Self::field(
+                "selected",
+                "本会话使用 true/false",
+                if item["selected"] == true {
+                    "true"
+                } else {
+                    "false"
+                },
+                false,
+                true,
+            ),
+            Self::field("__bind", "应用本会话选用（需确认）", "", false, false),
+            Self::field("__scan", "连接并发现工具（需确认）", "", false, false),
+            Self::field("__remove", "删除 MCP 服务（需二次确认）", "", false, false),
+        ];
+        self.form_revision = self.form_revision.wrapping_add(1);
+        self.form = Some(TerminalForm {
+            kind: FormKind::Mcp,
+            title: "MCP 服务".into(),
+            fields,
+            selected: 1,
+            editing: true,
+            notice: "Tab/↑↓ 切字段 · Ctrl+U 清字段 · Enter 下一项/执行 · Esc 返回".into(),
+            items: vec![item],
+            item_selected: 0,
+        });
+    }
+    pub fn open_skin(&mut self) {
+        self.drawer = None;
+        self.view = View::Chat;
+        let mut fields = crate::theme::SKINS
+            .iter()
+            .map(|(id, label)| Self::field(id, label, "", false, false))
+            .collect::<Vec<_>>();
+        fields.push(Self::field(
+            "__custom",
+            "自定义背景、强调色与代码配色",
+            "",
+            false,
+            false,
+        ));
+        self.form_revision = self.form_revision.wrapping_add(1);
+        self.form = Some(TerminalForm {
+            kind: FormKind::Skin,
+            title: "终端皮肤".into(),
+            fields,
+            selected: 0,
+            editing: false,
+            notice: "↑↓ 选择 · Enter 应用并保存 · Esc 返回".into(),
+            items: vec![],
+            item_selected: 0,
+        });
+    }
+    fn edit_asr(&mut self) {
+        let item = &self.snapshot["settings"]["asr"];
+        let fields = vec![
+            Self::field(
+                "base_url",
+                "音频服务 API 地址",
+                text(item, "base_url"),
+                false,
+                true,
+            ),
+            Self::field(
+                "model",
+                "语音模型（如 whisper-1 或 mimo）",
+                text(item, "model"),
+                false,
+                true,
+            ),
+            Self::field("api_key", "API Key（留空保留）", "", true, true),
+            Self::field(
+                "enabled",
+                "启用 true/false",
+                if item["enabled"] == true {
+                    "true"
+                } else {
+                    "false"
+                },
+                false,
+                true,
+            ),
+            Self::field("__save", "保存语音识别配置", "", false, false),
+        ];
+        self.form_revision = self.form_revision.wrapping_add(1);
+        self.form = Some(TerminalForm {
+            kind: FormKind::Asr,
+            title: "语音识别".into(),
+            fields,
+            selected: 0,
+            editing: true,
+            notice: "支持 OpenAI 转写与 MiMo 音频识别 · Tab 切字段 · Enter 下一项/保存".into(),
+            items: vec![],
+            item_selected: 0,
+        });
+    }
+    fn sync_appearance(&mut self, config: crate::config::Config) {
+        self.config_warning = None;
+        self.skin = config.skin;
+        self.background = config.background;
+        self.accent = config.accent;
+        self.code_style = config.code_style;
+        self.light = crate::theme::appearance_is_light(
+            &self.skin,
+            self.background.as_deref(),
+            self.terminal_light
+                .unwrap_or_else(|| crate::theme::light(None)),
+        );
+        self.truecolor = true;
+        self.redraw_requested = true;
+    }
+    fn apply_skin(&mut self, name: &str) {
+        match crate::config::save_skin(name) {
+            Ok(config) => {
+                self.sync_appearance(config);
+                self.notice = format!("已应用皮肤：{name}");
+                self.form = None;
+            }
+            Err(error) => {
+                self.notice = format!("无法保存皮肤：{error}");
+                if let Some(form) = self.form.as_mut() {
+                    form.notice = self.notice.clone();
+                }
+            }
+        }
+    }
+    fn form_key(&mut self, key: KeyEvent) -> Vec<Command> {
+        if key.code == KeyCode::Esc {
+            let kind = self.form.as_ref().unwrap().kind;
+            self.form = None;
+            self.form_confirm = None;
+            if matches!(kind, FormKind::Provider | FormKind::Mcp | FormKind::Asr) {
+                self.rebuild_settings();
+            }
+            return vec![];
+        }
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if ctrl && key.code == KeyCode::Char('v') {
+            self.clipboard_requested = true;
+            return vec![];
+        }
+        if (ctrl && key.code == KeyCode::Char('j'))
+            || (key.modifiers.contains(KeyModifiers::ALT) && key.code == KeyCode::Char('j'))
+            || (key.code == KeyCode::Enter
+                && key
+                    .modifiers
+                    .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::CONTROL))
+        {
+            if let Some(form) = self.form.as_mut()
+                && let Some(field) = form.fields.get_mut(form.selected)
+                && field.editable
+                && matches!(field.key.as_str(), "args" | "env" | "headers")
+            {
+                field.value.push('\n');
+            }
+            return vec![];
+        }
+        if ctrl && key.code == KeyCode::Char('l') {
+            self.redraw_requested = true;
+            return vec![];
+        }
+        let form = self.form.as_mut().unwrap();
+        let len = form.fields.len();
+        if len == 0 {
+            return vec![];
+        }
+        match key.code {
+            KeyCode::Tab | KeyCode::Down => {
+                form.selected = (form.selected + 1) % len;
+                self.form_confirm = None;
+            }
+            KeyCode::BackTab | KeyCode::Up => {
+                form.selected = form.selected.checked_sub(1).unwrap_or(len - 1);
+                self.form_confirm = None;
+            }
+            KeyCode::Backspace => {
+                if form.fields[form.selected].editable {
+                    form.fields[form.selected].value.pop();
+                }
+            }
+            KeyCode::Char('u') if ctrl => form.fields[form.selected].value.clear(),
+            KeyCode::Char(c) if !ctrl => {
+                if form.fields[form.selected].editable {
+                    form.fields[form.selected].value.push(c);
+                }
+            }
+            KeyCode::Enter => return self.form_activate(),
+            _ => {}
+        }
+        vec![]
+    }
+    fn form_activate(&mut self) -> Vec<Command> {
+        let form = self.form.as_ref().unwrap().clone();
+        let field = &form.fields[form.selected];
+        if field.key.starts_with("__") && self.pending_form.is_some() {
+            self.form.as_mut().unwrap().notice = "上一项操作仍在处理中，请等待响应".into();
+            return vec![];
+        }
+        if form.kind == FormKind::Settings {
+            match field.key.as_str() {
+                "provider.new" => self.edit_provider(json!({})),
+                "mcp.new" => self.edit_mcp(json!({})),
+                "attach" => self.file_picker_requested = true,
+                "skin" => self.open_skin(),
+                "asr" => self.edit_asr(),
+                key if key.starts_with("provider.") => {
+                    if let Ok(i) = key[9..].parse::<usize>() {
+                        self.edit_provider(self.snapshot["settings"]["providers"][i].clone());
+                    }
+                }
+                key if key.starts_with("mcp.") => {
+                    if let Ok(i) = key[4..].parse::<usize>() {
+                        self.edit_mcp(self.snapshot["settings"]["mcp"][i].clone());
+                    }
+                }
+                _ => {}
+            }
+            return vec![];
+        }
+        if form.kind == FormKind::Skin {
+            if field.key == "__custom" {
+                let styles = crate::theme::CODE_STYLES
+                    .iter()
+                    .map(|(id, _)| *id)
+                    .collect::<Vec<_>>()
+                    .join("/");
+                let fields = vec![
+                    Self::field(
+                        "background",
+                        "背景色 #RRGGBB（空白跟随皮肤）",
+                        self.background.as_deref().unwrap_or(""),
+                        false,
+                        true,
+                    ),
+                    Self::field(
+                        "accent",
+                        "强调色 #RRGGBB（空白跟随皮肤）",
+                        self.accent.as_deref().unwrap_or(""),
+                        false,
+                        true,
+                    ),
+                    Self::field(
+                        "code_style",
+                        &format!("代码配色 {styles}"),
+                        &self.code_style,
+                        false,
+                        true,
+                    ),
+                    Self::field("__apply", "应用并保存自定义外观", "", false, false),
+                ];
+                self.form_revision = self.form_revision.wrapping_add(1);
+                self.form = Some(TerminalForm {
+                    kind: FormKind::Skin,
+                    title: "自定义终端外观".into(),
+                    fields,
+                    selected: 0,
+                    editing: true,
+                    notice: "Tab 切字段 · Ctrl+U 清空 · Enter 下一项/应用".into(),
+                    items: vec![],
+                    item_selected: 0,
+                });
+            } else if field.editable {
+                self.form.as_mut().unwrap().selected = (form.selected + 1) % form.fields.len();
+            } else if field.key == "__apply" {
+                let value = |name: &str| {
+                    form.fields
+                        .iter()
+                        .find(|f| f.key == name)
+                        .map(|f| f.value.as_str())
+                        .unwrap_or("")
+                };
+                match crate::config::save_appearance(
+                    &self.skin,
+                    (!value("background").is_empty()).then(|| value("background")),
+                    (!value("accent").is_empty()).then(|| value("accent")),
+                    value("code_style"),
+                ) {
+                    Ok(config) => {
+                        self.sync_appearance(config);
+                        self.form = None;
+                        self.notice = "自定义外观已保存".into();
+                    }
+                    Err(error) => self.form.as_mut().unwrap().notice = error.to_string(),
+                }
+            } else {
+                self.apply_skin(&field.key);
+            }
+            return vec![];
+        }
+        if field.editable {
+            self.form.as_mut().unwrap().selected = (form.selected + 1) % form.fields.len();
+            return vec![];
+        }
+        let get = |key: &str| {
+            form.fields
+                .iter()
+                .find(|f| f.key == key)
+                .map(|f| f.value.clone())
+                .unwrap_or_default()
+        };
+        let prefix = if form.kind == FormKind::Asr {
+            "asr"
+        } else if form.kind == FormKind::Provider {
+            "provider"
+        } else {
+            "mcp"
+        };
+        let id = get("id");
+        if field.key == "__remove"
+            || field.key == "__bind"
+            || (field.key == "__scan" && form.kind == FormKind::Mcp)
+        {
+            let confirmation = format!("{prefix}:{}:{id}", field.key);
+            if self.form_confirm.as_ref() != Some(&confirmation) {
+                self.form_confirm = Some(confirmation);
+                self.form.as_mut().unwrap().notice =
+                    if field.key == "__scan" && get("transport") == "stdio" {
+                        "将启动 MCP 程序并发现工具；再次 Enter 确认，Esc 取消"
+                    } else if field.key == "__bind" {
+                        "将改变当前会话可用工具；再次 Enter 确认，Esc 取消"
+                    } else {
+                        "再次按 Enter 确认此操作；Esc 取消"
+                    }
+                    .into();
+                return vec![];
+            }
+        }
+        if field.key == "__remove" || field.key == "__scan" || field.key == "__bind" {
+            if id.is_empty() {
+                self.form.as_mut().unwrap().notice = "请先保存，再执行此操作".into();
+                return vec![];
+            }
+            self.form_confirm = None;
+            let command = self.command(
+                &format!(
+                    "{prefix}.{}",
+                    if field.key == "__bind" {
+                        "bind"
+                    } else if field.key == "__remove" {
+                        "remove"
+                    } else {
+                        "scan"
+                    }
+                ),
+                json!({"id":id,"confirmed":true,"selected":get("selected")=="true"}),
+            );
+            self.pending_form = Some((self.form_revision, command.clone()));
+            return vec![command];
+        }
+        if field.key != "__save" {
+            return vec![];
+        }
+        let mut params = json!({"name":get("name"),"enabled":get("enabled")!="false"});
+        if !id.is_empty() {
+            params["id"] = json!(id);
+        }
+        if form.kind == FormKind::Asr {
+            params = json!({"base_url":get("base_url"),"model":get("model"),"enabled":get("enabled")=="true"});
+            if !get("api_key").is_empty() {
+                params["api_key"] = json!(get("api_key"));
+            }
+        } else if form.kind == FormKind::Provider {
+            for name in [
+                "api_format",
+                "auth_mode",
+                "base_url",
+                "chat_model",
+                "reasoner_model",
+            ] {
+                params[name] = json!(get(name));
+            }
+            params["models"] = json!(
+                get("models")
+                    .split([',', '\n'])
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+            );
+            if !get("api_key").is_empty() {
+                params["api_key"] = json!(get("api_key"));
+            }
+        } else {
+            for name in ["transport", "command", "working_directory", "base_url"] {
+                params[name] = json!(get(name));
+            }
+            params["args"] = json!(
+                get("args")
+                    .lines()
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+            );
+            for name in ["env", "headers"] {
+                let raw = get(name);
+                if !raw.trim().is_empty() {
+                    match serde_json::from_str::<Value>(&raw) {
+                        Ok(value) if value.is_object() => params[name] = value,
+                        _ => {
+                            self.form.as_mut().unwrap().notice = format!("{name} 必须是 JSON 对象");
+                            return vec![];
+                        }
+                    }
+                }
+            }
+            if !get("token").is_empty() {
+                params["token"] = json!(get("token"));
+            }
+        }
+        for field in &mut self.form.as_mut().unwrap().fields {
+            if field.secret {
+                field.value.clear();
+            }
+        }
+        self.form.as_mut().unwrap().notice = "正在保存…".into();
+        let command = self.command(&format!("{prefix}.save"), params);
+        self.pending_form = Some((self.form_revision, command.clone()));
+        vec![command]
+    }
     pub fn apply_event(&mut self, envelope: &Value) -> anyhow::Result<()> {
         anyhow::ensure!(envelope["v"] == 1, "unsupported protocol version");
         let d = &envelope["data"];
@@ -395,6 +1187,8 @@ impl App {
         vec![]
     }
     pub fn open(&mut self, d: Drawer) {
+        self.form = None;
+        self.form_confirm = None;
         if self.view != View::Chat {
             self.scroll = 0;
         }
@@ -407,10 +1201,10 @@ impl App {
         self.full_confirm = false;
         self.model_effort_focus = false;
         if d == Drawer::Model {
-            let models = items(&self.snapshot, "models");
+            let models = self.drawer_items();
             if let Some(i) = models
                 .iter()
-                .position(|m| m["choice"] == self.snapshot["session"]["model_choice"])
+                .position(|m| current_model(m, &self.snapshot["session"]))
             {
                 self.selected = i;
                 let efforts = items(&models[i], "efforts");
@@ -425,6 +1219,17 @@ impl App {
     pub fn key(&mut self, key: KeyEvent, now: Instant, width: u16) -> Vec<Command> {
         self.viewport.0 = width;
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if self.form.is_some() {
+            return self.form_key(key);
+        }
+        if key.modifiers.contains(KeyModifiers::ALT) && key.code == KeyCode::Char('j') {
+            self.insert("\n");
+            return vec![];
+        }
+        if matches!(key.code, KeyCode::Char('\n' | '\r')) && !ctrl {
+            self.insert("\n");
+            return vec![];
+        }
         if !(ctrl && key.code == KeyCode::Char('c')) {
             self.exit_at = None;
         }
@@ -432,6 +1237,9 @@ impl App {
             self.esc_at = None;
         }
         if key.code == KeyCode::Esc {
+            if self.recent_confirm.take().is_some() || self.recent_selected.take().is_some() {
+                return vec![];
+            }
             if self.drawer.take().is_some() {
                 self.full_confirm = false;
                 return vec![];
@@ -566,6 +1374,7 @@ impl App {
                         self.notice = "再按一次退出".into();
                     }
                 }
+                KeyCode::Enter => self.insert("\n"),
                 KeyCode::Char('j')
                     if self.status() != "approval" || self.rejection || self.approval_collapsed =>
                 {
@@ -619,8 +1428,20 @@ impl App {
                     json!({"mode":if self.snapshot["session"]["mode"]=="plan"{"work"}else{"plan"}}),
                 )];
             }
-            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => self.insert("\n"),
+            KeyCode::Enter
+                if key.modifiers.intersects(
+                    KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::CONTROL,
+                ) =>
+            {
+                self.insert("\n")
+            }
             KeyCode::Enter => {
+                if self.input.is_empty()
+                    && self.recent_selected.is_some()
+                    && crate::ui::welcome(self)
+                {
+                    return self.activate_recent();
+                }
                 let completion = self.completion();
                 if !completion.is_empty() {
                     let value = completion[self.selected % completion.len()].clone();
@@ -671,6 +1492,13 @@ impl App {
                 self.selected = self.selected.saturating_add(1)
             }
             KeyCode::Up => {
+                if self.input.is_empty()
+                    && crate::ui::welcome(self)
+                    && !self.recent_sessions().is_empty()
+                {
+                    self.move_recent(-1);
+                    return vec![];
+                }
                 let historical = self
                     .history
                     .get(self.history_index)
@@ -711,6 +1539,13 @@ impl App {
                 }
             }
             KeyCode::Down => {
+                if self.input.is_empty()
+                    && crate::ui::welcome(self)
+                    && !self.recent_sessions().is_empty()
+                {
+                    self.move_recent(1);
+                    return vec![];
+                }
                 if self.history_index < self.history.len()
                     && self
                         .history
@@ -759,6 +1594,14 @@ impl App {
         self.cursor += s.len();
     }
     pub fn paste(&mut self, s: &str) {
+        if let Some(form) = self.form.as_mut() {
+            if let Some(field) = form.fields.get_mut(form.selected)
+                && field.editable
+            {
+                field.value.push_str(s.trim_end_matches(['\r', '\n']));
+            }
+            return;
+        }
         if self.view != View::Chat {
             return;
         }
@@ -776,6 +1619,11 @@ impl App {
             self.search_cursor += query.len();
             self.selected = 0;
         } else if self.status() != "approval" || self.approval_collapsed || self.rejection {
+            if let Some(paths) = crate::attachment::paths(&s) {
+                let commands = self.import_paths(paths);
+                self.outbox.extend(commands);
+                return;
+            }
             self.insert(&s);
             self.paste_collapsed = s.lines().count() > 5;
             self.completion_closed = true;
@@ -1086,6 +1934,113 @@ impl App {
         self.notice = "已恢复草稿与原发送目标；其他草稿可再次 /recover 切换".into();
     }
     pub fn command_response(&mut self, command: &Command, result: &Value) {
+        let form_origin = self
+            .pending_form
+            .as_ref()
+            .is_some_and(|(revision, c)| c == command && *revision == self.form_revision);
+        if self
+            .pending_form
+            .as_ref()
+            .is_some_and(|(_, c)| c == command)
+        {
+            self.pending_form = None;
+        }
+
+        if matches!(
+            command.method.as_str(),
+            "asr.save"
+                | "provider.save"
+                | "provider.remove"
+                | "provider.scan"
+                | "mcp.save"
+                | "mcp.remove"
+                | "mcp.scan"
+                | "mcp.bind"
+        ) && result["providers"].is_array()
+        {
+            self.snapshot["settings"] = result.clone();
+        }
+        if command.method == "settings.get" {
+            self.snapshot["settings"] = result.clone();
+            if self
+                .form
+                .as_ref()
+                .is_some_and(|f| f.kind == FormKind::Settings)
+            {
+                self.rebuild_settings();
+            }
+        }
+        if matches!(
+            command.method.as_str(),
+            "provider.save" | "provider.remove" | "mcp.save" | "mcp.remove" | "asr.save"
+        ) && form_origin
+        {
+            if let Some(form) = self.form.as_mut() {
+                form.notice = "已保存；设置已更新".into();
+            }
+            if command.method.ends_with(".save")
+                && let Some(id) = result["id"].as_str()
+                && let Some(form) = self.form.as_mut()
+                && let Some(field) = form.fields.iter_mut().find(|f| f.key == "id")
+            {
+                field.value = id.into();
+            }
+            self.outbox.push(self.command("settings.get", json!({})));
+            self.outbox.push(self.command("models.list", json!({})));
+            if let Some(item) = result.get("provider") {
+                self.edit_provider(item.clone());
+            } else if let Some(item) = result.get("mcp") {
+                self.edit_mcp(item.clone());
+            }
+            if command.method.ends_with(".remove") {
+                self.rebuild_settings();
+            }
+        }
+        if command.method == "provider.scan" && form_origin {
+            let models = items(result, "models")
+                .iter()
+                .filter_map(|m| m.as_str().or_else(|| m["id"].as_str()))
+                .collect::<Vec<_>>()
+                .join(",");
+            if let Some(form) = self.form.as_mut() {
+                if let Some(field) = form.fields.iter_mut().find(|f| f.key == "models") {
+                    field.value = models;
+                }
+                form.notice = "已发现并保存共享模型列表".into();
+            }
+        }
+        if command.method == "mcp.bind" && form_origin {
+            if let Some(form) = self.form.as_mut() {
+                form.notice = "本会话 MCP 工具选用已更新".into();
+            }
+        }
+        if command.method == "mcp.scan" && form_origin {
+            if let Some(form) = self.form.as_mut() {
+                form.notice = format!("已连接 · 发现 {} 个工具", items(result, "tools").len());
+            }
+        }
+        if command.method == "attachment.import"
+            && let Some(index) = self
+                .attachment_targets
+                .iter()
+                .position(|(c, _)| c == command)
+        {
+            let (_, agent) = self.attachment_targets.remove(index);
+            let attachment = result.get("attachment").unwrap_or(result).clone();
+            let warnings = items(&attachment, "warnings")
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join("；");
+            self.add_attachment(
+                command.params["session_id"].as_str(),
+                agent.as_deref(),
+                attachment,
+            );
+            if !warnings.is_empty() {
+                self.notice = format!("{} · {warnings}", self.notice);
+            }
+        }
         if command.method == "context.compact"
             && let Some(index) = self.pending_compactions.iter().position(|c| c == command)
         {
@@ -1140,6 +2095,35 @@ impl App {
         }
     }
     pub fn command_error(&mut self, command: &Command, message: &str) {
+        let form_origin = self
+            .pending_form
+            .as_ref()
+            .is_some_and(|(revision, c)| c == command && *revision == self.form_revision);
+        if self
+            .pending_form
+            .as_ref()
+            .is_some_and(|(_, c)| c == command)
+        {
+            self.pending_form = None;
+        }
+
+        self.attachment_targets.retain(|(c, _)| c != command);
+        if matches!(
+            command.method.as_str(),
+            "asr.save"
+                | "provider.save"
+                | "provider.remove"
+                | "provider.scan"
+                | "mcp.save"
+                | "mcp.remove"
+                | "mcp.scan"
+                | "mcp.bind"
+                | "settings.get"
+        ) && (form_origin || command.method == "settings.get")
+            && let Some(form) = self.form.as_mut()
+        {
+            form.notice = message.into();
+        }
         let recoveries = self.recovered_inputs.len();
         if let Some(index) = self
             .pending_inputs
@@ -1183,8 +2167,9 @@ impl App {
         attachment: Value,
     ) {
         if session == self.session_id() && agent == self.agent_message_id.as_deref() {
+            let name = text(&attachment, "name").to_owned();
             self.attachments.push(attachment);
-            self.notice = "已添加剪贴板图片".into();
+            self.notice = format!("已添加附件：{name}");
         } else if let Some(session) = session {
             self.recovered_inputs.push(PendingInput {
                 command: Command {
@@ -1372,8 +2357,44 @@ impl App {
                     }];
                 }
                 "/quit" | "/exit" => self.exit = true,
-                "/login" | "/settings" | "/doctor" | "/mcp" => {
-                    return vec![self.command("gui.open", json!({"page":"settings"}))];
+                "/login" | "/settings" | "/doctor" | "/mcp" | "/provider" => {
+                    return self.open_settings();
+                }
+                "/attach" => {
+                    if arg == "cancel" {
+                        let session = self.snapshot["session"]["id"].clone();
+                        self.attachment_targets
+                            .retain(|(command, _)| command.params["session_id"] != session);
+                        self.notice = "已请求取消附件处理；迟到结果不会附加到草稿".into();
+                        return vec![self.command("attachment.cancel", json!({}))];
+                    }
+                    if arg.is_empty() {
+                        self.file_picker_requested = true;
+                        return vec![];
+                    }
+                    if let Some(paths) = crate::attachment::paths(&arg) {
+                        return self.import_paths(paths);
+                    }
+                    self.notice = "文件不存在；含空格的路径请用双引号包围".into();
+                }
+                "/detach" => {
+                    if arg.is_empty() || arg == "all" {
+                        self.attachments.clear();
+                    } else if let Ok(i) = arg.parse::<usize>()
+                        && i > 0
+                        && i <= self.attachments.len()
+                    {
+                        self.attachments.remove(i - 1);
+                    } else {
+                        self.notice = "用法：/detach [编号|all]".into();
+                    }
+                }
+                "/skin" => {
+                    if arg.is_empty() {
+                        self.open_skin();
+                    } else {
+                        self.apply_skin(&arg);
+                    }
                 }
                 "/library" => return vec![self.command("gui.open", json!({"page":"library"}))],
                 "/media" => return vec![self.command("gui.open", json!({"page":"media"}))],
@@ -1397,6 +2418,14 @@ impl App {
                 "/recover" => self.recover_draft(),
                 _ => self.notice = format!("未知命令：{cmd} · /help"),
             }
+            return vec![];
+        }
+        if self
+            .attachment_targets
+            .iter()
+            .any(|(command, _)| command.params["session_id"] == self.snapshot["session"]["id"])
+        {
+            self.notice = "附件正在处理；可 /attach cancel".into();
             return vec![];
         }
         if self.pending_draft.is_some()
@@ -1592,11 +2621,37 @@ impl App {
     }
     pub fn drawer_items(&self) -> Vec<Value> {
         match self.drawer {
-            Some(Drawer::Model) => items(&self.snapshot, "models")
-                .iter()
-                .filter(|m| fuzzy(text(m, "id"), &self.search))
-                .cloned()
-                .collect(),
+            Some(Drawer::Model) => {
+                let mut list: Vec<Value> = items(&self.snapshot, "models")
+                    .iter()
+                    .filter(|m| {
+                        fuzzy(
+                            &format!(
+                                "{} {} {}",
+                                text(m, "id"),
+                                text(m, "source"),
+                                text(m, "source_host")
+                            ),
+                            &self.search,
+                        )
+                    })
+                    .cloned()
+                    .collect();
+                let mut sources = vec![];
+                for model in &list {
+                    let source = model_source_key(model).to_owned();
+                    if !sources.contains(&source) {
+                        sources.push(source);
+                    }
+                }
+                list.sort_by_key(|m| {
+                    sources
+                        .iter()
+                        .position(|s| s == model_source_key(m))
+                        .unwrap_or(0)
+                });
+                list
+            }
             Some(Drawer::Sessions) => items(&self.snapshot, "sessions")
                 .iter()
                 .filter(|m| fuzzy(text(m, "title"), &self.search))
@@ -1736,29 +2791,51 @@ impl App {
         out
     }
 }
-pub const COMMANDS: &[&str] = &[
-    "/gui",
-    "/bridge",
-    "/library",
-    "/media",
-    "/model",
-    "/mode",
-    "/permissions",
-    "/sessions",
-    "/resume",
-    "/workspace",
-    "/login",
-    "/new",
-    "/accept",
-    "/stop",
-    "/compact",
-    "/recover",
-    "/doctor",
-    "/mcp",
-    "/pet",
-    "/help",
-    "/quit",
+macro_rules! commands {
+    ($(($name:literal,$description:literal,$usage:literal)),* $(,)?)=>{
+        pub const COMMANDS:&[&str]=&[$($name),*];
+        pub const COMMAND_SPECS:&[CommandSpec]=&[$(CommandSpec{name:$name,description:$description,usage:$usage}),*];
+    }
+}
+commands![
+    ("/model", "切换模型与思考强度", "/model"),
+    ("/mode", "工作或计划模式", "/mode [work|plan]"),
+    ("/permissions", "选择工具权限", "/permissions"),
+    ("/settings", "终端内设置", "/settings"),
+    ("/provider", "管理模型来源与API密钥", "/provider"),
+    ("/mcp", "管理MCP服务与工具", "/mcp"),
+    (
+        "/attach",
+        "添加文件、图片、视频或音频",
+        "/attach [文件路径|cancel]"
+    ),
+    ("/detach", "移除草稿附件", "/detach [编号|all]"),
+    ("/skin", "切换终端皮肤", "/skin [皮肤名]"),
+    ("/sessions", "选择历史会话", "/sessions"),
+    ("/resume", "继续最近或指定会话", "/resume [会话ID]"),
+    ("/workspace", "切换工作区", "/workspace"),
+    ("/new", "新建工作会话", "/new"),
+    ("/stop", "立即中断任务", "/stop"),
+    ("/accept", "验收本轮改动", "/accept"),
+    ("/compact", "整理公开上下文", "/compact"),
+    ("/recover", "恢复失败草稿与发送目标", "/recover"),
+    ("/pet", "宠物动作及开关", "/pet [on|off]"),
+    ("/login", "添加模型登录来源", "/login"),
+    ("/doctor", "查看终端设置与配置", "/doctor"),
+    ("/help", "显示全部快捷键", "/help"),
+    ("/gui", "在图形界面定位当前会话", "/gui"),
+    ("/library", "打开资料库", "/library"),
+    ("/media", "打开媒体工作区", "/media"),
+    ("/bridge", "关闭桥接且保留后台任务", "/bridge off"),
+    ("/quit", "退出终端，后台任务继续", "/quit")
 ];
+pub fn command_metadata(command: &str) -> (&'static str, &'static str) {
+    COMMAND_SPECS
+        .iter()
+        .find(|c| c.name == command)
+        .map(|c| (c.description, c.usage))
+        .unwrap_or(("终端命令", ""))
+}
 fn fuzzy(value: &str, query: &str) -> bool {
     let lower = value.to_lowercase();
     let mut chars = lower.chars();

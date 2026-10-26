@@ -43,9 +43,10 @@ List<ProviderProfile> servicesForModel(
   final available = profiles
       .where(
         (p) =>
-            p.models.contains(model) ||
-            p.chatModel == model ||
-            p.reasonerModel == model,
+            p.enabled &&
+            (p.models.contains(model) ||
+                p.chatModel == model ||
+                p.reasonerModel == model),
       )
       .toList();
   final ordered = priorities[model] ?? const <String>[];

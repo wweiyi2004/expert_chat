@@ -177,7 +177,7 @@ impl Theme {
                 Style::default().fg(ansi)
             }
         };
-        Self {
+        let mut theme = Self {
             accent: color(Color::Cyan, (124, 192, 222), (31, 98, 131)),
             muted: if a.no_color || !a.truecolor {
                 Style::default().add_modifier(Modifier::DIM)
@@ -187,7 +187,28 @@ impl Theme {
             good: color(Color::Green, (143, 204, 168), (42, 115, 80)),
             warn: color(Color::Yellow, (227, 188, 114), (135, 89, 26)),
             bad: color(Color::Red, (234, 161, 168), (168, 62, 72)),
+        };
+        if !a.no_color {
+            let skin =
+                crate::theme::effective_skin_colors(&a.skin, a.background.as_deref(), a.light);
+            let custom = a.accent.as_deref().and_then(crate::theme::parse_color);
+            if let Some(color) = custom.or(skin.accent) {
+                theme.accent = Style::default().fg(color);
+            }
+            if let Some(color) = skin.muted {
+                theme.muted = Style::default().fg(color);
+            }
+            if let Some(color) = skin.good {
+                theme.good = Style::default().fg(color);
+            }
+            if let Some(color) = skin.warn {
+                theme.warn = Style::default().fg(color);
+            }
+            if let Some(color) = skin.bad {
+                theme.bad = Style::default().fg(color);
+            }
         }
+        theme
     }
 }
 fn line(s: impl Into<String>, style: Style) -> Line<'static> {
@@ -288,7 +309,14 @@ pub fn pet_rect(a: &App, terminal_width: u16, height: u16) -> Option<Rect> {
         0
     });
     if pet_visible(a, w, height) {
-        Some(Rect::new(w - 22, 0, 20, 6))
+        let visible_h = chat_layout(a, terminal_width as usize, height)
+            .record_h
+            .min(6);
+        if visible_h == 0 {
+            None
+        } else {
+            Some(Rect::new(w - 22, 0, 20, visible_h))
+        }
     } else {
         None
     }
@@ -824,6 +852,88 @@ fn short_model(s: &str) -> String {
             .collect()
     }
 }
+fn selection_line(value: &str, w: usize, a: &App, style: Style) -> Line<'static> {
+    let value = truncate(value, w, a.ambiguous_width);
+    let pad = w.saturating_sub(width(&value, a.ambiguous_width));
+    line(format!("{value}{}", " ".repeat(pad)), style)
+}
+
+fn form_lines(a: &App, w: usize, height: usize) -> Vec<Line<'static>> {
+    let Some(form) = &a.form else {
+        return vec![];
+    };
+    let t = Theme::new(a);
+    let mut out = vec![
+        line(glyph(a, "─", "-").repeat(w), t.muted),
+        line(
+            format!(" {}", form.title),
+            t.accent.add_modifier(Modifier::BOLD),
+        ),
+    ];
+    let notice = usize::from(!form.notice.is_empty());
+    let budget = height.saturating_sub(out.len() + 1 + notice).max(1);
+    let selected = form.selected.min(form.fields.len().saturating_sub(1));
+    let start = selected
+        .saturating_sub(budget / 2)
+        .min(form.fields.len().saturating_sub(budget));
+    for (i, field) in form.fields.iter().enumerate().skip(start).take(budget) {
+        let value = if field.secret {
+            if field.value.is_empty() {
+                "保留现有密钥".to_owned()
+            } else {
+                "*".repeat(field.value.chars().count().min(24))
+            }
+        } else {
+            display_path(&field.value)
+        };
+        let label_width = if field.editable {
+            w.saturating_sub(8).min(24).min(w / 3)
+        } else {
+            w.saturating_sub(3)
+        };
+        let label = truncate(&field.label, label_width, a.ambiguous_width);
+        let value = if value.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "  {}",
+                middle(
+                    &value,
+                    w.saturating_sub(width(&label, a.ambiguous_width) + 5),
+                    a
+                )
+            )
+        };
+        let marker = if i == selected {
+            glyph(a, "›", ">")
+        } else {
+            " "
+        };
+        out.push(selection_line(
+            &format!(" {marker} {label}{value}"),
+            w,
+            a,
+            if i == selected {
+                t.accent.add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default()
+            },
+        ));
+    }
+    if !form.notice.is_empty() {
+        out.push(line(truncate(&form.notice, w, a.ambiguous_width), t.warn));
+    }
+    out.push(line(
+        if form.editing {
+            " 输入编辑 · Tab 下一项 · Enter 确认 · Esc 返回"
+        } else {
+            " ↑/↓ 选择 · Enter 打开或确认 · Esc 返回"
+        },
+        t.muted,
+    ));
+    out
+}
+
 fn drawer_lines(a: &App, w: usize, height: usize) -> Vec<Line<'static>> {
     let t = Theme::new(a);
     let mut out = vec![];
@@ -858,33 +968,74 @@ fn drawer_lines(a: &App, w: usize, height: usize) -> Vec<Line<'static>> {
                 t.accent,
             ));
         }
-        let controls = 3; // thought settings, key hints, bottom separator
-        let budget = height.saturating_sub(out.len() + controls).max(1);
-        let count = (budget / 2).max(1).min(list.len());
-        let start = selected
-            .saturating_sub(count / 2)
-            .min(list.len().saturating_sub(count));
-        for (i, item) in list.iter().enumerate().skip(start).take(count) {
-            if budget >= count * 2 {
-                out.push(line(format!(" {}", text(item, "source")), t.muted));
+        let budget = height.saturating_sub(out.len() + 3).max(1);
+        let mut sources = vec![];
+        for model in &list {
+            let source = crate::app::model_source_key(model);
+            if !sources.contains(&source) {
+                sources.push(source);
             }
-            out.push(line(
-                format!(
-                    " {} {}",
-                    if i == selected {
-                        glyph(a, "›", ">")
-                    } else {
-                        " "
-                    },
-                    text(item, "id")
-                ),
-                if i == selected {
-                    Style::default().add_modifier(Modifier::REVERSED)
-                } else {
-                    Style::default()
-                },
-            ));
         }
+        let mut rows = vec![];
+        for source in sources {
+            let model = list
+                .iter()
+                .find(|m| crate::app::model_source_key(m) == source)
+                .unwrap();
+            let label = if text(model, "source_host").is_empty() {
+                text(model, "source").to_owned()
+            } else {
+                format!("{} · {}", text(model, "source"), text(model, "source_host"))
+            };
+            rows.push((None, line(format!(" {label}"), t.muted)));
+            for (i, item) in list
+                .iter()
+                .enumerate()
+                .filter(|(_, item)| crate::app::model_source_key(item) == source)
+            {
+                rows.push((
+                    Some(i),
+                    selection_line(
+                        &format!(
+                            " {} {}",
+                            if i == selected {
+                                glyph(a, "›", ">")
+                            } else {
+                                " "
+                            },
+                            text(item, "id")
+                        ),
+                        w,
+                        a,
+                        if i == selected {
+                            Style::default().add_modifier(Modifier::REVERSED)
+                        } else {
+                            Style::default()
+                        },
+                    ),
+                ));
+            }
+        }
+        let selected_row = rows
+            .iter()
+            .position(|(i, _)| *i == Some(selected))
+            .unwrap_or(0);
+        let start = selected_row
+            .saturating_sub(budget / 2)
+            .min(rows.len().saturating_sub(budget));
+        let mut remaining = budget;
+        if budget > 1
+            && let Some(index) = rows.get(start).and_then(|(i, _)| *i)
+        {
+            out.push(line(format!(" {}", text(&list[index], "source")), t.muted));
+            remaining -= 1;
+        }
+        out.extend(
+            rows.into_iter()
+                .skip(start)
+                .take(remaining)
+                .map(|(_, line)| line),
+        );
         let efforts = items(&list[selected], "efforts");
         let labels = efforts
             .iter()
@@ -931,7 +1082,8 @@ fn drawer_lines(a: &App, w: usize, height: usize) -> Vec<Line<'static>> {
                 t.muted,
             ));
             for s in [
-                " enter 发送   ctrl+j 换行   shift+tab 计划模式",
+                " enter 发送   Alt+J 换行   shift+tab 计划模式",
+                " Ctrl+J / Shift+Enter 换行视终端支持",
                 " esc 两次中断   ctrl+c 清空 / 中断 / 两次退出",
                 " ctrl+o 详情   ctrl+g 改动   ctrl+t 任务树",
                 " ctrl+y 批准   ctrl+r 历史搜索   ctrl+b 宽屏侧栏",
@@ -1088,11 +1240,7 @@ fn render_pet(f: &mut Frame, a: &App, area: Rect) {
         let bottom: Vec<char> = frame[y * 2 + 1].chars().collect();
         for x in 0..20 {
             let color = |c: char| -> Option<Color> {
-                let hex = if c == 'K' && !a.light {
-                    "#3d3448"
-                } else {
-                    a.pet.art.palette.get(&c)?.as_str()
-                };
+                let hex = a.pet.art.palette.get(&c)?.as_str();
                 let value = u32::from_str_radix(&hex[1..], 16).ok()?;
                 let (r, g, b) = ((value >> 16) as u8, (value >> 8) as u8, value as u8);
                 if a.truecolor {
@@ -1133,7 +1281,7 @@ fn render_pet(f: &mut Frame, a: &App, area: Rect) {
         if end >= qw {
             f.render_widget(
                 paragraph(a, quote).style(Theme::new(a).accent),
-                Rect::new(end - qw, area.y + 1, qw, 1),
+                Rect::new(end - qw, area.y + 5, qw, 1),
             );
         }
     }
@@ -1405,6 +1553,26 @@ pub fn draw(f: &mut Frame, a: &App) {
     if let Some(rect) = footer_at(a, area.width, area.height) {
         f.render_widget(paragraph(a, footer(a, area.width as usize)), rect);
     }
+    if !a.no_color {
+        let skin = crate::theme::effective_skin_colors(&a.skin, a.background.as_deref(), a.light);
+        let background = a
+            .background
+            .as_deref()
+            .and_then(crate::theme::parse_color)
+            .or(skin.background);
+        for cell in &mut f.buffer_mut().content {
+            if cell.fg == Color::Reset
+                && let Some(color) = skin.foreground
+            {
+                cell.set_fg(color);
+            }
+            if cell.bg == Color::Reset
+                && let Some(color) = background
+            {
+                cell.set_bg(color);
+            }
+        }
+    }
 }
 
 struct ChatLayout {
@@ -1418,6 +1586,7 @@ struct ChatLayout {
     drawer: Vec<Line<'static>>,
     drawer_h: u16,
     record_h: u16,
+    hint_h: u16,
 }
 fn chat_layout(a: &App, w: usize, height: u16) -> ChatLayout {
     let t = Theme::new(a);
@@ -1427,7 +1596,9 @@ fn chat_layout(a: &App, w: usize, height: u16) -> ChatLayout {
     let mut bottom_h = if completion.is_empty() {
         1
     } else {
-        completion.len().min(8).min((height / 3) as usize) as u16 + u16::from(danger)
+        let usage = usize::from(w < 90 && height >= 12);
+        (completion.len().min(8 - usage) + usage).min((height / 3) as usize) as u16
+            + u16::from(danger)
     };
     let approval = a.status() == "approval" && !a.approval_collapsed && !a.rejection;
     let input_h = if approval {
@@ -1462,7 +1633,16 @@ fn chat_layout(a: &App, w: usize, height: u16) -> ChatLayout {
             .saturating_sub(input_h + status_h + queue_h + notice_h)
             .max(1),
     );
-    let drawer = if a.drawer.is_some() {
+    let drawer = if a.form.is_some() {
+        form_lines(
+            a,
+            w,
+            (height / 2)
+                .min(12)
+                .min(height.saturating_sub(bottom_h + input_h + status_h + queue_h + notice_h))
+                as usize,
+        )
+    } else if a.drawer.is_some() {
         drawer_lines(
             a,
             w,
@@ -1506,7 +1686,8 @@ fn chat_layout(a: &App, w: usize, height: u16) -> ChatLayout {
         .min(if height < 16 { 6 } else { 12 })
         .min(height / 2)
         .min(height.saturating_sub(bottom_h + input_h + status_h + queue_h + notice_h));
-    let fixed = bottom_h + input_h + status_h + queue_h + notice_h + drawer_h;
+    let hint_h = u16::from(welcome(a) && height >= 12 && a.form.is_none() && a.drawer.is_none());
+    let fixed = bottom_h + input_h + status_h + queue_h + notice_h + drawer_h + hint_h;
     let record_h = height.saturating_sub(fixed);
     ChatLayout {
         completion,
@@ -1519,6 +1700,7 @@ fn chat_layout(a: &App, w: usize, height: u16) -> ChatLayout {
         drawer,
         drawer_h,
         record_h,
+        hint_h,
     }
 }
 
@@ -1591,6 +1773,7 @@ fn draw_inner(f: &mut Frame, a: &App) {
         drawer,
         drawer_h,
         record_h,
+        hint_h,
     } = chat_layout(a, w, area.height);
     let queued = items(&a.snapshot, "queued");
     let danger =
@@ -1643,11 +1826,62 @@ fn draw_inner(f: &mut Frame, a: &App) {
         );
     }
     let mut y = area.y + record_h;
+    if hint_h > 0 {
+        let hint = if w >= 64 {
+            "/ 命令   @ 文件   ? 快捷键   shift+tab 计划模式"
+        } else {
+            "/ 命令  @ 文件  ? 帮助"
+        };
+        let hint = truncate(hint, w, a.ambiguous_width);
+        let left = w.saturating_sub(width(&hint, a.ambiguous_width));
+        f.render_widget(
+            paragraph(a, format!("{}{hint}", " ".repeat(left))).style(t.muted),
+            Rect::new(area.x, y, area.width, 1),
+        );
+        y += 1;
+    }
     if drawer_h > 0 {
         f.render_widget(
             paragraph(a, drawer),
             Rect::new(area.x, y, area.width, drawer_h),
         );
+        if let Some(form) = &a.form
+            && form.editing
+            && let Some(field) = form.fields.get(form.selected)
+            && field.editable
+        {
+            let budget = (drawer_h as usize)
+                .saturating_sub(3 + usize::from(!form.notice.is_empty()))
+                .max(1);
+            let start = form
+                .selected
+                .saturating_sub(budget / 2)
+                .min(form.fields.len().saturating_sub(budget));
+            let row = 2 + form.selected.saturating_sub(start);
+            if row < drawer_h as usize {
+                let label = truncate(
+                    &field.label,
+                    w.saturating_sub(8).min(24).min(w / 3),
+                    a.ambiguous_width,
+                );
+                let value = if field.secret {
+                    "*".repeat(field.value.chars().count().min(24))
+                } else {
+                    display_path(&field.value)
+                };
+                let value = middle(
+                    &value,
+                    w.saturating_sub(width(&label, a.ambiguous_width) + 5),
+                    a,
+                );
+                let col =
+                    3 + width(&label, a.ambiguous_width) + 2 + width(&value, a.ambiguous_width);
+                f.set_cursor_position((
+                    area.x + col.min(w.saturating_sub(1)) as u16,
+                    y + row as u16,
+                ));
+            }
+        }
         y += drawer_h;
     }
     if notice_h > 0 {
@@ -1697,7 +1931,7 @@ fn draw_inner(f: &mut Frame, a: &App) {
         .border_type(border)
         .border_style(if approval {
             t.warn
-        } else if a.drawer.is_some() {
+        } else if a.drawer.is_some() || a.form.is_some() {
             t.muted
         } else {
             t.accent
@@ -1715,11 +1949,31 @@ fn draw_inner(f: &mut Frame, a: &App) {
         });
     }
     if !a.attachments.is_empty() {
-        block = block.title(format!(
-            " {} {} 个附件 ",
-            glyph(a, "⎘", "@"),
-            a.attachments.len()
-        ));
+        let mut counts = [0usize; 4];
+        for attachment in &a.attachments {
+            let mime = text(attachment, "mime");
+            let kind = text(attachment, "kind");
+            counts[if mime.starts_with("image/") || kind == "image" {
+                1
+            } else if mime.starts_with("video/") || kind == "video" {
+                2
+            } else if mime.starts_with("audio/") || kind == "audio" {
+                3
+            } else {
+                0
+            }] += 1;
+        }
+        let mut labels = ["File", "Image", "Video", "Audio"]
+            .iter()
+            .zip(counts)
+            .filter(|(_, n)| *n > 0)
+            .map(|(label, n)| format!("[{label} {n}]"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        if width(&labels, a.ambiguous_width) > w.saturating_sub(4) {
+            labels = labels.replace("] [", "][");
+        }
+        block = block.title(format!(" {labels} "));
     }
     if approval {
         block = block.padding(Padding::horizontal(1));
@@ -1752,7 +2006,7 @@ fn draw_inner(f: &mut Frame, a: &App) {
             } else if a.active() {
                 "输入补充要求，下一轮发送".to_string()
             } else {
-                "描述任务，/ 命令，@ 文件".to_string()
+                "描述任务；Alt+J 换行；/ 命令，@ 文件".to_string()
             }
         } else if a.paste_collapsed {
             format!("[已粘贴 {} 行]", a.input.lines().count())
@@ -1773,7 +2027,7 @@ fn draw_inner(f: &mut Frame, a: &App) {
         let (row, col) = input_visual_position(a, w);
         let offset = row.saturating_sub(inner.height.saturating_sub(1) as usize);
         f.render_widget(paragraph(a, lines).scroll((offset as u16, 0)), inner);
-        if a.drawer.is_none() && inner.width > 3 && inner.height > 0 {
+        if a.drawer.is_none() && a.form.is_none() && inner.width > 3 && inner.height > 0 {
             f.set_cursor_position((
                 inner.x + (col as u16 + 3).min(inner.width - 1),
                 inner.y + row.saturating_sub(offset) as u16,
@@ -1789,21 +2043,29 @@ fn draw_inner(f: &mut Frame, a: &App) {
             );
         } else {
             let completion_h = bottom_h - u16::from(danger);
+            let usage_h = u16::from(w < 90 && completion_h >= 2);
+            let menu_h = completion_h.saturating_sub(usage_h);
             let selected = a.selected % completion.len();
-            let start = (selected / completion.len().min(completion_h as usize).max(1))
-                * completion.len().min(completion_h as usize).max(1);
-            let lines = completion
+            let start = (selected / completion.len().min(menu_h as usize).max(1))
+                * completion.len().min(menu_h as usize).max(1);
+            let mut lines = completion
                 .iter()
                 .enumerate()
                 .skip(start)
-                .take(completion_h as usize)
+                .take(menu_h as usize)
                 .map(|(i, c)| {
-                    line(
-                        if c == "/recover" {
-                            "  /recover 恢复失败草稿与原发送目标".to_owned()
-                        } else {
-                            format!("  {c}")
-                        },
+                    let (description, usage) = crate::app::command_metadata(c);
+                    let value = if description.is_empty() {
+                        format!("  {c}")
+                    } else if w >= 90 {
+                        format!("  {c:<14} {description}  {usage}")
+                    } else {
+                        format!("  {c}  {description}")
+                    };
+                    selection_line(
+                        &value,
+                        w,
+                        a,
                         if i == a.selected % completion.len() {
                             t.accent.add_modifier(Modifier::REVERSED)
                         } else {
@@ -1812,6 +2074,13 @@ fn draw_inner(f: &mut Frame, a: &App) {
                     )
                 })
                 .collect::<Vec<_>>();
+            if usage_h > 0 {
+                while lines.len() < menu_h as usize {
+                    lines.push(Line::default());
+                }
+                let (_, usage) = crate::app::command_metadata(&completion[selected]);
+                lines.push(selection_line(&format!(" 用法 {usage}"), w, a, t.muted));
+            }
             f.render_widget(
                 paragraph(a, lines),
                 Rect::new(area.x, y, area.width, bottom_h),
@@ -2063,145 +2332,209 @@ fn step_lines(a: &App, w: usize, steps: &[&Value], finished: bool) -> Vec<Line<'
     out
 }
 
-fn welcome_record(a: &App, w: usize, h: u16, hint: bool) -> Vec<Line<'static>> {
-    let dot = glyph(a, "·", ":");
-    let t = Theme::new(a);
-    let s = &a.snapshot["session"];
-    let mut out = vec![];
-    let start = &a.snapshot["startup"];
-    out.push(Line::from(vec![
-        Span::styled(
-            format!("{} expert ", glyph(a, "◈", "*")),
-            t.accent.add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(format!(" v{}", text(start, "version")), t.muted),
-    ]));
-    out.push(Line::default());
-    if let Some(warning) = &a.config_warning {
-        out.extend(wrap(warning, w, a, "  ! ", t.warn));
+/// Display-only normalization; actual workspace and tool targets stay untouched.
+pub fn display_path(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else {
+        path.strip_prefix(r"\\?\").unwrap_or(path).to_owned()
     }
+}
+fn startup_date(a: &App) -> String {
+    let provided = text(&a.snapshot["startup"], "date");
+    if !provided.is_empty() {
+        return provided.to_owned();
+    }
+    crate::theme::local_date()
+}
+fn welcome_sessions(a: &App) -> Vec<Value> {
+    a.recent_sessions()
+}
 
-    if h >= 16 {
-        let project_w = if pet_visible(a, w as u16, h) {
-            w.saturating_sub(24)
-        } else {
-            w
-        };
-        out.push(line(
-            truncate(
-                &format!(
-                    "  {}  {}",
-                    text(start, "workspace"),
-                    text(start, "workspace_path")
-                ),
-                project_w,
-                a.ambiguous_width,
-            ),
-            Style::default(),
+fn welcome_content(
+    a: &App,
+    w: usize,
+    h: u16,
+    recent: bool,
+) -> (Vec<Line<'static>>, Vec<(usize, String)>) {
+    let t = Theme::new(a);
+    let session = &a.snapshot["session"];
+    let startup = &a.snapshot["startup"];
+    let mut out = vec![];
+    let mut hits = vec![];
+    let card_w = if pet_visible(a, w as u16, h) {
+        w.saturating_sub(24)
+    } else {
+        w
+    };
+    let inside = card_w.saturating_sub(2);
+    let version = text(startup, "version");
+    let title = truncate(
+        &format!(
+            " expert{} {} ",
+            if version.is_empty() {
+                String::new()
+            } else {
+                format!(" v{version}")
+            },
+            startup_date(a)
+        ),
+        inside.saturating_sub(1),
+        a.ambiguous_width,
+    );
+    out.push(line(
+        format!(
+            "{}{}{}{}",
+            glyph(a, "╭", "+"),
+            title,
+            glyph(a, "─", "-").repeat(inside.saturating_sub(width(&title, a.ambiguous_width))),
+            glyph(a, "╮", "+")
+        ),
+        t.accent,
+    ));
+    let model = items(&a.snapshot, "models")
+        .iter()
+        .find(|m| crate::app::current_model(m, session));
+    let category = model
+        .map(|m| text(m, "source"))
+        .filter(|v| !v.is_empty())
+        .unwrap_or("未选择来源");
+    let path = text(session, "workspace_path");
+    let path = if path.is_empty() {
+        text(startup, "workspace_path")
+    } else {
+        path
+    };
+    for value in [
+        format!(" 类别 {category}"),
+        format!(
+            " 模型 {}",
+            if text(session, "model").is_empty() {
+                "尚未选择"
+            } else {
+                text(session, "model")
+            }
+        ),
+        format!(" 目录 {}", display_path(path)),
+    ] {
+        let value = middle(&value, inside, a);
+        let pad = inside.saturating_sub(width(&value, a.ambiguous_width));
+        out.push(Line::from(vec![
+            Span::styled(glyph(a, "│", "|"), t.accent),
+            Span::raw(format!("{value}{}", " ".repeat(pad))),
+            Span::styled(glyph(a, "│", "|"), t.accent),
+        ]));
+    }
+    out.push(line(
+        format!(
+            "{}{}{}",
+            glyph(a, "╰", "+"),
+            glyph(a, "─", "-").repeat(inside),
+            glyph(a, "╯", "+")
+        ),
+        t.accent,
+    ));
+    if let Some(warning) = &a.config_warning {
+        out.extend(wrap(warning, w, a, " ! ", t.warn));
+    }
+    for issue in items(startup, "issues") {
+        out.extend(wrap(
+            issue.as_str().unwrap_or("启动问题"),
+            w,
+            a,
+            " ! ",
+            t.warn,
         ));
-        if !text(start, "branch").is_empty() {
+    }
+    if recent && items(&a.snapshot, "models").is_empty() {
+        out.extend(wrap(
+            "还没有可用模型：/login 登录，/model 添加来源",
+            w,
+            a,
+            " ",
+            t.warn,
+        ));
+    }
+    if recent {
+        let sessions = welcome_sessions(a);
+        if !sessions.is_empty() {
+            out.push(Line::default());
+            let panel = w.saturating_sub(4).min(72).max(1);
+            let left = w.saturating_sub(panel) / 2;
+            let title = if a.recent_confirm.is_some() {
+                "确认进入此会话？Enter 继续 · Esc 取消"
+            } else {
+                "最近会话 · ↑/↓ 选择 · Enter 确认"
+            };
             out.push(line(
                 format!(
-                    "  {} {dot} {} 个未提交改动",
-                    text(start, "branch"),
-                    start["dirty_count"].as_u64().unwrap_or(0)
+                    "{}{}",
+                    " ".repeat(left),
+                    truncate(title, panel, a.ambiguous_width)
                 ),
                 t.muted,
             ));
-        }
-        let contexts = items(start, "contexts")
-            .iter()
-            .filter_map(Value::as_str)
-            .collect::<Vec<_>>()
-            .join(glyph(a, " · ", " : "));
-        if !contexts.is_empty() {
-            out.push(line(
-                truncate(
-                    &format!("  已加载 {contexts}"),
-                    project_w,
-                    a.ambiguous_width,
-                ),
-                t.muted,
-            ));
-        }
-        if text(start, "workspace") == "默认工作区" {
-            out.push(line("  用 expert <目录> 在项目中启动", t.muted));
-        }
-        let issues = items(start, "issues");
-        if !issues.is_empty() {
-            out.push(line(
-                if issues.len() == 1 {
-                    format!(
-                        "  ! {} {dot} /mcp 查看",
-                        issues[0].as_str().unwrap_or("启动失败")
-                    )
+            for (index, item) in sessions.iter().enumerate() {
+                let focused = a.recent_selected == Some(index);
+                let marker = if focused {
+                    glyph(a, "›", ">")
+                } else if text(item, "status") == "running" {
+                    glyph(a, "●", "*")
                 } else {
-                    format!("  ! {} 个问题 {dot} /doctor 查看", issues.len())
-                },
-                t.warn,
-            ));
-        }
-        out.push(Line::default());
-        if items(&a.snapshot, "models").is_empty() {
-            out.push(line("  还没有可用的模型", t.warn));
-            out.push(line(
-                "  /login 登录官方订阅   /model 添加 API 来源",
-                t.muted,
-            ));
-        } else {
-            let sessions = items(&a.snapshot, "sessions")
-                .iter()
-                .filter(|x| {
-                    x["empty"] != true
-                        && (s["workspace_id"].is_null() || x["workspace_id"] == s["workspace_id"])
-                })
-                .collect::<Vec<_>>();
-            if !sessions.is_empty() {
-                while pet_visible(a, w as u16, h) && out.len() < 7 {
-                    out.push(Line::default());
-                }
-                out.push(pair(
-                    "  最近会话".into(),
-                    "/resume".into(),
-                    w,
-                    a,
-                    t.muted,
-                    t.accent,
-                ));
-                for session in sessions.into_iter().take(3) {
-                    let status = text(session, "status");
-                    let icon = if status == "running" {
-                        glyph(a, "●", "*")
-                    } else {
-                        glyph(a, "○", "o")
-                    };
-                    let name = format!("    {icon} {}", text(session, "title"));
-                    out.push(if w < 60 {
-                        line(name, t.muted)
-                    } else {
-                        pair(
-                            name,
-                            status_label(status).into(),
-                            w,
-                            a,
-                            Style::default(),
-                            t.muted,
-                        )
-                    });
-                }
+                    glyph(a, "○", "o")
+                };
+                let state = status_label(text(item, "status"));
+                let value = if w < 60 {
+                    format!(" {marker} {}", text(item, "title"))
+                } else {
+                    format!(" {marker} {}  {state}", text(item, "title"))
+                };
+                hits.push((out.len(), text(item, "id").to_owned()));
+                let mut row = vec![Span::raw(" ".repeat(left))];
+                row.extend(
+                    selection_line(
+                        &value,
+                        panel,
+                        a,
+                        if focused {
+                            t.accent.add_modifier(Modifier::REVERSED)
+                        } else {
+                            Style::default()
+                        },
+                    )
+                    .spans,
+                );
+                out.push(Line::from(row));
             }
         }
-        out.push(Line::default());
     }
-    if hint {
-        out.push(line(
-            "  / 命令   @ 文件   ? 快捷键   shift+tab 计划模式",
-            t.muted,
-        ));
-    }
-
-    out
+    (out, hits)
 }
+fn welcome_record(a: &App, w: usize, h: u16, recent: bool) -> Vec<Line<'static>> {
+    welcome_content(a, w, h, recent).0
+}
+
+pub fn recent_session_rects(a: &App, width: u16, height: u16) -> Vec<(Rect, String)> {
+    if a.view != View::Chat || !welcome(a) || a.drawer.is_some() || a.form.is_some() {
+        return vec![];
+    }
+    let w = width.saturating_sub(if a.sidebar && width >= 140 { 44 } else { 0 });
+    let (_, hits) = welcome_content(a, w as usize, height, true);
+    let record_h = chat_layout(a, width as usize, height).record_h;
+    let panel = w.saturating_sub(4).min(72);
+    let left = w.saturating_sub(panel) / 2;
+    hits.into_iter()
+        .filter_map(|(row, id)| {
+            let y = row.checked_sub(a.scroll as usize)?;
+            if y < record_h as usize {
+                Some((Rect::new(left, y as u16, panel, 1), id))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 fn effort_label(s: &str) -> &str {
     match s {
         "low" => "低",
@@ -2246,22 +2579,360 @@ fn approval_lines(a: &App, w: usize) -> Vec<Line<'static>> {
     ));
     lines
 }
+fn inline_markdown(a: &App, value: &str, base: Style) -> Vec<(char, Style)> {
+    let t = Theme::new(a);
+    let mut out = vec![];
+    let mut i = 0;
+    while i < value.len() {
+        let rest = &value[i..];
+        if let Some(escaped) = rest.strip_prefix('\\')
+            && let Some(c) = escaped.chars().next()
+            && r"\`*_{}[]()#+-.!>|".contains(c)
+        {
+            out.push((c, base));
+            i += 1 + c.len_utf8();
+            continue;
+        }
+        let mut consumed = false;
+        for marker in ["**", "__", "~~", "`"] {
+            if let Some(after) = rest.strip_prefix(marker)
+                && let Some(close) = after.find(marker)
+                && close > 0
+            {
+                let inside = &after[..close];
+                let style = if marker == "`" {
+                    base.patch(t.accent)
+                } else if marker == "~~" {
+                    base.add_modifier(Modifier::CROSSED_OUT)
+                } else {
+                    base.add_modifier(Modifier::BOLD)
+                };
+                if marker == "`" {
+                    out.extend(inside.chars().map(|c| (c, style)));
+                } else {
+                    out.extend(inline_markdown(a, inside, style));
+                }
+                i += marker.len() * 2 + close;
+                consumed = true;
+                break;
+            }
+        }
+        if consumed {
+            continue;
+        }
+        if rest.starts_with('[')
+            && let Some(label_end) = rest.find("](")
+        {
+            let target_start = label_end + 2;
+            // Balance parentheses in destinations; leave malformed links verbatim.
+            let mut depth = 1usize;
+            let mut end = None;
+            for (j, c) in rest[target_start..].char_indices() {
+                if c == '(' {
+                    depth += 1;
+                } else if c == ')' {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(target_start + j);
+                        break;
+                    }
+                }
+            }
+            if let Some(end) = end {
+                out.extend(inline_markdown(
+                    a,
+                    &rest[1..label_end],
+                    base.patch(t.accent),
+                ));
+                out.extend(
+                    format!(" ({})", &rest[target_start..end])
+                        .chars()
+                        .map(|c| (c, base.patch(t.accent))),
+                );
+                i += end + 1;
+                continue;
+            }
+        }
+        let c = rest.chars().next().unwrap();
+        out.push((c, base));
+        i += c.len_utf8();
+    }
+    out
+}
+fn code_tokens(a: &App, value: &str, language: &str) -> Vec<(char, Style)> {
+    let colors = crate::theme::code_colors(&a.code_style, a.light);
+    let styled = |color| {
+        if a.no_color {
+            Style::default()
+        } else {
+            Style::default().fg(color)
+        }
+    };
+    let language = language.to_ascii_lowercase();
+    let keywords: &[&str] = match language.as_str() {
+        "rs" | "rust" => &[
+            "fn", "pub", "let", "mut", "use", "impl", "struct", "enum", "trait", "match", "self",
+            "Self", "where", "async", "await", "move", "mod", "crate", "super", "const", "return",
+            "if", "else", "for", "while", "loop", "in", "true", "false",
+        ],
+        "py" | "python" => &[
+            "def", "class", "import", "from", "as", "if", "elif", "else", "for", "while", "in",
+            "is", "not", "and", "or", "return", "yield", "with", "lambda", "try", "except",
+            "finally", "pass", "None", "True", "False", "async", "await",
+        ],
+        "js" | "javascript" | "ts" | "typescript" | "jsx" | "tsx" => &[
+            "function",
+            "const",
+            "let",
+            "var",
+            "class",
+            "interface",
+            "type",
+            "export",
+            "import",
+            "from",
+            "return",
+            "if",
+            "else",
+            "for",
+            "of",
+            "in",
+            "new",
+            "this",
+            "async",
+            "await",
+            "throw",
+            "try",
+            "catch",
+            "true",
+            "false",
+            "null",
+            "undefined",
+        ],
+        "dart" => &[
+            "class",
+            "final",
+            "const",
+            "var",
+            "void",
+            "int",
+            "double",
+            "String",
+            "bool",
+            "return",
+            "if",
+            "else",
+            "for",
+            "in",
+            "new",
+            "this",
+            "extends",
+            "implements",
+            "import",
+            "async",
+            "await",
+            "true",
+            "false",
+            "null",
+            "required",
+            "late",
+        ],
+        "c" | "cpp" | "c++" | "h" | "java" | "cs" | "csharp" => &[
+            "int", "char", "float", "double", "void", "bool", "class", "struct", "enum", "public",
+            "private", "static", "const", "return", "if", "else", "for", "while", "switch", "case",
+            "break", "continue", "new", "this", "true", "false", "null", "nullptr", "include",
+            "define",
+        ],
+        "sql" => &[
+            "SELECT", "FROM", "WHERE", "JOIN", "ON", "AS", "INSERT", "INTO", "VALUES", "UPDATE",
+            "SET", "DELETE", "CREATE", "TABLE", "GROUP", "BY", "ORDER", "LIMIT", "NULL", "AND",
+            "OR", "select", "from", "where", "join", "on", "as", "insert", "into", "values",
+        ],
+        "sh" | "bash" | "shell" | "zsh" => &[
+            "if", "then", "else", "elif", "fi", "for", "in", "do", "done", "case", "esac",
+            "function", "export", "local", "echo", "return", "exit",
+        ],
+        "json" | "yaml" | "yml" => &["true", "false", "null"],
+        _ => &[],
+    };
+    let comment = if matches!(
+        language.as_str(),
+        "py" | "python" | "sh" | "bash" | "shell" | "yaml" | "yml" | "ruby"
+    ) {
+        Some("#")
+    } else if language == "sql" {
+        Some("--")
+    } else if matches!(
+        language.as_str(),
+        "rs" | "rust"
+            | "js"
+            | "javascript"
+            | "ts"
+            | "typescript"
+            | "jsx"
+            | "tsx"
+            | "c"
+            | "cpp"
+            | "c++"
+            | "java"
+            | "cs"
+            | "dart"
+    ) {
+        Some("//")
+    } else {
+        None
+    };
+    let mut out = vec![];
+    let mut i = 0;
+    while i < value.len() {
+        let rest = &value[i..];
+        let c = rest.chars().next().unwrap();
+        if comment.is_some_and(|marker| rest.starts_with(marker)) {
+            out.extend(rest.chars().map(|c| (c, styled(colors.comment))));
+            break;
+        }
+        if c == '\"'
+            || c == '\''
+            || (c == '`' && matches!(language.as_str(), "js" | "javascript" | "ts" | "typescript"))
+        {
+            let quote = c;
+            let mut escaped = false;
+            let mut end = c.len_utf8();
+            for ch in rest[c.len_utf8()..].chars() {
+                end += ch.len_utf8();
+                if ch == quote && !escaped {
+                    break;
+                }
+                if ch == '\\' {
+                    escaped = !escaped;
+                } else {
+                    escaped = false;
+                }
+            }
+            out.extend(rest[..end].chars().map(|c| (c, styled(colors.string))));
+            i += end;
+            continue;
+        }
+        if c.is_ascii_digit() {
+            let end = rest
+                .char_indices()
+                .find(|(_, c)| !c.is_ascii_alphanumeric() && !matches!(c, '.' | '_'))
+                .map_or(rest.len(), |(i, _)| i);
+            out.extend(rest[..end].chars().map(|c| (c, styled(colors.number))));
+            i += end;
+            continue;
+        }
+        if c.is_alphabetic() || c == '_' {
+            let end = rest
+                .char_indices()
+                .find(|(_, c)| !c.is_alphanumeric() && *c != '_')
+                .map_or(rest.len(), |(i, _)| i);
+            let word = &rest[..end];
+            let style = if keywords.contains(&word) {
+                styled(colors.keyword)
+            } else {
+                Style::default()
+            };
+            out.extend(word.chars().map(|c| (c, style)));
+            i += end;
+            continue;
+        }
+        out.push((
+            c,
+            if c.is_ascii_punctuation() {
+                styled(colors.punctuation)
+            } else {
+                Style::default()
+            },
+        ));
+        i += c.len_utf8();
+    }
+    out
+}
+fn styled_lines(
+    a: &App,
+    styled: Vec<(char, Style)>,
+    w: usize,
+    prefix: String,
+    continuation: String,
+    prefix_style: Style,
+) -> Vec<Line<'static>> {
+    let mut out = vec![];
+    let mut spans = vec![Span::styled(prefix.clone(), prefix_style)];
+    let mut col = width(&prefix, a.ambiguous_width);
+    for (c, style) in styled {
+        let cw = width(&c.to_string(), a.ambiguous_width);
+        if col + cw > w && col > width(&continuation, a.ambiguous_width) {
+            out.push(Line::from(std::mem::take(&mut spans)));
+            col = width(&continuation, a.ambiguous_width);
+            spans.push(Span::styled(continuation.clone(), prefix_style));
+        }
+        spans.push(Span::styled(c.to_string(), style));
+        col += cw;
+    }
+    out.push(Line::from(spans));
+    out
+}
 fn message_lines(a: &App, content: &str, user: bool, w: usize) -> Vec<Line<'static>> {
     let t = Theme::new(a);
     let content = clean(content);
     let raws: Vec<&str> = content.split('\n').collect();
     let mut out = vec![];
-    let mut code = false;
+    let mut fence: Option<(char, usize, String)> = None;
     let mut index = 0;
     while index < raws.len() {
         let raw = raws[index];
         index += 1;
-        if !user && raw.starts_with("```") {
-            code = !code;
+        let trim = raw.trim_start();
+        if !user {
+            if let Some((mark, length, _)) = &fence {
+                if trim.chars().take_while(|c| c == mark).count() >= *length
+                    && trim.trim_matches(*mark).trim().is_empty()
+                {
+                    fence = None;
+                    continue;
+                }
+            } else {
+                let marker = trim.chars().next().unwrap_or(' ');
+                let count = trim.chars().take_while(|c| *c == marker).count();
+                if matches!(marker, '`' | '~') && count >= 3 && raw.len() - trim.len() <= 3 {
+                    let language = trim[count..]
+                        .trim()
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("")
+                        .to_owned();
+                    if !language.is_empty() {
+                        out.push(line(format!("  {language}"), t.muted));
+                    }
+                    fence = Some((marker, count, language));
+                    continue;
+                }
+            }
+        }
+        if let Some((_, _, language)) = &fence {
+            let prefix = format!("  {} ", glyph(a, "│", "|"));
+            out.extend(styled_lines(
+                a,
+                code_tokens(a, raw, language),
+                w,
+                prefix.clone(),
+                prefix,
+                t.muted,
+            ));
             continue;
         }
-        if !user && !code && raw.trim().starts_with('|') && raw.trim().ends_with('|') {
-            let mut rows = vec![raw];
+        if !user
+            && raw.trim().starts_with('|')
+            && raw.trim().ends_with('|')
+            && index < raws.len()
+            && raws[index]
+                .chars()
+                .all(|c| matches!(c, '|' | '-' | ':' | ' ' | '\t'))
+            && raws[index].contains('-')
+        {
+            let mut rows = vec![raw, raws[index]];
+            index += 1;
             while index < raws.len()
                 && raws[index].trim().starts_with('|')
                 && raws[index].trim().ends_with('|')
@@ -2272,177 +2943,166 @@ fn message_lines(a: &App, content: &str, user: bool, w: usize) -> Vec<Line<'stat
             out.extend(table_lines(a, &rows, w));
             continue;
         }
-        let first = out.is_empty();
-        let mut prefix = vec![Span::styled(
-            if code {
-                format!("  {} ", glyph(a, "│", "|"))
-            } else if first {
-                format!(
-                    "{} ",
-                    if user {
-                        glyph(a, "›", ">")
-                    } else {
-                        glyph(a, "◈", "*")
-                    }
-                )
-            } else {
-                "  ".into()
-            },
-            if code { t.muted } else { t.accent },
-        )];
-        let heading = !user && !code && raw.starts_with('#');
-        let raw = if heading {
-            raw.trim_start_matches('#').trim_start()
-        } else {
-            raw
-        };
         let mut body = raw.to_owned();
-        if !user && !code && (body.starts_with("- ") || body.starts_with("* ")) {
-            body = format!("{} {}", glyph(a, "•", "*"), &body[2..]);
-        }
-        let base = if heading {
-            t.accent.add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-        };
-        let mut styled = vec![];
-        if code {
-            let mut quoted = false;
-            for word in body.split_inclusive(char::is_whitespace) {
-                let keyword = matches!(
-                    word.trim_matches(|c: char| !c.is_alphanumeric()),
-                    "fn" | "pub"
-                        | "let"
-                        | "mut"
-                        | "use"
-                        | "class"
-                        | "final"
-                        | "const"
-                        | "return"
-                        | "if"
-                        | "else"
-                        | "for"
-                        | "import"
-                        | "def"
-                        | "true"
-                        | "false"
-                        | "null"
+        let mut base = Style::default();
+        let mut quote = false;
+        let indent = body.len() - body.trim_start_matches([' ', '\t']).len();
+        if !user {
+            let heading = trim.chars().take_while(|c| *c == '#').count();
+            if heading > 0 && heading <= 6 && trim[heading..].starts_with(' ') {
+                body = trim[heading..].trim_start().to_owned();
+                base = t.accent.add_modifier(Modifier::BOLD);
+            } else if let Some(value) = trim.strip_prefix('>') {
+                body = format!(
+                    "{}{} {}",
+                    " ".repeat(indent),
+                    glyph(a, "│", "|"),
+                    value.trim_start()
                 );
-                for c in word.chars() {
-                    if c == '"' || c == '\'' {
-                        quoted = !quoted;
-                        styled.push((c, t.good));
-                    } else {
-                        styled.push((
-                            c,
-                            if quoted {
-                                t.good
-                            } else if c.is_ascii_digit() {
-                                t.warn
-                            } else if keyword {
-                                t.accent
-                            } else {
-                                base
-                            },
-                        ));
-                    }
-                }
-            }
-        } else {
-            let mut inline = false;
-            for c in body.chars() {
-                if !user && c == '`' {
-                    inline = !inline;
-                    continue;
-                }
-                styled.push((c, if inline { t.accent } else { base }));
+                base = t.muted;
+                quote = true;
+            } else if let Some(value) = trim
+                .strip_prefix("- ")
+                .or_else(|| trim.strip_prefix("* "))
+                .or_else(|| trim.strip_prefix("+ "))
+            {
+                body = format!("{}{} {value}", " ".repeat(indent), glyph(a, "•", "*"));
             }
         }
-        let mut col = prefix
-            .iter()
-            .map(|s| width(&s.content, a.ambiguous_width))
-            .sum::<usize>();
-        for (c, style) in styled {
-            let cw = if a.ambiguous_width == 2 {
-                c.width_cjk().unwrap_or(0)
-            } else {
-                c.width().unwrap_or(0)
-            };
-            if col + cw > w && col > 2 {
-                out.push(Line::from(std::mem::take(&mut prefix)));
-                let cont = if code {
-                    format!("  {} ", glyph(a, "│", "|"))
+        let prefix = if out.is_empty() {
+            format!(
+                "{} ",
+                if user {
+                    glyph(a, "›", ">")
                 } else {
-                    "  ".into()
-                };
-                col = width(&cont, a.ambiguous_width);
-                prefix.push(Span::styled(cont, t.muted));
+                    glyph(a, "◈", "*")
+                }
+            )
+        } else {
+            "  ".to_owned()
+        };
+        let continuation = format!(
+            "  {}",
+            if quote {
+                format!("{} ", glyph(a, "│", "|"))
+            } else {
+                " ".repeat(indent)
             }
-            prefix.push(Span::styled(c.to_string(), style));
-            col += cw;
-        }
-        out.push(Line::from(prefix));
+        );
+        let styled = if user {
+            body.chars().map(|c| (c, base)).collect()
+        } else {
+            inline_markdown(a, &body, base)
+        };
+        out.extend(styled_lines(
+            a,
+            styled,
+            w,
+            prefix,
+            continuation,
+            if quote { t.muted } else { t.accent },
+        ));
     }
     out
+}
+fn table_cells(row: &str) -> Vec<String> {
+    let trimmed = row.trim();
+    let inner = trimmed.strip_prefix('|').unwrap_or(trimmed);
+    let inner = inner.strip_suffix('|').unwrap_or(inner);
+    let mut cells = vec![];
+    let mut value = String::new();
+    let mut escaped = false;
+    let mut code = false;
+    for c in inner.chars() {
+        if escaped {
+            value.push('\\');
+            value.push(c);
+            escaped = false;
+            continue;
+        }
+        if c == '\\' {
+            escaped = true;
+            continue;
+        }
+        if c == '`' {
+            code = !code;
+            value.push(c);
+            continue;
+        }
+        if c == '|' && !code {
+            cells.push(value.trim().to_owned());
+            value.clear();
+        } else {
+            value.push(c);
+        }
+    }
+    if escaped {
+        value.push('\\');
+    }
+    cells.push(value.trim().to_owned());
+    cells
 }
 fn table_lines(a: &App, rows: &[&str], w: usize) -> Vec<Line<'static>> {
     let t = Theme::new(a);
     let parsed: Vec<Vec<String>> = rows
         .iter()
-        .filter(|r| !r.chars().all(|c| matches!(c, '|' | '-' | ':' | ' ')))
-        .map(|r| {
-            r.trim()
-                .trim_matches('|')
-                .split('|')
-                .map(|s| s.trim().to_owned())
-                .collect()
-        })
+        .filter(|r| !r.chars().all(|c| matches!(c, '|' | '-' | ':' | ' ' | '\t')))
+        .map(|r| table_cells(r))
         .collect();
     let cols = parsed.iter().map(Vec::len).max().unwrap_or(1).max(1);
-    let natural: Vec<usize> = (0..cols)
+    let plain = |value: &str| {
+        inline_markdown(a, value, Style::default())
+            .iter()
+            .map(|(c, _)| *c)
+            .collect::<String>()
+    };
+    let widths: Vec<usize> = (0..cols)
         .map(|i| {
             parsed
                 .iter()
-                .map(|r| r.get(i).map_or(0, |v| width(v, a.ambiguous_width)))
+                .map(|row| {
+                    row.get(i)
+                        .map_or(0, |c| width(&plain(c), a.ambiguous_width))
+                })
                 .max()
                 .unwrap_or(0)
+                .max(1)
         })
         .collect();
-    if natural.iter().sum::<usize>() + 3 * cols + 3 > w {
-        // Reflow tables that cannot fit rather than irreversibly truncating data.
+    if widths.iter().sum::<usize>() + cols * 3 + 3 > w {
         let mut out = vec![];
         let headers = parsed.first();
-        for (ri, row) in parsed.iter().enumerate().skip(1) {
-            out.push(line(format!("  {} {}", glyph(a, "┌", "+"), ri), t.muted));
-            for (ci, cell) in row.iter().enumerate() {
+        for (row_index, row) in parsed.iter().enumerate().skip(1) {
+            out.push(line(format!("  [{}]", row_index), t.muted));
+            for (i, cell) in row.iter().enumerate() {
                 let label = headers
-                    .and_then(|r| r.get(ci))
-                    .cloned()
-                    .unwrap_or_else(|| format!("{}", ci + 1));
-                out.extend(wrap(
-                    &format!("{label}: {cell}"),
-                    w,
+                    .and_then(|r| r.get(i))
+                    .map(|s| plain(s))
+                    .unwrap_or_else(|| format!("{}", i + 1));
+                let styled = inline_markdown(a, &format!("{label}: {cell}"), Style::default());
+                out.extend(styled_lines(
                     a,
-                    "  ",
-                    Style::default(),
+                    styled,
+                    w,
+                    "  ".into(),
+                    "  ".into(),
+                    t.muted,
                 ));
             }
         }
         if parsed.len() == 1 {
             for cell in &parsed[0] {
-                out.extend(wrap(cell, w, a, "  ", Style::default()));
+                out.extend(styled_lines(
+                    a,
+                    inline_markdown(a, cell, Style::default()),
+                    w,
+                    "  ".into(),
+                    "  ".into(),
+                    t.muted,
+                ));
             }
         }
         return out;
-    }
-    let available = w.saturating_sub(3 + cols * 3);
-    let mut widths = vec![1; cols];
-    for row in &parsed {
-        for (i, c) in row.iter().enumerate() {
-            widths[i] = widths[i]
-                .max(width(c, a.ambiguous_width))
-                .min((available / cols).max(1));
-        }
     }
     let rule = |left: &str, join: &str, right: &str| {
         format!(
@@ -2458,27 +3118,31 @@ fn table_lines(a: &App, rows: &[&str], w: usize) -> Vec<Line<'static>> {
         rule(glyph(a, "┌", "+"), glyph(a, "┬", "+"), glyph(a, "┐", "+")),
         t.muted,
     )];
-    for (i, row) in parsed.iter().enumerate() {
-        let mut cells = vec![];
-        for (col, w) in widths.iter().enumerate() {
-            let value = truncate(
-                row.get(col).map_or("", String::as_str),
-                *w,
-                a.ambiguous_width,
+    for (row_index, row) in parsed.iter().enumerate() {
+        let mut spans = vec![Span::raw("  "), Span::styled(glyph(a, "│", "|"), t.muted)];
+        for (i, cell_w) in widths.iter().enumerate() {
+            let value = row.get(i).map_or("", String::as_str);
+            let styled = inline_markdown(
+                a,
+                value,
+                if row_index == 0 {
+                    Style::default().add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                },
             );
-            let pad = w.saturating_sub(width(&value, a.ambiguous_width));
-            cells.push(format!(" {value}{} ", " ".repeat(pad)));
+            let used = width(&plain(value), a.ambiguous_width);
+            spans.push(Span::raw(" "));
+            spans.extend(
+                styled
+                    .into_iter()
+                    .map(|(c, s)| Span::styled(c.to_string(), s)),
+            );
+            spans.push(Span::raw(" ".repeat(cell_w.saturating_sub(used) + 1)));
+            spans.push(Span::styled(glyph(a, "│", "|"), t.muted));
         }
-        out.push(line(
-            format!(
-                "  {}{}{}",
-                glyph(a, "│", "|"),
-                cells.join(glyph(a, "│", "|")),
-                glyph(a, "│", "|")
-            ),
-            Style::default(),
-        ));
-        if i == 0 && parsed.len() > 1 {
+        out.push(Line::from(spans));
+        if row_index == 0 && parsed.len() > 1 {
             out.push(line(
                 rule(glyph(a, "├", "+"), glyph(a, "┼", "+"), glyph(a, "┤", "+")),
                 t.muted,

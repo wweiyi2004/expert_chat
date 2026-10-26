@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:crypto/crypto.dart';
 
 /// Arguments are passed directly to the executable, never to a command shell.
 class McpProcessConfig {
@@ -8,7 +9,9 @@ class McpProcessConfig {
     this.workingDirectory = '',
     this.sessionScoped = false,
     this.preset = '',
+    this.environment = const {},
   });
+  final Map<String, String> environment;
   final String command;
   final List<String> arguments;
   final String workingDirectory;
@@ -20,7 +23,22 @@ class McpProcessConfig {
   bool get isPlaywright => preset == 'playwright';
   bool get requiresSession => sessionScoped || isPlaywright;
   bool get isConfigured => command.trim().isNotEmpty;
-  String get identity => jsonEncode(toJson());
+  String get identity => jsonEncode({
+    ...toJson(),
+    if (environment.isNotEmpty)
+      'environmentHash': sha256
+          .convert(utf8.encode(jsonEncode(environment)))
+          .toString(),
+  });
+  McpProcessConfig withEnvironment(Map<String, String> values) =>
+      McpProcessConfig(
+        command: command,
+        arguments: arguments,
+        workingDirectory: workingDirectory,
+        sessionScoped: sessionScoped,
+        preset: preset,
+        environment: values,
+      );
   Map<String, dynamic> toJson() => {
     'command': command,
     'arguments': arguments,

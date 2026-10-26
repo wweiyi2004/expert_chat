@@ -82,10 +82,16 @@ class TuiBridgeServer {
         onDone: () {
           timeout.cancel();
           _clients.remove(client);
+          if (backend case BridgeClientLifecycle lifecycle) {
+            lifecycle.releaseClient(client.scope);
+          }
         },
         onError: (Object _) {
           timeout.cancel();
           _clients.remove(client);
+          if (backend case BridgeClientLifecycle lifecycle) {
+            lifecycle.releaseClient(client.scope);
+          }
         },
       );
     } catch (_) {
@@ -157,6 +163,7 @@ class TuiBridgeServer {
       if (previous != null && previous.request != fingerprint) {
         throw const BridgeFailure('conflict', '请求 id 已用于其他操作');
       }
+      // Scope is server-issued, never trust a client-provided attachment scope.
       final openRevision = method == 'session.open'
           ? client.openRequests.putIfAbsent(
               cacheKey,
@@ -181,7 +188,10 @@ class TuiBridgeServer {
                 case 'bridge.stop':
                   data = {'accepted': true};
                 default:
-                  data = await backend.invoke(method, params);
+                  data = await backend.invoke(method, {
+                    ...params,
+                    '_bridge_client_scope': client.scope,
+                  });
               }
               return {'v': 1, 'id': id, 'ok': true, 'result': data};
             } on BridgeFailure catch (error) {
@@ -256,6 +266,7 @@ class TuiBridgeServer {
       'task.stop',
       'agent.stop',
       'bridge.stop',
+      'attachment.cancel',
     };
     if (independent.contains(method)) return operation();
     final key = params['session_id'] is String
@@ -394,6 +405,7 @@ class TuiBridgeServer {
 class _Client {
   _Client(this.socket);
   final WebSocket socket;
+  final String scope = const Uuid().v4();
   bool authenticated = false, snapshotBusy = false;
   String clientId = '', lastSnapshot = '';
   String? session, snapshotError;

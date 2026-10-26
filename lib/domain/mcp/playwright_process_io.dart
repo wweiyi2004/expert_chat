@@ -17,7 +17,9 @@ prepareMcpProcess(McpProcessConfig config) async {
   var command = config.command.trim();
   var args = config.arguments;
   var directory = config.workingDirectory.trim();
-  Map<String, String>? environment;
+  Map<String, String>? environment = config.environment.isEmpty
+      ? null
+      : {...Platform.environment, ...config.environment};
   if (config.isPlaywright) {
     final error = PlaywrightMcpPreset.validate(config);
     if (error != null) throw StateError(error);
@@ -25,7 +27,7 @@ prepareMcpProcess(McpProcessConfig config) async {
     // Do not let an inherited CDP endpoint, extension token, profile or config
     // override the isolated preset. Other runtime/network variables stay intact.
     environment = Map<String, String>.from(
-      Platform.environment,
+      environment ?? Platform.environment,
     )..removeWhere((key, _) => key.toUpperCase().startsWith('PLAYWRIGHT_MCP_'));
     if (directory.isEmpty) {
       directory = (await Directory.systemTemp.createTemp(

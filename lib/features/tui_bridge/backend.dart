@@ -35,10 +35,17 @@ import '../library/resources_page.dart';
 import 'protocol.dart';
 import 'gui_navigation.dart';
 import 'snapshot_evidence.dart';
+import 'settings_bridge.dart';
+import 'attachment_imports.dart';
 
-class ControllerBridgeBackend implements BridgeBackend {
+class ControllerBridgeBackend implements BridgeBackend, BridgeClientLifecycle {
   ControllerBridgeBackend(this.container);
   final ProviderContainer container;
+  late final _settingsBridge = TuiSettingsBridge(
+    container,
+    rememberSecrets: _profileSecrets.addAll,
+  );
+  late final _attachmentImports = TuiAttachmentImports(container);
   Future<List<DesktopWorkspace>>? _workspaceCache;
   DateTime _workspaceRead = DateTime.fromMillisecondsSinceEpoch(0);
   final _profileSecrets = <String>{};
@@ -51,12 +58,19 @@ class ControllerBridgeBackend implements BridgeBackend {
   final _resuming = <String>{};
   final _gitCache =
       <String, ({DateTime time, Future<Map<String, Object?>> value})>{};
+  @override
+  void releaseClient(String scope) => _attachmentImports.release(scope);
+
   ChatController get controller =>
       container.read(chatControllerProvider.notifier);
   ChatState get state =>
       container.read(chatControllerProvider).value ?? const ChatState();
   @override
   List<String> get capabilities => const [
+    ...TuiSettingsBridge.methods,
+    'mcp.bind',
+    'attachment.import',
+    'attachment.cancel',
     'session.list',
     'session.new',
     'message.send',
@@ -144,6 +158,7 @@ class ControllerBridgeBackend implements BridgeBackend {
     if (settings == null) return [];
     final result = <Map<String, Object?>>[];
     for (final profile in settings.profiles) {
+      if (!profile.enabled) continue;
       if (profile.authMode == 'apiKey' &&
           !_availableProfiles.contains(profile.id) &&
           !(profile.id == settings.activeProfileId &&
@@ -169,6 +184,7 @@ class ControllerBridgeBackend implements BridgeBackend {
           'id': model,
           'source_id': profile.id,
           'source': profile.name,
+          'source_host': Uri.tryParse(profile.baseUrl)?.host,
           'efforts': reasoningEffortsFor(config).map((e) => e.wire).toList(),
           'thinking_supported':
               caps.supportsReasoningEffort ||
@@ -393,6 +409,7 @@ class ControllerBridgeBackend implements BridgeBackend {
     if (session != null) {
       _session(session);
       await controller.loadSession(session);
+      controller.requestAutomaticTitleForSession(session);
     }
     await _refreshSecrets();
     final workspaces = await _workspaces();
@@ -445,6 +462,7 @@ class ControllerBridgeBackend implements BridgeBackend {
       messages: path,
       changes: container.read(workChangesProvider),
     );
+    final today = DateTime.now();
     final data = <String, Object?>{
       'session': c == null
           ? null
@@ -466,6 +484,9 @@ class ControllerBridgeBackend implements BridgeBackend {
               'permission': policy.approval.name,
               'model': _modelLabel(choice, settings?.model),
               'model_choice': choice,
+              'model_source_id':
+                  parseModelSourceChoice(choice ?? '')?.profile ??
+                  (choice == null ? settings?.activeProfileId : null),
               'thinking': controller.thinkingForSession(c.id),
               'request_count':
                   container
@@ -486,6 +507,8 @@ class ControllerBridgeBackend implements BridgeBackend {
             },
       'startup': {
         'version': version,
+        'date':
+            '${today.year.toString().padLeft(4, '0')}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}',
         'workspace': workspaceLabel,
         'workspace_path': workspacePath,
         'branch': remote ? null : git['branch'],
@@ -629,6 +652,8 @@ class ControllerBridgeBackend implements BridgeBackend {
         settings.gatewayToken,
         settings.gatewayLegacyToken,
         ...settings.customMcpTokens.values,
+        ...settings.customMcpEnvironments.values.expand((m) => m.values),
+        ...settings.customMcpHeaders.values.expand((m) => m.values),
       ],
       ..._profileSecrets,
     ];
@@ -644,6 +669,59 @@ class ControllerBridgeBackend implements BridgeBackend {
     await _refreshSecrets();
     if (!capabilities.contains(method)) {
       throw const BridgeFailure('unsupported', '不支持此操作');
+    }
+    if (method == 'mcp.bind') {
+      final id = requiredString(params, 'session_id');
+      final c = _session(id);
+      _idle(id);
+      if (params['selected'] is! bool) {
+        throw const BridgeFailure('invalid_params', 'selected 必须为布尔值');
+      }
+      if (params['confirmed'] != true) {
+        throw const BridgeFailure('confirmation_required', '请确认在此会话选用 MCP 服务');
+      }
+      final server = requiredString(params, 'id');
+      _settingsBridge.server(server);
+      final selected = {...c.customMcpServerIds};
+      if (params['selected'] == true) {
+        selected.add(server);
+      } else {
+        selected.remove(server);
+      }
+      await controller.setSessionMcpSelection(id, selected.toList());
+      return {
+        'accepted': true,
+        'session_id': id,
+        'selected': selected.contains(server),
+      };
+    }
+    if (TuiSettingsBridge.methods.contains(method)) {
+      final data = await _settingsBridge.invoke(method, params);
+      final id = params['session_id'] as String?;
+      if (id != null) {
+        final selected = _session(id).customMcpServerIds;
+        data['session_id'] = id;
+        data['mcp'] = [
+          for (final server in data['mcp'] as List? ?? [])
+            {
+              ...Map<String, Object?>.from(server as Map),
+              'selected': selected.contains(server['id']),
+            },
+        ];
+      }
+      return _redact(data);
+    }
+    if (method == 'attachment.import' || method == 'attachment.cancel') {
+      final session = requiredString(params, 'session_id');
+      _session(session);
+      final scope = requiredString(params, '_bridge_client_scope');
+      if (method == 'attachment.cancel') {
+        _attachmentImports.cancel(scope, session);
+        return {'accepted': true};
+      }
+      return {
+        'attachment': await _attachmentImports.import(scope, session, params),
+      };
     }
     if (method == 'session.list') {
       final sessions = _sessions();
@@ -771,11 +849,34 @@ class ControllerBridgeBackend implements BridgeBackend {
         _idle(id);
         await controller.loadSession(id);
         _idle(id);
-        final text = requiredString(params, 'text');
-        final attachments = _attachments(params['attachments']);
+        final text = params['text'] as String? ?? '';
+        final attachments = _attachments(
+          params['attachments'],
+          session: id,
+          scope: params['_bridge_client_scope'] as String?,
+        );
+        if (text.trim().isEmpty && attachments.isEmpty) {
+          throw const BridgeFailure('invalid_params', '请输入消息或选择附件');
+        }
         unawaited(
           controller
-              .sendToSession(id, text, attachments: attachments)
+              .sendToSession(
+                id,
+                text,
+                attachments: attachments,
+                automaticTitle: true,
+              )
+              .then((accepted) {
+                final scope = params['_bridge_client_scope'] as String?;
+                if (accepted && scope != null) {
+                  _attachmentImports.consume(scope, id, [
+                    for (final a in params['attachments'] as List? ?? [])
+                      if (a is Map && a['token'] is String)
+                        a['token'] as String,
+                  ]);
+                }
+                return accepted;
+              })
               .catchError((Object _) => false),
         );
       case 'queue.add':
@@ -1117,13 +1218,31 @@ class ControllerBridgeBackend implements BridgeBackend {
     }
   }
 
-  List<Attachment> _attachments(Object? raw) {
+  List<Attachment> _attachments(Object? raw, {String? session, String? scope}) {
     if (raw == null) return [];
     if (raw is! List || raw.length > 8) {
       throw const BridgeFailure('invalid_params', '最多 8 个附件');
     }
+    final imported = <Attachment>[];
+    final legacy = <Object?>[];
+    for (final item in raw) {
+      if (item is Map && item['token'] is String) {
+        if (session == null || scope == null) {
+          throw const BridgeFailure('invalid_params', '附件缺少来源会话');
+        }
+        imported.addAll(
+          _attachmentImports.resolve(scope, session, item['token'] as String),
+        );
+      } else {
+        legacy.add(item);
+      }
+    }
+    if (imported.length + legacy.length > 8) {
+      throw const BridgeFailure('too_large', '视频帧和其他附件合计最多8个，请减少附件');
+    }
     return [
-      for (final item in raw)
+      ...imported,
+      for (final item in legacy)
         (() {
           if (item is! Map) {
             throw const BridgeFailure('invalid_params', '附件格式无效');

@@ -91,3 +91,12 @@
 - 最终包 E:\wweiyi\Project\Software\expert_chat\output\releases\tui-20261026-114432；ZIP SHA256 cec7a994cdab85a6f9a74a614eba86e2c1660ae632cc0bc6699b1b7c40747294；冻结1171文件，源SHA256 bdd59b956d56087fbc4fee9ef7d81147db7a944866553b090a645842a466cc77。运行包和ZIP保持封存。
 - expert入口已切换并打开Windows Terminal，新GUI PID50924、TUI PID6572，GUI单实例。仅本地提交，不push。最终报告 output/tui-repair/FINAL-REPORT.html。
 - 用户随后要求不再追加测试；立即停止扩测，仅收尾提交。未把未实机覆盖的tmux/SSH/所有字体/真实用户剪贴板标为已验证。
+
+## 用户11项交互与功能完善（进行中）
+
+- 用户新要求优先于旧TUI-SPEC：启动信息框、居中可选最近会话并确认、右下提示、原生设置/提供商/MCP、附件分类、AI自动短标题、自定义皮肤。只做必要编译与目标分析，不跑全量测试、不调用真实模型作测试，改完自动打开。
+- 交互/UI/后端三代理分工；root负责皮肤配置、协议、集成构建与重开。必要共享扩展：提供商启用字段、MCP环境与HTTP头兼容消费、已选附件导入处理与按客户端会话暂存、后台会话命名；密钥保持安全存储，读取只给存在标记，省略敏感字段保存时保留原值。新stdio配置保存不自动启动，扫描单独确认。
+
+- 本轮11项已实现并打开：原生settings/provider/MCP/ASR、来源分组、原始RGB宠物、可靠换行备选、分类附件及导入取消、启动信息卡与右下提示、居中会话选择确认、命令说明整行高亮、自动短标题、Markdown及skin自定义。原有GUI共享功能保留。
+- 仅cargo check、必要目标分析及Windows/Rust release编译；本轮未运行测试套件、未作真实模型测试。Windows包 E:\wweiyi\Project\Software\expert_chat\output\releases\tui-20261026-152118，SHA256 b183b6e0cc3680ef4492209d7082232fd30f138232693dd04d8c516ec2f10ff5。expert入口已切换，新GUI35912，api-nexus目录新TUI已打开，保持1 GUI/1 TUI。
+- 音频走已配置ASR；视频为前60秒最多3帧的明确受限解析，不冒称完整音视频理解。详见output/tui-refine/README.txt及代理实现记录。

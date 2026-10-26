@@ -572,6 +572,60 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       ),
     );
     await setCustomMcpToken(id, '');
+    await setCustomMcpSecrets(id, environment: {}, headers: {});
+  }
+
+  Future<void> setCustomMcpSecrets(
+    String id, {
+    Map<String, String>? environment,
+    Map<String, String>? headers,
+  }) async {
+    final env =
+        environment ??
+        _current.customMcpEnvironments[id] ??
+        const <String, String>{};
+    final http =
+        headers ?? _current.customMcpHeaders[id] ?? const <String, String>{};
+    final changed =
+        jsonEncode(env) !=
+            jsonEncode(_current.customMcpEnvironments[id] ?? const {}) ||
+        jsonEncode(http) !=
+            jsonEncode(_current.customMcpHeaders[id] ?? const {});
+    if (changed) await ref.read(mcpClientProvider).stopLocalServers();
+    final secure = ref.read(secureStorageProvider);
+    if (env.isEmpty && http.isEmpty) {
+      await secure.delete(key: customMcpSecretsStorageKey(id));
+    } else {
+      await secure.write(
+        key: customMcpSecretsStorageKey(id),
+        value: jsonEncode({'env': env, 'headers': http}),
+      );
+    }
+    if (ref.mounted) {
+      state = AsyncData(
+        _current.copyWith(
+          customMcpEnvironments: {
+            ..._current.customMcpEnvironments,
+            id: Map.unmodifiable(env),
+          },
+          customMcpHeaders: {
+            ..._current.customMcpHeaders,
+            id: Map.unmodifiable(http),
+          },
+        ),
+      );
+      if (changed && _current.gateway.customMcpServers.any((s) => s.id == id)) {
+        await _updateCustomMcpServer(
+          id,
+          (server) => server.copyWith(
+            toolsDiscovered: false,
+            tools: const [],
+            serverVersion: null,
+            lastError: null,
+          ),
+        );
+      }
+    }
   }
 
   Future<void> setCustomMcpToken(String id, String token) async {
@@ -783,6 +837,13 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     await ref
         .read(sharedPrefsProvider)
         .setString(kSettingsContextPrefs, jsonEncode(context.toJson()));
+  }
+
+  Future<void> setAsrEnabled(bool enabled) async {
+    if (!await ref.read(sharedPrefsProvider).setBool('asrEnabled', enabled)) {
+      throw StateError('ASR启用状态未保存');
+    }
+    if (ref.mounted) state = AsyncData(_current.copyWith(asrEnabled: enabled));
   }
 
   Future<void> setMediaApiConfig(

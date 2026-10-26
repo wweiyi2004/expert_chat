@@ -856,6 +856,18 @@ mixin ChatSessions on ChatTurns {
   void renameConversation(String id, String title) {
     final trimmed = title.trim();
     if (trimmed.isEmpty) return;
+    _manualTitleRevisions[id] = (_manualTitleRevisions[id] ?? 0) + 1;
+    _titleTokens[id]?.cancel('用户手动命名优先');
+    final manualIds = _manualTitleRevisions.keys.toList()..sort();
+    _persistence.persistSoon(
+      _persistence.enqueueWrite(() async {
+        if (!await ref
+            .read(sharedPrefsProvider)
+            .setStringList('manualTitleSessions.v1', manualIds)) {
+          throw StateError('手动标题标记未保存');
+        }
+      }),
+    );
     Conversation? renamed;
     final updated = [
       for (final c in _s.conversations)

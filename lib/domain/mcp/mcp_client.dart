@@ -508,6 +508,7 @@ class McpClient {
         },
         options: Options(
           headers: {
+            ...connection.headers,
             'Content-Type': 'application/json',
             'Accept': 'application/json, text/event-stream',
             'MCP-Protocol-Version': _protocolVersion,

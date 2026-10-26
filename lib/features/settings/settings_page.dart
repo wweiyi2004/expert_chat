@@ -252,12 +252,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     try {
       final capabilities = await ref
           .read(gatewayClientProvider)
-          .discover(
-            connection: s.gateway.connectionForCustom(
-              server,
-              s.customMcpTokens[server.id] ?? '',
-            ),
-          );
+          .discover(connection: s.connectionForCustom(server));
       if (!mounted) return;
       await controller.setCustomMcpDiscovered(
         server.id,

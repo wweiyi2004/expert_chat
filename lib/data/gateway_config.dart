@@ -237,18 +237,23 @@ class GatewayConfig {
       capabilitiesDiscovered &&
       capabilities.contains(capabilityId);
 
-  GatewayConnection connectionForCustom(CustomMcpServer server, String token) =>
-      GatewayConnection(
-        localProcess: server.localProcess,
-        computerUse: server.computerUse,
-        allowForeground: server.allowForeground,
-        config: GatewayConfig(
-          enabled: server.enabled,
-          baseUrl: server.baseUrl,
-          requestTimeoutSeconds: requestTimeoutSeconds,
-        ),
-        apiToken: token,
-      );
+  GatewayConnection connectionForCustom(
+    CustomMcpServer server,
+    String token, {
+    Map<String, String> headers = const {},
+    Map<String, String> environment = const {},
+  }) => GatewayConnection(
+    localProcess: server.localProcess?.withEnvironment(environment),
+    headers: headers,
+    computerUse: server.computerUse,
+    allowForeground: server.allowForeground,
+    config: GatewayConfig(
+      enabled: server.enabled,
+      baseUrl: server.baseUrl,
+      requestTimeoutSeconds: requestTimeoutSeconds,
+    ),
+    apiToken: token,
+  );
 
   GatewayConfig copyWith({
     bool? enabled,
@@ -370,6 +375,7 @@ class GatewayConnection {
     required this.config,
     required this.apiToken,
     this.tokenProvider,
+    this.headers = const {},
     this.localProcess,
     this.computerUse = false,
     this.allowForeground = false,
@@ -377,6 +383,7 @@ class GatewayConnection {
     this.agentId,
   });
 
+  final Map<String, String> headers;
   final GatewayConfig config;
   final String apiToken;
   final Future<String> Function()? tokenProvider;
@@ -392,6 +399,7 @@ class GatewayConnection {
         config: config,
         apiToken: apiToken,
         tokenProvider: tokenProvider,
+        headers: headers,
         localProcess: localProcess,
         computerUse: computerUse,
         allowForeground: allowForeground,

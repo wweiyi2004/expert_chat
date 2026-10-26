@@ -13,6 +13,4 @@ ratatui = { version = "0.30", default-features = false, features = ["crossterm"]
 crossterm = "0.29"
 unicode-width = "0.2"
 tungstenite = "0.29"
-
-[dev-dependencies]
 tempfile.workspace = true

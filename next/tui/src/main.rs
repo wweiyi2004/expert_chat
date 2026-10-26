@@ -75,17 +75,28 @@ fn main() {
 fn run() -> Result<()> {
     let args = Args::parse();
     let (config, config_warning) = expert_tui::config::load_with_warning();
+    let terminal_light = expert_tui::theme::light(args.theme.as_deref());
     let mut app = App {
         ascii: args.ascii,
         config_warning,
+        skin: config.skin.clone(),
+        background: config.background.clone(),
+        accent: config.accent.clone(),
+        code_style: config.code_style.clone(),
         no_color: std::env::var_os("NO_COLOR").is_some(),
-        truecolor: matches!(
-            std::env::var("COLORTERM").as_deref(),
-            Ok("truecolor" | "24bit")
-        ),
+        truecolor: std::env::var_os("WT_SESSION").is_some()
+            || matches!(
+                std::env::var("COLORTERM").as_deref(),
+                Ok("truecolor" | "24bit")
+            ),
         color256: std::env::var_os("WT_SESSION").is_some()
             || std::env::var("TERM").is_ok_and(|term| term.contains("256color")),
-        light: expert_tui::theme::light(args.theme.as_deref()),
+        light: expert_tui::theme::appearance_is_light(
+            &config.skin,
+            config.background.as_deref(),
+            terminal_light,
+        ),
+        terminal_light: args.theme.as_ref().map(|_| terminal_light),
         reduce_motion: std::env::var_os("EXPERT_REDUCE_MOTION").is_some()
             || std::env::var("TERM").as_deref() == Ok("dumb")
             || !io::stdout().is_terminal(),
@@ -146,35 +157,120 @@ fn run() -> Result<()> {
     let mut width = 80;
     let (clipboard_tx, clipboard_rx) = std::sync::mpsc::channel();
     let mut clipboard_pending = false;
+    let mut clipboard_images: Vec<(Command, tempfile::TempPath)> = vec![];
     let mut dirty = true;
     let mut last_size = term.size()?;
     let mut last_animation = Instant::now();
     let mut last_pet = (String::new(), String::new());
     while !app.exit {
-        if app.clipboard_requested {
+        for command in std::mem::take(&mut app.outbox) {
+            send(&mut *source, &mut app, command);
+        }
+        if app.clipboard_requested || app.file_picker_requested {
+            let picker = app.file_picker_requested;
+            app.file_picker_requested = false;
             app.clipboard_requested = false;
             if !clipboard_pending {
                 clipboard_pending = true;
-                app.notice = "读取剪贴板图片…".into();
+                app.notice = if picker {
+                    "选择附件…"
+                } else {
+                    "读取剪贴板…"
+                }
+                .into();
                 dirty = true;
                 let tx = clipboard_tx.clone();
                 let session = app.session_id().map(str::to_owned);
                 let agent = app.agent_message_id.clone();
+                let form = app
+                    .form
+                    .as_ref()
+                    .map(|f| (f.kind, f.selected, app.form_revision));
                 std::thread::spawn(move || {
                     let _ = tx.send((
                         session,
                         agent,
-                        expert_tui::clipboard::read_image().map_err(|e| e.to_string()),
+                        form,
+                        picker,
+                        if picker {
+                            expert_tui::clipboard::select_files()
+                        } else {
+                            expert_tui::clipboard::read()
+                        }
+                        .map_err(|e| e.to_string()),
                     ));
                 });
             }
         }
-        if let Ok((session, agent, result)) = clipboard_rx.try_recv() {
+        if let Ok((session, agent, form, picker, result)) = clipboard_rx.try_recv() {
             dirty = true;
             clipboard_pending = false;
             match result {
-                Ok(attachment) => {
-                    app.add_attachment(session.as_deref(), agent.as_deref(), attachment);
+                Ok(expert_tui::clipboard::ClipboardData::ImageFile(path)) => {
+                    if form.is_none() {
+                        match expert_tui::attachment::import_params(path.as_ref()) {
+                            Ok(mut params) => {
+                                if let Some(id) = &session {
+                                    params["session_id"] = json!(id);
+                                }
+                                let command = Command {
+                                    method: "attachment.import".into(),
+                                    params,
+                                };
+                                app.attachment_targets
+                                    .push((command.clone(), agent.clone()));
+                                match source.send(command.clone()) {
+                                    Ok(()) => {
+                                        clipboard_images.push((command, path));
+                                        app.notice = "正在导入剪贴板图片…".into();
+                                    }
+                                    Err(error) => app.command_error(&command, &error.to_string()),
+                                }
+                            }
+                            Err(error) => app.notice = format!("无法导入剪贴板图片：{error}"),
+                        }
+                    } else {
+                        app.notice = "当前表单字段仅支持文本，图片请使用 /attach".into();
+                    }
+                }
+                Ok(expert_tui::clipboard::ClipboardData::Files(paths)) => {
+                    if paths.is_empty() && picker {
+                        app.notice = "已取消附件选择".into();
+                    }
+                    if form.is_some() && !picker {
+                        app.notice = "当前表单字段仅支持文本，文件请使用 /attach".into();
+                        continue;
+                    }
+                    for path in paths {
+                        match expert_tui::attachment::import_params(&path) {
+                            Ok(mut params) => {
+                                if let Some(id) = &session {
+                                    params["session_id"] = json!(id);
+                                }
+                                let command = Command {
+                                    method: "attachment.import".into(),
+                                    params,
+                                };
+                                app.attachment_targets
+                                    .push((command.clone(), agent.clone()));
+                                send(&mut *source, &mut app, command);
+                            }
+                            Err(error) => app.notice = error.to_string(),
+                        }
+                    }
+                }
+                Ok(expert_tui::clipboard::ClipboardData::Text(text)) => {
+                    if session.as_deref() == app.session_id()
+                        && form
+                            == app
+                                .form
+                                .as_ref()
+                                .map(|f| (f.kind, f.selected, app.form_revision))
+                    {
+                        app.paste(&text);
+                    } else {
+                        app.notice = "输入焦点已改变，未将剪贴板文字写入其他字段".into();
+                    }
                 }
                 Err(error) => app.notice = error,
             }
@@ -186,6 +282,7 @@ fn run() -> Result<()> {
         for event in events {
             let event = match event {
                 SourceEvent::CommandResponse { command, result } => {
+                    clipboard_images.retain(|(pending, _)| pending != &command);
                     app.command_response(&command, &result);
                     if !command.params["session_id"].is_null()
                         && command.params["session_id"] != app.snapshot["session"]["id"]
@@ -199,6 +296,7 @@ fn run() -> Result<()> {
                     }
                 }
                 SourceEvent::CommandError { command, message } => {
+                    clipboard_images.retain(|(pending, _)| pending != &command);
                     app.command_error(&command, &message);
                     continue;
                 }
@@ -464,6 +562,22 @@ fn run() -> Result<()> {
                             rect.contains(ratatui::layout::Position::new(mouse.column, mouse.row))
                         }) {
                             app.pet.click(Instant::now(), app.reduce_motion);
+                        } else if let Some(index) =
+                            ui::recent_session_rects(&app, size.width, size.height)
+                                .iter()
+                                .position(|(rect, _)| {
+                                    rect.contains(ratatui::layout::Position::new(
+                                        mouse.column,
+                                        mouse.row,
+                                    ))
+                                })
+                        {
+                            for command in app.click_recent(index) {
+                                expected_session =
+                                    command.params["session_id"].as_str().map(str::to_owned);
+                                prepared = true;
+                                send(&mut *source, &mut app, command);
+                            }
                         } else if ui::footer_at(&app, size.width, size.height).is_some_and(|rect| {
                             rect.contains(ratatui::layout::Position::new(mouse.column, mouse.row))
                         }) {

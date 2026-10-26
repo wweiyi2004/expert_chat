@@ -76,3 +76,5 @@ String ttsApiProfileSecureKey(SpeechApiProtocol protocol) =>
 
 /// Loads settings (profiles + active key) and persists changes. Migrates the
 /// M1 single-config layout to a profile on first run.
+
+String customMcpSecretsStorageKey(String id) => 'customMcpSecrets.$id';

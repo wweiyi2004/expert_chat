@@ -256,10 +256,24 @@ class SettingsStorage {
         ? gatewayAuthSession.accessToken
         : gatewayLegacyToken;
     final customMcpTokens = <String, String>{};
+    final customMcpEnvironments = <String, Map<String, String>>{},
+        customMcpHeaders = <String, Map<String, String>>{};
     for (final server in gateway.customMcpServers) {
       final token =
           await secure.read(key: customMcpTokenStorageKey(server.id)) ?? '';
       if (token.isNotEmpty) customMcpTokens[server.id] = token;
+      final secretRaw = await secure.read(
+        key: customMcpSecretsStorageKey(server.id),
+      );
+      if (secretRaw != null) {
+        final secret = jsonDecode(secretRaw) as Map;
+        customMcpEnvironments[server.id] = Map<String, String>.from(
+          secret['env'] as Map? ?? {},
+        );
+        customMcpHeaders[server.id] = Map<String, String>.from(
+          secret['headers'] as Map? ?? {},
+        );
+      }
     }
 
     // Drop a stored model override that no longer exists in the active
@@ -364,7 +378,10 @@ class SettingsStorage {
       gatewayLegacyToken: gatewayLegacyToken,
       gatewayAuthSession: gatewayAuthSession,
       gatewayTokenProvider: freshGatewayToken,
+      asrEnabled: prefs.getBool('asrEnabled') ?? true,
       customMcpTokens: customMcpTokens,
+      customMcpEnvironments: customMcpEnvironments,
+      customMcpHeaders: customMcpHeaders,
       memoryEnabled: prefs.getBool(kSettingsMemoryEnabled) ?? false,
       researchModeEnabled: prefs.getBool(kSettingsResearchModeEnabled) ?? false,
       // Default on: learning hub is part of the main product surface.

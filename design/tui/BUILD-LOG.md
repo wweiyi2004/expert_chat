@@ -71,3 +71,23 @@
 - 真实模型请求此前11/30，本轮目前0；优先隔离假模型验证，保留累计上限。
 
 - 协议修复约定已批准：context.compact、可选session.retry、thinking_elapsed_ms、真实round_id与stopped、request.error(scope=snapshot)。必要新增lib/data/models.dart的SearchActivity兼容元数据、lib/domain/llm/work_request_retry.dart共享有界重试包装与主/子模型请求调用点；只在尚未产出任何结果的临时请求失败时尝试，不对工具重试，不与已有渠道fallback叠加。
+
+- 第一轮全量回归1968通过/3失败：新重试资格检查读取凭据，破坏已有Fake provider隔离并阻塞桌面工具、提示词更新和任务继续。已改为纯配置元数据判断，原失败测试33项独立全过，新增2项零凭据读取回归；不改原测试时限/断言。修复后的全量检查重新运行。
+- 主审补齐同连接慢请求不阻塞ping/stop，迟到session.open显式superseded，Rust过滤旧会话读响应；结果未知按原Command解除在途锁并保留可恢复草稿、不自动重发。
+- 47项已逐项映射实现/反例证据，最终发行验收尚在进行。布局不再篡改正文字符：CJK宽度在Paragraph自身区域保留真实字符格；模型重试计真实attempt，保留既有并发和时间预算。
+
+## 真实发布候选验收补充（尚未最终交付）
+
+- 候选 tui-20261026-111025 完整Flutter1973/Rust135/单实例7/包内原生7均过，但真实模型冒烟在停止后恢复失败：根任务运行身份未保存。消耗4请求，连同前轮11次累计15/30，测试任务已停止。当前候选不能标完成。
+- 只读发现Windows legacy shared_preferences文件0字节；运行GUI缓存仍完整。root仅对该新[TUI测试]会话同值权限保存，成功恢复1,235,534字节有效JSON，并在原私有appdata目录备份。未输出配置正文。
+- 必要额外修复授权范围：新data/atomic_windows_preferences条件平台适配、lib/main.dart在加载SharedPreferences前最小接入、把现有platform_interface依赖由dev移入生产（版本不变）、共享journal同快照限次重试与持久化revision归属。保留所有guard、不在失败时执行工具，不改pub缓存，不删用户备份。真实原始锁因未证实，但隔离Windows独占锁已复现插件setString false；文件失败保原文必须用原子替换验证。
+
+- LIVE-01修复落地：Windows应用级原子prefs写入（同目录temp+flush+MoveFileExW，失败保旧文件），保留原键/prefix/filter/显式mock；原Windows包2.4.1与接口2.4.2仅改direct依赖分类、无版本升级。journal最多3次50/150ms退避并返回本次持久化receipt，guard仍fail-closed。原子文件7项、真实磁盘Drift+atomic prefs原生10项及其他组合94项均过；等待重新全量和新包真实恢复流程验收。
+
+## 审计修复最终交付
+
+- 47项审计问题已实现并逐项回归；真实验收追加LIVE-01已修复，配置已从缓存恢复、私有备份，发行程序原子替换与0键丢失实测通过。原失败测试任务在新版成功停止/恢复、重连、批准、队列撤回、真实文件和差异一致、最终accepted。
+- 最终Flutter1980、Rust135、静态分析/Clippy、包内真实磁盘原生10、单实例7通过；真实模型累计24/30。没有继续调用模型。
+- 最终包 E:\wweiyi\Project\Software\expert_chat\output\releases\tui-20261026-114432；ZIP SHA256 cec7a994cdab85a6f9a74a614eba86e2c1660ae632cc0bc6699b1b7c40747294；冻结1171文件，源SHA256 bdd59b956d56087fbc4fee9ef7d81147db7a944866553b090a645842a466cc77。运行包和ZIP保持封存。
+- expert入口已切换并打开Windows Terminal，新GUI PID50924、TUI PID6572，GUI单实例。仅本地提交，不push。最终报告 output/tui-repair/FINAL-REPORT.html。
+- 用户随后要求不再追加测试；立即停止扩测，仅收尾提交。未把未实机覆盖的tmux/SSH/所有字体/真实用户剪贴板标为已验证。

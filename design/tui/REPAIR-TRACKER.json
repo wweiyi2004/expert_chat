@@ -18,8 +18,19 @@
       "verification": "隔离运行复现 + 代码核查",
       "number": 1,
       "owner": "layout",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/layout-results.json",
+          "details": {
+            "id": "LAY-001",
+            "title": "长输入末尾被裁切且无跟随视窗",
+            "status": "fixed_pending_root_review",
+            "fix": "Input follows visual cursor; only actual paste collapses",
+            "test": "next/tui/tests/layout_repair.rs::long_input_follows_end_and_then_home"
+          }
+        }
+      ]
     },
     {
       "id": "LAY-002",
@@ -37,8 +48,19 @@
       "verification": "隔离运行复现 + 代码核查",
       "number": 2,
       "owner": "layout",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/layout-results.json",
+          "details": {
+            "id": "LAY-002",
+            "title": "软换行输入光标停留首行行尾",
+            "status": "fixed_pending_root_review",
+            "fix": "Shared softwrap/CJK/newline cursor math; exact full line reserves cursor row",
+            "test": "next/tui/tests/layout_repair.rs::soft_wrapped_input_cursor_tracks_visual_row;exact_wrap_boundary_reserves_a_visible_cursor_row"
+          }
+        }
+      ]
     },
     {
       "id": "LAY-003",
@@ -56,8 +78,19 @@
       "verification": "隔离运行复现 + 代码核查",
       "number": 3,
       "owner": "layout",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/layout-results.json",
+          "details": {
+            "id": "LAY-003",
+            "title": "长任务树无法显示选中项或助手记录",
+            "status": "fixed_pending_root_review",
+            "fix": "Tree follows selected; agent_detail_id displays scrollable wrapped task/output",
+            "test": "next/tui/tests/layout_repair.rs::long_agent_tree_shows_selection_and_scrollable_detail"
+          }
+        }
+      ]
     },
     {
       "id": "BE-01",
@@ -82,8 +115,19 @@
       "source_report": "backend/findings.json",
       "number": 4,
       "owner": "backend",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-audit/backend/repair-summary.json",
+          "details": {
+            "id": "BE-01",
+            "implementation": "Automatic oversize snapshot publishes sequenced request.error scope=snapshot; failed send never advances authoritative lastSnapshot/previousSnapshot; unchanged small snapshot resent after recovery.",
+            "tests": [
+              "oversize and failed automatic snapshots emit scoped sequenced errors and recover"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "KEY-02",
@@ -105,8 +149,28 @@
       "verification": "隔离运行复现 + 代码核查",
       "number": 5,
       "owner": "interaction",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/interaction-results.json",
+          "details": {
+            "id": "KEY-02",
+            "status": "implemented_and_regression_passed",
+            "change": "PendingInput保存原Command、会话和完整Draft目标；失败按原目标恢复，跨会话不串写；不同目标通过/recover显式交换且保存当前草稿。",
+            "test_file": "next/tui/tests/interaction_repair.rs",
+            "tests": [
+              "key02_agent_retry_preserves_target_and_cancel_clears_it",
+              "key02_cross_session_followup_and_late_failure_stay_in_origin_session",
+              "failed_agent_target_does_not_merge_into_new_main_draft_and_recover_swaps_safely",
+              "stale_ack_does_not_clear_current_sessions_pending_message"
+            ],
+            "production_paths": [
+              "next/tui/src/app.rs",
+              "next/tui/src/main.rs"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "KEY-03",
@@ -128,8 +192,26 @@
       "verification": "隔离运行复现 + 代码核查",
       "number": 6,
       "owner": "interaction",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/interaction-results.json",
+          "details": {
+            "id": "KEY-03",
+            "status": "implemented_and_regression_passed",
+            "change": "拒绝理由使用独立rejection_draft备份；取消、提交或批准变更后恢复主草稿及附件；迟到响应只更新保存的主草稿。",
+            "test_file": "next/tui/tests/interaction_repair.rs",
+            "tests": [
+              "key03_rejection_cancel_and_submit_restore_main_draft_and_attachment",
+              "late_failure_and_withdrawal_update_saved_main_draft_not_rejection_reason"
+            ],
+            "production_paths": [
+              "next/tui/src/app.rs",
+              "next/tui/src/main.rs"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "KEY-05",
@@ -150,8 +232,25 @@
       "verification": "隔离运行复现 + 代码核查",
       "number": 7,
       "owner": "interaction",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/interaction-results.json",
+          "details": {
+            "id": "KEY-05",
+            "status": "implemented_and_regression_passed",
+            "change": "控制命令解析先于消息pending/附件守卫；/stop、/quit不被发送状态阻塞。",
+            "test_file": "next/tui/tests/interaction_repair.rs",
+            "tests": [
+              "key05_controls_work_while_pending_or_attached"
+            ],
+            "production_paths": [
+              "next/tui/src/app.rs",
+              "next/tui/src/main.rs"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "KEY-06",
@@ -172,8 +271,25 @@
       "verification": "隔离运行复现 + 代码核查",
       "number": 8,
       "owner": "interaction",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/interaction-results.json",
+          "details": {
+            "id": "KEY-06",
+            "status": "implemented_and_regression_passed",
+            "change": "子代理协议不支持附件时明确阻止发送并保留文本/附件，不再静默遗漏或延迟附加到其他请求。",
+            "test_file": "next/tui/tests/interaction_repair.rs",
+            "tests": [
+              "key06_agent_attachment_is_explicitly_blocked_and_kept"
+            ],
+            "production_paths": [
+              "next/tui/src/app.rs",
+              "next/tui/src/main.rs"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "KEY-12",
@@ -195,8 +311,29 @@
       "verification": "代码核查",
       "number": 9,
       "owner": "interaction",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/interaction-results.json",
+          "details": {
+            "id": "KEY-12",
+            "status": "implemented_and_regression_passed",
+            "change": "撤回请求按原Command与会话关联并去重；响应保留后续编辑；不同目标、问题、拒绝编辑期间安全分流，重复响应不重复插入。",
+            "test_file": "next/tui/tests/interaction_repair.rs",
+            "tests": [
+              "key12_withdrawal_preserves_new_edits_and_suppresses_duplicate_request",
+              "key12_late_withdrawal_does_not_write_into_another_session",
+              "late_failure_and_withdrawal_update_saved_main_draft_not_rejection_reason",
+              "withdrawal_during_question_stays_recoverable_without_becoming_an_answer",
+              "disconnect_releases_compaction_and_withdrawal_but_keeps_unknown_result_text_for_recovery"
+            ],
+            "production_paths": [
+              "next/tui/src/app.rs",
+              "next/tui/src/main.rs"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "KEY-14",
@@ -218,8 +355,25 @@
       "verification": "代码核查",
       "number": 10,
       "owner": "interaction",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/interaction-results.json",
+          "details": {
+            "id": "KEY-14",
+            "status": "implemented_and_regression_passed",
+            "change": "main Event::Paste调用App::paste，按搜索/主输入/拒绝理由焦点分发，全屏与无输入批准卡忽略粘贴。",
+            "test_file": "next/tui/tests/interaction_repair.rs",
+            "tests": [
+              "key14_paste_routes_to_current_focus_and_ignores_noneditable_views"
+            ],
+            "production_paths": [
+              "next/tui/src/app.rs",
+              "next/tui/src/main.rs"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "KEY-15",
@@ -240,8 +394,25 @@
       "verification": "代码核查",
       "number": 11,
       "owner": "interaction",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/interaction-results.json",
+          "details": {
+            "id": "KEY-15",
+            "status": "implemented_and_regression_passed",
+            "change": "粘贴数据不再经过ui::clean，Tab与正文保留；仅真实超过五行的粘贴标记折叠，提交仍用原数据。",
+            "test_file": "next/tui/tests/interaction_repair.rs",
+            "tests": [
+              "key15_paste_preserves_tabs_and_original_multiline_payload"
+            ],
+            "production_paths": [
+              "next/tui/src/app.rs",
+              "next/tui/src/main.rs"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "KEY-16",
@@ -263,8 +434,26 @@
       "verification": "隔离运行复现 + 代码核查",
       "number": 12,
       "owner": "interaction",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/interaction-results.json",
+          "details": {
+            "id": "KEY-16",
+            "status": "implemented_and_regression_passed",
+            "change": "搜索编辑拥有search_cursor，readline只改当前搜索字段，不改隐藏消息；批准卡/全屏Ctrl+C仍可停止且不清隐藏草稿。",
+            "test_file": "next/tui/tests/interaction_repair.rs",
+            "tests": [
+              "key16_readline_search_editing_never_edits_hidden_main_draft",
+              "control_c_in_fullscreen_or_approval_never_clears_hidden_draft"
+            ],
+            "production_paths": [
+              "next/tui/src/app.rs",
+              "next/tui/src/main.rs"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "AUD-01",
@@ -281,8 +470,37 @@
       "test_gap": "此前验收没有此行为的反例测试。",
       "number": 13,
       "owner": "backend",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/interaction-results.json",
+          "details": {
+            "id": "AUD-01",
+            "status": "implemented_and_regression_passed",
+            "change": "/compact发真实context.compact；独立会话级在途去重、进行中/成功摘要/失败可见反馈，不作为消息草稿恢复，也不阻塞停止退出。",
+            "test_file": "next/tui/tests/interaction_repair.rs",
+            "tests": [
+              "compaction_has_separate_pending_progress_success_and_failure",
+              "disconnect_releases_compaction_and_withdrawal_but_keeps_unknown_result_text_for_recovery"
+            ],
+            "production_paths": [
+              "next/tui/src/app.rs",
+              "next/tui/src/main.rs"
+            ]
+          }
+        },
+        {
+          "report": "output/tui-audit/backend/repair-summary.json",
+          "details": {
+            "id": "AUD-01",
+            "implementation": "context.compact capability invokes public controller method reusing shared PublicContextCompactor and existing version/CAS WorkMemory checkpoint path with explicit force trigger. Public goal/content/tools only, original messages unchanged. Busy/duplicate compaction rejects, new GUI/TUI send blocked during compaction, task.stop cancels auxiliary request.",
+            "tests": [
+              "context.compact saves real public checkpoint and preserves original messages",
+              "context compaction busy guard blocks new messages and task.stop cancels"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "LAY-004",
@@ -300,8 +518,19 @@
       "verification": "隔离运行复现 + 代码核查",
       "number": 14,
       "owner": "layout",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/layout-results.json",
+          "details": {
+            "id": "LAY-004",
+            "title": "窄屏改动列表固定前五项",
+            "status": "fixed_pending_root_review",
+            "fix": "File windows follow selected in both layouts",
+            "test": "next/tui/tests/layout_repair.rs::file_list_follows_selection_at_both_layouts"
+          }
+        }
+      ]
     },
     {
       "id": "LAY-005",
@@ -319,8 +548,19 @@
       "verification": "隔离运行复现 + 代码核查",
       "number": 15,
       "owner": "layout",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/layout-results.json",
+          "details": {
+            "id": "LAY-005",
+            "title": "完整差异长行右部不可达",
+            "status": "fixed_pending_root_review",
+            "fix": "Diff softwrap uses actual available columns; scrolling reaches full text",
+            "test": "next/tui/tests/layout_repair.rs::file_list_follows_selection_at_both_layouts"
+          }
+        }
+      ]
     },
     {
       "id": "LAY-006",
@@ -338,8 +578,19 @@
       "verification": "隔离运行复现 + 代码核查",
       "number": 16,
       "owner": "layout",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/layout-results.json",
+          "details": {
+            "id": "LAY-006",
+            "title": "模型抽屉截掉选中项及思考控制",
+            "status": "fixed_pending_root_review",
+            "fix": "Short drawer reserves selected model, strength and controls",
+            "test": "next/tui/tests/layout_repair.rs::short_model_drawer_retains_selected_model_and_controls"
+          }
+        }
+      ]
     },
     {
       "id": "LAY-007",
@@ -357,8 +608,19 @@
       "verification": "隔离运行复现 + 代码核查",
       "number": 17,
       "owner": "layout",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/layout-results.json",
+          "details": {
+            "id": "LAY-007",
+            "title": "极矮窗口完全访问权限消失",
+            "status": "fixed_pending_root_review",
+            "fix": "Tiny terminal prioritizes permissions; footer_at guarantees final row",
+            "test": "next/tui/tests/layout_repair.rs::every_tiny_height_prioritizes_full_access"
+          }
+        }
+      ]
     },
     {
       "id": "LAY-008",
@@ -376,8 +638,19 @@
       "verification": "代码核查",
       "number": 18,
       "owner": "layout",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/layout-results.json",
+          "details": {
+            "id": "LAY-008",
+            "title": "ambiguous_width=2无法约束实际组件宽度",
+            "status": "fixed_pending_root_review",
+            "fix": "Each Paragraph renders in its own temporary Buffer then reflows symbols by UnicodeWidthStr::width_cjk into physical columns. Main cells carry ForcedWidth; continuation cells Skip. Original content is preserved, Block borders and other widget Rects stay fixed. ASCII chrome chosen before interpolation. Links use CJK width; buffer_text respects Skip/ForcedWidth.",
+            "test": "double_width_ambiguity_uses_ascii_chrome;ambiguous_chrome_fallback_never_rewrites_original_content;ambiguous_paragraph_reserves_physical_columns_without_changing_symbols;ambiguous_input_preserves_fixed_borders_and_true_cursor_column;ambiguous_diff_expands_only_inside_its_own_column"
+          }
+        }
+      ]
     },
     {
       "id": "LAY-013",
@@ -395,8 +668,19 @@
       "verification": "隔离运行复现 + 代码核查",
       "number": 19,
       "owner": "layout",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/layout-results.json",
+          "details": {
+            "id": "LAY-013",
+            "title": "侧栏打开后宠物可见位置与鼠标命中区域相差44列",
+            "status": "fixed_pending_root_review",
+            "fix": "Shared pet_rect includes sidebar width and main reuses it",
+            "test": "next/tui/tests/layout_repair.rs::pet_hit_rect_matches_sidebar_render_position"
+          }
+        }
+      ]
     },
     {
       "id": "LAY-015",
@@ -414,8 +698,19 @@
       "verification": "隔离运行复现 + 代码核查",
       "number": 20,
       "owner": "layout",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/layout-results.json",
+          "details": {
+            "id": "LAY-015",
+            "title": "Markdown表格静默丢失长单元格尾部及窄屏整列",
+            "status": "fixed_pending_root_review",
+            "fix": "Overflowing tables reflow as row key/value text without losing cell content",
+            "test": "next/tui/tests/layout_repair.rs::long_table_cells_and_many_columns_retain_all_data"
+          }
+        }
+      ]
     },
     {
       "id": "AUD-02",
@@ -432,8 +727,25 @@
       "test_gap": "此前验收没有此行为的反例测试。",
       "number": 21,
       "owner": "integration",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/interaction-results.json",
+          "details": {
+            "id": "AUD-02",
+            "status": "implemented_and_regression_passed",
+            "change": "Ctrl+L设置redraw_requested，main执行Terminal::clear后完整绘制。",
+            "test_file": "next/tui/tests/interaction_repair.rs",
+            "tests": [
+              "aud02_ctrl_l_requests_real_redraw_without_touching_input"
+            ],
+            "production_paths": [
+              "next/tui/src/app.rs",
+              "next/tui/src/main.rs"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "AUD-03",
@@ -450,8 +762,20 @@
       "test_gap": "此前验收没有此行为的反例测试。",
       "number": 22,
       "owner": "layout",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/layout-results.json",
+          "details": {
+            "id": "AUD-03",
+            "status": "fixed_pending_root_review",
+            "fix": "Index steps by message_id once; remove both M*S scans and clones; preserve orphan order",
+            "test": "indexed_tool_history_preserves_last_round_and_orphan_order",
+            "evidence": "output/tui-audit/layout/after/render_perf.json",
+            "baseline_ms_1000_messages_10000_steps": 267
+          }
+        }
+      ]
     },
     {
       "id": "BE-02",
@@ -475,8 +799,19 @@
       "source_report": "backend/findings.json",
       "number": 23,
       "owner": "backend",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-audit/backend/repair-summary.json",
+          "details": {
+            "id": "BE-02",
+            "implementation": "Refresh exceptions publish deduplicated snapshot_failed request.error, next successful authoritative snapshot clears failure and is sent even when content matches last successful snapshot.",
+            "tests": [
+              "oversize and failed automatic snapshots emit scoped sequenced errors and recover"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "BE-03",
@@ -501,8 +836,20 @@
       "source_report": "backend/findings.json",
       "number": 24,
       "owner": "backend",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-audit/backend/repair-summary.json",
+          "details": {
+            "id": "BE-03",
+            "implementation": "PendingWorkApproval carries toolCallId; backend matches only exact active tool call. Workspace trace begins before approval and is reused by call identity; blocked output tail suppressed.",
+            "tests": [
+              "snapshot associates only exact approval, preserves interruption rounds and timing",
+              "native shared controller workflow pending approval step assertion"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "BE-04",
@@ -527,8 +874,20 @@
       "source_report": "backend/findings.json",
       "number": 25,
       "owner": "backend",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-audit/backend/repair-summary.json",
+          "details": {
+            "id": "BE-04",
+            "implementation": "SearchActivity optional interrupted persisted compatibly; cancellation stamps interruption explicitly; snapshot maps this to stopped while retaining unrelated failed activities.",
+            "tests": [
+              "snapshot associates only exact approval, preserves interruption rounds and timing",
+              "SearchActivity serialization roundtrip within same test"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "BE-05",
@@ -552,8 +911,19 @@
       "source_report": "backend/findings.json",
       "number": 26,
       "owner": "backend",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-audit/backend/repair-summary.json",
+          "details": {
+            "id": "BE-05",
+            "implementation": "session.new supports ssh workspace id using shared connected-profile validation and stores SSH session policy; no registration or network connection side effect.",
+            "tests": [
+              "new session accepts selected connected SSH workspace identity (fake connected research controller, no SSH connection)"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "BE-06",
@@ -576,8 +946,19 @@
       "source_report": "backend/findings.json",
       "number": 27,
       "owner": "backend",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-audit/backend/repair-summary.json",
+          "details": {
+            "id": "BE-06",
+            "implementation": "Snapshot model label resolves route groups and auto choice to readable text; internal choice remains in model_choice.",
+            "tests": [
+              "model group and auto choices have readable snapshot labels"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "BE-07",
@@ -602,8 +983,21 @@
       "source_report": "backend/findings.json",
       "number": 28,
       "owner": "backend",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-audit/backend/repair-summary.json",
+          "details": {
+            "id": "BE-07",
+            "implementation": "Shared WorkRequestRetry wraps only root/child model stream factories; up to 3 total attempts, 1s/2s real backoff or capped Retry-After (seconds or HTTP-date on IO), cancellation immediate. No retries after any content/reasoning/tool/hosted-search/usage/finish/native-result/citation chunk; auth/permission/quota excluded. Additional retries disabled when configured model or same-model channel fallback exists. Root public retry state includes request_id/active/retry_at/remaining; child activity scoped independently. Actual root retry attempts counted in insights; all attempts logged. Retry transition does not emit false round end.",
+            "tests": [
+              "5 pure retry tests incl transient bounds, no auth/fallback replay, partial response suppression, RFC HTTP-date, cancel-before-second-attempt",
+              "real controller publishes actual retry countdown and counts actual HTTP attempts"
+            ],
+            "budget": "TaskCore budget mirrors TaskBudget (workSeconds/search/tool quotas); no HTTP-count lease exists. Existing root/child scheduler model concurrency slot covers the whole logical request, so retry does not widen concurrency and backoff remains within original work-time budget."
+          }
+        }
+      ]
     },
     {
       "id": "BE-08",
@@ -628,8 +1022,21 @@
       "source_report": "backend/findings.json",
       "number": 29,
       "owner": "backend",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-audit/backend/repair-summary.json",
+          "details": {
+            "id": "BE-08",
+            "implementation": "Per-session mutation serialization; reads/urgent stop bypass pending I/O, including same socket after removing outer client.tail HOL. Authentication/parsing/enqueueing remain synchronous. Id cache still deduplicates in-flight work. session.open latest revision supersedes older response with explicit cached superseded error, preventing old snapshot success.",
+            "tests": [
+              "same connection ping and stop bypass pending mutation without replay",
+              "other connection ping and other session mutation bypass suspended operation; same id dedups",
+              "late session.open result cannot replace newer subscription (asserts old superseded, latest success and subscription)"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "BE-09",
@@ -654,8 +1061,20 @@
       "source_report": "backend/findings.json",
       "number": 30,
       "owner": "backend",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-audit/backend/repair-summary.json",
+          "details": {
+            "id": "BE-09",
+            "implementation": "SearchActivity optional persisted roundId stamped from actual root model round and child runtime round; workspace traces preserve request round identity; old data remains null.",
+            "tests": [
+              "native shared workflow requires >=3 distinct factual round ids",
+              "snapshot metadata and serialization roundtrip"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "KEY-01",
@@ -676,8 +1095,25 @@
       "verification": "代码核查",
       "number": 31,
       "owner": "interaction",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/interaction-results.json",
+          "details": {
+            "id": "KEY-01",
+            "status": "implemented_and_regression_passed",
+            "change": "显式区分 /mode work、plan 与无参数切换，非法参数保留提示。",
+            "test_file": "next/tui/tests/interaction_repair.rs",
+            "tests": [
+              "key01_mode_arguments_are_explicit_and_compact_dispatches_real_method"
+            ],
+            "production_paths": [
+              "next/tui/src/app.rs",
+              "next/tui/src/main.rs"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "KEY-04",
@@ -698,8 +1134,25 @@
       "verification": "隔离运行复现 + 代码核查",
       "number": 32,
       "owner": "interaction",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/interaction-results.json",
+          "details": {
+            "id": "KEY-04",
+            "status": "implemented_and_regression_passed",
+            "change": "工作区按名称与路径模糊过滤，选择动作与筛选后的可见列表一致。",
+            "test_file": "next/tui/tests/interaction_repair.rs",
+            "tests": [
+              "key04_workspace_query_filters_visible_results"
+            ],
+            "production_paths": [
+              "next/tui/src/app.rs",
+              "next/tui/src/main.rs"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "KEY-07",
@@ -721,8 +1174,25 @@
       "verification": "隔离运行复现 + 代码核查",
       "number": 33,
       "owner": "interaction",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/interaction-results.json",
+          "details": {
+            "id": "KEY-07",
+            "status": "implemented_and_regression_passed",
+            "change": "快照用户历史与本地待确认历史合并并按已确认文本抵消，GUI新消息可搜索且本地消息不重复。",
+            "test_file": "next/tui/tests/interaction_repair.rs",
+            "tests": [
+              "key07_history_merges_external_snapshot_without_duplicating_local_send"
+            ],
+            "production_paths": [
+              "next/tui/src/app.rs",
+              "next/tui/src/main.rs"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "KEY-08",
@@ -762,8 +1232,25 @@
       },
       "number": 34,
       "owner": "interaction",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/interaction-results.json",
+          "details": {
+            "id": "KEY-08",
+            "status": "implemented_and_regression_passed",
+            "change": "全屏视图替换旧浮层；App::open统一切回Chat，消除隐藏模态吞Esc；与LAY-014合并。",
+            "test_file": "next/tui/tests/interaction_repair.rs",
+            "tests": [
+              "key08_fullscreen_replaces_drawer_and_footer_open_returns_to_chat"
+            ],
+            "production_paths": [
+              "next/tui/src/app.rs",
+              "next/tui/src/main.rs"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "KEY-09",
@@ -785,8 +1272,25 @@
       "verification": "隔离运行复现 + 代码核查",
       "number": 35,
       "owner": "interaction",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/interaction-results.json",
+          "details": {
+            "id": "KEY-09",
+            "status": "implemented_and_regression_passed",
+            "change": "切换diff文件重置scroll，并补全普通差异PageUp/PageDown。",
+            "test_file": "next/tui/tests/interaction_repair.rs",
+            "tests": [
+              "key09_file_selection_resets_scroll_and_pageup_works"
+            ],
+            "production_paths": [
+              "next/tui/src/app.rs",
+              "next/tui/src/main.rs"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "KEY-10",
@@ -807,8 +1311,25 @@
       "verification": "隔离运行复现 + 代码核查",
       "number": 36,
       "owner": "interaction",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/interaction-results.json",
+          "details": {
+            "id": "KEY-10",
+            "status": "implemented_and_regression_passed",
+            "change": "选项输入逐项校验；混合无效编号/说明直接提示且保留输入，不再静默丢字。",
+            "test_file": "next/tui/tests/interaction_repair.rs",
+            "tests": [
+              "key10_invalid_question_tokens_preserve_input"
+            ],
+            "production_paths": [
+              "next/tui/src/app.rs",
+              "next/tui/src/main.rs"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "KEY-11",
@@ -830,8 +1351,26 @@
       "verification": "隔离运行复现 + 代码核查",
       "number": 37,
       "owner": "interaction",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/interaction-results.json",
+          "details": {
+            "id": "KEY-11",
+            "status": "implemented_and_regression_passed",
+            "change": "问题答案跟踪在途请求/确认ID，抑制重复；失败恢复答案及问卷进度，跨会话/不同编辑上下文进入显式恢复队列。",
+            "test_file": "next/tui/tests/interaction_repair.rs",
+            "tests": [
+              "key11_question_error_restores_answers_and_ack_blocks_duplicate",
+              "recovered_question_failure_waits_for_explicit_recovery_in_original_session"
+            ],
+            "production_paths": [
+              "next/tui/src/app.rs",
+              "next/tui/src/main.rs"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "KEY-13",
@@ -852,8 +1391,26 @@
       "verification": "隔离运行复现 + 代码核查",
       "number": 38,
       "owner": "interaction",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/interaction-results.json",
+          "details": {
+            "id": "KEY-13",
+            "status": "implemented_and_regression_passed",
+            "change": "待答问题只优先执行已知控制命令；/home/project等路径保持字面答案；普通未知命令保留全文。",
+            "test_file": "next/tui/tests/interaction_repair.rs",
+            "tests": [
+              "key13_slash_controls_are_not_question_answers",
+              "question_answers_accept_unix_paths_and_unknown_commands_preserve_text"
+            ],
+            "production_paths": [
+              "next/tui/src/app.rs",
+              "next/tui/src/main.rs"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "KEY-17",
@@ -874,8 +1431,26 @@
       "verification": "隔离运行复现 + 代码核查",
       "number": 39,
       "owner": "interaction",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/interaction-results.json",
+          "details": {
+            "id": "KEY-17",
+            "status": "implemented_and_regression_passed",
+            "change": "上下键按显示宽度移动软换行/逻辑行光标；已编辑历史不被Down替换，历史暂存草稿可回到编辑状态。",
+            "test_file": "next/tui/tests/interaction_repair.rs",
+            "tests": [
+              "key17_edited_history_survives_down_and_multiline_cursor_moves",
+              "up_down_move_across_soft_wrapped_input_at_current_terminal_width"
+            ],
+            "production_paths": [
+              "next/tui/src/app.rs",
+              "next/tui/src/main.rs"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "KEY-18",
@@ -896,8 +1471,26 @@
       "verification": "代码核查",
       "number": 40,
       "owner": "interaction",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/interaction-results.json",
+          "details": {
+            "id": "KEY-18",
+            "status": "implemented_and_regression_passed",
+            "change": "main滚轮与键盘统一调用scroll_by，区分聊天底部偏移、欢迎顶部偏移与全屏顶部偏移，聊天/欢迎按真实布局限制上限。",
+            "test_file": "next/tui/tests/interaction_repair.rs",
+            "tests": [
+              "key18_wheel_scroll_method_respects_view_direction",
+              "welcome_scrolling_starts_at_top_and_never_blanks_the_block"
+            ],
+            "production_paths": [
+              "next/tui/src/app.rs",
+              "next/tui/src/main.rs"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "AUD-04",
@@ -914,8 +1507,17 @@
       "test_gap": "此前验收没有此行为的反例测试。",
       "number": 41,
       "owner": "integration",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "source": "next/tui/src/links.rs",
+          "tests": [
+            "links_encode_names_and_reject_escape_and_nonfiles",
+            "osc_links_are_closed_and_old_metadata_is_removed_without_text_changes"
+          ],
+          "integration": "main uses HyperlinkBackend + LinkState.prepare from the visible frame; canonical root validation, percent-encoded file URLs, OSC8 close and stale link refresh"
+        }
+      ]
     },
     {
       "id": "AUD-05",
@@ -932,8 +1534,25 @@
       "test_gap": "此前验收没有此行为的反例测试。",
       "number": 42,
       "owner": "integration",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/interaction-results.json",
+          "details": {
+            "id": "AUD-05",
+            "status": "implemented_and_regression_passed",
+            "change": "/pet on与禁用后的无参数/pet恢复宠物并save_pet(true)，/pet off仍持久关闭。",
+            "test_file": "next/tui/tests/interaction_repair.rs",
+            "tests": [
+              "aud05_pet_can_be_restored_and_saved_without_touching_user_config"
+            ],
+            "production_paths": [
+              "next/tui/src/app.rs",
+              "next/tui/src/main.rs"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "AUD-06",
@@ -950,8 +1569,17 @@
       "test_gap": "此前验收没有此行为的反例测试。",
       "number": 43,
       "owner": "integration",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "source": "next/tui/src/config.rs",
+          "tests": [
+            "malformed_configuration_is_reported_without_overwriting_it",
+            "missing_configuration_is_normal_but_invalid_settings_are_reported"
+          ],
+          "integration": "main load_with_warning -> App.config_warning; UI retains configuration issue separately from newer operation errors"
+        }
+      ]
     },
     {
       "id": "LAY-009",
@@ -969,8 +1597,29 @@
       "verification": "隔离运行复现 + 代码核查",
       "number": 44,
       "owner": "layout",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/layout-results.json",
+          "details": {
+            "id": "LAY-009",
+            "title": "思考折叠行没有耗时",
+            "status": "fixed_pending_root_review",
+            "fix": "Real thinking_elapsed_ms only; missing time is not fabricated",
+            "test": "next/tui/tests/layout_repair.rs::thinking_duration_only_uses_real_backend_time"
+          }
+        },
+        {
+          "report": "output/tui-audit/backend/repair-summary.json",
+          "details": {
+            "id": "LAY-009",
+            "implementation": "Message thinking_elapsed_ms maps actual existing thinkingMillis >0, otherwise null; no inferred durations.",
+            "tests": [
+              "snapshot associates only exact approval, preserves interruption rounds and timing (1234ms)"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "LAY-010",
@@ -988,8 +1637,19 @@
       "verification": "代码核查",
       "number": 45,
       "owner": "layout",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/layout-results.json",
+          "details": {
+            "id": "LAY-010",
+            "title": "助手正文换行宽度超过规格上限",
+            "status": "fixed_pending_root_review",
+            "fix": "Assistant body min(width-4,100), user width unchanged",
+            "test": "next/tui/tests/layout_repair.rs::prose_body_is_capped_at_one_hundred_columns"
+          }
+        }
+      ]
     },
     {
       "id": "LAY-011",
@@ -1007,8 +1667,19 @@
       "verification": "代码核查",
       "number": 46,
       "owner": "layout",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/layout-results.json",
+          "details": {
+            "id": "LAY-011",
+            "title": "运行状态转圈使用muted而非accent",
+            "status": "fixed_pending_root_review",
+            "fix": "Spinner accent span separate from muted status",
+            "test": "next/tui/tests/layout_repair.rs::status_spinner_is_accent_and_summary_counts_are_semantic"
+          }
+        }
+      ]
     },
     {
       "id": "LAY-012",
@@ -1026,8 +1697,36 @@
       "verification": "代码核查",
       "number": 47,
       "owner": "layout",
-      "status": "pending",
-      "fix_evidence": []
+      "status": "implemented_and_targeted_regression_verified",
+      "fix_evidence": [
+        {
+          "report": "output/tui-repair/layout-results.json",
+          "details": {
+            "id": "LAY-012",
+            "title": "交付摘要整行被改动类型色覆盖",
+            "status": "fixed_pending_root_review",
+            "fix": "Type/path/add/remove counts get separate semantic spans",
+            "test": "next/tui/tests/layout_repair.rs::status_spinner_is_accent_and_summary_counts_are_semantic"
+          }
+        }
+      ]
+    }
+  ],
+  "final_release_verification": "output/tui-repair/FINAL-REPORT.html; full frozen-source checks and packaged execution required before goal completion",
+  "integration_findings": [
+    {
+      "id": "LIVE-01",
+      "status": "implemented_and_targeted_regression_verified",
+      "title": "真实停止/恢复流程遇到Windows SharedPreferences写失败和文件截断",
+      "evidence": "output/tui-repair/live-failure.json; prefs-recovery.json; candidate1-live-smoke.json",
+      "recovery": "仅对新测试会话同值权限保存，从运行缓存恢复1,235,534字节有效JSON并备份于私有appdata",
+      "plan": "Windows共享偏好原子写入；journal同快照有限重试、按revision确认，不放宽失败关闭",
+      "fix_evidence": [
+        "lib/data/atomic_windows_preferences_io.dart",
+        "test/atomic_windows_preferences_test.dart",
+        "test/tui_bridge_native_test.dart",
+        "output/tui-repair/live01-results.json"
+      ]
     }
   ]
 }

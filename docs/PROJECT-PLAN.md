@@ -681,3 +681,12 @@ Android也已完成：[签名APK](../output/releases/work-polish-20261025-130222
 [完整报告](../output/tui-build/FINAL-REPORT.md)与[持续日志](../design/tui/BUILD-LOG.md)包含架构、修订、失败与修复、逐项验收和平台限制。全量analyze0、Flutter 1956、Rust 67、Clippy0、最终包CLI/桥接7、原生单实例7、42终端快照通过。真实DeepSeek Flash流程11次请求，临时工作区、仅请求批准；最终包只读复核与实际终端重连通过。
 
 [最终Windows包](E:/wweiyi/Project/Software/expert_chat/output/releases/tui-20261026-045848/ExpertChat-TUI-windows.zip)，35,599,095字节，SHA256 `4e33b461d878d0e807c9339fac24d8430682f60975351e22bcd81ed2cd18c1b7`。源SHA256 `5b08e5463f7cea8980c351a3a8cc6681f94a5fe990acd213586db79217bdad75`。已将expert启动器放入现有用户bin，打开TUI并保留一个后台GUI；运行包封存。仅本地提交到feat/tui，未push。本次交付Windows；物理tmux/SSH终端、POSIX OSC11、真实图片剪贴板端到端未验证，未伪称完成跨平台实机验收。
+
+
+## 22. TUI全面审计修复（2026-10-26）
+
+此前第21节的完成判断经审计纠正：47项缺陷/缺口现已逐项修复，并追加修复真实停止恢复流程暴露的Windows偏好文件截断问题。共享内核、GUI功能及权限边界保留；新原子偏好存储不改变键格式和位置。
+
+[逐项修复追踪](../design/tui/REPAIR-TRACKER.json)与[最终验收](../output/tui-repair/FINAL-REPORT.html)记录实现、失败及修复证据。Flutter1980、Rust135、包内原生10、单实例7与分析检查通过；真实应用请求累计24/30，原失败临时任务已恢复并验收。新版已打开，expert入口已切换；用户要求停止追加测试，已执行。
+
+[Windows包](E:/wweiyi/Project/Software/expert_chat/output/releases/tui-20261026-114432/ExpertChat-TUI-windows.zip)，代码144dc5f，源SHA256 bdd59b956d56087fbc4fee9ef7d81147db7a944866553b090a645842a466cc77。本地feat/tui提交，未推送。

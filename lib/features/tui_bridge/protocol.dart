@@ -13,7 +13,8 @@ abstract interface class BridgeBackend {
 }
 
 abstract interface class BridgeClientLifecycle {
-  void releaseClient(String scope);
+  Future<void> releaseClient(String scope);
+  Future<void> selectClientSession(String scope, String session);
 }
 
 String requiredString(Map<String, dynamic> params, String name) {

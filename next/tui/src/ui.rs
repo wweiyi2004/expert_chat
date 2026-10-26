@@ -4,7 +4,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Padding, Paragraph, Widget},
+    widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph, Widget},
 };
 use serde_json::Value;
 use std::time::Instant;
@@ -424,6 +424,34 @@ fn record(a: &App, w: usize, h: u16) -> Vec<Line<'static>> {
     }
     for message in items(&a.snapshot, "messages") {
         let user = text(message, "role") == "user";
+        if !text(message, "thinking").is_empty() {
+            let elapsed = message
+                .get("thinking_elapsed_ms")
+                .filter(|v| v.is_number())
+                .map(|v| format!("  {}", duration(v)))
+                .unwrap_or_default();
+            out.push(line(
+                format!("  {} 思考{elapsed}", glyph(a, "∴", "~")),
+                t.muted,
+            ));
+            if a.expanded {
+                out.extend(wrap(
+                    text(message, "thinking"),
+                    w.min(104),
+                    a,
+                    &format!("    {} ", glyph(a, "│", "|")),
+                    t.muted,
+                ));
+            }
+        }
+        let linked = linked_steps.remove(text(message, "id")).unwrap_or_default();
+        let finished = linked
+            .iter()
+            .all(|step| matches!(text(step, "status"), "done" | "failed" | "stopped"));
+        out.extend(step_lines(a, w, &linked, finished));
+        if !linked.is_empty() {
+            out.push(Line::default());
+        }
         out.extend(message_lines(
             a,
             text(message, "text"),
@@ -445,45 +473,7 @@ fn record(a: &App, w: usize, h: u16) -> Vec<Line<'static>> {
                 t.muted,
             ));
         }
-        if !text(message, "thinking").is_empty() {
-            let elapsed = message
-                .get("thinking_elapsed_ms")
-                .filter(|v| v.is_number())
-                .map(|v| format!("  {}", duration(v)))
-                .unwrap_or_default();
-            out.push(line(
-                format!("  {} 思考{elapsed}", glyph(a, "∴", "~")),
-                t.muted,
-            ));
-            if a.expanded {
-                out.extend(wrap(
-                    text(message, "thinking"),
-                    w.min(104),
-                    a,
-                    &format!("    {} ", glyph(a, "│", "|")),
-                    t.muted,
-                ));
-            }
-        }
         out.push(Line::default());
-        let linked = linked_steps.remove(text(message, "id")).unwrap_or_default();
-        let mut groups: Vec<Vec<&Value>> = vec![];
-        for step in linked {
-            if let Some(last) = groups
-                .last_mut()
-                .filter(|g| g.first().is_some_and(|s| s["round_id"] == step["round_id"]))
-            {
-                last.push(step);
-            } else {
-                groups.push(vec![step]);
-            }
-        }
-        for group in groups {
-            let finished = group
-                .iter()
-                .all(|s| matches!(text(s, "status"), "done" | "failed" | "stopped"));
-            out.extend(step_lines(a, w, &group, finished));
-        }
     }
     let orphans: Vec<&Value> = items(&a.snapshot, "steps")
         .iter()
@@ -863,13 +853,7 @@ fn form_lines(a: &App, w: usize, height: usize) -> Vec<Line<'static>> {
         return vec![];
     };
     let t = Theme::new(a);
-    let mut out = vec![
-        line(glyph(a, "─", "-").repeat(w), t.muted),
-        line(
-            format!(" {}", form.title),
-            t.accent.add_modifier(Modifier::BOLD),
-        ),
-    ];
+    let mut out = vec![];
     let notice = usize::from(!form.notice.is_empty());
     let budget = height.saturating_sub(out.len() + 1 + notice).max(1);
     let selected = form.selected.min(form.fields.len().saturating_sub(1));
@@ -932,6 +916,192 @@ fn form_lines(a: &App, w: usize, height: usize) -> Vec<Line<'static>> {
         t.muted,
     ));
     out
+}
+
+/// Dialog geometry is shared by painting and input hit testing.
+pub fn popup_rect(a: &App, width: u16, height: u16) -> Option<Rect> {
+    if (a.form.is_none() && a.drawer.is_none()) || width < 8 || height < 6 {
+        return None;
+    }
+    let horizontal_margin = if width >= 70 { 4 } else { 1 };
+    let w = width.saturating_sub(horizontal_margin * 2).min(112);
+    let available = height.saturating_sub(3);
+    let desired = a.form.as_ref().map_or(22, |form| {
+        (form.fields.len() + 7).min(u16::MAX as usize) as u16
+    });
+    let h = desired.max(12).min(available);
+    Some(Rect::new((width - w) / 2, (height - 1 - h) / 2, w, h))
+}
+pub fn popup_close_rect(a: &App, width: u16, height: u16) -> Option<Rect> {
+    let r = popup_rect(a, width, height)?;
+    Some(Rect::new(r.right().saturating_sub(5), r.y, 3, 1))
+}
+fn popup_inner(r: Rect) -> Rect {
+    Rect::new(
+        r.x + 3,
+        r.y + 2,
+        r.width.saturating_sub(6),
+        r.height.saturating_sub(4),
+    )
+}
+fn form_window(a: &App, height: usize) -> (usize, usize) {
+    let Some(form) = &a.form else { return (0, 0) };
+    let budget = height
+        .saturating_sub(1 + usize::from(!form.notice.is_empty()))
+        .max(1);
+    let selected = form.selected.min(form.fields.len().saturating_sub(1));
+    (
+        selected
+            .saturating_sub(budget / 2)
+            .min(form.fields.len().saturating_sub(budget)),
+        budget,
+    )
+}
+pub fn popup_field_at(a: &App, width: u16, height: u16, x: u16, y: u16) -> Option<usize> {
+    let form = a.form.as_ref()?;
+    let inner = popup_inner(popup_rect(a, width, height)?);
+    if !inner.contains(ratatui::layout::Position::new(x, y)) {
+        return None;
+    }
+    let (start, budget) = form_window(a, inner.height as usize);
+    let row = (y - inner.y) as usize;
+    (row < budget && start + row < form.fields.len()).then_some(start + row)
+}
+fn draw_popup(f: &mut Frame, a: &App) {
+    let area = f.area();
+    let Some(rect) = popup_rect(a, area.width, area.height) else {
+        return;
+    };
+    let t = Theme::new(a);
+    // Keep permissions in the final row readable while muting the inactive page.
+    for y in area.y..area.bottom().saturating_sub(1) {
+        for x in area.x..area.right() {
+            f.buffer_mut()[(x, y)].modifier.insert(Modifier::DIM);
+        }
+    }
+    f.render_widget(Clear, rect);
+    let skin = crate::theme::effective_skin_colors(&a.skin, a.background.as_deref(), a.light);
+    let mut panel = Style::default();
+    if !a.no_color {
+        panel = panel.bg(skin.background.unwrap_or(if a.light {
+            Color::Rgb(250, 250, 250)
+        } else {
+            Color::Rgb(24, 28, 34)
+        }));
+        if let Some(fg) = skin.foreground {
+            panel = panel.fg(fg);
+        }
+    }
+    let title = a
+        .form
+        .as_ref()
+        .map(|form| form.title.as_str())
+        .unwrap_or(match a.drawer {
+            Some(Drawer::Model) => "模型与思考",
+            Some(Drawer::Permissions) => "工具权限",
+            Some(Drawer::Sessions) => "会话",
+            Some(Drawer::Workspace) => "工作区",
+            Some(Drawer::History) => "历史搜索",
+            Some(Drawer::Login) => "登录与来源",
+            _ => "快捷键帮助",
+        });
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(t.accent)
+        .style(panel)
+        .title(format!(
+            " {} ",
+            truncate(
+                title,
+                rect.width.saturating_sub(10) as usize,
+                a.ambiguous_width
+            )
+        ));
+    if a.ascii || a.ambiguous_width == 2 {
+        block = block.border_set(ratatui::symbols::border::Set {
+            top_left: "+",
+            top_right: "+",
+            bottom_left: "+",
+            bottom_right: "+",
+            vertical_left: "|",
+            vertical_right: "|",
+            horizontal_top: "-",
+            horizontal_bottom: "-",
+        });
+    }
+    f.render_widget(block, rect);
+    let close = popup_close_rect(a, area.width, area.height).unwrap();
+    f.render_widget(paragraph(a, "[x]").style(t.accent), close);
+    let inner = popup_inner(rect);
+    if inner.is_empty() {
+        return;
+    }
+    if let Some(form) = &a.form {
+        f.render_widget(
+            paragraph(
+                a,
+                form_lines(a, inner.width as usize, inner.height as usize),
+            ),
+            inner,
+        );
+        let (start, budget) = form_window(a, inner.height as usize);
+        if form.fields.len() > budget {
+            f.render_widget(
+                paragraph(a, format!(" {}/{} ", form.selected + 1, form.fields.len()))
+                    .style(t.muted),
+                Rect::new(
+                    rect.x + 3,
+                    rect.bottom() - 1,
+                    rect.width.saturating_sub(9),
+                    1,
+                ),
+            );
+        }
+        if form.editing
+            && let Some(field) = form.fields.get(form.selected)
+            && field.editable
+        {
+            let w = inner.width as usize;
+            let label = truncate(
+                &field.label,
+                w.saturating_sub(8).min(24).min(w / 3),
+                a.ambiguous_width,
+            );
+            let value = if field.secret {
+                "*".repeat(field.value.chars().count().min(24))
+            } else {
+                display_path(&field.value)
+            };
+            let value = middle(
+                &value,
+                w.saturating_sub(width(&label, a.ambiguous_width) + 5),
+                a,
+            );
+            let col = (5 + width(&label, a.ambiguous_width) + width(&value, a.ambiguous_width))
+                .min(w.saturating_sub(1));
+            f.set_cursor_position((
+                inner.x + col as u16,
+                inner.y
+                    + form
+                        .selected
+                        .saturating_sub(start)
+                        .min(inner.height.saturating_sub(1) as usize) as u16,
+            ));
+        }
+    } else {
+        let rows = drawer_lines(a, inner.width as usize, inner.height as usize + 2);
+        f.render_widget(
+            paragraph(
+                a,
+                rows.into_iter()
+                    .skip(2)
+                    .take(inner.height as usize)
+                    .collect::<Vec<_>>(),
+            ),
+            inner,
+        );
+    }
 }
 
 fn drawer_lines(a: &App, w: usize, height: usize) -> Vec<Line<'static>> {
@@ -1084,11 +1254,12 @@ fn drawer_lines(a: &App, w: usize, height: usize) -> Vec<Line<'static>> {
             for s in [
                 " enter 发送   Alt+J 换行   shift+tab 计划模式",
                 " Ctrl+J / Shift+Enter 换行视终端支持",
-                " esc 两次中断   ctrl+c 清空 / 中断 / 两次退出",
+                " 鼠标拖选后 ctrl+c 复制 · /copy [all] 复制正文",
+                " esc 两次中断 · 未选文字时 ctrl+c 清空 / 中断",
                 " ctrl+o 详情   ctrl+g 改动   ctrl+t 任务树",
                 " ctrl+y 批准   ctrl+r 历史搜索   ctrl+b 宽屏侧栏",
                 " pgup/pgdn 滚动   / 命令   @ 文件",
-                " 按住 shift 拖动选择文字（多数终端支持）",
+                " Shift 拖选可用终端复制任意界面文字 · ctrl+v 粘贴附件",
             ] {
                 out.push(line(s, t.muted));
             }
@@ -1553,6 +1724,7 @@ pub fn draw(f: &mut Frame, a: &App) {
     if let Some(rect) = footer_at(a, area.width, area.height) {
         f.render_widget(paragraph(a, footer(a, area.width as usize)), rect);
     }
+    draw_popup(f, a);
     if !a.no_color {
         let skin = crate::theme::effective_skin_colors(&a.skin, a.background.as_deref(), a.light);
         let background = a
@@ -1605,6 +1777,8 @@ fn chat_layout(a: &App, w: usize, height: u16) -> ChatLayout {
         (approval_lines(a, w.saturating_sub(4)).len() as u16 + 2)
             .min(height.saturating_sub(3))
             .max(3)
+    } else if a.paste_collapsed {
+        3
     } else {
         let n = a
             .input
@@ -1616,11 +1790,7 @@ fn chat_layout(a: &App, w: usize, height: u16) -> ChatLayout {
             })
             .sum::<usize>()
             .max(input_visual_position(a, w).0 + 1);
-        if a.paste_collapsed {
-            3
-        } else {
-            (n as u16 + 2).min(if height < 16 { 3 } else { 8 })
-        }
+        (n as u16 + 2).min(if height < 16 { 3 } else { 8 })
     };
     let status_line = status(a, w);
     let status_h = u16::from(status_line.is_some());
@@ -1633,24 +1803,8 @@ fn chat_layout(a: &App, w: usize, height: u16) -> ChatLayout {
             .saturating_sub(input_h + status_h + queue_h + notice_h)
             .max(1),
     );
-    let drawer = if a.form.is_some() {
-        form_lines(
-            a,
-            w,
-            (height / 2)
-                .min(12)
-                .min(height.saturating_sub(bottom_h + input_h + status_h + queue_h + notice_h))
-                as usize,
-        )
-    } else if a.drawer.is_some() {
-        drawer_lines(
-            a,
-            w,
-            (height / 2)
-                .min(if height < 16 { 6 } else { 12 })
-                .min(height.saturating_sub(bottom_h + input_h + status_h + queue_h + notice_h))
-                as usize,
-        )
+    let drawer = if a.form.is_some() || a.drawer.is_some() {
+        vec![]
     } else if let Some(request) = items(&a.snapshot, "questions").first() {
         let mut lines = vec![line(" 需要你回答", t.warn.add_modifier(Modifier::BOLD))];
         if let Some(q) = items(request, "questions").get(a.question_index) {
@@ -2009,7 +2163,7 @@ fn draw_inner(f: &mut Frame, a: &App) {
                 "描述任务；Alt+J 换行；/ 命令，@ 文件".to_string()
             }
         } else if a.paste_collapsed {
-            format!("[已粘贴 {} 行]", a.input.lines().count())
+            format!("[char +{}]", a.input.chars().count())
         } else {
             a.input.clone()
         };

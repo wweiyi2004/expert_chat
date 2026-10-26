@@ -18,6 +18,7 @@ class TuiBridgeServer {
   final Future<void> Function()? onStopped;
   final serverId = const Uuid().v4();
   final _clients = <_Client>{};
+  final _clientCleanups = <Future<void>>{};
   final _results =
       <String, ({String request, Future<Map<String, Object?>> response})>{};
   HttpServer? _server;
@@ -82,16 +83,12 @@ class TuiBridgeServer {
         onDone: () {
           timeout.cancel();
           _clients.remove(client);
-          if (backend case BridgeClientLifecycle lifecycle) {
-            lifecycle.releaseClient(client.scope);
-          }
+          unawaited(_releaseClient(client));
         },
         onError: (Object _) {
           timeout.cancel();
           _clients.remove(client);
-          if (backend case BridgeClientLifecycle lifecycle) {
-            lifecycle.releaseClient(client.scope);
-          }
+          unawaited(_releaseClient(client));
         },
       );
     } catch (_) {
@@ -228,9 +225,24 @@ class TuiBridgeServer {
       if (method == 'session.open' &&
           response['ok'] == true &&
           openRevision == client.openRevision) {
-        client.session = params['session_id'] as String;
-        client.previousSnapshot = null;
-        client.lastSnapshot = '';
+        final selectedSession = params['session_id'] as String;
+        if (backend case BridgeClientLifecycle lifecycle) {
+          await lifecycle.selectClientSession(client.scope, selectedSession);
+        }
+        if (openRevision != client.openRevision) {
+          response = _error(
+            id,
+            const BridgeFailure('superseded', '已被更新的会话打开请求取代'),
+          );
+          _results[cacheKey] = (
+            request: fingerprint,
+            response: Future.value(response),
+          );
+        } else {
+          client.session = selectedSession;
+          client.previousSnapshot = null;
+          client.lastSnapshot = '';
+        }
       }
       _send(client, response);
       if (method == 'bridge.stop') unawaited(stop());
@@ -387,13 +399,28 @@ class TuiBridgeServer {
     }
   }
 
+  Future<void> _releaseClient(_Client client) {
+    if (client.cleanup case final pending?) return pending;
+    final operation = (() async {
+      if (backend case BridgeClientLifecycle lifecycle) {
+        await lifecycle.releaseClient(client.scope);
+      }
+    })().catchError((Object _) {});
+    client.cleanup = operation;
+    _clientCleanups.add(operation);
+    unawaited(operation.whenComplete(() => _clientCleanups.remove(operation)));
+    return operation;
+  }
+
   Future<void> stop() async {
     _updates?.cancel();
     _updates = null;
     for (final client in _clients.toList()) {
       await client.socket.close(WebSocketStatus.goingAway);
+      await _releaseClient(client);
     }
     _clients.clear();
+    await Future.wait(_clientCleanups.toList());
     await _server?.close(force: true);
     _server = null;
     await discovery.remove();
@@ -405,6 +432,7 @@ class TuiBridgeServer {
 class _Client {
   _Client(this.socket);
   final WebSocket socket;
+  Future<void>? cleanup;
   final String scope = const Uuid().v4();
   bool authenticated = false, snapshotBusy = false;
   String clientId = '', lastSnapshot = '';

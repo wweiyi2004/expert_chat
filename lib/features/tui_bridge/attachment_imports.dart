@@ -151,6 +151,17 @@ class TuiAttachmentImports {
     }
   }
 
+  void discardSession(String session) {
+    _items.removeWhere((_, item) => item.session == session);
+    for (final entry in _pending.entries) {
+      if ((jsonDecode(entry.key) as List).last == session) {
+        for (final token in entry.value) {
+          token.cancel('空草稿已关闭');
+        }
+      }
+    }
+  }
+
   void consume(String scope, String session, Iterable<String> tokens) {
     for (final token in tokens) {
       final item = _items[token];

@@ -58,8 +58,121 @@ class ControllerBridgeBackend implements BridgeBackend, BridgeClientLifecycle {
   final _resuming = <String>{};
   final _gitCache =
       <String, ({DateTime time, Future<Map<String, Object?>> value})>{};
+  final _draftOwners = <String, String>{};
+  final _draftProtected = <String, int>{};
+  final _clientSessions = <String, String>{};
+  final _releasedScopes = <String>{};
+  final _scopeCreations = <String, Set<Future<void>>>{};
+  final _draftReferences = <String, Set<String>>{};
+  Future<void> _draftCleanupTail = Future<void>.value();
+
+  bool _hasDraftContent(Conversation c) =>
+      c.hasUserActivity ||
+      c.messages.any(
+        (m) =>
+            m.content.trim().isNotEmpty ||
+            m.reasoning.trim().isNotEmpty ||
+            m.attachments.isNotEmpty ||
+            m.searchActivities.isNotEmpty,
+      );
+
+  bool _emptyDraft(String id) {
+    final c = state.conversations.where((c) => c.id == id).firstOrNull;
+    if (c == null ||
+        !c.messagesLoaded ||
+        _hasDraftContent(c) ||
+        (_draftProtected[id] ?? 0) > 0 ||
+        controller.isConversationRunning(id) ||
+        controller.isContextCompacting(id) ||
+        _resuming.contains(id)) {
+      return false;
+    }
+    final checkpoint = state.sessionCheckpoints[id]?.status;
+    if (checkpoint == SessionExecutionStatus.running ||
+        checkpoint == SessionExecutionStatus.waiting) {
+      return false;
+    }
+    if (container
+            .read(workApprovalsProvider)
+            .any((a) => a.conversationId == id) ||
+        container
+            .read(workQuestionsProvider)
+            .any((q) => q.conversationId == id) ||
+        container
+            .read(workTaskRuntimeProvider)
+            .any((r) => r.conversationId == id && r.status.isActive) ||
+        container
+            .read(workAgentsProvider)
+            .records
+            .any((a) => a.conversationId == id && !a.terminal) ||
+        container
+            .read(workChangesProvider)
+            .any((c) => c.conversationId == id) ||
+        container.read(workTaskSteeringProvider).snapshot(id).isNotEmpty) {
+      return false;
+    }
+    return true;
+  }
+
+  Future<void> _cleanupOwnedDrafts(String scope) {
+    final next = _draftCleanupTail
+        .catchError((Object _) {})
+        .then((_) async {
+          // Every candidate is a TUI-created draft; active references from another
+          // connection protect adopted/reconnected drafts regardless of creator.
+          for (final id in _draftOwners.keys.toList()) {
+            final c = state.conversations.where((c) => c.id == id).firstOrNull;
+            if (c == null || _hasDraftContent(c)) {
+              _draftOwners.remove(id);
+              _draftReferences.remove(id);
+              continue;
+            }
+            if (_draftReferences[id]?.isNotEmpty == true || !_emptyDraft(id)) {
+              continue;
+            }
+            _attachmentImports.discardSession(id);
+            await controller.deleteConversation(id);
+            if (!state.conversations.any((c) => c.id == id)) {
+              _draftOwners.remove(id);
+              _draftReferences.remove(id);
+            }
+          }
+        })
+        .catchError((Object _) {
+          // Existing controller deletion restores its row on persistence failure.
+          // Never erase another conversation to hide a failed draft cleanup.
+        });
+    _draftCleanupTail = next;
+    return next;
+  }
+
   @override
-  void releaseClient(String scope) => _attachmentImports.release(scope);
+  Future<void> selectClientSession(String scope, String session) async {
+    _session(session); // A concurrent cleanup must not yield a stale success.
+    final previous = _clientSessions[scope];
+    if (previous != null && previous != session) {
+      _draftReferences[previous]?.remove(scope);
+    }
+    if (!_releasedScopes.contains(scope)) {
+      _clientSessions[scope] = session;
+      if (_draftOwners.containsKey(session)) {
+        (_draftReferences[session] ??= <String>{}).add(scope);
+      }
+    }
+    await _cleanupOwnedDrafts(scope);
+  }
+
+  @override
+  Future<void> releaseClient(String scope) async {
+    _releasedScopes.add(scope);
+    _clientSessions.remove(scope);
+    for (final references in _draftReferences.values) {
+      references.remove(scope);
+    }
+    _attachmentImports.release(scope);
+    await Future.wait(_scopeCreations[scope]?.toList() ?? <Future<void>>[]);
+    await _cleanupOwnedDrafts(scope);
+  }
 
   ChatController get controller =>
       container.read(chatControllerProvider.notifier);
@@ -73,6 +186,7 @@ class ControllerBridgeBackend implements BridgeBackend, BridgeClientLifecycle {
     'attachment.cancel',
     'session.list',
     'session.new',
+    'session.ensure',
     'message.send',
     'context.compact',
     'queue.add',
@@ -665,6 +779,50 @@ class ControllerBridgeBackend implements BridgeBackend, BridgeClientLifecycle {
     String method,
     Map<String, dynamic> params,
   ) async {
+    final scope = params['_bridge_client_scope'] as String?;
+    final id = params['session_id'] as String?;
+    final protect =
+        (method == 'message.send' || method == 'task.revise') &&
+        scope != null &&
+        id != null &&
+        _draftOwners.containsKey(id);
+    if (protect) _draftProtected[id] = (_draftProtected[id] ?? 0) + 1;
+    final creation =
+        scope != null && (method == 'session.new' || method == 'session.ensure')
+        ? Completer<void>()
+        : null;
+    if (creation != null) {
+      (_scopeCreations[scope!] ??= <Future<void>>{}).add(creation.future);
+    }
+    try {
+      if (scope != null && _releasedScopes.contains(scope)) {
+        throw const BridgeFailure('disconnected', '连接已关闭');
+      }
+      return await _invoke(method, params);
+    } finally {
+      if (protect) {
+        final count = (_draftProtected[id] ?? 1) - 1;
+        if (count <= 0) {
+          _draftProtected.remove(id);
+        } else {
+          _draftProtected[id] = count;
+        }
+        await _cleanupOwnedDrafts(scope);
+      }
+      if (creation != null) {
+        creation.complete();
+        _scopeCreations[scope]?.remove(creation.future);
+        if (_scopeCreations[scope]?.isEmpty == true) {
+          _scopeCreations.remove(scope);
+        }
+      }
+    }
+  }
+
+  Future<Map<String, Object?>> _invoke(
+    String method,
+    Map<String, dynamic> params,
+  ) async {
     await container.read(chatControllerProvider.future);
     await _refreshSecrets();
     if (!capabilities.contains(method)) {
@@ -772,8 +930,49 @@ class ControllerBridgeBackend implements BridgeBackend, BridgeClientLifecycle {
       _workspaceCache = null;
       return {'workspace': _workspace(workspace)};
     }
-    if (method == 'session.new') {
-      final workspaceId = params['workspace_id'] as String?;
+    if (method == 'session.new' || method == 'session.ensure') {
+      final scope = params['_bridge_client_scope'] as String?;
+      var workspaceId = params['workspace_id'] as String?;
+      if (method == 'session.ensure') {
+        if (scope == null) {
+          throw const BridgeFailure('invalid_params', '自动草稿需要明确的客户端来源');
+        }
+        if (!params.containsKey('workspace_id')) {
+          throw const BridgeFailure('workspace_required', '自动会话需要明确工作区');
+        }
+        if (workspaceId == null) {
+          final host = container.read(desktopWorkspaceHostProvider);
+          if (!host.supported) {
+            throw const BridgeFailure('workspace_required', '请选择已授权的工作区后开始');
+          }
+          final workspace = await host.defaultWorkspace();
+          workspaceId = workspace.id;
+          _workspaceCache = null;
+        }
+        for (final entry
+            in _draftOwners.entries
+                .where(
+                  (e) =>
+                      e.value == scope ||
+                      _draftReferences[e.key]?.contains(scope) == true,
+                )
+                .toList()) {
+          final binding = _policy(entry.key).sshProfileId.isNotEmpty
+              ? 'ssh:${_policy(entry.key).sshProfileId}'
+              : container.read(
+                  conversationWorkspaceBindingsProvider,
+                )[entry.key];
+          if (binding == workspaceId && _emptyDraft(entry.key)) {
+            await selectClientSession(scope, entry.key);
+            return {
+              'session_id': entry.key,
+              'workspace_id': workspaceId,
+              'created': false,
+              'draft': true,
+            };
+          }
+        }
+      }
       if (workspaceId != null &&
           !workspaceId.startsWith('ssh:') &&
           !(await _workspaces()).any((w) => w.id == workspaceId)) {
@@ -795,7 +994,19 @@ class ControllerBridgeBackend implements BridgeBackend, BridgeClientLifecycle {
             .read(conversationWorkspaceBindingsProvider.notifier)
             .select(id, workspaceId);
       }
-      return {'session_id': id};
+      if (scope != null) {
+        _draftOwners[id] = scope;
+        await selectClientSession(scope, id);
+        if (_releasedScopes.contains(scope)) {
+          throw const BridgeFailure('disconnected', '连接已关闭');
+        }
+      }
+      return {
+        'session_id': id,
+        'workspace_id': workspaceId,
+        'created': true,
+        'draft': scope != null,
+      };
     }
     if (method == 'gui.open') {
       final page = params['page'];
@@ -875,6 +1086,7 @@ class ControllerBridgeBackend implements BridgeBackend, BridgeClientLifecycle {
                         a['token'] as String,
                   ]);
                 }
+                if (scope != null) unawaited(_cleanupOwnedDrafts(scope));
                 return accepted;
               })
               .catchError((Object _) => false),

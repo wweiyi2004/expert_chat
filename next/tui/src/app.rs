@@ -17,6 +17,71 @@ pub struct PendingInput {
     pub draft: Draft,
     pub question_state: Option<(usize, serde_json::Map<String, Value>)>,
 }
+#[derive(Debug, Clone)]
+pub struct TextSelection {
+    pub start: (u16, u16),
+    pub end: (u16, u16),
+    pub buffer: ratatui::buffer::Buffer,
+    pub dragging: bool,
+    pub revision: u64,
+}
+impl TextSelection {
+    pub fn contains(&self, x: u16, y: u16) -> bool {
+        use unicode_width::UnicodeWidthStr;
+        let (a, b) = if (self.start.1, self.start.0) <= (self.end.1, self.end.0) {
+            (self.start, self.end)
+        } else {
+            (self.end, self.start)
+        };
+        if !self
+            .buffer
+            .area
+            .contains(ratatui::layout::Position::new(x, y))
+        {
+            return false;
+        }
+        let cell = &self.buffer[(x, y)];
+        let width = match cell.diff_option {
+            ratatui::buffer::CellDiffOption::ForcedWidth(w) => u16::from(w.get()),
+            _ => cell.symbol().width().max(1) as u16,
+        };
+        (y, x.saturating_add(width.saturating_sub(1))) >= (a.1, a.0) && (y, x) <= (b.1, b.0)
+    }
+    pub fn text(&self) -> String {
+        use unicode_width::UnicodeWidthStr;
+        let (mut a, mut b) = (self.start, self.end);
+        if (a.1, a.0) > (b.1, b.0) {
+            std::mem::swap(&mut a, &mut b);
+        }
+        let mut lines = vec![];
+        for y in a.1..=b.1.min(self.buffer.area.bottom().saturating_sub(1)) {
+            let left = if y == a.1 { a.0 } else { self.buffer.area.x };
+            let right = if y == b.1 {
+                b.0
+            } else {
+                self.buffer.area.right().saturating_sub(1)
+            };
+            let mut row = String::new();
+            let mut x = self.buffer.area.x;
+            while x < self.buffer.area.right() {
+                let cell = &self.buffer[(x, y)];
+                let width = match cell.diff_option {
+                    ratatui::buffer::CellDiffOption::ForcedWidth(w) => usize::from(w.get()),
+                    _ => cell.symbol().width().max(1),
+                } as u16;
+                if x <= right
+                    && x.saturating_add(width) > left
+                    && cell.diff_option != ratatui::buffer::CellDiffOption::Skip
+                {
+                    row.push_str(cell.symbol());
+                }
+                x = x.saturating_add(width.max(1));
+            }
+            lines.push(row.trim_end().to_owned());
+        }
+        lines.join("\n")
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormKind {
     Settings,
@@ -170,6 +235,7 @@ pub struct App {
     pub snapshot_stale: bool,
     pub snapshot_error: Option<String>,
     pub paste_collapsed: bool,
+    pub long_input_expanded: bool,
     pub redraw_requested: bool,
     pub rejection_draft: Option<Draft>,
     pub session_drafts: HashMap<String, Draft>,
@@ -198,6 +264,13 @@ pub struct App {
     pub form_confirm: Option<String>,
     pub form_revision: u64,
     pub pending_form: Option<(u64, Command)>,
+    pub selection: Option<TextSelection>,
+    pub selection_revision: u64,
+    pub copy_requested: Option<String>,
+    pub binding_ready: bool,
+    pub send_after_binding: bool,
+    pub deferred_paths: Vec<std::path::PathBuf>,
+    pub cancel_attachments_requested: bool,
 }
 impl Default for App {
     fn default() -> Self {
@@ -250,6 +323,7 @@ impl Default for App {
             snapshot_stale: false,
             snapshot_error: None,
             paste_collapsed: false,
+            long_input_expanded: false,
             redraw_requested: false,
             rejection_draft: None,
             session_drafts: HashMap::new(),
@@ -275,6 +349,13 @@ impl Default for App {
             form_confirm: None,
             form_revision: 0,
             pending_form: None,
+            selection: None,
+            selection_revision: 0,
+            copy_requested: None,
+            binding_ready: true,
+            send_after_binding: false,
+            deferred_paths: vec![],
+            cancel_attachments_requested: false,
             background: None,
             accent: None,
             code_style: "auto".into(),
@@ -282,6 +363,28 @@ impl Default for App {
     }
 }
 impl App {
+    pub fn start_selection(&mut self, buffer: ratatui::buffer::Buffer, x: u16, y: u16) {
+        self.selection_revision = self.selection_revision.wrapping_add(1);
+        self.selection = Some(TextSelection {
+            start: (x, y),
+            end: (x, y),
+            buffer,
+            dragging: true,
+            revision: self.selection_revision,
+        });
+    }
+    pub fn update_selection(&mut self, x: u16, y: u16, dragging: bool) {
+        if let Some(selection) = self.selection.as_mut() {
+            selection.end = (
+                x.min(selection.buffer.area.right().saturating_sub(1)),
+                y.min(selection.buffer.area.bottom().saturating_sub(2)),
+            );
+            selection.dragging = dragging;
+        }
+    }
+    pub fn selection_contains(&self, x: u16, y: u16) -> bool {
+        self.selection.as_ref().is_some_and(|s| s.contains(x, y))
+    }
     pub fn recent_sessions(&self) -> Vec<Value> {
         items(&self.snapshot, "sessions")
             .iter()
@@ -345,6 +448,11 @@ impl App {
         self.activate_recent()
     }
     pub fn import_paths(&mut self, paths: Vec<std::path::PathBuf>) -> Vec<Command> {
+        if !self.binding_ready {
+            self.deferred_paths.extend(paths);
+            self.notice = "正在创建工作会话，附件将在会话就绪后导入".into();
+            return vec![];
+        }
         let mut commands = vec![];
         for path in paths {
             match crate::attachment::import_params(&path) {
@@ -680,6 +788,31 @@ impl App {
             }
         }
     }
+    pub fn close_popup(&mut self) {
+        self.form = None;
+        self.drawer = None;
+        self.form_confirm = None;
+        self.full_confirm = false;
+        self.form_revision = self.form_revision.wrapping_add(1);
+    }
+    pub fn click_form_field(&mut self, index: usize) -> Vec<Command> {
+        let Some(form) = self.form.as_mut() else {
+            return vec![];
+        };
+        let Some(field) = form.fields.get(index) else {
+            return vec![];
+        };
+        if form.selected != index {
+            self.form_confirm = None;
+        }
+        form.selected = index;
+        form.editing = field.editable;
+        if field.editable {
+            vec![]
+        } else {
+            self.form_activate()
+        }
+    }
     fn form_key(&mut self, key: KeyEvent) -> Vec<Command> {
         if key.code == KeyCode::Esc {
             let kind = self.form.as_ref().unwrap().kind;
@@ -691,7 +824,11 @@ impl App {
             return vec![];
         }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        if ctrl && key.code == KeyCode::Char('v') {
+        if key.code == KeyCode::Char('v')
+            && key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
             self.clipboard_requested = true;
             return vec![];
         }
@@ -756,7 +893,11 @@ impl App {
             match field.key.as_str() {
                 "provider.new" => self.edit_provider(json!({})),
                 "mcp.new" => self.edit_mcp(json!({})),
-                "attach" => self.file_picker_requested = true,
+                "attach" => {
+                    self.form = None;
+                    self.form_revision = self.form_revision.wrapping_add(1);
+                    self.clipboard_requested = true;
+                }
                 "skin" => self.open_skin(),
                 "asr" => self.edit_asr(),
                 key if key.starts_with("provider.") => {
@@ -1049,15 +1190,34 @@ impl App {
         };
         if self.snapshot["session"]["id"] != snapshot["session"]["id"] {
             self.cancel_rejection();
-            if let Some(id) = self.session_id().map(str::to_owned) {
+            let carry = (!self.binding_ready).then(|| self.current_draft());
+            if carry.is_none()
+                && let Some(id) = self.session_id().map(str::to_owned)
+            {
                 let draft = self.current_draft();
                 self.session_drafts.insert(id, draft);
             }
-            let draft = snapshot["session"]["id"]
+            let mut draft = snapshot["session"]["id"]
                 .as_str()
                 .and_then(|id| self.session_drafts.remove(id))
                 .unwrap_or_default();
+            if let Some(carry) = carry {
+                if draft.text.is_empty() && draft.attachments.is_empty() {
+                    draft = carry;
+                } else if !carry.text.is_empty() || !carry.attachments.is_empty() {
+                    self.recovered_inputs.push(PendingInput {
+                        command: Command {
+                            method: "draft.restore".into(),
+                            params: json!({"session_id":snapshot["session"]["id"]}),
+                        },
+                        draft: carry,
+                        question_state: None,
+                    });
+                    self.send_after_binding = false;
+                }
+            }
             self.load_draft(draft);
+            self.selection = None;
             self.drawer = None;
             self.view = View::Chat;
             self.agent_detail_id = None;
@@ -1202,9 +1362,20 @@ impl App {
         self.model_effort_focus = false;
         if d == Drawer::Model {
             let models = self.drawer_items();
+            let session = &self.snapshot["session"];
+            let choice = text(session, "model_choice");
             if let Some(i) = models
                 .iter()
-                .position(|m| current_model(m, &self.snapshot["session"]))
+                .position(|m| !choice.is_empty() && text(m, "choice") == choice)
+                .or_else(|| {
+                    models.iter().position(|m| {
+                        !choice.is_empty()
+                            && text(m, "id") == choice
+                            && (text(session, "model_source_id").is_empty()
+                                || m["source_id"] == session["model_source_id"])
+                    })
+                })
+                .or_else(|| models.iter().position(|m| current_model(m, session)))
             {
                 self.selected = i;
                 let efforts = items(&models[i], "efforts");
@@ -1219,8 +1390,22 @@ impl App {
     pub fn key(&mut self, key: KeyEvent, now: Instant, width: u16) -> Vec<Command> {
         self.viewport.0 = width;
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if ctrl && key.code == KeyCode::Char('c') && self.selection.is_some() {
+            let text = self.selection.as_ref().unwrap().text();
+            if !text.is_empty() {
+                self.copy_requested = Some(text);
+            } else {
+                self.notice = "选区没有可复制文字".into();
+            }
+            return vec![];
+        }
+        self.selection = None;
         if self.form.is_some() {
             return self.form_key(key);
+        }
+        if key.modifiers.contains(KeyModifiers::ALT) && key.code == KeyCode::Char('v') {
+            self.clipboard_requested = true;
+            return vec![];
         }
         if key.modifiers.contains(KeyModifiers::ALT) && key.code == KeyCode::Char('j') {
             self.insert("\n");
@@ -1356,6 +1541,7 @@ impl App {
             }
             match key.code {
                 KeyCode::Char('c') => {
+                    self.send_after_binding = false;
                     self.agent_message_id = None;
                     if !self.input.is_empty() || !self.attachments.is_empty() {
                         self.input.clear();
@@ -1588,10 +1774,21 @@ impl App {
         vec![]
     }
     pub fn insert(&mut self, s: &str) {
+        if self.input.is_empty() {
+            self.paste_collapsed = false;
+            self.long_input_expanded = false;
+        }
         self.preferred_column = None;
         self.cursor = self.cursor.min(self.input.len());
         self.input.insert_str(self.cursor, s);
         self.cursor += s.len();
+        // Windows terminals can deliver a paste as ordinary character events.
+        if !self.long_input_expanded
+            && !self.paste_collapsed
+            && self.input.chars().take(301).count() > 300
+        {
+            self.paste_collapsed = true;
+        }
     }
     pub fn paste(&mut self, s: &str) {
         if let Some(form) = self.form.as_mut() {
@@ -1625,7 +1822,9 @@ impl App {
                 return;
             }
             self.insert(&s);
-            self.paste_collapsed = s.lines().count() > 5;
+            self.long_input_expanded = false;
+            self.paste_collapsed =
+                self.paste_collapsed || s.chars().count() > 300 || s.lines().count() > 5;
             self.completion_closed = true;
         }
     }
@@ -1673,10 +1872,12 @@ impl App {
         }
         self.paste_collapsed = false;
         self.preferred_column = None;
+        self.long_input_expanded = true;
         true
     }
     fn vertical(&mut self, direction: i32, terminal_width: u16) {
         self.paste_collapsed = false;
+        self.long_input_expanded = true;
         let (current_row, current_col) =
             crate::ui::input_visual_position(self, usize::from(terminal_width));
         let target = if direction < 0 {
@@ -1767,6 +1968,7 @@ impl App {
         self.attachments = draft.attachments;
         self.agent_message_id = draft.agent_id;
         self.paste_collapsed = draft.collapsed;
+        self.long_input_expanded = !draft.collapsed && self.input.chars().count() > 300;
     }
     fn cancel_rejection(&mut self) {
         if let Some(draft) = self.rejection_draft.take() {
@@ -2167,6 +2369,8 @@ impl App {
         attachment: Value,
     ) {
         if session == self.session_id() && agent == self.agent_message_id.as_deref() {
+            self.recent_selected = None;
+            self.recent_confirm = None;
             let name = text(&attachment, "name").to_owned();
             self.attachments.push(attachment);
             self.notice = format!("已添加附件：{name}");
@@ -2277,7 +2481,7 @@ impl App {
     }
     fn submit(&mut self) -> Vec<Command> {
         let trimmed = self.input.trim();
-        if trimmed.starts_with('/') {
+        if trimmed.starts_with('/') && !self.paste_collapsed {
             if !Self::is_control_command(trimmed) {
                 self.notice = "未知命令；输入已保留，/help 查看命令".into();
                 return vec![];
@@ -2362,6 +2566,8 @@ impl App {
                 }
                 "/attach" => {
                     if arg == "cancel" {
+                        self.cancel_attachments_requested = true;
+                        self.deferred_paths.clear();
                         let session = self.snapshot["session"]["id"].clone();
                         self.attachment_targets
                             .retain(|(command, _)| command.params["session_id"] != session);
@@ -2369,13 +2575,47 @@ impl App {
                         return vec![self.command("attachment.cancel", json!({}))];
                     }
                     if arg.is_empty() {
-                        self.file_picker_requested = true;
+                        self.clipboard_requested = true;
                         return vec![];
                     }
                     if let Some(paths) = crate::attachment::paths(&arg) {
                         return self.import_paths(paths);
                     }
                     self.notice = "文件不存在；含空格的路径请用双引号包围".into();
+                }
+                "/copy" => {
+                    let messages = items(&self.snapshot, "messages");
+                    let content = if arg == "all" {
+                        messages
+                            .iter()
+                            .filter(|m| matches!(text(m, "role"), "user" | "assistant"))
+                            .map(|m| {
+                                format!(
+                                    "{}\n{}",
+                                    if m["role"] == "user" {
+                                        "用户"
+                                    } else {
+                                        "助手"
+                                    },
+                                    text(m, "text")
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n\n")
+                    } else {
+                        messages
+                            .iter()
+                            .rev()
+                            .find(|m| m["role"] == "assistant")
+                            .map(|m| text(m, "text").to_owned())
+                            .unwrap_or_default()
+                    };
+                    if content.is_empty() {
+                        self.notice = "没有可复制的对话正文".into();
+                    } else {
+                        self.copy_requested = Some(content);
+                    }
+                    return vec![];
                 }
                 "/detach" => {
                     if arg.is_empty() || arg == "all" {
@@ -2418,6 +2658,11 @@ impl App {
                 "/recover" => self.recover_draft(),
                 _ => self.notice = format!("未知命令：{cmd} · /help"),
             }
+            return vec![];
+        }
+        if !self.binding_ready {
+            self.send_after_binding = true;
+            self.notice = "正在创建工作会话，就绪后发送此草稿".into();
             return vec![];
         }
         if self
@@ -2798,6 +3043,7 @@ macro_rules! commands {
     }
 }
 commands![
+    ("/copy", "复制回复或整段对话正文", "/copy [all]"),
     ("/model", "切换模型与思考强度", "/model"),
     ("/mode", "工作或计划模式", "/mode [work|plan]"),
     ("/permissions", "选择工具权限", "/permissions"),

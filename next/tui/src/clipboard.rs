@@ -108,3 +108,34 @@ pub fn select_files() -> Result<ClipboardData> {
         anyhow::bail!("此终端没有系统文件选择器；请使用 /attach 文件路径")
     }
 }
+/// Called only after an explicit copy action; no clipboard reads are performed.
+pub fn write_text(text: &str) -> Result<()> {
+    #[cfg(windows)]
+    {
+        use std::io::Write;
+        use std::os::windows::process::CommandExt;
+        use std::process::Stdio;
+        let script = r#"$ErrorActionPreference='Stop';Add-Type -AssemblyName System.Windows.Forms;$reader=New-Object System.IO.StreamReader([Console]::OpenStandardInput(),[System.Text.UTF8Encoding]::new($false));try{$text=$reader.ReadToEnd();[System.Windows.Forms.Clipboard]::SetText($text)}finally{$reader.Dispose()}"#;
+        let mut child = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Sta", "-Command", script])
+            .env_remove("PSModulePath")
+            .creation_flags(0x08000000)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+        if let Some(mut input) = child.stdin.take() {
+            input.write_all(text.as_bytes())?;
+        }
+        anyhow::ensure!(
+            child.wait()?.success(),
+            "无法写入系统剪贴板；可按住 Shift 使用终端原生选取复制"
+        );
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = text;
+        anyhow::bail!("当前平台未配置系统剪贴板；请按住 Shift 选取后使用终端复制")
+    }
+}

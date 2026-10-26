@@ -100,3 +100,12 @@
 - 本轮11项已实现并打开：原生settings/provider/MCP/ASR、来源分组、原始RGB宠物、可靠换行备选、分类附件及导入取消、启动信息卡与右下提示、居中会话选择确认、命令说明整行高亮、自动短标题、Markdown及skin自定义。原有GUI共享功能保留。
 - 仅cargo check、必要目标分析及Windows/Rust release编译；本轮未运行测试套件、未作真实模型测试。Windows包 E:\wweiyi\Project\Software\expert_chat\output\releases\tui-20261026-152118，SHA256 b183b6e0cc3680ef4492209d7082232fd30f138232693dd04d8c516ec2f10ff5。expert入口已切换，新GUI35912，api-nexus目录新TUI已打开，保持1 GUI/1 TUI。
 - 音频走已配置ASR；视频为前60秒最多3帧的明确受限解析，不冒称完整音视频理解。详见output/tui-refine/README.txt及代理实现记录。
+
+## 弹窗、回复顺序、粘贴复制与空会话体验
+
+- 按用户追加要求：设置及选择器改居中弹窗，保留关闭/返回、字段点击与滚轮，背景不可误操作；思考和合并后的工具步骤放在正文前，每条回复只一个步骤折叠入口。
+- 附件默认Ctrl+V直接读取复制的文件/截图；/attach不带参数也读剪贴板，不再弹文件选择器。支持鼠标拖选Ctrl+C及/copy [all]，选区冻结原文本，复制不误中断任务。
+- 新增session.ensure及client-owned空草稿生命周期，首发等待明确工作区绑定，未发消息退出/切换清理；有内容会话及既有历史不删除。仅必要编译/目标分析，不跑测试/模型。
+
+- 本轮追加长文字展示：普通输入按可用宽度换行，长输入含终端逐字粘贴自动折叠为[char +N]，方向键可展开，保留原文发送；Alt+V提供终端拦截Ctrl+V时的直接剪贴板入口。
+- 编译完成并打开 E:\wweiyi\Project\Software\expert_chat\output\releases\tui-20261026-163514；GUI3104，expert入口已切换，保持单实例。后加的字数标签仅重编Rust，复用同一份已编译GUI，未运行测试套件/真实模型测试。

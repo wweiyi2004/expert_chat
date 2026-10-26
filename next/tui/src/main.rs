@@ -124,6 +124,7 @@ fn run() -> Result<()> {
     );
     let (workspace, initial) = resolve_target(args.target.as_deref(), &std::env::current_dir()?)?;
     let demo = args.demo.is_some();
+    app.binding_ready = demo;
     let mut source: Box<dyn DataSource> = if let Some(name) = args.demo.as_deref() {
         Box::new(DemoSource::new(name)?)
     } else {
@@ -158,11 +159,40 @@ fn run() -> Result<()> {
     let (clipboard_tx, clipboard_rx) = std::sync::mpsc::channel();
     let mut clipboard_pending = false;
     let mut clipboard_images: Vec<(Command, tempfile::TempPath)> = vec![];
+    let mut unbound_images: Vec<tempfile::TempPath> = vec![];
+    let (copy_tx, copy_rx) = std::sync::mpsc::channel();
+    let mut last_frame: Option<ratatui::buffer::Buffer> = None;
     let mut dirty = true;
     let mut last_size = term.size()?;
     let mut last_animation = Instant::now();
     let mut last_pet = (String::new(), String::new());
     while !app.exit {
+        if app.cancel_attachments_requested {
+            unbound_images.clear();
+            app.cancel_attachments_requested = false;
+        }
+        if let Some(text) = app.copy_requested.take() {
+            let tx = copy_tx.clone();
+            let selection = app.selection.as_ref().map(|s| s.revision);
+            std::thread::spawn(move || {
+                let _ = tx.send((
+                    selection,
+                    expert_tui::clipboard::write_text(&text).map_err(|e| e.to_string()),
+                ));
+            });
+        }
+        if let Ok((revision, result)) = copy_rx.try_recv() {
+            match result {
+                Ok(()) => {
+                    if app.selection.as_ref().map(|s| s.revision) == revision {
+                        app.selection = None;
+                    }
+                    app.notice = "已复制到系统剪贴板".into();
+                }
+                Err(error) => app.notice = error,
+            }
+            dirty = true;
+        }
         for command in std::mem::take(&mut app.outbox) {
             send(&mut *source, &mut app, command);
         }
@@ -208,6 +238,11 @@ fn run() -> Result<()> {
             match result {
                 Ok(expert_tui::clipboard::ClipboardData::ImageFile(path)) => {
                     if form.is_none() {
+                        if !app.binding_ready {
+                            unbound_images.push(path);
+                            app.notice = "会话就绪后导入剪贴板图片".into();
+                            continue;
+                        }
                         match expert_tui::attachment::import_params(path.as_ref()) {
                             Ok(mut params) => {
                                 if let Some(id) = &session {
@@ -239,6 +274,11 @@ fn run() -> Result<()> {
                     }
                     if form.is_some() && !picker {
                         app.notice = "当前表单字段仅支持文本，文件请使用 /attach".into();
+                        continue;
+                    }
+                    if !app.binding_ready {
+                        app.deferred_paths.extend(paths);
+                        app.notice = "会话就绪后导入附件".into();
                         continue;
                     }
                     for path in paths {
@@ -298,6 +338,9 @@ fn run() -> Result<()> {
                 SourceEvent::CommandError { command, message } => {
                     clipboard_images.retain(|(pending, _)| pending != &command);
                     app.command_error(&command, &message);
+                    if command.method == "attachment.import" {
+                        app.send_after_binding = false;
+                    }
                     continue;
                 }
                 SourceEvent::SnapshotError(message) => {
@@ -314,6 +357,9 @@ fn run() -> Result<()> {
                 }
                 SourceEvent::Snapshot(v) => app.apply_snapshot(v),
                 SourceEvent::Connection { connected, message } => {
+                    if !connected && !bound {
+                        boot = true;
+                    }
                     app.notice = if connected { String::new() } else { message };
                     if connected && boot {
                         if let Some(id) = &resume {
@@ -359,7 +405,7 @@ fn run() -> Result<()> {
                                 &mut *source,
                                 &mut app,
                                 Command {
-                                    method: "session.new".into(),
+                                    method: "session.ensure".into(),
                                     params: json!({"workspace_id":w["id"]}),
                                 },
                             );
@@ -372,13 +418,16 @@ fn run() -> Result<()> {
                             &mut *source,
                             &mut app,
                             Command {
-                                method: "session.new".into(),
+                                method: "session.ensure".into(),
                                 params: json!({"workspace_id":workspace["id"]}),
                             },
                         );
                         prepared = true;
                     }
-                    "session.new" => {
+                    "session.new" | "session.ensure" => {
+                        app.binding_ready = false;
+                        bound = false;
+                        prepared = true;
                         expected_session = result["session_id"].as_str().map(str::to_owned);
                     }
                     "files.list" => {
@@ -417,19 +466,58 @@ fn run() -> Result<()> {
                 .is_some_and(|id| app.session_id() == Some(id))
         {
             bound = true;
-            if let Some(task) = initial.take() {
-                app.input = task;
-                app.cursor = app.input.len();
-                let commands = app.key(
-                    crossterm::event::KeyEvent::new(KeyCode::Enter, event::KeyModifiers::NONE),
-                    Instant::now(),
-                    width,
-                );
-                for c in commands {
-                    send(&mut *source, &mut app, c);
+            app.binding_ready = true;
+            let deferred = std::mem::take(&mut app.deferred_paths);
+            for command in app.import_paths(deferred) {
+                send(&mut *source, &mut app, command);
+            }
+            for path in unbound_images.drain(..) {
+                match expert_tui::attachment::import_params(path.as_ref()) {
+                    Ok(params) => {
+                        let command = app.command("attachment.import", params);
+                        app.attachment_targets.push((command.clone(), None));
+                        match source.send(command.clone()) {
+                            Ok(()) => clipboard_images.push((command, path)),
+                            Err(error) => {
+                                app.command_error(&command, &error.to_string());
+                                app.send_after_binding = false;
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        app.notice = error.to_string();
+                        app.send_after_binding = false;
+                    }
                 }
             }
+            if let Some(task) = initial.take() {
+                app.input = if app.input.is_empty() {
+                    task
+                } else {
+                    format!("{task}\n{}", app.input)
+                };
+                app.cursor = app.input.len();
+                app.send_after_binding = true;
+            }
             prepared = false;
+        }
+        if bound
+            && app.binding_ready
+            && app.send_after_binding
+            && app
+                .attachment_targets
+                .iter()
+                .all(|(c, _)| c.params["session_id"] != app.snapshot["session"]["id"])
+        {
+            app.send_after_binding = false;
+            let commands = app.key(
+                crossterm::event::KeyEvent::from(KeyCode::Enter),
+                Instant::now(),
+                width,
+            );
+            for command in commands {
+                send(&mut *source, &mut app, command);
+            }
         }
         let title = format!(
             "expert · {}",
@@ -441,6 +529,7 @@ fn run() -> Result<()> {
         }
         let size = term.size()?;
         if size != last_size {
+            app.selection = None;
             last_size = size;
             dirty = true;
         }
@@ -479,6 +568,22 @@ fn run() -> Result<()> {
         if dirty {
             term.draw(|f| {
                 ui::draw(f, &app);
+                if let Some(selection) = &app.selection {
+                    let current = f.buffer_mut();
+                    let area = current.area.intersection(selection.buffer.area);
+                    for y in area.y..area.bottom().saturating_sub(1) {
+                        for x in area.x..area.right() {
+                            current[(x, y)] = selection.buffer[(x, y)].clone();
+                            if selection.contains(x, y) {
+                                current[(x, y)].set_style(
+                                    ratatui::style::Style::default()
+                                        .add_modifier(ratatui::style::Modifier::REVERSED),
+                                );
+                            }
+                        }
+                    }
+                }
+                last_frame = Some(f.buffer_mut().clone());
                 let paths = ui::file_links_from_buffer(&app, f.buffer_mut());
                 hyperlinks.prepare(&app, f.buffer_mut(), paths);
             })?;
@@ -494,6 +599,14 @@ fn run() -> Result<()> {
             dirty = true;
             match event::read()? {
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
+                    if key.modifiers.contains(event::KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('c')
+                        && app.selection.is_some()
+                    {
+                        app.key(key, Instant::now(), width);
+                        continue;
+                    }
+                    app.selection = None;
                     if let Some(path) = workspace_confirmation.clone() {
                         match key.code {
                             KeyCode::Char('r') => {
@@ -535,7 +648,7 @@ fn run() -> Result<()> {
                                     &mut *source,
                                     &mut app,
                                     Command {
-                                        method: "session.new".into(),
+                                        method: "session.ensure".into(),
                                         params: json!({"workspace_id":c.params["workspace_id"]}),
                                     },
                                 );
@@ -552,12 +665,74 @@ fn run() -> Result<()> {
                     }
                 }
                 Event::Paste(s) => {
+                    app.selection = None;
                     app.paste(&s);
                 }
+                Event::Mouse(mouse) if mouse.modifiers.contains(event::KeyModifiers::SHIFT) => {
+                    app.selection = None;
+                }
+                Event::Mouse(mouse) if app.form.is_some() || app.drawer.is_some() => {
+                    let commands = match mouse.kind {
+                        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => app.key(
+                            crossterm::event::KeyEvent::from(
+                                if mouse.kind == MouseEventKind::ScrollUp {
+                                    KeyCode::Up
+                                } else {
+                                    KeyCode::Down
+                                },
+                            ),
+                            Instant::now(),
+                            width,
+                        ),
+                        MouseEventKind::Down(event::MouseButton::Left) => {
+                            if ui::popup_close_rect(&app, size.width, size.height).is_some_and(
+                                |r| {
+                                    r.contains(ratatui::layout::Position::new(
+                                        mouse.column,
+                                        mouse.row,
+                                    ))
+                                },
+                            ) {
+                                app.close_popup();
+                                vec![]
+                            } else if let Some(index) = ui::popup_field_at(
+                                &app,
+                                size.width,
+                                size.height,
+                                mouse.column,
+                                mouse.row,
+                            ) {
+                                app.click_form_field(index)
+                            } else {
+                                vec![]
+                            }
+                        }
+                        _ => vec![],
+                    };
+                    for command in commands {
+                        send(&mut *source, &mut app, command);
+                    }
+                }
                 Event::Mouse(mouse) => match mouse.kind {
-                    MouseEventKind::ScrollUp => app.scroll_by(-3),
-                    MouseEventKind::ScrollDown => app.scroll_by(3),
+                    MouseEventKind::ScrollUp => {
+                        app.selection = None;
+                        app.scroll_by(-3);
+                    }
+                    MouseEventKind::ScrollDown => {
+                        app.selection = None;
+                        app.scroll_by(3);
+                    }
+                    MouseEventKind::Drag(event::MouseButton::Left) => {
+                        app.update_selection(mouse.column, mouse.row, true)
+                    }
+                    MouseEventKind::Up(event::MouseButton::Left) => {
+                        app.update_selection(mouse.column, mouse.row, false);
+                        if app.selection.as_ref().is_some_and(|s| s.start == s.end) {
+                            app.selection = None;
+                        }
+                    }
                     MouseEventKind::Down(event::MouseButton::Left) => {
+                        app.selection = None;
                         if ui::pet_rect(&app, size.width, size.height).is_some_and(|rect| {
                             rect.contains(ratatui::layout::Position::new(mouse.column, mouse.row))
                         }) {
@@ -586,6 +761,11 @@ fn run() -> Result<()> {
                                 size.width as usize,
                                 mouse.column as usize,
                             ));
+                        } else if let Some(frame) = &last_frame
+                            && frame.area.height > 1
+                            && mouse.row < frame.area.bottom().saturating_sub(1)
+                        {
+                            app.start_selection(frame.clone(), mouse.column, mouse.row);
                         }
                     }
                     _ => {}

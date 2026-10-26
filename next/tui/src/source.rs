@@ -112,7 +112,7 @@ impl DataSource for DemoSource {
                 state["workspaces"] = json!([w.clone()]);
                 w
             }
-            "session.new" => {
+            "session.new" | "session.ensure" => {
                 state["session"] = json!({"id":"demo-session","title":p["title"].as_str().unwrap_or("演示任务"),"status":"idle","mode":"work","permission":"request","round":0,"round_limit":24});
                 state["messages"] = json!([]);
                 json!({"session_id":"demo-session"})
@@ -337,6 +337,8 @@ fn connect(
 fn worker(path: PathBuf, commands: Receiver<Command>, events: SyncSender<SourceEvent>) {
     let mut counter = 0;
     let mut session: Option<String> = None;
+    let mut last_workspace = Value::Null;
+    let mut last_empty = false;
     let mut pending = HashMap::new();
     loop {
         pending.clear();
@@ -453,6 +455,10 @@ fn worker(path: PathBuf, commands: Receiver<Command>, events: SyncSender<SourceE
                         }
                         if is_snapshot {
                             session = value["data"]["session"]["id"].as_str().map(str::to_owned);
+                            last_workspace = value["data"]["session"]["workspace_id"].clone();
+                            last_empty = value["data"]["messages"]
+                                .as_array()
+                                .is_some_and(Vec::is_empty);
                         }
                         events.send(SourceEvent::Event(value))?;
                     } else if let Some(command) =
@@ -461,9 +467,14 @@ fn worker(path: PathBuf, commands: Receiver<Command>, events: SyncSender<SourceE
                         let method = command.method.clone();
                         if value["ok"] == true {
                             let result = value["result"].clone();
-                            if method == "session.new" {
+                            if method == "session.new" || method == "session.ensure" {
                                 session = result["session_id"].as_str().map(str::to_owned);
                                 desired_session = session.clone();
+                                last_workspace = result
+                                    .get("workspace_id")
+                                    .unwrap_or(&command.params["workspace_id"])
+                                    .clone();
+                                last_empty = true;
                                 if let Some(s) = &session {
                                     write_request(
                                         &mut ws,
@@ -490,6 +501,9 @@ fn worker(path: PathBuf, commands: Receiver<Command>, events: SyncSender<SourceE
                                     continue;
                                 }
                                 session = result["session"]["id"].as_str().map(str::to_owned);
+                                last_workspace = result["session"]["workspace_id"].clone();
+                                last_empty =
+                                    result["messages"].as_array().is_some_and(Vec::is_empty);
                                 if method == "session.open" {
                                     desired_session = session.clone();
                                 }
@@ -528,6 +542,21 @@ fn worker(path: PathBuf, commands: Receiver<Command>, events: SyncSender<SourceE
                                 desired_session = session.clone();
                             }
                             let code = value["error"]["code"].as_str().unwrap_or("request_failed");
+                            if code == "not_found"
+                                && last_empty
+                                && matches!(method.as_str(), "session.open" | "snapshot.get")
+                            {
+                                session = None;
+                                desired_session = None;
+                                write_request(
+                                    &mut ws,
+                                    &mut counter,
+                                    "session.ensure",
+                                    json!({"workspace_id":last_workspace}),
+                                    &mut pending,
+                                )?;
+                                continue;
+                            }
                             let message: String = value["error"]["message"]
                                 .as_str()
                                 .unwrap_or("Operation rejected")

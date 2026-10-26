@@ -27,6 +27,7 @@ hello 必须首个请求，5 秒内完成，返回 `{protocol:1,server_id,pid,ca
 | snapshot.get | session_id? | 完整快照 |
 | session.list | workspace_id? | sessions:Session[] |
 | session.new | title?,workspace_id? | session_id；新工作会话，不覆盖现有会话 |
+| session.ensure | workspace_id:明确ID或显式null,title? | session_id,workspace_id,created,draft；同连接同工作区复用空草稿，否则创建；null固定绑定后端已授权默认工作区，不引用GUI当前会话 |
 | session.open | session_id | 快照，绑定该连接的事件订阅，不取消其他会话 |
 | message.send | session_id,text,attachments? | accepted；运行中返回 busy，客户端改用 queue.add |
 | queue.add | session_id,text | id，持久化后确认 |
@@ -136,5 +137,7 @@ fixture 可以以 snapshot 开始，再跟增量，最终 snapshot。DemoSource 
 - 客户端本地保留原始命令/会话/对象与请求响应的关联，失败只恢复对应草稿；不把失败的子代理补充重试为主代理消息，不自动重放不确定写操作。
 
 ## 最低安全/兼容测试
+
+TUI创建的未发送消息会话作为连接拥有的草稿。退出或切换后仅清理无内容、无活动任务且不被其它连接引用的草稿；断连保留短暂重连缓冲，成功发言后永久退出自动清理。既有历史会话不纳入此清理。session.open建立新scope引用，防止旧连接清理正在使用的草稿；首发消息等待工作区与会话绑定，不向GUI临时会话发送。此行为不要求用户先手工创建session。
 
 拒绝错误 token/版本/Origin/远程地址/超大消息；未认证不可查询会话；多连接显式会话隔离；重复请求不重复发送；断连不中断任务；reconnect 快照恢复；待批准不能显示正在运行；计划模式执行层阻止写/shell/未知工具；批准 id 防串会话；完整访问二次确认；workspace 运行锁；秘密字段不进入 snapshot；撤回消费竞态；acceptance 实际哈希复核失败不能显示成功。

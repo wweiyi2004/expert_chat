@@ -47,6 +47,7 @@ hello 必须首个请求，5 秒内完成，返回 `{protocol:1,server_id,pid,ca
 | changes.diff | session_id,id | id,path,diff:String[]，二进制需明确说明 |
 | task.accept | session_id | accepted，调用 verifyAndAcceptTask 复核真实证据 |
 | task.revise | session_id,text | accepted，新补充/新明确用户轮，不删除验收历史 |
+| context.compact | session_id | accepted,result；复用共享公开上下文压缩器，仅空闲会话可执行，真实持久化检查点；无可压缩内容明确返回而非伪造摘要 |
 | agents.list | session_id | agents:Agent[] |
 | agent.message | session_id,id,text | accepted |
 | agent.stop | session_id,id | accepted |
@@ -64,9 +65,9 @@ hello 必须首个请求，5 秒内完成，返回 `{protocol:1,server_id,pid,ca
 {
   session: {id,title,status,phase,round,round_limit,elapsed_ms,mode,permission,
     model,model_choice,thinking,effort,workspace_id,workspace_label,workspace_path,
-    branch,context_percent,error}, // 没有会话时 null
+    branch,context_percent,error,retry?}, // 没有会话时 null；retry 为当前真实主请求退避信息或 null
   startup: {version,workspace,workspace_path,branch,dirty_count,contexts:[],issues:[]},
-  messages:[{id,role,text,thinking,attachments:[{name,mime,size}]}],
+  messages:[{id,role,text,thinking,thinking_elapsed_ms?,attachments:[{name,mime,size}]}],
   steps:[{id,message_id,round_id,verb,object,status,tail:[],elapsed_ms,exit_code,
     added,removed,detail}],
   approvals:[{id,tool,arguments,target,reason,diff:[]}],
@@ -103,10 +104,19 @@ snapshot 为权威状态；其余事件让客户端低延迟更新，后续 snap
 | approval.requested | 完整 Approval |
 | changes.updated | changes:Change[] |
 | request.retry | code,message,attempt,max_attempts,retry_after_ms（后端真实信息） |
-| request.error | code,message,retryable |
+| request.error | code,message,retryable,scope?（snapshot 表示刷新失效；保留旧业务状态但必须明显提示） |
 | context.updated | context_percent:number|null |
 
 fixture 可以以 snapshot 开始，再跟增量，最终 snapshot。DemoSource 和 BridgeSource 应用同一 reducer，不能各自维护互不相干的演示 UI。演示动作只更新本地演示状态，不联系真实 bridge。
+
+### 审计修复轮兼容扩展
+
+- `session.retry` 可为 null，或真实重试对象 `{code,message,attempt,max_attempts,retry_after_ms}`，可包含请求身份等附加元信息。倒计时由真实退避截止时间计算；仅主请求影响 session 的 retrying，子代理等待不能掩盖其他正在运行的请求。
+- `messages.thinking_elapsed_ms` 为真实已记录思考耗时，未知为 null，不从任务总时长推算。
+- `steps.round_id` 使用工具请求实际轮次；中断步骤标为 stopped，既有真实失败仍为 failed。
+- 自动快照失败以有 seq 的 `request.error(scope:snapshot)` 发布。客户端标记旧快照，下次成功快照清除此标记。超过上限/发送失败不得推进服务端“成功发送”的快照签名；无 id 的旧版刷新错误也必须可见。
+- 心跳与只读请求不排在其他会话的慢操作之后；同会话修改串行，停止可及时打断，仍保持请求 id 幂等。
+- 客户端本地保留原始命令/会话/对象与请求响应的关联，失败只恢复对应草稿；不把失败的子代理补充重试为主代理消息，不自动重放不确定写操作。
 
 ## 最低安全/兼容测试
 

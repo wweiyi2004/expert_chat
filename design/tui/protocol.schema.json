@@ -180,6 +180,34 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "event": {
+                "const": "request.error"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "properties": {
+                  "scope": {
+                    "enum": [
+                      "snapshot",
+                      "request"
+                    ]
+                  }
+                },
+                "required": [
+                  "code",
+                  "message"
+                ]
+              }
+            }
+          }
         }
       ]
     },
@@ -190,7 +218,35 @@
           "type": [
             "object",
             "null"
-          ]
+          ],
+          "properties": {
+            "retry": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "attempt": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "max_attempts": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "retry_after_ms": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          }
         },
         "startup": {
           "type": "object"
@@ -198,7 +254,16 @@
         "messages": {
           "type": "array",
           "items": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "thinking_elapsed_ms": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0
+              }
+            }
           }
         },
         "steps": {

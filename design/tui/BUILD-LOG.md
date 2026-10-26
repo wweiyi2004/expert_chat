@@ -61,3 +61,13 @@
 - 真实模型请求共11/30，之后只读验证增加0。
 - [完整验收与限制](../../output/tui-build/FINAL-REPORT.md)，[启动与关闭说明](E:/wweiyi/Project/Software/expert_chat/output/releases/tui-20261026-045848/README.md)。
 - 不需要手动处理补丁；未推送。物理tmux/SSH/剪贴板等未验证项已逐项说明，不标为通过。
+
+## 2026-10-26 全面审计后的修复轮（进行中）
+
+- 撤回上一节「全部完成」判断：审计识别47项缺陷/缺口，见 REPAIR-TRACKER.json（固定审计基线742b4c2）。本轮用户明确要求分子代理逐项修复，工作区开工干净，延续 feat/tui。
+- 分工：交互代理负责 app.rs/main.rs 与交互测试；布局代理负责 ui.rs/布局模块与快照测试；后端代理负责 Dart bridge 与必要共享控制器/重试状态扩展；root 负责 source.rs/config.rs/协议协调/链接与终端集成、验证构建交付。代理间不得直接改对方文件；必要接口先协调。
+- 允许的现有核心最小修改理由：补齐实际上下文整理、重试公开状态、工具轮次/中断元数据，使共享后端提供真实而非演示的数据；不另建代理循环、不放宽权限。
+- 验收以每项反例回归为准；既有测试45项TUI、28项bridge、7项原生控制器仅作基线。每项都记录修复与证据，尚未修复不标通过。
+- 真实模型请求此前11/30，本轮目前0；优先隔离假模型验证，保留累计上限。
+
+- 协议修复约定已批准：context.compact、可选session.retry、thinking_elapsed_ms、真实round_id与stopped、request.error(scope=snapshot)。必要新增lib/data/models.dart的SearchActivity兼容元数据、lib/domain/llm/work_request_retry.dart共享有界重试包装与主/子模型请求调用点；只在尚未产出任何结果的临时请求失败时尝试，不对工具重试，不与已有渠道fallback叠加。

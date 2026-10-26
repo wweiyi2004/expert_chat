@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'core/providers.dart';
 import 'core/theme.dart';
 import 'data/db/app_database.dart';
+import 'data/atomic_windows_preferences.dart';
 import 'data/backup_journal.dart';
 import 'data/full_backup_service.dart';
 import 'data/library_file_store.dart';
@@ -50,6 +51,7 @@ Future<void> main(List<String> args) async {
     // Prefs I/O overlaps DB open; migration and study load are independent
     // of each other. Both still finish before runApp so controllers never
     // see a half-migrated store.
+    await installAtomicWindowsPreferences();
     final prefsFuture = SharedPreferences.getInstance();
     final db = AppDatabase();
     final prefs = await prefsFuture;

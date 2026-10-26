@@ -6,6 +6,10 @@ import 'package:drift/native.dart';
 import 'package:expert_chat/core/providers.dart';
 import 'package:expert_chat/core/desktop_providers.dart';
 import 'package:expert_chat/data/db/app_database.dart';
+import 'package:expert_chat/data/drift_conversation_repository.dart';
+import 'package:expert_chat/data/atomic_windows_preferences_io.dart';
+import 'package:shared_preferences_platform_interface/shared_preferences_platform_interface.dart';
+import 'package:shared_preferences_platform_interface/types.dart';
 import 'package:expert_chat/domain/desktop/workspace_host_io.dart';
 import 'package:expert_chat/domain/llm/llm_provider.dart';
 import 'package:expert_chat/features/tui_bridge/backend.dart';
@@ -17,6 +21,7 @@ import 'package:expert_chat/state/settings_controller.dart';
 import 'package:expert_chat/state/work_approvals.dart';
 import 'package:expert_chat/state/work_agents.dart';
 import 'package:expert_chat/state/work_changes.dart';
+import 'package:expert_chat/state/work_runtime_logs.dart';
 import 'package:expert_chat/state/work_task_steering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -24,8 +29,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'widget_test.dart'
-    show FakeSettings, InMemoryRepo, InMemoryLibraryFileStore;
+import 'widget_test.dart' show FakeSettings, InMemoryLibraryFileStore;
 
 class _Settings extends FakeSettings {
   @override
@@ -44,6 +48,39 @@ class _Paths extends PathProviderPlatform {
   final String path;
   @override
   Future<String?> getApplicationSupportPath() async => path;
+}
+
+class _JournalFaults extends SharedPreferencesStorePlatform {
+  _JournalFaults(this.delegate);
+  final AtomicWindowsPreferencesStore delegate;
+  int transientRootFailures = 0, failures = 0;
+  bool permanent = false, throwFailure = false;
+  @override
+  Future<bool> setValue(String type, String key, Object value) async {
+    if (key == 'flutter.chatSessionJournal.v1' &&
+        (permanent ||
+            transientRootFailures > 0 &&
+                value is String &&
+                value.contains('根任务运行身份已保存'))) {
+      failures++;
+      if (transientRootFailures > 0) transientRootFailures--;
+      if (throwFailure) {
+        throw StateError('synthetic journal persistence failure');
+      }
+      return false;
+    }
+    return delegate.setValue(type, key, value);
+  }
+
+  @override
+  Future<Map<String, Object>> getAll() => delegate.getAll();
+  @override
+  Future<Map<String, Object>> getAllWithParameters(GetAllParameters p) =>
+      delegate.getAllWithParameters(p);
+  @override
+  Future<bool> remove(String key) => delegate.remove(key);
+  @override
+  Future<bool> clear() => delegate.clear();
 }
 
 class _Request {
@@ -134,6 +171,9 @@ void main() {
   late ControllerBridgeBackend bridge;
   late _Llm llm;
   late AppDatabase db;
+  late SharedPreferencesStorePlatform oldPreferencesStore;
+  late _JournalFaults preferencesStore;
+  late File preferencesFile;
   late String id;
   late PathProviderPlatform oldPaths;
   late TuiBridgeServer server;
@@ -164,12 +204,20 @@ void main() {
   }
 
   setUp(() async {
-    SharedPreferences.setMockInitialValues({});
+    oldPreferencesStore = SharedPreferencesStorePlatform.instance;
+    SharedPreferences.resetStatic();
     FlutterSecureStorage.setMockInitialValues({});
     root = await Directory.systemTemp.createTemp('expert-tui-native-');
     oldPaths = PathProviderPlatform.instance;
     PathProviderPlatform.instance = _Paths(p.join(root.path, 'support'));
-    db = AppDatabase(NativeDatabase.memory());
+    preferencesFile = File(
+      p.join(root.path, 'support', 'shared_preferences.json'),
+    );
+    preferencesStore = _JournalFaults(
+      await AtomicWindowsPreferencesStore.open(preferencesFile),
+    );
+    SharedPreferencesStorePlatform.instance = preferencesStore;
+    db = AppDatabase(NativeDatabase(File(p.join(root.path, 'fixture.sqlite'))));
     llm = _Llm();
     final host = CliDesktopWorkspaceHost(
       executable: p.absolute(
@@ -186,7 +234,9 @@ void main() {
         sharedPrefsProvider.overrideWithValue(
           await SharedPreferences.getInstance(),
         ),
-        conversationRepositoryProvider.overrideWithValue(InMemoryRepo()),
+        conversationRepositoryProvider.overrideWithValue(
+          DriftConversationRepository(db),
+        ),
         libraryFileStoreProvider.overrideWithValue(InMemoryLibraryFileStore()),
         settingsControllerProvider.overrideWith(_Settings.new),
         llmProvider.overrideWithValue(llm),
@@ -225,13 +275,22 @@ void main() {
     await socket.close();
     await messages.cancel();
     await server.stop();
+    final controller = container.read(chatControllerProvider.notifier);
+    final runtimeLogs = container.read(workRuntimeLogsProvider.notifier);
+    final runtime = container.read(workAgentsProvider);
     container.dispose();
+    await controller.flushSessionCheckpointWrites();
     for (final r in llm.requests) {
       if (!r.stream.isClosed) await r.stream.close();
     }
     await Future<void>.delayed(Duration.zero);
+    await runtime.flushJournal();
+    await runtimeLogs.flush();
+    await preferencesStore.delegate.flush();
     await db.close();
     PathProviderPlatform.instance = oldPaths;
+    SharedPreferencesStorePlatform.instance = oldPreferencesStore;
+    SharedPreferences.resetStatic();
     final absolute = await root.resolveSymbolicLinks();
     final temporary = await Directory.systemTemp.resolveSymbolicLinks();
     if (!p.isWithin(temporary, absolute) ||
@@ -500,6 +559,105 @@ void main() {
     },
   );
 
+  for (final throwFailure in [false, true]) {
+    test(
+      'real Drift and atomic prefs stop/resume retries transient root journal failure (throw=$throwFailure)',
+      () async {
+        Future<void> validPreferences() async {
+          final bytes = await preferencesFile.readAsBytes();
+          expect(bytes, isNotEmpty);
+          expect(jsonDecode(utf8.decode(bytes)), isA<Map>());
+        }
+
+        await validPreferences();
+        final proof = File(p.join(root.path, 'project', 'proof.txt'));
+        await proof.writeAsString('BEFORE');
+        await call('message.send', {
+          'text': 'Read proof then propose writing it',
+        });
+        await llm.tools(0, [
+          ('coding_read_file', {'scope': 'root', 'path': 'proof.txt'}),
+        ]);
+        final request = await llm.request(1);
+        final receipt =
+            jsonDecode(
+                  request.messages
+                      .lastWhere((m) => m.role.name == 'tool')
+                      .content,
+                )
+                as Map;
+        await llm.tools(1, [
+          (
+            'coding_write_file',
+            {
+              'scope': 'root',
+              'path': 'proof.txt',
+              'content': 'AFTER',
+              'expected_sha256': receipt['sha256'],
+            },
+          ),
+        ]);
+        await approval();
+        await validPreferences();
+        await call('task.stop');
+        final controller = container.read(chatControllerProvider.notifier);
+        await until(() => !controller.isConversationRunning(id));
+        await controller.flushSessionCheckpointWrites();
+        await validPreferences();
+        preferencesStore
+          ..throwFailure = throwFailure
+          ..transientRootFailures = 1;
+        await call('task.resume');
+        await llm.request(2);
+        await llm.tools(2, [
+          ('coding_read_file', {'scope': 'root', 'path': 'proof.txt'}),
+        ]);
+        await llm.request(3);
+        await llm.finish(3);
+        await until(() => !controller.isConversationRunning(id));
+        await controller.flushSessionCheckpointWrites();
+        await validPreferences();
+        expect(preferencesStore.failures, 1);
+        expect(controller.errorForSession(id), isNull);
+        expect(await proof.readAsString(), 'BEFORE');
+        final persisted = await DriftConversationRepository(
+          db,
+        ).loadConversation(id);
+        expect(
+          persisted.activePath.any(
+            (m) => m.role.name == 'user' && m.content.contains('继续完成任务'),
+          ),
+          true,
+        );
+        final json = jsonDecode(await preferencesFile.readAsString()) as Map;
+        expect(json['flutter.chatSessionJournal.v1'], isA<String>());
+        expect(
+          (jsonDecode(json['flutter.chatSessionJournal.v1'] as String) as List),
+          isNotEmpty,
+        );
+      },
+    );
+  }
+  test(
+    'permanent real-prefs journal rejection remains fail closed before tools or model',
+    () async {
+      preferencesStore.permanent = true;
+      await call('message.send', {
+        'text': 'Do not execute without durable root identity',
+      });
+      final controller = container.read(chatControllerProvider.notifier);
+      await until(
+        () =>
+            !controller.isConversationRunning(id) &&
+            controller.errorForSession(id) != null,
+      );
+      await controller.flushSessionCheckpointWrites();
+      expect(llm.requests, isEmpty);
+      expect(preferencesStore.failures, greaterThanOrEqualTo(3));
+      expect(container.read(workApprovalsProvider), isEmpty);
+      expect(controller.errorForSession(id), contains('持久化失败'));
+    },
+  );
   test(
     'shared controller workflow: queue, write, command approval, diff, stop, resume and acceptance',
     () async {

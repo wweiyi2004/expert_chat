@@ -1458,9 +1458,15 @@ mixin ChatTools on ChatMutations {
     );
     _run?.agentRootId = rootId;
     if (_run case final run?) {
-      _checkpointSession(run, SessionExecutionStatus.running, '根任务运行身份已保存');
+      final receipt = _checkpointSession(
+        run,
+        SessionExecutionStatus.running,
+        '根任务运行身份已保存',
+      );
       await _journalWrite;
-      if (_journalError != null) throw StateError('根任务运行身份未保存');
+      if (!await receipt || _journalError != null) {
+        throw StateError('根任务运行身份未保存：${_journalError ?? '本次检查点未获持久化确认'}');
+      }
     }
   }
 

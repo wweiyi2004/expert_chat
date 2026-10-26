@@ -122,3 +122,12 @@ class _SessionFailure {
   final ChatRetryOperation? retry;
   final bool dismissed;
 }
+
+/// No preference values or platform exception text enter user-facing errors.
+class _SessionJournalFailure implements Exception {
+  const _SessionJournalFailure(this.revision, this.reason);
+  final int revision;
+  final String reason;
+  @override
+  String toString() => '检查点版本 $revision 持久化失败（3 次，$reason）';
+}

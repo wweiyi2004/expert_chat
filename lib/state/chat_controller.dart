@@ -532,9 +532,13 @@ abstract class _ChatControllerBase extends AsyncNotifier<ChatState> {
     final ids = events.map((e) => e.id).toSet();
     run.inbox.removeWhere((e) => ids.contains(e.id));
     run.core?.acknowledge(ids);
-    _checkpointSession(run, SessionExecutionStatus.running, '事件上下文已保存');
+    final receipt = _checkpointSession(
+      run,
+      SessionExecutionStatus.running,
+      '事件上下文已保存',
+    );
     await _journalWrite;
-    if (_journalError != null) {
+    if (!await receipt || _journalError != null) {
       for (final event in events) {
         run.core?.acknowledged.remove(event.id);
         run.core?.receive(event.id, event.content, event.taskId);
@@ -592,9 +596,13 @@ abstract class _ChatControllerBase extends AsyncNotifier<ChatState> {
       run.core!.receive(id, content, null);
       run.inbox.add(_SessionEvent(id, content, null));
     }
-    _checkpointSession(run, SessionExecutionStatus.waiting, '用户显式恢复，先检查真实状态');
+    final receipt = _checkpointSession(
+      run,
+      SessionExecutionStatus.waiting,
+      '用户显式恢复，先检查真实状态',
+    );
     await _journalWrite;
-    if (_journalError != null) return false;
+    if (!await receipt || _journalError != null) return false;
     await _dispatchSessionEvents(run);
     _publishRuntimeState();
     return true;
@@ -639,13 +647,14 @@ abstract class _ChatControllerBase extends AsyncNotifier<ChatState> {
   final _sessionCheckpoints = <String, SessionExecutionCheckpoint>{};
   Future<void> _journalWrite = Future.value();
   Object? _journalError;
-  void _checkpointSession(
+  int _journalRevision = 0;
+  Future<bool> _checkpointSession(
     _SessionRun run,
     SessionExecutionStatus status,
     String phase,
   ) {
     if (!ref.mounted || _deletedWhileStartingIds.contains(run.conversationId)) {
-      return;
+      return Future.value(false);
     }
     final core = run.core;
     if (core != null) {
@@ -689,19 +698,35 @@ abstract class _ChatControllerBase extends AsyncNotifier<ChatState> {
       _sessionCheckpoints.values.map((entry) => entry.toJson()).toList(),
     );
     final prefs = ref.read(sharedPrefsProvider);
-    _journalWrite = _journalWrite
-        .catchError((Object _) {})
-        .then((_) async {
-          _journalError = null;
-          if (!await prefs.setString('chatSessionJournal.v1', saved)) {
-            throw StateError('会话执行检查点未保存');
+    final revision = ++_journalRevision;
+    final receipt = Completer<bool>();
+    _journalWrite = _journalWrite.catchError((Object _) {}).then((_) async {
+      String failure = 'return_false';
+      for (var attempt = 1; attempt <= 3; attempt++) {
+        try {
+          if (await prefs.setString('chatSessionJournal.v1', saved)) {
+            _journalError = null;
+            receipt.complete(true);
+            return;
           }
-        })
-        .catchError((Object error) {
-          _journalError = error;
-          run.core?.resumeRequired = true;
-          debugPrint('Session checkpoint: $error');
-        });
+          failure = 'return_false';
+        } catch (error) {
+          // Platform exception text may contain local paths. Keep a safe,
+          // factual failure kind in the UI; the atomic store logs OS codes.
+          failure = 'exception:${error.runtimeType}';
+        }
+        if (attempt < 3) {
+          await Future<void>.delayed(
+            Duration(milliseconds: attempt == 1 ? 50 : 150),
+          );
+        }
+      }
+      _journalError = _SessionJournalFailure(revision, failure);
+      run.core?.resumeRequired = true;
+      debugPrint('Session checkpoint: $_journalError');
+      receipt.complete(false);
+    });
+    return receipt.future;
   }
 
   final _rootModelRequestTails = <String, Future<void>>{};
@@ -1902,6 +1927,8 @@ class ChatController extends _ChatControllerBase
         ChatTurns,
         ChatSessions,
         ChatTaskRecovery {
+  Future<void> flushSessionCheckpointWrites() => _journalWrite;
+
   bool isContextCompacting(String id) => _compactingSessions.contains(id);
 
   Future<Map<String, dynamic>> compactSessionContext(String id) =>

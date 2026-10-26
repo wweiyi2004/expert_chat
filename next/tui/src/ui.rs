@@ -4,11 +4,74 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Padding, Paragraph},
+    widgets::{Block, BorderType, Borders, Padding, Paragraph, Widget},
 };
 use serde_json::Value;
 use std::time::Instant;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+/// Ratatui uses narrow East Asian Ambiguous widths. Reflow each paragraph's
+/// own content rectangle into physical CJK columns without moving neighboring
+/// borders, separators, or other widgets and without changing original symbols.
+struct CellParagraph<'a> {
+    inner: Paragraph<'a>,
+    ambiguous_width: u8,
+}
+fn paragraph<'a>(a: &App, text: impl Into<ratatui::text::Text<'a>>) -> CellParagraph<'a> {
+    CellParagraph {
+        inner: Paragraph::new(text),
+        ambiguous_width: a.ambiguous_width,
+    }
+}
+impl CellParagraph<'_> {
+    fn style(mut self, style: Style) -> Self {
+        self.inner = self.inner.style(style);
+        self
+    }
+    fn scroll(mut self, offset: (u16, u16)) -> Self {
+        self.inner = self.inner.scroll(offset);
+        self
+    }
+}
+impl Widget for CellParagraph<'_> {
+    fn render(self, area: Rect, buffer: &mut ratatui::buffer::Buffer) {
+        if self.ambiguous_width != 2 {
+            self.inner.render(area, buffer);
+            return;
+        }
+        use ratatui::buffer::{Buffer, CellDiffOption};
+        let area = area.intersection(buffer.area);
+        if area.is_empty() {
+            return;
+        }
+        let mut narrow = Buffer::empty(area);
+        self.inner.render(area, &mut narrow);
+        for y in area.y..area.bottom() {
+            for x in area.x..area.right() {
+                buffer[(x, y)].reset();
+            }
+            let mut source = area.x;
+            let mut target = area.x;
+            while source < area.right() && target < area.right() {
+                let cell = &narrow[(source, y)];
+                let narrow_width = cell.symbol().width().max(1) as u16;
+                let physical_width = cell.symbol().width_cjk().max(1) as u16;
+                if target.saturating_add(physical_width) > area.right() {
+                    break;
+                }
+                buffer[(target, y)] = cell.clone();
+                buffer[(target, y)].set_diff_option(CellDiffOption::ForcedWidth(
+                    std::num::NonZeroU16::new(physical_width).unwrap(),
+                ));
+                for continuation in target + 1..target + physical_width {
+                    buffer[(continuation, y)].set_diff_option(CellDiffOption::Skip);
+                }
+                source = source.saturating_add(narrow_width);
+                target = target.saturating_add(physical_width);
+            }
+        }
+    }
+}
 
 pub fn clean(s: &str) -> String {
     let mut out = String::new();
@@ -69,8 +132,12 @@ pub fn middle(s: &str, max: usize, app: &App) -> String {
     if width(&s, app.ambiguous_width) <= max {
         return s;
     }
-    let ell = if app.ascii { "..." } else { "…" };
-    let ew = ell.width();
+    let ell = if app.ascii || app.ambiguous_width == 2 {
+        "..."
+    } else {
+        "…"
+    };
+    let ew = width(ell, app.ambiguous_width);
     if max <= ew {
         return truncate(ell, max, app.ambiguous_width);
     }
@@ -84,7 +151,11 @@ pub fn middle(s: &str, max: usize, app: &App) -> String {
     format!("{a}{ell}{b}")
 }
 fn glyph<'a>(app: &App, normal: &'a str, ascii: &'a str) -> &'a str {
-    if app.ascii { ascii } else { normal }
+    if app.ascii || app.ambiguous_width == 2 {
+        ascii
+    } else {
+        normal
+    }
 }
 #[derive(Clone, Copy)]
 struct Theme {
@@ -167,6 +238,62 @@ fn wrap(s: &str, w: usize, a: &App, prefix: &str, style: Style) -> Vec<Line<'sta
     }
     lines
 }
+/// Cursor position in the wrapped input body, excluding the three-column prompt.
+pub fn input_visual_position(a: &App, terminal_width: usize) -> (usize, usize) {
+    if a.paste_collapsed {
+        return (0, 0);
+    }
+    let available = terminal_width.saturating_sub(5).max(1);
+    let mut row = 0;
+    let mut col = 0;
+    for c in a.input[..a.cursor.min(a.input.len())].chars() {
+        if c == '\n' {
+            row += 1;
+            col = 0;
+            continue;
+        }
+        let cw = width(&clean(&c.to_string()), a.ambiguous_width);
+        if col + cw > available && col > 0 {
+            row += 1;
+            col = 0;
+        }
+        col += cw;
+    }
+    if col >= available {
+        row += 1;
+        col = 0;
+    }
+    (row, col)
+}
+
+/// The final row is a footer only when it is not replaced by completion rows.
+pub fn footer_at(a: &App, width: u16, height: u16) -> Option<Rect> {
+    if height == 0 || width == 0 {
+        return None;
+    }
+    let danger =
+        a.snapshot["session"]["permission"] == "full" || a.snapshot["session"]["mode"] == "plan";
+    if height < 6 || a.view != View::Chat || a.completion().is_empty() || danger {
+        Some(Rect::new(0, height - 1, width, 1))
+    } else {
+        None
+    }
+}
+
+/// Shared layout rectangle for drawing and mouse hit testing, including the sidebar.
+pub fn pet_rect(a: &App, terminal_width: u16, height: u16) -> Option<Rect> {
+    let w = terminal_width.saturating_sub(if a.sidebar && terminal_width >= 140 {
+        44
+    } else {
+        0
+    });
+    if pet_visible(a, w, height) {
+        Some(Rect::new(w - 22, 0, 20, 6))
+    } else {
+        None
+    }
+}
+
 fn duration(v: &Value) -> String {
     let Some(ms) = v.as_u64() else {
         return String::new();
@@ -181,21 +308,21 @@ fn duration(v: &Value) -> String {
 fn state_icon<'a>(a: &App, status: &str) -> &'a str {
     match status {
         "done" | "completed" | "accepted" => {
-            if a.ascii {
+            if a.ascii || a.ambiguous_width == 2 {
                 "v"
             } else {
                 "✓"
             }
         }
         "failed" => {
-            if a.ascii {
+            if a.ascii || a.ambiguous_width == 2 {
                 "x"
             } else {
                 "✗"
             }
         }
         "stopped" | "cancelled" | "interrupted" => {
-            if a.ascii {
+            if a.ascii || a.ambiguous_width == 2 {
                 "#"
             } else {
                 "■"
@@ -203,15 +330,19 @@ fn state_icon<'a>(a: &App, status: &str) -> &'a str {
         }
         "running" => {
             if a.reduce_motion {
-                if a.ascii { "." } else { "◌" }
-            } else if a.ascii {
+                if a.ascii || a.ambiguous_width == 2 {
+                    "."
+                } else {
+                    "◌"
+                }
+            } else if a.ascii || a.ambiguous_width == 2 {
                 ["-", "\\", "|", "/"][(a.tick % 4) as usize]
             } else {
                 ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][(a.tick % 10) as usize]
             }
         }
         _ => {
-            if a.ascii {
+            if a.ascii || a.ambiguous_width == 2 {
                 "."
             } else {
                 "◌"
@@ -231,7 +362,8 @@ pub fn welcome(a: &App) -> bool {
     items(&a.snapshot, "messages").is_empty()
 }
 pub fn pet_visible(a: &App, w: u16, h: u16) -> bool {
-    welcome(a)
+    a.view == View::Chat
+        && welcome(a)
         && a.scroll == 0
         && w >= 80
         && h >= 20
@@ -242,6 +374,7 @@ pub fn pet_visible(a: &App, w: u16, h: u16) -> bool {
         && a.pet.enabled
 }
 fn record(a: &App, w: usize, h: u16) -> Vec<Line<'static>> {
+    let dot = glyph(a, "·", ":");
     let t = Theme::new(a);
     let mut out = vec![];
     let s = &a.snapshot["session"];
@@ -252,13 +385,31 @@ fn record(a: &App, w: usize, h: u16) -> Vec<Line<'static>> {
         out.extend(welcome_record(a, w, h, false));
         out.push(Line::default());
     }
+    // Index once instead of scanning M messages against S tools twice.
+    let mut linked_steps: std::collections::HashMap<&str, Vec<&Value>> =
+        std::collections::HashMap::new();
+    for step in items(&a.snapshot, "steps") {
+        linked_steps
+            .entry(text(step, "message_id"))
+            .or_default()
+            .push(step);
+    }
     for message in items(&a.snapshot, "messages") {
         let user = text(message, "role") == "user";
-        out.extend(message_lines(a, text(message, "text"), user, w.min(104)));
+        out.extend(message_lines(
+            a,
+            text(message, "text"),
+            user,
+            if user {
+                w
+            } else {
+                w.saturating_sub(2).min(102)
+            },
+        ));
         for att in items(message, "attachments") {
             out.push(line(
                 format!(
-                    "  {} {} · {} B",
+                    "  {} {} {dot} {} B",
                     glyph(a, "⎘", "@"),
                     text(att, "name"),
                     att["size"]
@@ -267,7 +418,15 @@ fn record(a: &App, w: usize, h: u16) -> Vec<Line<'static>> {
             ));
         }
         if !text(message, "thinking").is_empty() {
-            out.push(line(format!("  {} 思考", glyph(a, "∴", "~")), t.muted));
+            let elapsed = message
+                .get("thinking_elapsed_ms")
+                .filter(|v| v.is_number())
+                .map(|v| format!("  {}", duration(v)))
+                .unwrap_or_default();
+            out.push(line(
+                format!("  {} 思考{elapsed}", glyph(a, "∴", "~")),
+                t.muted,
+            ));
             if a.expanded {
                 out.extend(wrap(
                     text(message, "thinking"),
@@ -279,12 +438,8 @@ fn record(a: &App, w: usize, h: u16) -> Vec<Line<'static>> {
             }
         }
         out.push(Line::default());
-        let linked: Vec<Value> = items(&a.snapshot, "steps")
-            .iter()
-            .filter(|step| step["message_id"] == message["id"])
-            .cloned()
-            .collect();
-        let mut groups: Vec<Vec<Value>> = vec![];
+        let linked = linked_steps.remove(text(message, "id")).unwrap_or_default();
+        let mut groups: Vec<Vec<&Value>> = vec![];
         for step in linked {
             if let Some(last) = groups
                 .last_mut()
@@ -302,14 +457,9 @@ fn record(a: &App, w: usize, h: u16) -> Vec<Line<'static>> {
             out.extend(step_lines(a, w, &group, finished));
         }
     }
-    let orphans: Vec<Value> = items(&a.snapshot, "steps")
+    let orphans: Vec<&Value> = items(&a.snapshot, "steps")
         .iter()
-        .filter(|step| {
-            !items(&a.snapshot, "messages")
-                .iter()
-                .any(|m| m["id"] == step["message_id"])
-        })
-        .cloned()
+        .filter(|s| linked_steps.contains_key(text(s, "message_id")))
         .collect();
     out.extend(step_lines(
         a,
@@ -326,7 +476,7 @@ fn record(a: &App, w: usize, h: u16) -> Vec<Line<'static>> {
     {
         out.push(pair(
             format!(
-                "  {} 助手  {} · {}",
+                "  {} 助手  {} {dot} {}",
                 state_icon(a, "running"),
                 text(agent, "name"),
                 text(agent, "activity")
@@ -369,20 +519,31 @@ fn record(a: &App, w: usize, h: u16) -> Vec<Line<'static>> {
             t.muted,
         ));
         for c in changes {
-            out.push(line(
-                format!(
-                    "    {} {}  {}",
-                    text(c, "kind"),
-                    middle(text(c, "path"), w.saturating_sub(24), a),
-                    change_counts(c, a)
-                ),
-                match text(c, "kind") {
-                    "A" => t.good,
-                    "D" => t.bad,
-                    "R" => t.accent,
-                    _ => t.warn,
-                },
-            ));
+            let kind_style = match text(c, "kind") {
+                "A" => t.good,
+                "D" => t.bad,
+                "R" => t.accent,
+                _ => t.warn,
+            };
+            let mut spans = vec![
+                Span::raw("    "),
+                Span::styled(text(c, "kind").to_owned(), kind_style),
+                Span::raw(format!(
+                    " {}  ",
+                    middle(text(c, "path"), w.saturating_sub(24), a)
+                )),
+            ];
+            for count in change_counts(c, a).split_whitespace() {
+                spans.push(Span::styled(
+                    format!("{count} "),
+                    if count.starts_with('+') {
+                        t.good
+                    } else {
+                        t.bad
+                    },
+                ));
+            }
+            out.push(Line::from(spans));
         }
         for check in steps
             .iter()
@@ -390,7 +551,7 @@ fn record(a: &App, w: usize, h: u16) -> Vec<Line<'static>> {
         {
             out.push(line(
                 format!(
-                    "  检查  {} {} · 退出码 {}",
+                    "  检查  {} {} {dot} 退出码 {}",
                     glyph(a, "✓", "v"),
                     text(check, "object"),
                     check["exit_code"]
@@ -419,6 +580,7 @@ fn status_label(s: &str) -> &str {
     }
 }
 fn status(a: &App, w: usize) -> Option<Line<'static>> {
+    let dot = glyph(a, "·", ":");
     let t = Theme::new(a);
     let s = &a.snapshot["session"];
     let (left, right, style) = if a.esc_at.is_some_and(|x| x.elapsed().as_millis() < 1500) {
@@ -427,7 +589,7 @@ fn status(a: &App, w: usize) -> Option<Line<'static>> {
         match a.status() {
             "running" => (
                 format!(
-                    "{} {} · 第 {}/{} 轮 · {}",
+                    "{} {} {dot} 第 {}/{} 轮 {dot} {}",
                     state_icon(a, "running"),
                     text(s, "phase"),
                     s["round"],
@@ -450,7 +612,7 @@ fn status(a: &App, w: usize) -> Option<Line<'static>> {
                 let r = a.retry.as_ref().unwrap_or(&s["retry"]);
                 (
                     format!(
-                        "! {} {} · {}s 后重试（{}/{}）",
+                        "! {} {} {dot} {}s 后重试（{}/{}）",
                         text(r, "code"),
                         text(r, "message"),
                         r["retry_after_ms"].as_u64().unwrap_or(0) / 1000,
@@ -462,13 +624,17 @@ fn status(a: &App, w: usize) -> Option<Line<'static>> {
                 )
             }
             "waiting_acceptance" => (
-                format!("{} 检查完成 · 待验收", glyph(a, "✓", "v")),
-                "/accept 验收 · 直接输入修改意见",
+                format!("{} 检查完成 {dot} 待验收", glyph(a, "✓", "v")),
+                glyph(
+                    a,
+                    "/accept 验收 · 直接输入修改意见",
+                    "/accept 验收 : 直接输入修改意见",
+                ),
                 t.good,
             ),
             "stopped" => (
                 format!(
-                    "{} 已停止 · 第 {}/{} 轮",
+                    "{} 已停止 {dot} 第 {}/{} 轮",
                     glyph(a, "■", "#"),
                     s["round"],
                     s["round_limit"]
@@ -479,20 +645,33 @@ fn status(a: &App, w: usize) -> Option<Line<'static>> {
             _ => return None,
         }
     };
-    Some(pair(
+    let mut result = pair(
         left,
         if w >= 60 { right } else { "" }.into(),
         w,
         a,
         style,
         t.muted,
-    ))
+    );
+    if a.status() == "running"
+        && a.esc_at.is_none_or(|x| x.elapsed().as_millis() >= 1500)
+        && let Some(first) = result.spans.first_mut()
+    {
+        let original = first.content.to_string();
+        if let Some((icon, rest)) = original.split_once(' ') {
+            *first = Span::styled(icon.to_owned(), t.accent);
+            result
+                .spans
+                .insert(1, Span::styled(format!(" {rest}"), t.muted));
+        }
+    }
+    Some(result)
 }
 fn permission(a: &App) -> (&str, Style) {
     let t = Theme::new(a);
     match text(&a.snapshot["session"], "permission") {
         "full" => (
-            if a.ascii {
+            if a.ascii || a.ambiguous_width == 2 {
                 "! 完全访问"
             } else {
                 "▲ 完全访问"
@@ -500,7 +679,7 @@ fn permission(a: &App) -> (&str, Style) {
             t.bad.add_modifier(Modifier::BOLD),
         ),
         "assisted" => (
-            if a.ascii {
+            if a.ascii || a.ambiguous_width == 2 {
                 "+ 自动审查"
             } else {
                 "◆ 自动审查"
@@ -508,7 +687,7 @@ fn permission(a: &App) -> (&str, Style) {
             t.accent,
         ),
         _ => (
-            if a.ascii {
+            if a.ascii || a.ambiguous_width == 2 {
                 "? 请求批准"
             } else {
                 "◇ 请求批准"
@@ -518,6 +697,7 @@ fn permission(a: &App) -> (&str, Style) {
     }
 }
 pub fn footer(a: &App, w: usize) -> Line<'static> {
+    let dot = glyph(a, "·", ":");
     let t = Theme::new(a);
     let s = &a.snapshot["session"];
     let (permission, ps) = permission(a);
@@ -563,7 +743,7 @@ pub fn footer(a: &App, w: usize) -> Line<'static> {
                 if effort.is_empty() {
                     String::new()
                 } else {
-                    format!(" · {effort}")
+                    format!(" {dot} {effort}")
                 }
             ),
             permission.into(),
@@ -610,7 +790,7 @@ pub fn footer(a: &App, w: usize) -> Line<'static> {
             if effort.is_empty() {
                 String::new()
             } else {
-                format!(" · {effort}")
+                format!(" {dot} {effort}")
             }
         )
     };
@@ -644,7 +824,7 @@ fn short_model(s: &str) -> String {
             .collect()
     }
 }
-fn drawer_lines(a: &App, w: usize) -> Vec<Line<'static>> {
+fn drawer_lines(a: &App, w: usize, height: usize) -> Vec<Line<'static>> {
     let t = Theme::new(a);
     let mut out = vec![];
     let title = match a.drawer {
@@ -659,14 +839,97 @@ fn drawer_lines(a: &App, w: usize) -> Vec<Line<'static>> {
     out.push(line(glyph(a, "─", "-").repeat(w), t.muted));
     out.push(pair(
         format!(" {title}"),
-        "enter 确认 · esc 关闭".into(),
+        glyph(a, "enter 确认 · esc 关闭", "enter 确认 : esc 关闭").into(),
         w,
         a,
         Style::default().add_modifier(Modifier::BOLD),
         t.muted,
     ));
+    if a.drawer == Some(Drawer::Model) {
+        let list = a.drawer_items();
+        if list.is_empty() {
+            out.push(line(" 没有可用模型", t.warn));
+            return out;
+        }
+        let selected = a.selected % list.len();
+        if height >= 8 {
+            out.push(line(
+                format!(" {} {}", glyph(a, "⌕", "/"), a.search),
+                t.accent,
+            ));
+        }
+        let controls = 3; // thought settings, key hints, bottom separator
+        let budget = height.saturating_sub(out.len() + controls).max(1);
+        let count = (budget / 2).max(1).min(list.len());
+        let start = selected
+            .saturating_sub(count / 2)
+            .min(list.len().saturating_sub(count));
+        for (i, item) in list.iter().enumerate().skip(start).take(count) {
+            if budget >= count * 2 {
+                out.push(line(format!(" {}", text(item, "source")), t.muted));
+            }
+            out.push(line(
+                format!(
+                    " {} {}",
+                    if i == selected {
+                        glyph(a, "›", ">")
+                    } else {
+                        " "
+                    },
+                    text(item, "id")
+                ),
+                if i == selected {
+                    Style::default().add_modifier(Modifier::REVERSED)
+                } else {
+                    Style::default()
+                },
+            ));
+        }
+        let efforts = items(&list[selected], "efforts");
+        let labels = efforts
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                let e = effort_label(v.as_str().unwrap_or(""));
+                if i == a.effort_index % efforts.len().max(1) {
+                    format!("[{e}]")
+                } else {
+                    e.to_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        out.push(line(
+            format!(
+                " 思考 {}  强度 {labels}",
+                if a.thinking { "开" } else { "已关闭" }
+            ),
+            if a.thinking { t.accent } else { t.muted },
+        ));
+        out.push(line(
+            glyph(
+                a,
+                " tab 切换 · 左右 强度 · space 思考",
+                " tab 切换 : 左右 强度 : space 思考",
+            ),
+            t.muted,
+        ));
+        out.push(line(glyph(a, "─", "-").repeat(w), t.muted));
+        return out;
+    }
     match a.drawer {
         Some(Drawer::Help) => {
+            if let Some(warning) = &a.config_warning {
+                out.extend(wrap(warning, w, a, " ", t.warn));
+            }
+            out.push(line(
+                glyph(
+                    a,
+                    " /recover 恢复失败草稿 · 再次执行切换保留草稿",
+                    " /recover 恢复失败草稿 : 再次执行切换保留草稿",
+                ),
+                t.muted,
+            ));
             for s in [
                 " enter 发送   ctrl+j 换行   shift+tab 计划模式",
                 " esc 两次中断   ctrl+c 清空 / 中断 / 两次退出",
@@ -684,14 +947,22 @@ fn drawer_lines(a: &App, w: usize) -> Vec<Line<'static>> {
         }
         Some(Drawer::Permissions) => {
             for (i, s) in [
-                "◇ 请求批准 · 写入和命令先确认",
-                "◆ 自动审查 · 按规则自动批准安全操作",
-                "▲ 完全访问 · 不再询问",
+                glyph(
+                    a,
+                    "◇ 请求批准 · 写入和命令先确认",
+                    "◇ 请求批准 : 写入和命令先确认",
+                ),
+                glyph(
+                    a,
+                    "◆ 自动审查 · 按规则自动批准安全操作",
+                    "◆ 自动审查 : 按规则自动批准安全操作",
+                ),
+                glyph(a, "▲ 完全访问 · 不再询问", "▲ 完全访问 : 不再询问"),
             ]
             .iter()
             .enumerate()
             {
-                let s = if a.ascii {
+                let s = if a.ascii || a.ambiguous_width == 2 {
                     s.replace('◇', "?").replace('◆', "+").replace('▲', "!")
                 } else {
                     s.to_string()
@@ -792,7 +1063,14 @@ fn drawer_lines(a: &App, w: usize) -> Vec<Line<'static>> {
                     ),
                     if a.thinking { t.accent } else { t.muted },
                 ));
-                out.push(line(" tab 切换 · 左右 调整强度 · space 开关思考", t.muted));
+                out.push(line(
+                    glyph(
+                        a,
+                        " tab 切换 · 左右 调整强度 · space 开关思考",
+                        " tab 切换 : 左右 调整强度 : space 开关思考",
+                    ),
+                    t.muted,
+                ));
             }
         }
     }
@@ -854,7 +1132,7 @@ fn render_pet(f: &mut Frame, a: &App, area: Rect) {
         let qw = width(quote, 1) as u16;
         if end >= qw {
             f.render_widget(
-                Paragraph::new(quote).style(Theme::new(a).accent),
+                paragraph(a, quote).style(Theme::new(a).accent),
                 Rect::new(end - qw, area.y + 1, qw, 1),
             );
         }
@@ -885,13 +1163,14 @@ fn nearest_xterm(r: u8, g: u8, b: u8) -> u8 {
     best.1
 }
 fn full_view(f: &mut Frame, a: &App, area: Rect) {
+    let dot = glyph(a, "·", ":");
     let t = Theme::new(a);
     if a.reviewing_proposed_write() {
         let approval = &a.snapshot["approvals"][0];
         let mut lines = vec![
             pair(
-                " 拟写入差异 · 尚未执行".into(),
-                "q 返回 · ctrl+y 批准".into(),
+                glyph(a, " 拟写入差异 · 尚未执行", " 拟写入差异 : 尚未执行").into(),
+                glyph(a, "q 返回 · ctrl+y 批准", "q 返回 : ctrl+y 批准").into(),
                 area.width as usize,
                 a,
                 t.warn,
@@ -899,8 +1178,12 @@ fn full_view(f: &mut Frame, a: &App, area: Rect) {
             ),
             line(glyph(a, "─", "-").repeat(area.width as usize), t.muted),
         ];
-        lines.extend(diff_lines(a, approval).into_iter().skip(a.scroll as usize));
-        f.render_widget(Paragraph::new(lines), area);
+        lines.extend(
+            diff_lines(a, approval, area.width as usize)
+                .into_iter()
+                .skip(a.scroll as usize),
+        );
+        f.render_widget(paragraph(a, lines), area);
         return;
     }
     let mut lines = vec![
@@ -913,7 +1196,7 @@ fn full_view(f: &mut Frame, a: &App, area: Rect) {
                     "任务树"
                 }
             ),
-            "j/k 选择 · q / esc 返回".into(),
+            glyph(a, "j/k 选择 · q / esc 返回", "j/k 选择 : q / esc 返回").into(),
             area.width as usize,
             a,
             Style::default(),
@@ -923,44 +1206,83 @@ fn full_view(f: &mut Frame, a: &App, area: Rect) {
     ];
     if a.view == View::Agents {
         let agents = items(&a.snapshot, "agents");
-        for (i, agent) in agents.iter().enumerate() {
+        if let Some(id) = &a.agent_detail_id {
+            if let Some(agent) = agents.iter().find(|v| text(v, "id") == id) {
+                lines[0] = pair(
+                    format!(" {} {dot} 记录", text(agent, "name")),
+                    glyph(a, "pgup/pgdn 滚动 · q 返回", "pgup/pgdn 滚动 : q 返回").into(),
+                    area.width as usize,
+                    a,
+                    t.accent,
+                    t.muted,
+                );
+                let mut body = wrap(
+                    text(agent, "task"),
+                    area.width as usize,
+                    a,
+                    "",
+                    Style::default(),
+                );
+                body.extend(wrap(
+                    text(agent, "output"),
+                    area.width as usize,
+                    a,
+                    "",
+                    Style::default(),
+                ));
+                lines.extend(body.into_iter().skip(a.scroll as usize));
+            }
+        } else {
+            let available = area.height.saturating_sub(3) as usize;
+            let selected = a.selected % agents.len().max(1);
+            let start = selected.saturating_sub(available.saturating_sub(1));
+            for (i, agent) in agents.iter().enumerate().skip(start).take(available) {
+                lines.push(line(
+                    format!(
+                        " {} {}{} {}  {}  {}  {}",
+                        if i == selected {
+                            glyph(a, "›", ">")
+                        } else {
+                            " "
+                        },
+                        agent_tree_prefix(agents, i, a.ascii || a.ambiguous_width == 2),
+                        state_icon(a, text(agent, "status")),
+                        text(agent, "name"),
+                        text(agent, "model"),
+                        text(agent, "activity"),
+                        duration(&agent["elapsed_ms"])
+                    ),
+                    state_style(t, text(agent, "status")),
+                ));
+            }
+            while lines.len() < area.height.saturating_sub(1) as usize {
+                lines.push(Line::default());
+            }
             lines.push(line(
-                format!(
-                    " {} {}{} {}  {}  {}  {}",
-                    if i == a.selected % agents.len().max(1) {
-                        glyph(a, "›", ">")
-                    } else {
-                        " "
-                    },
-                    agent_tree_prefix(agents, i, a.ascii),
-                    state_icon(a, text(agent, "status")),
-                    text(agent, "name"),
-                    text(agent, "model"),
-                    text(agent, "activity"),
-                    duration(&agent["elapsed_ms"])
+                glyph(
+                    a,
+                    " enter 查看记录 · m 补充要求 · x 停止助手",
+                    " enter 查看记录 : m 补充要求 : x 停止助手",
                 ),
-                state_style(t, text(agent, "status")),
+                t.muted,
             ));
         }
-        lines.push(Line::default());
-        lines.push(line(" enter 查看记录 · m 补充要求 · x 停止助手", t.muted));
-        if !a.notice.is_empty() {
-            lines.extend(wrap(&a.notice, area.width as usize, a, "  ", t.muted));
-        }
-        f.render_widget(Paragraph::new(lines), area);
+        f.render_widget(paragraph(a, lines), area);
         return;
     }
     let changes = items(&a.snapshot, "changes");
     let selected = a.selected % changes.len().max(1);
     if area.width >= 100 {
         f.render_widget(
-            Paragraph::new(lines),
+            paragraph(a, lines),
             Rect::new(area.x, area.y, area.width, 2),
         );
         let list_area = Rect::new(area.x, area.y + 2, 28, area.height.saturating_sub(2));
         let file_lines = changes
             .iter()
             .enumerate()
+            .skip(selected.saturating_sub(list_area.height.saturating_sub(1) as usize))
+            .take(list_area.height as usize)
             .map(|(i, c)| {
                 line(
                     format!(
@@ -977,18 +1299,18 @@ fn full_view(f: &mut Frame, a: &App, area: Rect) {
                 )
             })
             .collect::<Vec<_>>();
-        f.render_widget(Paragraph::new(file_lines), list_area);
+        f.render_widget(paragraph(a, file_lines), list_area);
         for y in area.y + 2..area.bottom() {
             f.render_widget(
-                Paragraph::new(glyph(a, "│", "|")).style(t.muted),
+                paragraph(a, glyph(a, "│", "|")).style(t.muted),
                 Rect::new(area.x + 28, y, 1, 1),
             );
         }
         if let Some(c) = changes.get(selected) {
             let mut diff = vec![line(text(c, "path").to_owned(), t.accent)];
-            diff.extend(diff_lines(a, c));
+            diff.extend(diff_lines(a, c, area.width.saturating_sub(30) as usize));
             f.render_widget(
-                Paragraph::new(diff).scroll((a.scroll, 0)),
+                paragraph(a, diff).scroll((a.scroll, 0)),
                 Rect::new(
                     area.x + 30,
                     area.y + 2,
@@ -998,7 +1320,12 @@ fn full_view(f: &mut Frame, a: &App, area: Rect) {
             );
         }
     } else {
-        for (i, c) in changes.iter().enumerate().take(5) {
+        for (i, c) in changes
+            .iter()
+            .enumerate()
+            .skip(selected.saturating_sub(4))
+            .take(5)
+        {
             lines.push(line(
                 format!(
                     " {} {} {} +{} -{}",
@@ -1020,16 +1347,20 @@ fn full_view(f: &mut Frame, a: &App, area: Rect) {
             t.muted,
         ));
         if let Some(c) = changes.get(selected) {
-            lines.extend(diff_lines(a, c).into_iter().skip(a.scroll as usize));
+            lines.extend(
+                diff_lines(a, c, area.width as usize)
+                    .into_iter()
+                    .skip(a.scroll as usize),
+            );
         }
-        f.render_widget(Paragraph::new(lines), area);
+        f.render_widget(paragraph(a, lines), area);
     }
 }
-fn diff_lines(a: &App, c: &Value) -> Vec<Line<'static>> {
+fn diff_lines(a: &App, c: &Value, w: usize) -> Vec<Line<'static>> {
     let t = Theme::new(a);
     items(c, "diff")
         .iter()
-        .map(|v| {
+        .flat_map(|v| {
             let s = v.as_str().unwrap_or("");
             let mut st = if s.starts_with('+') {
                 t.good
@@ -1054,63 +1385,92 @@ fn diff_lines(a: &App, c: &Value) -> Vec<Line<'static>> {
                     });
                 }
             }
-            line(clean(s), st)
+            wrap(s, w, a, "", st)
         })
         .collect()
 }
+fn persistent_notice(a: &App) -> Option<&str> {
+    if a.snapshot_stale {
+        Some("状态更新失败，当前为旧快照")
+    } else if !a.notice.is_empty() {
+        Some(&a.notice)
+    } else {
+        a.config_warning.as_deref()
+    }
+}
+
 pub fn draw(f: &mut Frame, a: &App) {
+    draw_inner(f, a);
     let area = f.area();
-    if area.width == 0 || area.height == 0 {
-        return;
+    if let Some(rect) = footer_at(a, area.width, area.height) {
+        f.render_widget(paragraph(a, footer(a, area.width as usize)), rect);
     }
-    if a.view != View::Chat {
-        if area.height >= 3 {
-            full_view(f, a, Rect::new(area.x, area.y, area.width, area.height - 1));
-        }
-        f.render_widget(
-            Paragraph::new(footer(a, area.width as usize)),
-            Rect::new(area.x, area.bottom() - 1, area.width, 1),
-        );
-        return;
-    }
+}
+
+struct ChatLayout {
+    completion: Vec<String>,
+    bottom_h: u16,
+    input_h: u16,
+    status_line: Option<Line<'static>>,
+    queue_h: u16,
+    notice_h: u16,
+    persistent_notice: String,
+    drawer: Vec<Line<'static>>,
+    drawer_h: u16,
+    record_h: u16,
+}
+fn chat_layout(a: &App, w: usize, height: u16) -> ChatLayout {
     let t = Theme::new(a);
-    let w = area.width as usize;
     let completion = a.completion();
     let danger =
         a.snapshot["session"]["permission"] == "full" || a.snapshot["session"]["mode"] == "plan";
-    let bottom_h = if completion.is_empty() {
+    let mut bottom_h = if completion.is_empty() {
         1
     } else {
-        completion.len().min(8).min((area.height / 3) as usize) as u16 + u16::from(danger)
+        completion.len().min(8).min((height / 3) as usize) as u16 + u16::from(danger)
     };
     let approval = a.status() == "approval" && !a.approval_collapsed && !a.rejection;
     let input_h = if approval {
         (approval_lines(a, w.saturating_sub(4)).len() as u16 + 2)
-            .min(area.height.saturating_sub(3))
+            .min(height.saturating_sub(3))
             .max(3)
     } else {
         let n = a
             .input
             .split('\n')
             .map(|s| {
-                width(s, a.ambiguous_width)
+                width(&clean(s), a.ambiguous_width)
                     .div_ceil(w.saturating_sub(5).max(1))
                     .max(1)
             })
-            .sum::<usize>();
-        if a.input.lines().count() > 5 {
+            .sum::<usize>()
+            .max(input_visual_position(a, w).0 + 1);
+        if a.paste_collapsed {
             3
         } else {
-            (n as u16 + 2).min(if area.height < 16 { 3 } else { 8 })
+            (n as u16 + 2).min(if height < 16 { 3 } else { 8 })
         }
     };
     let status_line = status(a, w);
     let status_h = u16::from(status_line.is_some());
     let queued = items(&a.snapshot, "queued");
     let queue_h = u16::from(!queued.is_empty());
-    let notice_h = u16::from(!a.notice.is_empty());
+    let persistent_notice = persistent_notice(a).unwrap_or("").to_owned();
+    let notice_h = u16::from(!persistent_notice.is_empty());
+    bottom_h = bottom_h.min(
+        height
+            .saturating_sub(input_h + status_h + queue_h + notice_h)
+            .max(1),
+    );
     let drawer = if a.drawer.is_some() {
-        drawer_lines(a, w)
+        drawer_lines(
+            a,
+            w,
+            (height / 2)
+                .min(if height < 16 { 6 } else { 12 })
+                .min(height.saturating_sub(bottom_h + input_h + status_h + queue_h + notice_h))
+                as usize,
+        )
     } else if let Some(request) = items(&a.snapshot, "questions").first() {
         let mut lines = vec![line(" 需要你回答", t.warn.add_modifier(Modifier::BOLD))];
         if let Some(q) = items(request, "questions").get(a.question_index) {
@@ -1123,9 +1483,17 @@ pub fn draw(f: &mut Frame, a: &App) {
             }
             lines.push(line(
                 if q["multiple"] == true {
-                    " 输入选项编号（逗号分隔）或文字 · enter 回答"
+                    glyph(
+                        a,
+                        " 输入选项编号（逗号分隔）或文字 · enter 回答",
+                        " 输入选项编号（逗号分隔）或文字 : enter 回答",
+                    )
                 } else {
-                    " 输入选项编号或文字 · enter 回答"
+                    glyph(
+                        a,
+                        " 输入选项编号或文字 · enter 回答",
+                        " 输入选项编号或文字 : enter 回答",
+                    )
                 },
                 t.muted,
             ));
@@ -1135,10 +1503,99 @@ pub fn draw(f: &mut Frame, a: &App) {
         vec![]
     };
     let drawer_h = (drawer.len() as u16)
-        .min(if area.height < 16 { 6 } else { 12 })
-        .min(area.height / 2);
+        .min(if height < 16 { 6 } else { 12 })
+        .min(height / 2)
+        .min(height.saturating_sub(bottom_h + input_h + status_h + queue_h + notice_h));
     let fixed = bottom_h + input_h + status_h + queue_h + notice_h + drawer_h;
-    let record_h = area.height.saturating_sub(fixed);
+    let record_h = height.saturating_sub(fixed);
+    ChatLayout {
+        completion,
+        bottom_h,
+        input_h,
+        status_line,
+        queue_h,
+        notice_h,
+        persistent_notice,
+        drawer,
+        drawer_h,
+        record_h,
+    }
+}
+
+/// Exact shared chat geometry keeps paging from overscrolling into empty history.
+pub fn record_scroll_limit(a: &App, width: u16, height: u16) -> u16 {
+    if height < 6 {
+        return 0;
+    }
+    let layout = chat_layout(a, width as usize, height);
+    let record_width = width.saturating_sub(if a.sidebar && width >= 140 { 44 } else { 0 });
+    record(a, record_width as usize, height)
+        .len()
+        .saturating_sub(layout.record_h as usize)
+        .min(u16::MAX as usize) as u16
+}
+
+fn draw_inner(f: &mut Frame, a: &App) {
+    let area = f.area();
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    // On extremely short terminals preserve dangerous permissions before decorative chrome.
+    if area.height < 6 {
+        f.render_widget(
+            paragraph(a, footer(a, area.width as usize)),
+            Rect::new(area.x, area.bottom() - 1, area.width, 1),
+        );
+        if area.height > 1
+            && let Some(status) = status(a, area.width as usize)
+        {
+            f.render_widget(
+                paragraph(a, status),
+                Rect::new(area.x, area.y, area.width, 1),
+            );
+        }
+        return;
+    }
+    if a.view != View::Chat {
+        let warning = persistent_notice(a);
+        let warning_h = u16::from(warning.is_some());
+        if area.height >= 3 + warning_h {
+            full_view(
+                f,
+                a,
+                Rect::new(area.x, area.y, area.width, area.height - 1 - warning_h),
+            );
+        }
+        if let Some(warning) = warning {
+            f.render_widget(
+                paragraph(a, warning).style(Theme::new(a).warn),
+                Rect::new(area.x, area.bottom() - 2, area.width, 1),
+            );
+        }
+        f.render_widget(
+            paragraph(a, footer(a, area.width as usize)),
+            Rect::new(area.x, area.bottom() - 1, area.width, 1),
+        );
+        return;
+    }
+    let t = Theme::new(a);
+    let w = area.width as usize;
+    let ChatLayout {
+        completion,
+        bottom_h,
+        input_h,
+        status_line,
+        queue_h,
+        notice_h,
+        persistent_notice,
+        drawer,
+        drawer_h,
+        record_h,
+    } = chat_layout(a, w, area.height);
+    let queued = items(&a.snapshot, "queued");
+    let danger =
+        a.snapshot["session"]["permission"] == "full" || a.snapshot["session"]["mode"] == "plan";
+    let approval = a.status() == "approval" && !a.approval_collapsed && !a.rejection;
     let mut main_area = Rect::new(area.x, area.y, area.width, record_h);
     if a.sidebar && area.width >= 140 {
         main_area.width = area.width - 44;
@@ -1150,7 +1607,7 @@ pub fn draw(f: &mut Frame, a: &App) {
             lines.push(line(
                 format!(
                     "{edge} {}{} {}",
-                    agent_tree_prefix(agents, index, a.ascii),
+                    agent_tree_prefix(agents, index, a.ascii || a.ambiguous_width == 2),
                     state_icon(a, text(agent, "status")),
                     text(agent, "name")
                 ),
@@ -1164,7 +1621,7 @@ pub fn draw(f: &mut Frame, a: &App) {
                 t.muted,
             ));
         }
-        f.render_widget(Paragraph::new(lines), right);
+        f.render_widget(paragraph(a, lines), right);
     }
     let rec = record(a, main_area.width as usize, area.height);
     let offset = if welcome(a) {
@@ -1175,7 +1632,7 @@ pub fn draw(f: &mut Frame, a: &App) {
             .saturating_sub(a.scroll as usize)
     };
     f.render_widget(
-        Paragraph::new(rec.into_iter().skip(offset).collect::<Vec<_>>()),
+        paragraph(a, rec.into_iter().skip(offset).collect::<Vec<_>>()),
         main_area,
     );
     if offset == 0 {
@@ -1188,14 +1645,14 @@ pub fn draw(f: &mut Frame, a: &App) {
     let mut y = area.y + record_h;
     if drawer_h > 0 {
         f.render_widget(
-            Paragraph::new(drawer),
+            paragraph(a, drawer),
             Rect::new(area.x, y, area.width, drawer_h),
         );
         y += drawer_h;
     }
     if notice_h > 0 {
         f.render_widget(
-            Paragraph::new(truncate(&a.notice, w, a.ambiguous_width)).style(t.warn),
+            paragraph(a, truncate(&persistent_notice, w, a.ambiguous_width)).style(t.warn),
             Rect::new(area.x, y, area.width, 1),
         );
         y += 1;
@@ -1207,18 +1664,21 @@ pub fn draw(f: &mut Frame, a: &App) {
             .collect::<Vec<_>>()
             .join("；");
         f.render_widget(
-            Paragraph::new(truncate(
-                &format!("  {} 下一轮发送：{q}", glyph(a, "↳", ">")),
-                w,
-                a.ambiguous_width,
-            ))
+            paragraph(
+                a,
+                truncate(
+                    &format!("  {} 下一轮发送：{q}", glyph(a, "↳", ">")),
+                    w,
+                    a.ambiguous_width,
+                ),
+            )
             .style(t.muted),
             Rect::new(area.x, y, area.width, 1),
         );
         y += 1;
     }
     if let Some(s) = status_line {
-        f.render_widget(Paragraph::new(s), Rect::new(area.x, y, area.width, 1));
+        f.render_widget(paragraph(a, s), Rect::new(area.x, y, area.width, 1));
         y += 1;
     }
     let input_area = Rect::new(
@@ -1227,7 +1687,7 @@ pub fn draw(f: &mut Frame, a: &App) {
         area.width,
         input_h.min(area.bottom().saturating_sub(y)),
     );
-    let border = if a.ascii {
+    let border = if a.ascii || a.ambiguous_width == 2 {
         BorderType::Plain
     } else {
         BorderType::Rounded
@@ -1242,7 +1702,7 @@ pub fn draw(f: &mut Frame, a: &App) {
         } else {
             t.accent
         });
-    if a.ascii {
+    if a.ascii || a.ambiguous_width == 2 {
         block = block.border_set(ratatui::symbols::border::Set {
             top_left: "+",
             top_right: "+",
@@ -1281,7 +1741,7 @@ pub fn draw(f: &mut Frame, a: &App) {
             lines.truncate((inner.height as usize).saturating_sub(actions.len()));
             lines.extend(actions);
         }
-        f.render_widget(Paragraph::new(lines), inner);
+        f.render_widget(paragraph(a, lines), inner);
     } else {
         f.render_widget(block, input_area);
         let content = if a.input.is_empty() {
@@ -1294,7 +1754,7 @@ pub fn draw(f: &mut Frame, a: &App) {
             } else {
                 "描述任务，/ 命令，@ 文件".to_string()
             }
-        } else if a.input.lines().count() > 5 {
+        } else if a.paste_collapsed {
             format!("[已粘贴 {} 行]", a.input.lines().count())
         } else {
             a.input.clone()
@@ -1310,14 +1770,13 @@ pub fn draw(f: &mut Frame, a: &App) {
                 Style::default()
             },
         );
-        f.render_widget(Paragraph::new(lines), inner);
-        if a.drawer.is_none() && inner.width > 2 && inner.height > 0 {
-            let before = &a.input[..a.cursor.min(a.input.len())];
-            let row = before.chars().filter(|c| *c == '\n').count() as u16;
-            let col = width(before.rsplit('\n').next().unwrap_or(""), a.ambiguous_width) as u16;
+        let (row, col) = input_visual_position(a, w);
+        let offset = row.saturating_sub(inner.height.saturating_sub(1) as usize);
+        f.render_widget(paragraph(a, lines).scroll((offset as u16, 0)), inner);
+        if a.drawer.is_none() && inner.width > 3 && inner.height > 0 {
             f.set_cursor_position((
-                inner.x + (col + 2).min(inner.width - 1),
-                inner.y + row.min(inner.height - 1),
+                inner.x + (col as u16 + 3).min(inner.width - 1),
+                inner.y + row.saturating_sub(offset) as u16,
             ));
         }
     }
@@ -1325,7 +1784,7 @@ pub fn draw(f: &mut Frame, a: &App) {
     if y < area.bottom() {
         if completion.is_empty() {
             f.render_widget(
-                Paragraph::new(footer(a, w)),
+                paragraph(a, footer(a, w)),
                 Rect::new(area.x, y, area.width, 1),
             );
         } else {
@@ -1340,7 +1799,11 @@ pub fn draw(f: &mut Frame, a: &App) {
                 .take(completion_h as usize)
                 .map(|(i, c)| {
                     line(
-                        format!("  {c}"),
+                        if c == "/recover" {
+                            "  /recover 恢复失败草稿与原发送目标".to_owned()
+                        } else {
+                            format!("  {c}")
+                        },
                         if i == a.selected % completion.len() {
                             t.accent.add_modifier(Modifier::REVERSED)
                         } else {
@@ -1350,17 +1813,108 @@ pub fn draw(f: &mut Frame, a: &App) {
                 })
                 .collect::<Vec<_>>();
             f.render_widget(
-                Paragraph::new(lines),
+                paragraph(a, lines),
                 Rect::new(area.x, y, area.width, bottom_h),
             );
             if danger && y + completion_h < area.bottom() {
                 f.render_widget(
-                    Paragraph::new(footer(a, w)),
+                    paragraph(a, footer(a, w)),
                     Rect::new(area.x, y + completion_h, area.width, 1),
                 );
             }
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileLink {
+    pub area: Rect,
+    pub path: String,
+}
+
+/// Associate only complete visible paths with file objects. URI construction and
+/// canonical authorization remain the backend's responsibility; truncated paths
+/// and arbitrary Markdown/query text never become guessed destinations.
+pub fn file_links_from_buffer(a: &App, buffer: &ratatui::buffer::Buffer) -> Vec<FileLink> {
+    let session = &a.snapshot["session"];
+    if session["remote"] == true
+        || session["workspace_remote"] == true
+        || text(session, "workspace_path").starts_with("ssh:")
+    {
+        return vec![];
+    }
+    let mut paths = std::collections::BTreeSet::new();
+    for c in items(&a.snapshot, "changes") {
+        paths.insert(text(c, "path"));
+    }
+    for step in items(&a.snapshot, "steps") {
+        if matches!(text(step, "verb"), "读取" | "编辑" | "新建" | "删除") {
+            paths.insert(text(step, "object"));
+        }
+    }
+    let boundary = |c: char| c.is_whitespace() || c == '│' || c == '|';
+    let mut candidates: std::collections::HashMap<&str, Vec<&str>> =
+        std::collections::HashMap::new();
+    for path in paths {
+        if path.is_empty() || path.contains(['\n', '\r', '\x1b']) {
+            continue;
+        }
+        if let Some(first) = path.split(boundary).next() {
+            candidates.entry(first).or_default().push(path);
+        }
+    }
+    let mut out = vec![];
+    // Walk visible cells once instead of rescanning the screen per historical path.
+    for y in buffer.area.y..buffer.area.bottom() {
+        let mut row = String::new();
+        let mut offsets = vec![];
+        let mut skip = 0;
+        for x in buffer.area.x..buffer.area.right() {
+            if skip > 0 {
+                skip -= 1;
+                continue;
+            }
+            if buffer[(x, y)].diff_option == ratatui::buffer::CellDiffOption::Skip {
+                continue;
+            }
+            let symbol = buffer[(x, y)].symbol();
+            offsets.push((row.len(), x));
+            row.push_str(symbol);
+            skip = width(symbol, a.ambiguous_width).saturating_sub(1);
+        }
+        for (byte, x) in offsets {
+            if byte > 0
+                && row[..byte]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| !boundary(c))
+            {
+                continue;
+            }
+            let rest = &row[byte..];
+            let first = rest.split(boundary).next().unwrap_or("");
+            if let Some(paths) = candidates.get(first) {
+                for path in paths {
+                    if !rest.starts_with(path)
+                        || rest[path.len()..]
+                            .chars()
+                            .next()
+                            .is_some_and(|c| !boundary(c))
+                    {
+                        continue;
+                    }
+                    let w = width(path, a.ambiguous_width) as u16;
+                    if x + w <= buffer.area.right() {
+                        out.push(FileLink {
+                            area: Rect::new(x, y, w, 1),
+                            path: (*path).to_owned(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 pub fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {
@@ -1373,9 +1927,17 @@ pub fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {
                 skip -= 1;
                 continue;
             }
+            if buffer[(x, y)].diff_option == ratatui::buffer::CellDiffOption::Skip {
+                continue;
+            }
             let symbol = buffer[(x, y)].symbol();
             row.push_str(symbol);
-            skip = symbol.width().saturating_sub(1);
+            skip = match buffer[(x, y)].diff_option {
+                ratatui::buffer::CellDiffOption::ForcedWidth(w) => {
+                    usize::from(w.get()).saturating_sub(1)
+                }
+                _ => symbol.width().saturating_sub(1),
+            };
         }
         result.push_str(row.trim_end());
         result.push('\n');
@@ -1383,7 +1945,8 @@ pub fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {
     result
 }
 
-fn step_lines(a: &App, w: usize, steps: &[Value], finished: bool) -> Vec<Line<'static>> {
+fn step_lines(a: &App, w: usize, steps: &[&Value], finished: bool) -> Vec<Line<'static>> {
+    let dot = glyph(a, "·", ":");
     let t = Theme::new(a);
     let s = &a.snapshot["session"];
     let mut out = vec![];
@@ -1391,7 +1954,7 @@ fn step_lines(a: &App, w: usize, steps: &[Value], finished: bool) -> Vec<Line<'s
     if collapsed && !steps.is_empty() {
         out.push(pair(
             format!(
-                "  {} {} 个步骤 · {}",
+                "  {} {} 个步骤 {dot} {}",
                 state_icon(
                     a,
                     if a.status() == "stopped" {
@@ -1501,6 +2064,7 @@ fn step_lines(a: &App, w: usize, steps: &[Value], finished: bool) -> Vec<Line<'s
 }
 
 fn welcome_record(a: &App, w: usize, h: u16, hint: bool) -> Vec<Line<'static>> {
+    let dot = glyph(a, "·", ":");
     let t = Theme::new(a);
     let s = &a.snapshot["session"];
     let mut out = vec![];
@@ -1513,6 +2077,10 @@ fn welcome_record(a: &App, w: usize, h: u16, hint: bool) -> Vec<Line<'static>> {
         Span::styled(format!(" v{}", text(start, "version")), t.muted),
     ]));
     out.push(Line::default());
+    if let Some(warning) = &a.config_warning {
+        out.extend(wrap(warning, w, a, "  ! ", t.warn));
+    }
+
     if h >= 16 {
         let project_w = if pet_visible(a, w as u16, h) {
             w.saturating_sub(24)
@@ -1534,7 +2102,7 @@ fn welcome_record(a: &App, w: usize, h: u16, hint: bool) -> Vec<Line<'static>> {
         if !text(start, "branch").is_empty() {
             out.push(line(
                 format!(
-                    "  {} · {} 个未提交改动",
+                    "  {} {dot} {} 个未提交改动",
                     text(start, "branch"),
                     start["dirty_count"].as_u64().unwrap_or(0)
                 ),
@@ -1545,7 +2113,7 @@ fn welcome_record(a: &App, w: usize, h: u16, hint: bool) -> Vec<Line<'static>> {
             .iter()
             .filter_map(Value::as_str)
             .collect::<Vec<_>>()
-            .join(" · ");
+            .join(glyph(a, " · ", " : "));
         if !contexts.is_empty() {
             out.push(line(
                 truncate(
@@ -1564,11 +2132,11 @@ fn welcome_record(a: &App, w: usize, h: u16, hint: bool) -> Vec<Line<'static>> {
             out.push(line(
                 if issues.len() == 1 {
                     format!(
-                        "  ! {} · /mcp 查看",
+                        "  ! {} {dot} /mcp 查看",
                         issues[0].as_str().unwrap_or("启动失败")
                     )
                 } else {
-                    format!("  ! {} 个问题 · /doctor 查看", issues.len())
+                    format!("  ! {} 个问题 {dot} /doctor 查看", issues.len())
                 },
                 t.warn,
             ));
@@ -1645,6 +2213,7 @@ fn effort_label(s: &str) -> &str {
     }
 }
 fn approval_lines(a: &App, w: usize) -> Vec<Line<'static>> {
+    let dot = glyph(a, "·", ":");
     let t = Theme::new(a);
     let p = &a.snapshot["approvals"][0];
     let args = text(p, "arguments");
@@ -1654,7 +2223,11 @@ fn approval_lines(a: &App, w: usize) -> Vec<Line<'static>> {
         .unwrap_or_else(|| args.to_owned());
     let mut lines = wrap(&display, w, a, "", Style::default());
     lines.extend(wrap(
-        &format!("目录 {} · 原因 {}", text(p, "target"), text(p, "reason")),
+        &format!(
+            "目录 {} {dot} 原因 {}",
+            text(p, "target"),
+            text(p, "reason")
+        ),
         w,
         a,
         "",
@@ -1715,7 +2288,7 @@ fn message_lines(a: &App, content: &str, user: bool, w: usize) -> Vec<Line<'stat
             } else {
                 "  ".into()
             },
-            t.accent,
+            if code { t.muted } else { t.accent },
         )];
         let heading = !user && !code && raw.starts_with('#');
         let raw = if heading {
@@ -1826,6 +2399,42 @@ fn table_lines(a: &App, rows: &[&str], w: usize) -> Vec<Line<'static>> {
         })
         .collect();
     let cols = parsed.iter().map(Vec::len).max().unwrap_or(1).max(1);
+    let natural: Vec<usize> = (0..cols)
+        .map(|i| {
+            parsed
+                .iter()
+                .map(|r| r.get(i).map_or(0, |v| width(v, a.ambiguous_width)))
+                .max()
+                .unwrap_or(0)
+        })
+        .collect();
+    if natural.iter().sum::<usize>() + 3 * cols + 3 > w {
+        // Reflow tables that cannot fit rather than irreversibly truncating data.
+        let mut out = vec![];
+        let headers = parsed.first();
+        for (ri, row) in parsed.iter().enumerate().skip(1) {
+            out.push(line(format!("  {} {}", glyph(a, "┌", "+"), ri), t.muted));
+            for (ci, cell) in row.iter().enumerate() {
+                let label = headers
+                    .and_then(|r| r.get(ci))
+                    .cloned()
+                    .unwrap_or_else(|| format!("{}", ci + 1));
+                out.extend(wrap(
+                    &format!("{label}: {cell}"),
+                    w,
+                    a,
+                    "  ",
+                    Style::default(),
+                ));
+            }
+        }
+        if parsed.len() == 1 {
+            for cell in &parsed[0] {
+                out.extend(wrap(cell, w, a, "  ", Style::default()));
+            }
+        }
+        return out;
+    }
     let available = w.saturating_sub(3 + cols * 3);
     let mut widths = vec![1; cols];
     for row in &parsed {

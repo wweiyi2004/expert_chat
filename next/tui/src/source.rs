@@ -25,6 +25,9 @@ pub enum SourceEvent {
     Event(Value),
     Snapshot(Value),
     Response { method: String, result: Value },
+    CommandResponse { command: Command, result: Value },
+    CommandError { command: Command, message: String },
+    SnapshotError(String),
     Error(String),
     Connection { connected: bool, message: String },
 }
@@ -187,10 +190,8 @@ impl DataSource for DemoSource {
             }
             _ => bail!("{} is unavailable in offline demo", command.method),
         };
-        self.events.push(SourceEvent::Response {
-            method: command.method,
-            result,
-        });
+        self.events
+            .push(SourceEvent::CommandResponse { command, result });
         self.events
             .push(SourceEvent::Snapshot(self.app.snapshot.clone()));
         Ok(())
@@ -251,7 +252,7 @@ fn write_request(
     counter: &mut u64,
     method: &str,
     params: Value,
-    pending: &mut HashMap<String, String>,
+    pending: &mut HashMap<String, Command>,
 ) -> Result<()> {
     *counter += 1;
     let id = format!(
@@ -266,14 +267,20 @@ fn write_request(
     }
     // A failed write can still have reached the peer. Keep it outstanding so a
     // disconnect reports an unknown result rather than implying safe failure.
-    pending.insert(id, method.to_owned());
+    pending.insert(
+        id,
+        Command {
+            method: method.to_owned(),
+            params,
+        },
+    );
     ws.send(Message::Text(encoded.into()))?;
     Ok(())
 }
 fn connect(
     path: &std::path::Path,
     counter: &mut u64,
-    pending: &mut HashMap<String, String>,
+    pending: &mut HashMap<String, Command>,
 ) -> Result<WebSocket<TcpStream>> {
     let d = read_discovery(path)?;
     let stream = TcpStream::connect_timeout(
@@ -339,10 +346,12 @@ fn worker(path: PathBuf, commands: Receiver<Command>, events: SyncSender<SourceE
                 if events.send(SourceEvent::Connection{connected:false,message:"Bridge unavailable or authentication rejected. Start/update GUI with --tui-bridge --background; reconnecting…".into()}).is_err(){return;}
                 for _ in 0..10 {
                     match commands.try_recv() {
-                        Ok(_) => {
-                            let _ = events.send(SourceEvent::Error(
-                                "Disconnected: command not sent; retry after reconnect".into(),
-                            ));
+                        Ok(command) => {
+                            let _ = events.send(SourceEvent::CommandError {
+                                command,
+                                message: "Disconnected: command not sent; retry after reconnect"
+                                    .into(),
+                            });
                         }
                         Err(TryRecvError::Disconnected) => return,
                         Err(TryRecvError::Empty) => {}
@@ -381,12 +390,16 @@ fn worker(path: PathBuf, commands: Receiver<Command>, events: SyncSender<SourceE
         if initial.is_err() {
             continue;
         }
+        let mut desired_session = session.clone();
         let mut seq = 0;
         let mut heartbeat = Instant::now();
         let mut received = Instant::now();
         let reason: Result<()> = (|| loop {
             match commands.try_recv() {
                 Ok(command) => {
+                    if command.method == "session.open" {
+                        desired_session = command.params["session_id"].as_str().map(str::to_owned);
+                    }
                     write_request(
                         &mut ws,
                         &mut counter,
@@ -424,17 +437,33 @@ fn worker(path: PathBuf, commands: Receiver<Command>, events: SyncSender<SourceE
                             continue;
                         }
                         seq = next;
-                        if value["event"] == "snapshot" {
+                        let is_snapshot = value["event"] == "snapshot";
+                        let scope = value["session_id"].as_str().or_else(|| {
+                            if is_snapshot {
+                                value["data"]["session"]["id"].as_str()
+                            } else {
+                                None
+                            }
+                        });
+                        if session
+                            .as_deref()
+                            .is_some_and(|current| scope.is_some_and(|id| id != current))
+                        {
+                            continue;
+                        }
+                        if is_snapshot {
                             session = value["data"]["session"]["id"].as_str().map(str::to_owned);
                         }
                         events.send(SourceEvent::Event(value))?;
-                    } else if let Some(method) =
+                    } else if let Some(command) =
                         value["id"].as_str().and_then(|id| pending.remove(id))
                     {
+                        let method = command.method.clone();
                         if value["ok"] == true {
                             let result = value["result"].clone();
                             if method == "session.new" {
                                 session = result["session_id"].as_str().map(str::to_owned);
+                                desired_session = session.clone();
                                 if let Some(s) = &session {
                                     write_request(
                                         &mut ws,
@@ -446,14 +475,28 @@ fn worker(path: PathBuf, commands: Receiver<Command>, events: SyncSender<SourceE
                                 }
                             }
                             if method == "snapshot.get" || method == "session.open" {
+                                let result_session = result["session"]["id"].as_str();
+                                if method == "session.open"
+                                    && desired_session.as_deref()
+                                        != command.params["session_id"].as_str()
+                                {
+                                    continue;
+                                }
+                                if method == "snapshot.get"
+                                    && session
+                                        .as_deref()
+                                        .is_some_and(|current| result_session != Some(current))
+                                {
+                                    continue;
+                                }
                                 session = result["session"]["id"].as_str().map(str::to_owned);
+                                if method == "session.open" {
+                                    desired_session = session.clone();
+                                }
                                 events.send(SourceEvent::Snapshot(result.clone()))?;
                             }
                             if method != "ping" {
-                                events.send(SourceEvent::Response {
-                                    method: method.clone(),
-                                    result,
-                                })?;
+                                events.send(SourceEvent::CommandResponse { command, result })?;
                                 if ![
                                     "snapshot.get",
                                     "session.open",
@@ -478,6 +521,12 @@ fn worker(path: PathBuf, commands: Receiver<Command>, events: SyncSender<SourceE
                                 }
                             }
                         } else {
+                            if method == "session.open"
+                                && desired_session.as_deref()
+                                    == command.params["session_id"].as_str()
+                            {
+                                desired_session = session.clone();
+                            }
                             let code = value["error"]["code"].as_str().unwrap_or("request_failed");
                             let message: String = value["error"]["message"]
                                 .as_str()
@@ -486,9 +535,23 @@ fn worker(path: PathBuf, commands: Receiver<Command>, events: SyncSender<SourceE
                                 .filter(|c| !c.is_control())
                                 .take(1024)
                                 .collect();
-                            events
-                                .send(SourceEvent::Error(format!("{method}: {code}: {message}")))?;
+                            events.send(SourceEvent::CommandError {
+                                command,
+                                message: format!("{method}: {code}: {message}"),
+                            })?;
                         }
+                    } else if value["ok"] == false && value["id"].as_str().is_none_or(str::is_empty)
+                    {
+                        // Older bridges use an uncorrelated response for failed automatic
+                        // snapshots. Keep the failure visible instead of silently freezing.
+                        let message: String = value["error"]["message"]
+                            .as_str()
+                            .unwrap_or("State refresh failed; the visible snapshot may be stale")
+                            .chars()
+                            .filter(|c| !c.is_control())
+                            .take(1024)
+                            .collect();
+                        events.send(SourceEvent::SnapshotError(message))?;
                     }
                 }
                 Ok(Message::Ping(p)) => {
@@ -508,6 +571,12 @@ fn worker(path: PathBuf, commands: Receiver<Command>, events: SyncSender<SourceE
             return;
         }
         if !pending.is_empty() {
+            for command in pending.values() {
+                if events.send(SourceEvent::CommandError {
+                    command: command.clone(),
+                    message: "Connection lost: request result is unknown. Inspect refreshed state before retrying; this command was not replayed.".into(),
+                }).is_err() { return; }
+            }
             if events.send(SourceEvent::Error("Connection lost: outstanding request results are unknown. Commands were not replayed; inspect refreshed state before retrying.".into())).is_err(){return;}
             pending.clear();
         }

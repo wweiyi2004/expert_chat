@@ -2,6 +2,14 @@
 
 `expert` is the terminal client for the running Expert desktop application. It uses the same sessions, controller, approvals, model sources and task acceptance evidence. Closing the terminal disconnects the client; `/stop`, double Esc, or Ctrl+C during a running task explicitly stop a task.
 
+The audit repair revision keeps drafts associated with their original conversation and destination. If a failed send conflicts with a newer draft, `/recover` restores the failed draft and retains the current one; it never sends automatically. Pending questions still accept control commands, while paths such as `/home/project` remain valid answers. `/mode work` and `/mode plan` select the named mode explicitly. `/stop` and `/quit` remain available while a send is pending or an image is attached.
+
+`/compact` explicitly summarizes public task context through the configured model and stores a versioned checkpoint using the shared backend. Original messages remain available. It reports progress, success or failure; `/stop` cancels the pending operation. Automatic transient request retries are bounded to three total attempts, only before any response content or tool call exists, and are disabled when channel/model fallback already handles retry. The TUI shows the actual backoff; tools are never replayed by this retry layer.
+
+Long input follows the cursor. Changes and agent lists keep the selected item visible; long diffs wrap, and wide tables switch to complete labeled rows. Enter on an agent opens its scrollable record. Ctrl+L forces a full terminal repaint. Verified visible local file paths use OSC 8 hyperlinks (follow the terminal's link gesture, commonly Ctrl+click); truncated paths and remote targets are not guessed. `/pet on` restores a disabled pet. Invalid local configuration is reported without overwriting it. `ambiguous_width=2` uses ASCII interface decoration to avoid double-width borders.
+
+State-refresh failures remain visibly marked until a successful snapshot arrives. A slow read or compaction cannot block heartbeat/stop, and a late result from another conversation cannot switch the visible conversation back. Native login, library, media and complex settings continue to use the same GUI; `/doctor` and `/mcp` currently open its settings rather than a separate terminal diagnostics page.
+
 `/resume` opens recent activity in the current project, skipping the new empty input session. `/sessions` lets you choose another session explicitly. `/gui` opens the current session in the same desktop instance, including its existing detailed tool views and workspace previews.
 
 Build from the repository root:

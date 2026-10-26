@@ -74,9 +74,10 @@ fn main() {
 }
 fn run() -> Result<()> {
     let args = Args::parse();
-    let config = expert_tui::config::load();
+    let (config, config_warning) = expert_tui::config::load_with_warning();
     let mut app = App {
         ascii: args.ascii,
+        config_warning,
         no_color: std::env::var_os("NO_COLOR").is_some(),
         truecolor: matches!(
             std::env::var("COLORTERM").as_deref(),
@@ -138,7 +139,8 @@ fn run() -> Result<()> {
         EnableMouseCapture,
         EnableBracketedPaste
     )?;
-    let backend = ratatui::backend::CrosstermBackend::new(io::stdout());
+    let hyperlinks = expert_tui::links::LinkState::default();
+    let backend = expert_tui::links::HyperlinkBackend::new(io::stdout(), hyperlinks.clone());
     let mut term = ratatui::Terminal::new(backend)?;
     let mut last_title = String::new();
     let mut width = 80;
@@ -156,18 +158,23 @@ fn run() -> Result<()> {
                 app.notice = "读取剪贴板图片…".into();
                 dirty = true;
                 let tx = clipboard_tx.clone();
+                let session = app.session_id().map(str::to_owned);
+                let agent = app.agent_message_id.clone();
                 std::thread::spawn(move || {
-                    let _ = tx.send(expert_tui::clipboard::read_image().map_err(|e| e.to_string()));
+                    let _ = tx.send((
+                        session,
+                        agent,
+                        expert_tui::clipboard::read_image().map_err(|e| e.to_string()),
+                    ));
                 });
             }
         }
-        if let Ok(result) = clipboard_rx.try_recv() {
+        if let Ok((session, agent, result)) = clipboard_rx.try_recv() {
             dirty = true;
             clipboard_pending = false;
             match result {
                 Ok(attachment) => {
-                    app.attachments.push(attachment);
-                    app.notice = "已添加剪贴板图片".into();
+                    app.add_attachment(session.as_deref(), agent.as_deref(), attachment);
                 }
                 Err(error) => app.notice = error,
             }
@@ -177,6 +184,30 @@ fn run() -> Result<()> {
             dirty = true;
         }
         for event in events {
+            let event = match event {
+                SourceEvent::CommandResponse { command, result } => {
+                    app.command_response(&command, &result);
+                    if !command.params["session_id"].is_null()
+                        && command.params["session_id"] != app.snapshot["session"]["id"]
+                        && !matches!(command.method.as_str(), "session.open" | "snapshot.get")
+                    {
+                        continue;
+                    }
+                    SourceEvent::Response {
+                        method: command.method,
+                        result,
+                    }
+                }
+                SourceEvent::CommandError { command, message } => {
+                    app.command_error(&command, &message);
+                    continue;
+                }
+                SourceEvent::SnapshotError(message) => {
+                    app.set_snapshot_error(&message);
+                    continue;
+                }
+                event => event,
+            };
             match event {
                 SourceEvent::Event(v) => {
                     if let Err(e) = app.apply_event(&v) {
@@ -266,14 +297,8 @@ fn run() -> Result<()> {
                             change["diff"] = result["diff"].clone();
                         }
                     }
-                    "queue.remove" => {
-                        app.input = text(&result, "text").into();
-                        app.cursor = app.input.len();
-                    }
-                    "message.send" | "queue.add" | "agent.message" => {
-                        app.pending_draft = None;
-                        app.notice.clear();
-                    }
+                    "queue.remove" | "message.send" | "queue.add" | "agent.message"
+                    | "question.answer" => {}
                     "bridge.stop" => app.exit = true,
                     "models.list" => app.snapshot["models"] = result["models"].clone(),
                     "session.list" => app.snapshot["sessions"] = result["sessions"].clone(),
@@ -283,6 +308,9 @@ fn run() -> Result<()> {
                     }
                     _ => {}
                 },
+                SourceEvent::CommandResponse { .. }
+                | SourceEvent::CommandError { .. }
+                | SourceEvent::SnapshotError(_) => unreachable!("source events normalized above"),
             }
         }
         if prepared
@@ -319,6 +347,7 @@ fn run() -> Result<()> {
             dirty = true;
         }
         width = size.width;
+        app.viewport = (size.width, size.height);
         app.pet.visible = ui::pet_visible(&app, size.width, size.height);
         app.pet.tick(Instant::now(), app.reduce_motion);
         if app.active()
@@ -344,8 +373,17 @@ fn run() -> Result<()> {
             app.esc_at = None;
             dirty = true;
         }
+        if app.redraw_requested {
+            term.clear()?;
+            app.redraw_requested = false;
+            dirty = true;
+        }
         if dirty {
-            term.draw(|f| ui::draw(f, &app))?;
+            term.draw(|f| {
+                ui::draw(f, &app);
+                let paths = ui::file_links_from_buffer(&app, f.buffer_mut());
+                hyperlinks.prepare(&app, f.buffer_mut(), paths);
+            })?;
             dirty = false;
         }
         if event::poll(Duration::from_millis(if app.pet.visible {
@@ -416,19 +454,19 @@ fn run() -> Result<()> {
                     }
                 }
                 Event::Paste(s) => {
-                    app.insert(&ui::clean(&s));
+                    app.paste(&s);
                 }
                 Event::Mouse(mouse) => match mouse.kind {
-                    MouseEventKind::ScrollUp => app.scroll = app.scroll.saturating_add(3),
-                    MouseEventKind::ScrollDown => app.scroll = app.scroll.saturating_sub(3),
+                    MouseEventKind::ScrollUp => app.scroll_by(-3),
+                    MouseEventKind::ScrollDown => app.scroll_by(3),
                     MouseEventKind::Down(event::MouseButton::Left) => {
-                        if ui::pet_visible(&app, size.width, size.height)
-                            && mouse.column >= size.width.saturating_sub(22)
-                            && mouse.column < size.width.saturating_sub(2)
-                            && mouse.row < 6
-                        {
+                        if ui::pet_rect(&app, size.width, size.height).is_some_and(|rect| {
+                            rect.contains(ratatui::layout::Position::new(mouse.column, mouse.row))
+                        }) {
                             app.pet.click(Instant::now(), app.reduce_motion);
-                        } else if mouse.row == size.height.saturating_sub(1) {
+                        } else if ui::footer_at(&app, size.width, size.height).is_some_and(|rect| {
+                            rect.contains(ratatui::layout::Position::new(mouse.column, mouse.row))
+                        }) {
                             app.open(ui::footer_hit(
                                 &app,
                                 size.width as usize,
@@ -464,9 +502,8 @@ fn run() -> Result<()> {
     Ok(())
 }
 fn send(source: &mut dyn DataSource, app: &mut App, c: Command) {
-    if let Err(e) = source.send(c) {
-        app.restore_draft();
-        app.notice = e.to_string();
+    if let Err(e) = source.send(c.clone()) {
+        app.command_error(&c, &e.to_string());
     }
 }
 

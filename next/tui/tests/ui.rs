@@ -166,7 +166,7 @@ fn unicode_editing_paste_history_and_pending_draft_preserve_text() {
     app.pending_draft = None;
     app.input.clear();
     app.cursor = 0;
-    app.insert("1\n2\n3\n4\n5\n6");
+    app.paste("1\n2\n3\n4\n5\n6");
     assert!(ui::buffer_text(&render(&app, 40, 24)).contains("[已粘贴 6 行]"));
 }
 #[test]

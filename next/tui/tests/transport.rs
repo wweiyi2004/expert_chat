@@ -301,7 +301,9 @@ fn failed_open_preserves_the_acknowledged_session_on_reconnect() {
                     sent = true;
                 }
                 SourceEvent::Snapshot(v) if v["session"]["status"] == "restored" => restored = true,
-                SourceEvent::Error(message) => actual_error |= message.contains("会话不存在"),
+                SourceEvent::CommandError { message, .. } => {
+                    actual_error |= message.contains("会话不存在")
+                }
                 _ => {}
             }
         }
@@ -366,4 +368,153 @@ fn unauthenticated_event_flood_is_bounded_and_never_reaches_the_reducer() {
     );
     drop(source);
     server.join().unwrap();
+}
+
+#[test]
+fn command_failures_preserve_the_destination_and_orphan_snapshot_errors_are_visible() {
+    use expert_tui::source::BridgeSource;
+    use std::{
+        net::TcpListener,
+        thread,
+        time::{Duration, Instant},
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let (_dir, path) = private_discovery(listener.local_addr().unwrap().port());
+    let server = thread::spawn(move || {
+        let (tcp, _) = listener.accept().unwrap();
+        tcp.set_read_timeout(Some(Duration::from_secs(6))).unwrap();
+        let mut ws = tungstenite::accept(tcp).unwrap();
+        let hello = read_wire(&mut ws);
+        reply(&mut ws, &hello, json!({"protocol":1}));
+        let snapshot = read_wire(&mut ws);
+        reply(
+            &mut ws,
+            &snapshot,
+            json!({"session":{"id":"s","status":"idle"}}),
+        );
+        let message = read_wire(&mut ws);
+        assert_eq!(message["method"], "agent.message");
+        ws.send(tungstenite::Message::Text(json!({"v":1,"id":message["id"],"ok":false,"error":{"code":"busy","message":"try later"}}).to_string().into())).unwrap();
+        ws.send(tungstenite::Message::Text(json!({"v":1,"id":"","ok":false,"error":{"code":"too_large","message":"snapshot unavailable"}}).to_string().into())).unwrap();
+        let _ = ws.read();
+    });
+    let mut source = BridgeSource::new(path);
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let mut sent = false;
+    let mut attributed = false;
+    let mut refresh_error = false;
+    let command = Command {
+        method: "agent.message".into(),
+        params: json!({"session_id":"s","id":"worker","text":"precise target"}),
+    };
+    while Instant::now() < deadline {
+        for event in source.poll() {
+            match event {
+                SourceEvent::Snapshot(_) if !sent => {
+                    source.send(command.clone()).unwrap();
+                    sent = true;
+                }
+                SourceEvent::CommandError {
+                    command: original,
+                    message,
+                } => {
+                    attributed = original == command && message.contains("try later");
+                }
+                SourceEvent::SnapshotError(message) => {
+                    refresh_error = message.contains("snapshot unavailable")
+                }
+                _ => {}
+            }
+        }
+        if attributed && refresh_error {
+            break;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    drop(source);
+    server.join().unwrap();
+    assert!(attributed && refresh_error);
+}
+
+#[test]
+fn delayed_snapshot_and_events_cannot_switch_back_to_the_previous_session() {
+    use expert_tui::source::BridgeSource;
+    use std::{
+        net::TcpListener,
+        thread,
+        time::{Duration, Instant},
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let (_dir, path) = private_discovery(listener.local_addr().unwrap().port());
+    let server = thread::spawn(move || {
+        let (tcp, _) = listener.accept().unwrap();
+        tcp.set_read_timeout(Some(Duration::from_secs(6))).unwrap();
+        let mut ws = tungstenite::accept(tcp).unwrap();
+        let hello = read_wire(&mut ws);
+        reply(&mut ws, &hello, json!({"protocol":1}));
+        let initial = read_wire(&mut ws);
+        reply(
+            &mut ws,
+            &initial,
+            json!({"session":{"id":"old","status":"idle"}}),
+        );
+        let delayed = read_wire(&mut ws);
+        assert_eq!(delayed["method"], "snapshot.get");
+        let open = read_wire(&mut ws);
+        assert_eq!(open["method"], "session.open");
+        reply(
+            &mut ws,
+            &open,
+            json!({"session":{"id":"new","status":"running"}}),
+        );
+        reply(
+            &mut ws,
+            &delayed,
+            json!({"session":{"id":"old","status":"stale"}}),
+        );
+        ws.send(tungstenite::Message::Text(json!({"v":1,"type":"event","seq":1,"session_id":"old","event":"snapshot","data":{"session":{"id":"old","status":"stale"}}}).to_string().into())).unwrap();
+        ws.send(tungstenite::Message::Text(json!({"v":1,"type":"event","seq":2,"session_id":"new","event":"context.updated","data":{"context_percent":30}}).to_string().into())).unwrap();
+        let _ = ws.read();
+    });
+    let mut source = BridgeSource::new(path);
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let (mut sent, mut changed, mut marker, mut stale) = (false, false, false, false);
+    while Instant::now() < deadline {
+        for event in source.poll() {
+            match event {
+                SourceEvent::Snapshot(v) if !sent => {
+                    assert_eq!(v["session"]["id"], "old");
+                    source
+                        .send(Command {
+                            method: "snapshot.get".into(),
+                            params: json!({"session_id":"old"}),
+                        })
+                        .unwrap();
+                    source
+                        .send(Command {
+                            method: "session.open".into(),
+                            params: json!({"session_id":"new"}),
+                        })
+                        .unwrap();
+                    sent = true;
+                }
+                SourceEvent::Snapshot(v) => {
+                    changed |= v["session"]["id"] == "new";
+                    stale |= v["session"]["id"] == "old";
+                }
+                SourceEvent::Event(v) => {
+                    marker |= v["event"] == "context.updated";
+                    stale |= v["session_id"] == "old";
+                }
+                _ => {}
+            }
+        }
+        if marker {
+            break;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    drop(source);
+    server.join().unwrap();
+    assert!(changed && marker && !stale);
 }

@@ -23,7 +23,7 @@ class TuiBridgeServer {
   HttpServer? _server;
   String? _token;
   Timer? _updates;
-  Future<void> _operations = Future.value();
+  final _operations = <String, Future<void>>{};
   int? get port => _server?.port;
 
   Future<void> start() async {
@@ -70,13 +70,14 @@ class TuiBridgeServer {
       });
       socket.listen(
         (raw) {
-          client.tail = client.tail
-              .then((_) => _receive(client, raw))
-              .catchError((Object _) {
-                unawaited(
-                  socket.close(WebSocketStatus.invalidFramePayloadData),
-                );
-              });
+          // Parsing/authentication and enqueueing happen synchronously inside
+          // _receive. Awaiting a long result here would block this same TUI's
+          // heartbeat and urgent cancellation behind that result.
+          unawaited(
+            _receive(client, raw).catchError((Object _) {
+              unawaited(socket.close(WebSocketStatus.invalidFramePayloadData));
+            }),
+          );
         },
         onDone: () {
           timeout.cancel();
@@ -93,6 +94,7 @@ class TuiBridgeServer {
   }
 
   Future<void> _receive(_Client client, Object? raw) async {
+    if (client.socket.readyState != WebSocket.open) return;
     if (raw is! String || utf8.encode(raw).length > 1024 * 1024) {
       await client.socket.close(WebSocketStatus.messageTooBig);
       return;
@@ -155,9 +157,15 @@ class TuiBridgeServer {
       if (previous != null && previous.request != fingerprint) {
         throw const BridgeFailure('conflict', '请求 id 已用于其他操作');
       }
+      final openRevision = method == 'session.open'
+          ? client.openRequests.putIfAbsent(
+              cacheKey,
+              () => ++client.openRevision,
+            )
+          : null;
       final result =
           previous?.response ??
-          _serialized(() async {
+          _serialized(method, params, () async {
             try {
               final Map<String, Object?> data;
               switch (method) {
@@ -194,8 +202,22 @@ class TuiBridgeServer {
           _results.remove(_results.keys.first);
         }
       }
-      final response = await result;
-      if (method == 'session.open' && response['ok'] == true) {
+      var response = await result;
+      if (method == 'session.open' &&
+          response['ok'] == true &&
+          openRevision != client.openRevision) {
+        response = _error(
+          id,
+          const BridgeFailure('superseded', '已被更新的会话打开请求取代'),
+        );
+        _results[cacheKey] = (
+          request: fingerprint,
+          response: Future.value(response),
+        );
+      }
+      if (method == 'session.open' &&
+          response['ok'] == true &&
+          openRevision == client.openRevision) {
         client.session = params['session_id'] as String;
         client.previousSnapshot = null;
         client.lastSnapshot = '';
@@ -212,9 +234,43 @@ class TuiBridgeServer {
     }
   }
 
-  Future<T> _serialized<T>(Future<T> Function() operation) {
-    final result = _operations.then((_) => operation());
-    _operations = result.then<void>((_) {}, onError: (Object _) {});
+  Future<T> _serialized<T>(
+    String method,
+    Map<String, dynamic> params,
+    Future<T> Function() operation,
+  ) {
+    // Reads and urgent cancellation must not wait behind unrelated I/O. The
+    // backend independently checks object scope and current execution state.
+    const independent = {
+      'ping',
+      'snapshot.get',
+      'session.open',
+      'session.list',
+      'models.list',
+      'workspace.list',
+      'workspace.prepare',
+      'changes.list',
+      'changes.diff',
+      'agents.list',
+      'files.list',
+      'task.stop',
+      'agent.stop',
+      'bridge.stop',
+    };
+    if (independent.contains(method)) return operation();
+    final key = params['session_id'] is String
+        ? params['session_id'] as String
+        : '__global__';
+    final result = (_operations[key] ?? Future<void>.value()).then(
+      (_) => operation(),
+    );
+    final tail = result.then<void>((_) {}, onError: (Object _) {});
+    _operations[key] = tail;
+    unawaited(
+      tail.then((_) {
+        if (identical(_operations[key], tail)) _operations.remove(key);
+      }),
+    );
     return result;
   }
 
@@ -234,20 +290,44 @@ class TuiBridgeServer {
     'ok': false,
     'error': {'code': error.code, 'message': error.message, 'retryable': false},
   };
-  void _send(_Client client, Map<String, Object?> value) {
+  bool _send(_Client client, Map<String, Object?> value) {
     final encoded = jsonEncode(value);
     if (utf8.encode(encoded).length > 8 * 1024 * 1024) {
-      client.socket.add(
-        jsonEncode(
-          _error(
-            value['id'] as String? ?? '',
-            const BridgeFailure('too_large', '快照超过 8 MiB，请在 GUI 查看完整记录'),
+      if (value['type'] == 'event') {
+        _snapshotError(client, 'too_large', '快照超过 8 MiB，请在 GUI 查看完整记录');
+      } else if (client.socket.readyState == WebSocket.open) {
+        client.socket.add(
+          jsonEncode(
+            _error(
+              value['id'] as String? ?? '',
+              const BridgeFailure('too_large', '快照超过 8 MiB，请在 GUI 查看完整记录'),
+            ),
           ),
-        ),
-      );
-      return;
+        );
+      }
+      return false;
     }
-    if (client.socket.readyState == WebSocket.open) client.socket.add(encoded);
+    if (client.socket.readyState != WebSocket.open) return false;
+    client.socket.add(encoded);
+    return true;
+  }
+
+  void _snapshotError(_Client client, String code, String message) {
+    if (client.snapshotError == code) return;
+    client.snapshotError = code;
+    _send(client, {
+      'v': 1,
+      'type': 'event',
+      'seq': ++client.seq,
+      'session_id': client.session,
+      'event': 'request.error',
+      'data': {
+        'code': code,
+        'message': message,
+        'retryable': true,
+        'scope': 'snapshot',
+      },
+    });
   }
 
   Future<void> _snapshot(_Client client) async {
@@ -258,7 +338,11 @@ class TuiBridgeServer {
       final snapshot = await backend.snapshot(session);
       if (client.session != session || !_clients.contains(client)) return;
       final signature = jsonEncode(snapshot);
-      if (signature != client.lastSnapshot) {
+      if (signature != client.lastSnapshot || client.snapshotError != null) {
+        if (utf8.encode(signature).length > 8 * 1024 * 1024 - 512) {
+          _snapshotError(client, 'too_large', '快照超过 8 MiB，请在 GUI 查看完整记录');
+          return;
+        }
         if (client.previousSnapshot case final previous?) {
           for (final event in bridgeSnapshotEvents(previous, snapshot)) {
             _send(client, {
@@ -271,9 +355,7 @@ class TuiBridgeServer {
             });
           }
         }
-        client.previousSnapshot = snapshot;
-        client.lastSnapshot = signature;
-        _send(client, {
+        final sent = _send(client, {
           'v': 1,
           'type': 'event',
           'seq': ++client.seq,
@@ -281,9 +363,14 @@ class TuiBridgeServer {
           'event': 'snapshot',
           'data': snapshot,
         });
+        if (sent) {
+          client.previousSnapshot = snapshot;
+          client.lastSnapshot = signature;
+          client.snapshotError = null;
+        }
       }
     } catch (_) {
-      /* A failed refresh cannot cancel running tasks. */
+      _snapshotError(client, 'snapshot_failed', '状态刷新失败，当前显示可能已过期；正在重试。');
     } finally {
       client.snapshotBusy = false;
     }
@@ -309,9 +396,9 @@ class _Client {
   final WebSocket socket;
   bool authenticated = false, snapshotBusy = false;
   String clientId = '', lastSnapshot = '';
-  String? session;
-  int seq = 0;
+  String? session, snapshotError;
+  int seq = 0, openRevision = 0;
+  final openRequests = <String, int>{};
   DateTime lastRequest = DateTime.now();
-  Future<void> tail = Future.value();
   Map<String, Object?>? previousSnapshot;
 }

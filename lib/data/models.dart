@@ -390,6 +390,8 @@ class SearchActivity {
     this.resultText,
     this.retryOfId,
     this.roundElapsedMillis,
+    this.roundId,
+    this.interrupted = false,
   }) : id = id ?? _uuid.v4();
 
   final String id;
@@ -422,6 +424,8 @@ class SearchActivity {
   final String? resultText;
   final String? retryOfId;
   final int? roundElapsedMillis;
+  final String? roundId;
+  final bool interrupted;
 
   bool get canRetry =>
       status == SearchActivityStatus.failed &&
@@ -444,6 +448,8 @@ class SearchActivity {
     String? resultText,
     String? retryOfId,
     int? roundElapsedMillis,
+    String? roundId,
+    bool? interrupted,
   }) => SearchActivity(
     id: id,
     kind: kind,
@@ -462,6 +468,8 @@ class SearchActivity {
     resultText: resultText ?? this.resultText,
     retryOfId: retryOfId ?? this.retryOfId,
     roundElapsedMillis: roundElapsedMillis ?? this.roundElapsedMillis,
+    roundId: roundId ?? this.roundId,
+    interrupted: interrupted ?? this.interrupted,
   );
 
   Map<String, dynamic> toJson() => {
@@ -469,6 +477,8 @@ class SearchActivity {
     'kind': kind.name,
     'query': query,
     'status': status.name,
+    if (roundId != null) 'roundId': roundId,
+    if (interrupted) 'interrupted': true,
     'resultCount': resultCount,
     if (startedAt != null) 'startedAt': startedAt!.toIso8601String(),
     if (finishedAt != null) 'finishedAt': finishedAt!.toIso8601String(),
@@ -486,6 +496,8 @@ class SearchActivity {
 
   factory SearchActivity.fromJson(Map<String, dynamic> json) => SearchActivity(
     id: json['id'] as String?,
+    roundId: json['roundId'] as String?,
+    interrupted: json['interrupted'] == true || json['status'] == 'running',
     kind: SearchActivityKind.values.firstWhere(
       (k) => k.name == json['kind'],
       orElse: () => SearchActivityKind.search,

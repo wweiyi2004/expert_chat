@@ -53,6 +53,7 @@ import '../domain/context/context_window_manager.dart';
 import '../domain/context/public_context_compactor.dart';
 import '../domain/workbench/changes/delivery_snapshot.dart';
 import '../domain/llm/llm_provider.dart';
+import '../domain/llm/work_request_retry.dart';
 import '../domain/llm/llm_request_policy.dart';
 import '../domain/media/image_reference_preparer.dart';
 import '../domain/media/image_generation_service.dart';
@@ -770,6 +771,79 @@ abstract class _ChatControllerBase extends AsyncNotifier<ChatState> {
       requestId: requestId,
     ),
   );
+
+  final _requestRetries = <String, Map<String, Object?>>{};
+  final _compactingSessions = <String>{};
+  final _compactionTokens = <String, CancelToken>{};
+
+  Future<bool> _allowWorkRequestRetry(LlmConfig config) async {
+    if (config.modelFallbacks.isNotEmpty) return false;
+    // Admission needs only routing cardinality, never credentials. Reading
+    // secure storage here would bypass an injected/custom LlmProvider and can
+    // block a request before that provider gets a chance to run. The real
+    // provider continues to resolve and validate its own credentials.
+    if (config.profileId == null) return true;
+    final settings = ref.read(settingsControllerProvider).value;
+    if (settings == null) return false;
+    final profiles = config.lockProfile
+        ? settings.profiles.where((p) => p.id == config.profileId).toList()
+        : settings.profiles;
+    final candidates = servicesForModel(
+      config.model,
+      profiles,
+      ref.read(modelServiceRoutingProvider),
+    );
+    // Unknown/removed descriptors conservatively disable this extra retry;
+    // they must not prevent the selected provider's initial request.
+    return candidates.length == 1;
+  }
+
+  Stream<ChatChunk> _workRequestStream({
+    required String conversation,
+    required String requestId,
+    required LlmConfig config,
+    required CancelToken token,
+    required Stream<ChatChunk> Function() open,
+  }) async* {
+    final allowed = await _allowWorkRequestRetry(config);
+    yield* const WorkRequestRetry().run(
+      open: open,
+      token: token,
+      allowed: allowed,
+      onAttempt: (attempt) {
+        if (attempt > 1) {
+          ref
+              .read(workSessionInsightsProvider.notifier)
+              .auxiliaryRequest(
+                conversation,
+                '$requestId:attempt:$attempt',
+                config,
+              );
+        }
+        _runtimeLog(
+          conversationId: conversation,
+          phase: 'request_attempt',
+          status: 'started',
+          requestId: '$requestId:attempt:$attempt',
+          config: config,
+        );
+      },
+      onRetry: (retry) {
+        if (retry == null) {
+          final previous = _requestRetries[conversation];
+          if (previous?['request_id'] == requestId) {
+            _requestRetries[conversation] = {...previous!, 'active': false};
+          }
+        } else {
+          _requestRetries[conversation] = {
+            ...retry,
+            'request_id': requestId,
+            'active': true,
+          };
+        }
+      },
+    );
+  }
 
   Future<GenerationStreamResult> _consumeSessionStreamUnlocked<T>(
     Stream<T> source, {
@@ -1828,6 +1902,92 @@ class ChatController extends _ChatControllerBase
         ChatTurns,
         ChatSessions,
         ChatTaskRecovery {
+  bool isContextCompacting(String id) => _compactingSessions.contains(id);
+
+  Future<Map<String, dynamic>> compactSessionContext(String id) =>
+      _inSession(() async {
+        if (isConversationRunning(id) || !_compactingSessions.add(id)) {
+          throw StateError('任务运行中或正在整理上下文，请稍后重试');
+        }
+        final compactToken = CancelToken();
+        _compactionTokens[id] = compactToken;
+        try {
+          await _ensureConversationLoaded(id);
+          if (isConversationRunning(id)) throw StateError('任务已开始，未整理上下文');
+          final conversation = _s.conversations.firstWhere((c) => c.id == id);
+          if (!conversation.workMode || !conversation.hasUserActivity) {
+            throw StateError('当前工作会话没有可整理的任务上下文');
+          }
+          final settings = ref.read(settingsControllerProvider).value;
+          if (settings == null) throw StateError('模型设置未就绪');
+          final config = await resolveConversationModel(
+            ref,
+            id,
+            _configFor(settings),
+            work: true,
+            images: false,
+            thinking: false,
+          );
+          List<String> sources() => _s.conversations
+              .firstWhere((c) => c.id == id)
+              .activePath
+              .map(
+                (m) => jsonEncode({
+                  'source_id': m.id,
+                  'role': m.role.name,
+                  'content': m.content,
+                  'tool_results': [
+                    for (final a in m.searchActivities)
+                      if (a.resultText != null)
+                        {
+                          'source_id': a.id,
+                          'tool': a.toolName,
+                          'result': a.resultText,
+                        },
+                  ],
+                }),
+              )
+              .toList();
+          final goal = conversation.activePath
+              .where((m) => m.role == MessageRole.user)
+              .first
+              .content;
+          final result = await _maybeCompactPublicContext(
+            conversation: id,
+            taskId: _run?.agentTaskId ?? conversation.id,
+            round: ref.read(workRoundsProvider)[id]?.used ?? 0,
+            config: config,
+            settings: settings,
+            goal: goal,
+            token: compactToken,
+            activeMessages: [
+              for (final m in conversation.activePath)
+                LlmRequestMessage.fromChatMessage(m),
+            ],
+            readPublicSources: sources,
+            publicHistoryCount: conversation.activePath.length,
+            force: true,
+          );
+          if (result == null) throw StateError('公开上下文整理未完成；原始记录保持不变，请重试');
+          return result;
+        } finally {
+          _compactingSessions.remove(id);
+          _compactionTokens.remove(id);
+        }
+      }, conversationId: id);
+
+  Map<String, Object?>? retryForSession(String id) {
+    final retry = _requestRetries[id];
+    if (retry == null) return null;
+    final until = DateTime.tryParse(retry['retry_at'] as String? ?? '');
+    return {
+      ...retry,
+      'retry_after_ms': retry['active'] == true && until != null
+          ? until.difference(DateTime.now()).inMilliseconds.clamp(0, 30000)
+          : 0,
+    };
+  }
+
   bool thinkingForSession(String id) => _composerThinking[id] ?? true;
   String? errorForSession(String id) =>
       _sessionFailures[id]?.message ??

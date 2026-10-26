@@ -15,15 +15,16 @@ List<({String event, Map<String, Object?> data})> bridgeSnapshotEvents(
   if (old['id'] != current['id']) return result;
   if (current['round'] != null &&
       (old['round'] != current['round'] ||
-          old['status'] != 'running' && current['status'] == 'running')) {
+          !['running', 'approval', 'retrying'].contains(old['status']) &&
+              current['status'] == 'running')) {
     emit('round.started', {
       'round': current['round'],
       'round_limit': current['round_limit'],
       'status': current['status'],
     });
   }
-  if (old['status'] == 'running' &&
-      !['running', 'approval'].contains(current['status'])) {
+  if (['running', 'approval', 'retrying'].contains(old['status']) &&
+      !['running', 'approval', 'retrying'].contains(current['status'])) {
     emit('round.ended', {
       'round': current['round'],
       'round_limit': current['round_limit'],
@@ -86,6 +87,10 @@ List<({String event, Map<String, Object?> data})> bridgeSnapshotEvents(
   }
   if (old['context_percent'] != current['context_percent']) {
     emit('context.updated', {'context_percent': current['context_percent']});
+  }
+  if (current['retry'] is Map &&
+      jsonEncode(old['retry']) != jsonEncode(current['retry'])) {
+    emit('request.retry', Map<String, Object?>.from(current['retry'] as Map));
   }
   if (current['error'] != null && old['error'] != current['error']) {
     emit('request.error', {

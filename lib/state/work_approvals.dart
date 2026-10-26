@@ -8,12 +8,13 @@ class PendingWorkApproval {
     required this.id,
     required this.conversationId,
     this.sourceAgentId,
+    this.toolCallId,
     required this.tool,
     required this.arguments,
     required this.target,
     required this.reason,
   });
-  final String? sourceAgentId;
+  final String? sourceAgentId, toolCallId;
   final String id, conversationId, tool, arguments, target, reason;
   final Completer<bool> decision = Completer<bool>();
   String? denialReason;

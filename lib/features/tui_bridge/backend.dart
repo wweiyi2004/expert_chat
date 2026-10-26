@@ -60,6 +60,7 @@ class ControllerBridgeBackend implements BridgeBackend {
     'session.list',
     'session.new',
     'message.send',
+    'context.compact',
     'queue.add',
     'queue.remove',
     'task.stop',
@@ -95,6 +96,7 @@ class ControllerBridgeBackend implements BridgeBackend {
 
   void _idle(String id) {
     if (controller.isConversationRunning(id) ||
+        controller.isContextCompacting(id) ||
         _resuming.contains(id) ||
         state.sessionCheckpoints[id]?.status ==
             SessionExecutionStatus.waiting) {
@@ -296,12 +298,56 @@ class ControllerBridgeBackend implements BridgeBackend {
     ];
   }
 
+  String _connectedSsh(String workspace) {
+    final profile = workspace.substring(4);
+    final research = container.read(researchTerminalProvider);
+    if (!research.profiles.any((p) => p.id == profile)) {
+      throw const BridgeFailure('not_found', 'SSH 配置不存在');
+    }
+    if (!research.isConnected || research.activeProfile?.id != profile) {
+      throw const BridgeFailure('unsupported', '请先在 GUI 连接此 SSH 配置');
+    }
+    return profile;
+  }
+
+  String? _modelLabel(String? choice, String? fallback) {
+    if (choice == null) return fallback;
+    final source = parseModelSourceChoice(choice);
+    if (source != null) return source.model;
+    if (choice == autoModelChoice) return '自动选择';
+    if (choice.startsWith(modelGroupPrefix)) {
+      return container
+              .read(modelRouteGroupsProvider)
+              .groups
+              .where((g) => '$modelGroupPrefix${g.id}' == choice)
+              .firstOrNull
+              ?.name ??
+          '已移除的路由组';
+    }
+    return choice;
+  }
+
+  bool _blockedApproval(String? session, SearchActivity activity) {
+    if (activity.status != SearchActivityStatus.running || session == null) {
+      return false;
+    }
+    return container
+        .read(workApprovalsProvider)
+        .any(
+          (a) =>
+              a.conversationId == session &&
+              a.toolCallId != null &&
+              a.toolCallId == activity.toolCallId,
+        );
+  }
+
   String _status(Conversation c) {
     if (container
         .read(workApprovalsProvider)
         .any((a) => a.conversationId == c.id)) {
       return 'approval';
     }
+    if (controller.retryForSession(c.id)?['active'] == true) return 'retrying';
     final checkpoint = state.sessionCheckpoints[c.id];
     if (controller.isConversationRunning(c.id) ||
         _resuming.contains(c.id) ||
@@ -418,10 +464,7 @@ class ControllerBridgeBackend implements BridgeBackend {
                         .inMilliseconds,
               'mode': policy.planOnly ? 'plan' : 'work',
               'permission': policy.approval.name,
-              'model':
-                  parseModelSourceChoice(choice ?? '')?.model ??
-                  choice ??
-                  settings?.model,
+              'model': _modelLabel(choice, settings?.model),
               'model_choice': choice,
               'thinking': controller.thinkingForSession(c.id),
               'request_count':
@@ -439,6 +482,7 @@ class ControllerBridgeBackend implements BridgeBackend {
                   ? null
                   : report.fraction * 100,
               'error': controller.errorForSession(c.id),
+              'retry': controller.retryForSession(c.id),
             },
       'startup': {
         'version': version,
@@ -460,6 +504,9 @@ class ControllerBridgeBackend implements BridgeBackend {
             'role': m.role.name,
             'text': m.content,
             'thinking': m.reasoning,
+            'thinking_elapsed_ms': m.thinkingMillis > 0
+                ? m.thinkingMillis
+                : null,
             'attachments': [
               for (final a in m.attachments)
                 {'name': a.name, 'mime': a.mimeType, 'size': a.sizeBytes},
@@ -472,16 +519,20 @@ class ControllerBridgeBackend implements BridgeBackend {
             {
               'id': a.id,
               'message_id': m.id,
-              'round_id': null,
+              'round_id': a.roundId,
               'verb': _verb(a.toolName),
               'object': TuiSnapshotEvidence.stepObject(a),
-              'status':
-                  a.status == SearchActivityStatus.running &&
-                      _status(c!) == 'approval'
+              'status': a.interrupted
+                  ? 'stopped'
+                  : _blockedApproval(session, a)
                   ? 'approval'
                   : a.status.name,
               'tail': const LineSplitter()
-                  .convert(a.resultText ?? a.error ?? '')
+                  .convert(
+                    _blockedApproval(session, a)
+                        ? ''
+                        : a.resultText ?? a.error ?? '',
+                  )
                   .reversed
                   .take(a.status == SearchActivityStatus.failed ? 3 : 2)
                   .toList()
@@ -646,13 +697,22 @@ class ControllerBridgeBackend implements BridgeBackend {
     if (method == 'session.new') {
       final workspaceId = params['workspace_id'] as String?;
       if (workspaceId != null &&
+          !workspaceId.startsWith('ssh:') &&
           !(await _workspaces()).any((w) => w.id == workspaceId)) {
         throw const BridgeFailure('not_found', '工作区不存在');
       }
+      if (workspaceId?.startsWith('ssh:') == true) _connectedSsh(workspaceId!);
       final id = await controller.createWorkSession(
         title: params['title'] as String?,
       );
-      if (workspaceId != null) {
+      if (workspaceId?.startsWith('ssh:') == true) {
+        await container
+            .read(sessionPolicyProvider.notifier)
+            .save(
+              id,
+              _policy(id).copyWith(sshProfileId: workspaceId!.substring(4)),
+            );
+      } else if (workspaceId != null) {
         await container
             .read(conversationWorkspaceBindingsProvider.notifier)
             .select(id, workspaceId);
@@ -702,6 +762,10 @@ class ControllerBridgeBackend implements BridgeBackend {
     final id = requiredString(params, 'session_id');
     _session(id);
     switch (method) {
+      case 'context.compact':
+        _idle(id);
+        final result = await controller.compactSessionContext(id);
+        return _redact({'accepted': true, 'result': result});
       case 'message.send':
       case 'task.revise':
         _idle(id);
@@ -813,14 +877,7 @@ class ControllerBridgeBackend implements BridgeBackend {
         _idle(id);
         final workspace = requiredString(params, 'workspace_id');
         if (workspace.startsWith('ssh:')) {
-          final profile = workspace.substring(4);
-          final research = container.read(researchTerminalProvider);
-          if (!research.profiles.any((p) => p.id == profile)) {
-            throw const BridgeFailure('not_found', 'SSH 配置不存在');
-          }
-          if (!research.isConnected || research.activeProfile?.id != profile) {
-            throw const BridgeFailure('unsupported', '请先在 GUI 连接此 SSH 配置');
-          }
+          final profile = _connectedSsh(workspace);
           await container
               .read(sessionPolicyProvider.notifier)
               .save(id, _policy(id).copyWith(sshProfileId: profile));

@@ -5,7 +5,7 @@ import 'package:dio/dio.dart';
 import 'package:drift/native.dart';
 import 'package:expert_chat/core/providers.dart';
 import 'package:expert_chat/core/desktop_providers.dart';
-import 'package:expert_chat/data/db/app_database.dart';
+import 'package:expert_chat/data/db/app_database.dart' hide Conversation;
 import 'package:expert_chat/domain/desktop/workspace_host.dart';
 import 'package:expert_chat/domain/llm/llm_provider.dart';
 import 'package:expert_chat/features/tui_bridge/backend.dart';
@@ -23,6 +23,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:expert_chat/data/models.dart';
+import 'package:expert_chat/domain/llm/llm_http_errors.dart';
+import 'package:expert_chat/data/research/ssh_profile.dart';
+import 'package:expert_chat/state/research_terminal_controller.dart';
+import 'package:expert_chat/state/work_memory.dart';
+import 'package:expert_chat/state/conversation_model_choice.dart';
+import 'package:expert_chat/state/model_route_groups.dart';
 import 'widget_test.dart' show FakeSettings, FakeLlmProvider, InMemoryRepo;
 
 class _TestDiscovery extends BridgeDiscovery {
@@ -94,6 +101,59 @@ class _DelayedHost implements DesktopWorkspaceHost {
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class _GatedLlm extends FakeLlmProvider {
+  _GatedLlm(super.chunks);
+  Completer<void>? compactGate;
+  int transientFailures = 0, httpAttempts = 0;
+  final compactEntered = Completer<void>();
+  @override
+  Stream<ChatChunk> streamChat({
+    required LlmConfig config,
+    required List<LlmRequestMessage> messages,
+    List<ToolSpec>? tools,
+    bool? thinking,
+    ReasoningEffort? reasoningEffort,
+    String? forceToolName,
+    CancelToken? cancelToken,
+  }) async* {
+    httpAttempts++;
+    if (transientFailures > 0) {
+      transientFailures--;
+      throw const LlmHttpException('temporary', statusCode: 503);
+    }
+    if (config.routingSessionId?.contains('public-checkpoint') == true &&
+        compactGate != null) {
+      if (!compactEntered.isCompleted) compactEntered.complete();
+      await compactGate!.future;
+    }
+    yield* super.streamChat(
+      config: config,
+      messages: messages,
+      tools: tools,
+      thinking: thinking,
+      reasoningEffort: reasoningEffort,
+      forceToolName: forceToolName,
+      cancelToken: cancelToken,
+    );
+  }
+}
+
+class _ConnectedSsh extends ResearchTerminalController {
+  @override
+  ResearchTerminalState build() => const ResearchTerminalState(
+    profiles: [
+      SshProfile(
+        id: 'ssh-test',
+        name: 'test',
+        host: 'invalid.test',
+        username: 'test',
+      ),
+    ],
+    activeProfileId: 'ssh-test',
+    status: ResearchConnectionStatus.connected,
+  );
 }
 
 Future<Map<String, dynamic>> _reply(
@@ -412,7 +472,7 @@ void main() {
     late ProviderContainer container;
     late AppDatabase db;
     late InMemoryRepo repo;
-    late FakeLlmProvider llm;
+    late _GatedLlm llm;
     late ControllerBridgeBackend backend;
     late _DelayedHost host;
     setUp(() async {
@@ -420,7 +480,7 @@ void main() {
       FlutterSecureStorage.setMockInitialValues({});
       db = AppDatabase(NativeDatabase.memory());
       repo = InMemoryRepo();
-      llm = FakeLlmProvider([
+      llm = _GatedLlm([
         const ChatChunk(contentDelta: 'done', finishReason: 'stop'),
       ]);
       host = _DelayedHost();
@@ -434,6 +494,7 @@ void main() {
           ),
           desktopWorkspaceHostProvider.overrideWithValue(host),
           llmProvider.overrideWithValue(llm),
+          researchTerminalProvider.overrideWith(_ConnectedSsh.new),
         ],
       );
       await container.read(chatControllerProvider.future);
@@ -444,6 +505,275 @@ void main() {
       await Future<void>.delayed(Duration.zero);
       await db.close();
     });
+    test(
+      'new session accepts selected connected SSH workspace identity',
+      () async {
+        final listed =
+            (await backend.invoke('workspace.list', {}))['workspaces'] as List;
+        final ssh =
+            (listed.firstWhere((w) => (w as Map)['remote'] == true)
+                as Map)['id'];
+        final id =
+            (await backend.invoke('session.new', {
+                  'workspace_id': ssh,
+                }))['session_id']
+                as String;
+        expect(
+          container.read(sessionPolicyProvider)[id]!.sshProfileId,
+          'ssh-test',
+        );
+        expect(
+          ((await backend.snapshot(id))['session'] as Map)['workspace_id'],
+          ssh,
+        );
+        await expectLater(
+          backend.invoke('session.new', {'workspace_id': 'ssh:missing'}),
+          throwsA(isA<BridgeFailure>()),
+        );
+      },
+    );
+    test(
+      'snapshot associates only exact approval, preserves interruption rounds and timing',
+      () async {
+        final user = ChatMessage(role: MessageRole.user, content: 'task');
+        final assistant = ChatMessage(
+          role: MessageRole.assistant,
+          parentId: user.id,
+          content: 'partial',
+          reasoning: 'public reasoning',
+          thinkingMillis: 1234,
+          searchActivities: [
+            SearchActivity(
+              id: 'blocked',
+              kind: SearchActivityKind.mcp,
+              query: 'write',
+              toolName: 'coding_write_file',
+              toolCallId: 'call-a',
+              roundId: 'round-1',
+            ),
+            SearchActivity(
+              id: 'live',
+              kind: SearchActivityKind.mcp,
+              query: 'read',
+              toolName: 'coding_read_file',
+              toolCallId: 'call-b',
+              roundId: 'round-2',
+            ),
+            SearchActivity(
+              id: 'stopped',
+              kind: SearchActivityKind.mcp,
+              query: 'stop',
+              status: SearchActivityStatus.failed,
+              interrupted: true,
+              roundId: 'round-2',
+            ),
+            SearchActivity(
+              id: 'failed',
+              kind: SearchActivityKind.mcp,
+              query: 'fail',
+              status: SearchActivityStatus.failed,
+              roundId: 'round-1',
+            ),
+          ],
+        );
+        final conversation = Conversation(
+          workMode: true,
+          messages: [user, assistant],
+          activeChildren: {kRootKey: user.id, user.id: assistant.id},
+        );
+        repo.store = [conversation];
+        container.invalidate(chatControllerProvider);
+        await container.read(chatControllerProvider.future);
+        final token = CancelToken();
+        final pending = container
+            .read(workApprovalsProvider.notifier)
+            .ask(
+              PendingWorkApproval(
+                id: 'approval',
+                conversationId: conversation.id,
+                toolCallId: 'call-a',
+                tool: 'coding_write_file',
+                arguments: '{}',
+                target: 'test',
+                reason: 'test',
+              ),
+              token,
+            );
+        final snapshot = await backend.snapshot(conversation.id);
+        final steps = {
+          for (final a in snapshot['steps'] as List) (a as Map)['id']: a,
+        };
+        expect(steps['blocked']!['status'], 'approval');
+        expect(steps['live']!['status'], 'running');
+        expect(steps['stopped']!['status'], 'stopped');
+        expect(steps['failed']!['status'], 'failed');
+        expect(steps['blocked']!['round_id'], 'round-1');
+        expect(steps['live']!['round_id'], 'round-2');
+        expect(
+          (snapshot['messages'] as List).last['thinking_elapsed_ms'],
+          1234,
+        );
+        token.cancel();
+        await pending;
+        final restored = SearchActivity.fromJson(
+          assistant.searchActivities[2].toJson(),
+        );
+        expect(restored.interrupted, true);
+        expect(restored.roundId, 'round-2');
+      },
+    );
+    test(
+      'model group and auto choices have readable snapshot labels',
+      () async {
+        final id =
+            (await backend.invoke('session.new', {}))['session_id'] as String;
+        await container.read(modelRouteGroupsProvider.notifier).save([
+          const ModelRouteGroup(
+            id: 'g',
+            name: 'Review models',
+            models: ['deepseek-chat'],
+          ),
+        ]);
+        await container
+            .read(conversationModelChoiceProvider.notifier)
+            .select(id, '${modelGroupPrefix}g');
+        expect(
+          ((await backend.snapshot(id))['session'] as Map)['model'],
+          'Review models',
+        );
+        await container
+            .read(conversationModelChoiceProvider.notifier)
+            .select(id, autoModelChoice);
+        expect(
+          ((await backend.snapshot(id))['session'] as Map)['model'],
+          '自动选择',
+        );
+      },
+    );
+    test(
+      'context.compact saves real public checkpoint and preserves original messages',
+      () async {
+        final controller = container.read(chatControllerProvider.notifier);
+        final id = await controller.createWorkSession();
+        await controller.sendToSession(id, 'Preserve the original goal');
+        final before = container
+            .read(chatControllerProvider)
+            .requireValue
+            .conversations
+            .firstWhere((c) => c.id == id)
+            .activePath
+            .map((m) => m.content)
+            .toList();
+        llm.chunks
+          ..clear()
+          ..add(
+            const ChatChunk(
+              contentDelta:
+                  '{"summary":"Verified public result","constraints":"Preserve goal","plan":"Review","open_questions":[]}',
+              finishReason: 'stop',
+            ),
+          );
+        final result = await backend.invoke('context.compact', {
+          'session_id': id,
+        });
+        expect(result['accepted'], true);
+        expect((result['result'] as Map)['summary'], 'Verified public result');
+        expect(
+          container.read(workMemoryProvider).snapshot(id)['compact_revision'],
+          greaterThan(0),
+        );
+        expect(
+          container
+              .read(chatControllerProvider)
+              .requireValue
+              .conversations
+              .firstWhere((c) => c.id == id)
+              .activePath
+              .map((m) => m.content)
+              .toList(),
+          before,
+        );
+        expect(llm.lastThinking, false);
+        expect(llm.lastTools, isNull);
+        final empty = await controller.createWorkSession();
+        await expectLater(
+          backend.invoke('context.compact', {'session_id': empty}),
+          throwsA(isA<StateError>()),
+        );
+      },
+    );
+    test(
+      'context compaction busy guard blocks new messages and task.stop cancels',
+      () async {
+        final controller = container.read(chatControllerProvider.notifier);
+        final id = await controller.createWorkSession();
+        await controller.sendToSession(id, 'Keep this original goal');
+        llm.compactGate = Completer<void>();
+        final pending = expectLater(
+          backend.invoke('context.compact', {'session_id': id}),
+          throwsA(anything),
+        );
+        await llm.compactEntered.future;
+        await expectLater(
+          backend.invoke('context.compact', {'session_id': id}),
+          throwsA(isA<BridgeFailure>().having((e) => e.code, 'code', 'busy')),
+        );
+        expect(await controller.sendToSession(id, 'must not start'), false);
+        await backend.invoke('task.stop', {'session_id': id});
+        await pending;
+        llm.compactGate!.complete();
+        expect(controller.isContextCompacting(id), false);
+        expect(
+          container.read(workMemoryProvider).snapshot(id)['compact_revision'],
+          isNull,
+        );
+      },
+    );
+    test(
+      'real controller publishes actual retry countdown and counts actual HTTP attempts',
+      () async {
+        final controller = container.read(chatControllerProvider.notifier);
+        final id = await controller.createWorkSession();
+        llm.transientFailures = 1;
+        final done = controller.sendToSession(
+          id,
+          'Retry only before any result',
+        );
+        final deadline = DateTime.now().add(const Duration(seconds: 4));
+        while (controller.retryForSession(id)?['active'] != true) {
+          if (DateTime.now().isAfter(deadline)) fail('missing retry');
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+        final snapshot = await backend.snapshot(id);
+        final session = snapshot['session'] as Map;
+        expect(session['status'], 'retrying');
+        final runningBefore = Map<String, Object?>.from(snapshot)
+          ..['session'] = {...session, 'status': 'running', 'retry': null};
+        expect(
+          bridgeSnapshotEvents(
+            runningBefore,
+            snapshot,
+          ).any((e) => e.event == 'round.ended'),
+          false,
+        );
+        expect(session['retry']['attempt'], 2);
+        expect(session['retry']['retry_after_ms'], greaterThan(0));
+        await done;
+        expect(llm.httpAttempts, 2);
+        expect(controller.retryForSession(id)?['active'], false);
+        final finished = await backend.snapshot(id);
+        expect((finished['session'] as Map)['request_count'], 2);
+        final before = Map<String, Object?>.from(snapshot)
+          ..['session'] = {...session, 'retry': null};
+        expect(
+          bridgeSnapshotEvents(
+            before,
+            snapshot,
+          ).any((e) => e.event == 'request.retry'),
+          true,
+        );
+      },
+    );
     test(
       'fresh terminal thinking is high enabled and remains adjustable',
       () async {

@@ -1215,6 +1215,7 @@ mixin ChatTools on ChatMutations {
       },
       maxRounds: ref.read(workAgentLimitsProvider).maxRounds,
       provider: ref.read(llmProvider),
+      allowRequestRetry: _allowWorkRequestRetry,
       config: config,
       tools: tools,
       thinking: configuration.thinking,
@@ -1353,7 +1354,9 @@ mixin ChatTools on ChatMutations {
           ..taskId = assistantId
           ..agentRootId = agentId
           ..agentTaskId = rootTaskId
-          ..streamingId = convoId;
+          ..streamingId = convoId
+          ..currentRoundId =
+              '$agentId:round:${runtime.record(agentId)?.rounds ?? 0}';
         childRun.execution.tryStart();
         childRun.execution.attachRequest(token);
         childRun.execution.beginBudget(
@@ -1651,7 +1654,8 @@ mixin ChatTools on ChatMutations {
               )?.searchActivities.map((a) => a.id).toSet() ??
               <String>{};
           directTrace = null;
-          if (ChatCapabilityExtensions._directTraceNames.contains(call.name)) {
+          if (ChatCapabilityExtensions._directTraceNames.contains(call.name) ||
+              workToolNames.contains(call.name)) {
             directTrace = SearchActivity(
               kind: SearchActivityKind.mcp,
               query: call.name!,
@@ -2340,6 +2344,7 @@ mixin ChatTools on ChatMutations {
               id: '$convoId:${call.id}:${DateTime.now().microsecondsSinceEpoch}',
               conversationId: convoId,
               sourceAgentId: _sourceAgentId,
+              toolCallId: call.id,
               tool: call.name ?? '工具',
               arguments: call.argumentsJson,
               target: target,
@@ -2371,6 +2376,8 @@ mixin ChatTools on ChatMutations {
       query: '工作区：${call.name}',
       toolName: call.name,
       toolArguments: call.argumentsJson,
+      toolCallId: call.id,
+      roundId: roundId,
     );
     try {
       final conversation = _s.conversations
@@ -3291,12 +3298,23 @@ mixin ChatTools on ChatMutations {
     required String query,
     String? toolName,
     String? toolArguments,
+    String? toolCallId,
+    String? roundId,
   }) {
+    if (toolCallId != null) {
+      final existing = _messageById(
+        convoId,
+        assistantId,
+      )?.searchActivities.where((a) => a.toolCallId == toolCallId).lastOrNull;
+      if (existing != null) return existing;
+    }
     final activity = SearchActivity(
       kind: kind,
       query: query,
       toolName: toolName,
       toolArguments: toolArguments,
+      toolCallId: toolCallId,
+      roundId: roundId,
       startedAt: DateTime.now(),
     );
     _upsertSearchActivity(convoId, assistantId, activity);

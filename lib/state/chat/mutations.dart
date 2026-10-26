@@ -18,7 +18,12 @@ mixin ChatMutations on _ChatControllerBase {
         _upsertSearchActivity(
           convoId,
           msgId,
-          activity.copyWith(status: SearchActivityStatus.failed, error: reason),
+          activity.copyWith(
+            status: SearchActivityStatus.failed,
+            error: reason,
+            interrupted:
+                _execution.isCancelled || (_run?.userCancelled ?? false),
+          ),
         );
       }
     }
@@ -221,6 +226,9 @@ mixin ChatMutations on _ChatControllerBase {
     String msgId,
     SearchActivity activity,
   ) {
+    activity = activity.copyWith(
+      roundId: activity.roundId ?? _run?.currentRoundId,
+    );
     final idx = _s.conversations.indexWhere((c) => c.id == convoId);
     if (idx < 0) return; // conversation was deleted mid-stream
     var convo = _s.conversations[idx];
@@ -285,6 +293,8 @@ mixin ChatMutations on _ChatControllerBase {
       if (existing.id == activity.id) {
         return activity.copyWith(
           reasoningOffset: existing.reasoningOffset,
+          roundId: existing.roundId,
+          interrupted: activity.interrupted || existing.interrupted,
           startedAt: existing.startedAt,
           finishedAt: activity.status == SearchActivityStatus.running
               ? null

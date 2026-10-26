@@ -16,3 +16,11 @@ String underlyingTransportDetails(Object? error) {
     if (osError != null) '系统错误：${osError.errorCode} ${osError.message}',
   ].join('\n');
 }
+
+DateTime? retryAfterDate(String value) {
+  try {
+    return HttpDate.parse(value);
+  } catch (_) {
+    return DateTime.tryParse(value);
+  }
+}

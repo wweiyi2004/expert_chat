@@ -14,6 +14,7 @@ import 'agent_instructions.dart';
 import '../../context/context_window_manager.dart';
 import '../../chat/tool_markup_filter.dart';
 import '../../llm/llm_provider.dart';
+import '../../llm/work_request_retry.dart';
 
 enum WorkAgentStatus {
   queued,
@@ -115,6 +116,7 @@ class WorkAgentEnvironment {
     this.takeTaskSearch,
     this.onChildExecution,
     this.allowTool,
+    this.allowRequestRetry,
   });
   final List<LlmRequestMessage> Function(String agentId, String callId)?
   takeToolObservations;
@@ -132,6 +134,7 @@ class WorkAgentEnvironment {
   final WorkAgentRoleTrial Function(String candidateId)? resolveRoleTrial;
   final void Function(WorkAgentRecord record, WorkAgentRoleTrial trial)?
   onRoleTrialCompleted;
+  final Future<bool> Function(LlmConfig config)? allowRequestRetry;
   final LlmProvider provider;
   final LlmConfig config;
   final List<ToolSpec> tools;
@@ -1387,7 +1390,7 @@ class WorkAgentRuntime extends ChangeNotifier {
         await flushJournal();
         await _acquireModelSlot(r);
         try {
-          await for (final chunk in r.environment.provider.streamChat(
+          Stream<ChatChunk> openRequest() => r.environment.provider.streamChat(
             config: config,
             messages: [
               ...r.context,
@@ -1419,6 +1422,27 @@ class WorkAgentRuntime extends ChangeNotifier {
             thinking: r.environment.thinking,
             reasoningEffort: r.environment.reasoningEffort,
             cancelToken: r.token,
+          );
+          final retryAllowed =
+              await r.environment.allowRequestRetry?.call(config) ?? false;
+          await for (final chunk in const WorkRequestRetry().run(
+            open: openRequest,
+            token: r.token,
+            allowed: retryAllowed,
+            onAttempt: (attempt) => r.environment.onRuntimeLog?.call(
+              r.id,
+              'request_attempt',
+              'attempt:$attempt',
+              config,
+              null,
+              requestElapsed?.elapsedMilliseconds ?? 0,
+            ),
+            onRetry: (retry) {
+              r.activity = retry == null
+                  ? '模型执行 · 第 ${r.rounds} 轮'
+                  : '请求重试 ${retry['attempt']}/${retry['max_attempts']} · ${retry['retry_after_ms']}ms';
+              _notify();
+            },
           )) {
             if (r.token.isCancelled) {
               r.environment.onRuntimeLog?.call(

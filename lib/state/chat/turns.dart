@@ -2,6 +2,8 @@ part of '../chat_controller.dart';
 
 mixin ChatTurns on ChatMedia {
   void stop({bool persist = true, String? conversationId}) => _withSession(() {
+    final stoppingId = conversationId ?? _run?.conversationId ?? _s.currentId;
+    _compactionTokens[stoppingId]?.cancel('用户已停止上下文整理');
     final streamingId = _s.streamingConvoId;
     final stoppedRun = _run;
     final onlyAuxiliary =
@@ -19,6 +21,7 @@ mixin ChatTurns on ChatMedia {
           .firstOrNull;
       final message = active?.activePath.lastOrNull;
       if (message != null) {
+        _run?.userCancelled = true;
         _endPendingActivities(streamingId, message.id, '已停止本地等待；远端状态未确认');
       }
     }
@@ -298,6 +301,7 @@ mixin ChatTurns on ChatMedia {
     int? oneTimeWorkRounds,
   }) => _inSession(() async {
     final trimmed = text.trim();
+    if (_compactingSessions.contains(_s.currentId)) return false;
     if ((trimmed.isEmpty && attachments.isEmpty) ||
         _s.isStreaming ||
         _execution.isActive) {

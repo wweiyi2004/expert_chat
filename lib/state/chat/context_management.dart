@@ -1,7 +1,7 @@
 part of '../chat_controller.dart';
 
 extension ChatContextManagement on ChatTools {
-  Future<void> _maybeCompactPublicContext({
+  Future<Map<String, dynamic>?> _maybeCompactPublicContext({
     required String conversation,
     required String taskId,
     String? agentId,
@@ -13,12 +13,13 @@ extension ChatContextManagement on ChatTools {
     required List<LlmRequestMessage> activeMessages,
     required List<String> Function() readPublicSources,
     required int publicHistoryCount,
+    bool force = false,
   }) async {
     final prefs = effectiveContextPrefs(settings, config);
     if (!prefs.enabled ||
         token.isCancelled ||
         utf8.encode(goal).length > 4000) {
-      return;
+      return null;
     }
     final memory = _capabilityRef.read(workMemoryProvider);
     final own = memory.snapshot(conversation, agentId: agentId);
@@ -49,14 +50,15 @@ extension ChatContextManagement on ChatTools {
     final budget = agentId == null
         ? '$conversation:$taskId'
         : '$conversation:$taskId:$agentId';
-    if (!_publicCompactor.shouldCompact(
-      taskId: budget,
-      round: round,
-      estimatedTokens: estimated,
-      inputBudgetTokens: prefs.inputBudgetTokens,
-      historyCount: historyCount,
-    )) {
-      return;
+    if (!force &&
+        !_publicCompactor.shouldCompact(
+          taskId: budget,
+          round: round,
+          estimatedTokens: estimated,
+          inputBudgetTokens: prefs.inputBudgetTokens,
+          historyCount: historyCount,
+        )) {
+      return null;
     }
     final requestId = 'public-checkpoint:${const Uuid().v4()}';
     _capabilityRef
@@ -76,6 +78,7 @@ extension ChatContextManagement on ChatTools {
       rootId: agentId == null ? _run?.agentRootId : null,
       token: token,
       action: () => _publicCompactor.compact(
+        force: force,
         taskId: budget,
         sourceVersion: sourceVersion,
         round: round,
@@ -101,7 +104,7 @@ extension ChatContextManagement on ChatTools {
         },
       ),
     );
-    if (!_capabilityRef.mounted || token.isCancelled) return;
+    if (!_capabilityRef.mounted || token.isCancelled) return null;
     if (checkpoint == null) {
       _runtimeLog(
         conversationId: conversation,
@@ -112,7 +115,7 @@ extension ChatContextManagement on ChatTools {
         requestId: requestId,
         detail: '自动检查点未完成；保留原始历史，使用本地预算并可 work_history 回读。',
       );
-      return;
+      return null;
     }
     final latestOwn = memory.snapshot(conversation, agentId: agentId);
     final latestRoot = memory.snapshot(conversation);
@@ -133,7 +136,7 @@ extension ChatContextManagement on ChatTools {
         status: 'stale_discarded',
         requestId: requestId,
       );
-      return;
+      return null;
     }
     try {
       final constraints = {
@@ -141,7 +144,7 @@ extension ChatContextManagement on ChatTools {
           own['constraints'] as String,
         if (checkpoint.constraints.isNotEmpty) checkpoint.constraints,
       }.join('\n');
-      await memory.checkpoint(conversation, {
+      final saved = await memory.checkpoint(conversation, {
         'expected_revision': own['revision'] ?? 0,
         'summary':
             '${checkpoint.summary}${checkpoint.openQuestions.isEmpty ? '' : '\n待核实：${checkpoint.openQuestions.join('；')}'}',
@@ -157,6 +160,7 @@ extension ChatContextManagement on ChatTools {
         requestId: requestId,
         detail: '公开摘要已按版本保存；原始目标/用户固定约束不改写，下一请求压缩旧上下文。',
       );
+      return saved;
     } catch (_) {
       _runtimeLog(
         conversationId: conversation,
@@ -165,6 +169,8 @@ extension ChatContextManagement on ChatTools {
         status: 'checkpoint_not_saved',
         requestId: requestId,
       );
+      if (force) rethrow;
     }
+    return null;
   }
 }

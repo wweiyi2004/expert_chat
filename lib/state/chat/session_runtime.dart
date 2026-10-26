@@ -89,6 +89,7 @@ class _SessionRun {
   final execution = GenerationExecution();
   _SessionConfiguration? configuration;
   String? streamingId;
+  String? currentRoundId;
   TaskCore? core;
   String? taskId;
   String? agentRootId;

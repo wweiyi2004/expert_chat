@@ -212,6 +212,7 @@ mixin ChatStreaming on ChatTools {
         workMode || round < maxToolRounds;
         round++
       ) {
+        _run?.currentRoundId = '$assistantId:round:${round + 1}';
         if (workMode &&
             ref.read(workRoundsProvider)[convoId]?.pauseRequested == true) {
           _execution.budget?.waitForApproval();
@@ -852,7 +853,7 @@ mixin ChatStreaming on ChatTools {
                 contextBudgetTokens: settings.context.inputBudgetTokens,
               );
         }
-        final stream = llm.streamChat(
+        Stream<ChatChunk> openRequest() => llm.streamChat(
           config: request.config,
           messages: outgoingMessages,
           tools: request.tools,
@@ -861,6 +862,15 @@ mixin ChatStreaming on ChatTools {
           forceToolName: request.forceToolName,
           cancelToken: requestToken,
         );
+        final stream = workMode
+            ? _workRequestStream(
+                conversation: convoId,
+                requestId: insightRequestId,
+                config: request.config,
+                token: requestToken,
+                open: openRequest,
+              )
+            : openRequest();
 
         if (_run?.agentRootId case final rootId?) {
           ref

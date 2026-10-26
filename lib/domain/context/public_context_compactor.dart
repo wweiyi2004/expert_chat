@@ -66,15 +66,17 @@ class PublicContextCompactor {
     required LlmProvider provider,
     required CancelToken cancelToken,
     void Function(ChatChunk)? onChunk,
+    bool force = false,
   }) async {
     if (cancelToken.isCancelled ||
-        !shouldCompact(
-          taskId: taskId,
-          round: round,
-          estimatedTokens: estimatedTokens,
-          inputBudgetTokens: inputBudgetTokens,
-          historyCount: historyCount,
-        )) {
+        (!force &&
+            !shouldCompact(
+              taskId: taskId,
+              round: round,
+              estimatedTokens: estimatedTokens,
+              inputBudgetTokens: inputBudgetTokens,
+              historyCount: historyCount,
+            ))) {
       return null;
     }
     // A byte bound is conservative for tokenizers and avoids cutting Unicode

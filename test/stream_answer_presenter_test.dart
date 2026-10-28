@@ -21,6 +21,38 @@ class _ThinkingClock implements Stopwatch {
 }
 
 void main() {
+  testWidgets(
+    'host transport bounds visible latency and publishes both channels',
+    (tester) async {
+      var visible = true;
+      final values = <StreamAnswerSnapshot>[];
+      final presenter = StreamAnswerPresenter(
+        buffer: StreamAnswerBuffer(),
+        focusOf: () => StreamUiFocus.away,
+        publishAllChannels: true,
+        maximumDelay: () => visible ? const Duration(milliseconds: 80) : null,
+        onPublish: values.add,
+        onCheckpoint: () {},
+      );
+      addTearDown(presenter.dispose);
+      presenter.addContent('visible reply');
+      presenter.addReasoning('shared reasoning');
+      presenter.scheduleFlush();
+      await tester.pump(const Duration(milliseconds: 79));
+      expect(values, isEmpty);
+      await tester.pump(const Duration(milliseconds: 1));
+      expect(values.single.content, 'visible reply');
+      expect(values.single.reasoning, 'shared reasoning');
+      visible = false;
+      presenter.addContent(' background');
+      presenter.scheduleFlush();
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(values, hasLength(1));
+      visible = true;
+      presenter.nudge();
+      expect(values.last.content, 'visible reply background');
+    },
+  );
   test(
     'tool rounds preserve published non-reasoning prose and separate later output',
     () {

@@ -1,6 +1,7 @@
-import 'package:flutter/services.dart';
+import '../../platform/services.dart';
 import '../llm/llm_provider.dart';
 import 'dart:convert';
+import 'dart:typed_data';
 
 /// Local channel only; permission and arming are always explicit user actions.
 class DeviceAgent {

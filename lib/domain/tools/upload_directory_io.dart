@@ -4,7 +4,7 @@ import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
-import 'package:shared_preferences/shared_preferences.dart';
+import '../../platform/preferences.dart';
 
 import 'file_parser.dart';
 import 'upload_directory_models.dart';

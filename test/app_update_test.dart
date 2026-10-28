@@ -3,7 +3,7 @@ import 'package:expert_chat/domain/update/app_update.dart';
 import 'package:expert_chat/domain/update/update_prefs.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:expert_chat/platform/preferences.dart';
 
 void main() {
   group('AppUpdateChecker version compare', () {

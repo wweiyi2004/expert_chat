@@ -1,4 +1,4 @@
-import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:riverpod/riverpod.dart';
 import '../domain/desktop/workspace_host.dart';
 import '../domain/desktop/workspace_host_factory.dart';
 

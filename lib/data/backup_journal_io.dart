@@ -1,6 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
-import 'package:path_provider/path_provider.dart';
+import '../platform/paths.dart';
 
 /// Written BEFORE staging files or touching external memory/preferences.
 /// A DB commit marker determines whether startup rolls back the auxiliary data.

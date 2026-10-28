@@ -5,7 +5,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dartssh2/dartssh2.dart';
-import 'package:dio/dio.dart' show CancelToken;
+import 'package:dio/dio.dart' show CancelToken, DioException;
 import 'package:expert_chat/core/providers.dart';
 import 'package:expert_chat/data/research/research_prefs.dart';
 import 'package:expert_chat/data/research/ssh_profile.dart';
@@ -25,11 +25,11 @@ import 'package:expert_chat/state/research_terminal_controller.dart';
 import 'package:expert_chat/state/settings_controller.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:expert_chat/platform/credentials.dart';
 import 'package:flutter_secure_storage/test/test_flutter_secure_storage_platform.dart';
 import 'package:flutter_secure_storage_platform_interface/flutter_secure_storage_platform_interface.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:expert_chat/platform/preferences.dart';
 // ignore: depend_on_referenced_packages - test-only transitive platform dep
 import 'package:shared_preferences_platform_interface/shared_preferences_platform_interface.dart';
 
@@ -176,6 +176,17 @@ class _FakeDartSshClient implements SSHClient {
   SSHHostkeyVerifyHandler? verifyHostKey;
   String? lastCommand;
   SSHPtyConfig? lastPty;
+  final forwardRequests = <(String?, int?)>[];
+
+  @override
+  Future<SSHRemoteForward?> forwardRemote({
+    String? host,
+    int? port,
+    SSHRemoteConnectionFilter? filter,
+  }) async {
+    forwardRequests.add((host, port));
+    return null;
+  }
 
   @override
   Future<void> get authenticated => authCompleter.future;
@@ -252,16 +263,36 @@ class _FakeDartSshSession implements SSHSession {
 }
 
 class _FakeExecSession implements SSHSession {
-  _FakeExecSession(this.exitCode);
+  _FakeExecSession(
+    this.exitCode, {
+    this.packets = const ['ok'],
+    this.errors = const [],
+  });
+  final List<String> packets, errors;
+  bool closed = false;
   @override
   final int? exitCode;
   @override
-  Stream<Uint8List> get stdout =>
-      Stream.value(Uint8List.fromList(utf8.encode('ok')));
+  Stream<Uint8List> get stdout async* {
+    for (final text in packets) {
+      yield Uint8List.fromList(utf8.encode(text));
+    }
+  }
+
   @override
-  Stream<Uint8List> get stderr => const Stream.empty();
+  Stream<Uint8List> get stderr async* {
+    for (final text in errors) {
+      yield Uint8List.fromList(utf8.encode(text));
+    }
+  }
+
   @override
   Future<void> get done => Future.value();
+  @override
+  void close() {
+    closed = true;
+  }
+
   @override
   dynamic noSuchMethod(Invocation invocation) =>
       throw UnimplementedError('${invocation.memberName} not faked');
@@ -1332,6 +1363,15 @@ void main() {
 
       await ctrl.connect(afterEdit.activeProfile!);
       expect(container.read(researchTerminalProvider).isConnected, isTrue);
+      await ctrl.saveProfile(
+        afterEdit.activeProfile!.copyWith(
+          remoteForwards: SshRemoteForward.parseLines('10808 127.0.0.1:7890'),
+        ),
+      );
+      expect(container.read(researchTerminalProvider).isConnected, isFalse);
+      await ctrl.connect(
+        container.read(researchTerminalProvider).activeProfile!,
+      );
       await ctrl.deleteProfile(profile.id);
       final afterDelete = container.read(researchTerminalProvider);
       expect(afterDelete.isConnected, isFalse);
@@ -2152,6 +2192,134 @@ void main() {
         expect(harness.client.isConnected, isFalse);
         expect(harness.client.interactiveTty, isNull);
         expect(harness.fake.closed, isTrue);
+        await harness.client.disconnect();
+      },
+    );
+
+    test(
+      'workspace command drains 16 MiB without flooding UI and retains final lines',
+      () async {
+        final server = await dummyListener();
+        addTearDown(server.close);
+        final harness = newIoWithFake();
+        harness.fake.shellFuture = Future.value(_FakeDartSshSession());
+        final connecting = harness.client.connect(
+          profile: profile(server),
+          password: 'pw',
+          privateKeyPem: null,
+          passphrase: null,
+          onHostKeyTrust: (_) async => true,
+          onHostKeyMismatch: (_, _) async => false,
+        );
+        await harness.created;
+        harness.fake.authCompleter.complete();
+        await connecting;
+        final session = _FakeExecSession(
+          0,
+          packets: ['BEGIN\n', ...List.filled(2048, 'x' * 8192), '\nEND\n'],
+          errors: ['stderr start\n', 'e' * 100000, '\nFINAL ERROR CONTEXT\n'],
+        );
+        harness.fake.shellFuture = Future.value(session);
+        var callbacks = 0, ticks = 0;
+        WorkspaceCommandOutcome? outcome;
+        final heartbeat = Timer.periodic(
+          const Duration(milliseconds: 1),
+          (_) => ticks++,
+        );
+        final clock = Stopwatch()..start();
+        final result = await harness.client.runWorkspaceCommand(
+          'synthetic-large-output',
+          const Duration(seconds: 30),
+          CancelToken(),
+          onOutput: (_, _) => callbacks++,
+          onComplete: (value) => outcome = value,
+        );
+        heartbeat.cancel();
+        expect(result.length, lessThan(25000));
+        expect(result, contains('BEGIN'));
+        expect(result, contains('END'));
+        expect(result, contains('FINAL ERROR CONTEXT'));
+        expect(result, contains('已省略中间'));
+        expect(callbacks, lessThan(512));
+        expect(ticks, greaterThan(0));
+        expect(outcome?.exitCode, 0);
+        expect(session.closed, true);
+        // Opening an SSH command channel must also be cancellable and bounded.
+        final opening = Completer<SSHSession>();
+        harness.fake.shellFuture = opening.future;
+        final token = CancelToken();
+        final pending = harness.client.runWorkspaceCommand(
+          'delayed-open',
+          const Duration(seconds: 20),
+          token,
+        );
+        token.cancel('user stop');
+        await expectLater(pending, throwsA(isA<DioException>()));
+        final late = _FakeExecSession(0);
+        opening.complete(late);
+        await Future<void>.delayed(Duration.zero);
+        expect(late.closed, true);
+        final timed = Completer<SSHSession>();
+        harness.fake.shellFuture = timed.future;
+        await expectLater(
+          harness.client.runWorkspaceCommand(
+            'timeout-open',
+            const Duration(milliseconds: 10),
+            CancelToken(),
+          ),
+          throwsA(
+            isA<ResearchSshException>().having(
+              (e) => e.message,
+              'message',
+              contains('通道打开超时'),
+            ),
+          ),
+        );
+        final lateTimed = _FakeExecSession(0);
+        timed.complete(lateTimed);
+        await Future<void>.delayed(Duration.zero);
+        expect(lateTimed.closed, true);
+        debugPrint(
+          'SSH_OUTPUT_STRESS ${jsonEncode({'bytes': 16 * 1024 * 1024, 'elapsed_ms': clock.elapsedMilliseconds, 'retained_chars': result.length, 'ui_callbacks': callbacks, 'heartbeat_ticks': ticks})}',
+        );
+        await harness.client.disconnect();
+      },
+    );
+
+    test(
+      'configured RemoteForward is requested after authentication and fails clearly when denied',
+      () async {
+        final server = await dummyListener();
+        addTearDown(server.close);
+        final harness = newIoWithFake();
+        harness.fake.shellFuture = Future.value(_FakeDartSshSession());
+        final connecting = harness.client.connect(
+          profile: profile(server).copyWith(
+            remoteForwards: SshRemoteForward.parseLines('10808 127.0.0.1:7890'),
+          ),
+          password: 'pw',
+          privateKeyPem: null,
+          passphrase: null,
+          onHostKeyTrust: (_) async => true,
+          onHostKeyMismatch: (_, _) async => false,
+        );
+        final expectation = expectLater(
+          connecting,
+          throwsA(
+            isA<ResearchSshException>().having(
+              (e) => e.message,
+              'message',
+              contains('RemoteForward'),
+            ),
+          ),
+        );
+        await harness.created;
+        expect(harness.fake.forwardRequests, isEmpty);
+        harness.fake.authCompleter.complete();
+        await expectation;
+        expect(harness.fake.forwardRequests, [('localhost', 10808)]);
+        expect(harness.fake.closed, true);
+        expect(harness.client.isConnected, false);
         await harness.client.disconnect();
       },
     );

@@ -94,8 +94,9 @@ class ToolEngine {
   static const fetchUrlTool = ToolSpec(
     name: 'fetch_url',
     description:
-        '使用 DeepSeek 官方 Fetch 读取本轮用户提供或搜索结果中的网页 URL，返回页面正文摘要。'
-        '当用户粘贴了链接、或需要阅读某一确定页面时使用；'
+        '使用 DeepSeek 官方 Fetch 读取公开网页并返回正文摘要。工作模式在网络权限允许时，'
+        '可直接读取公开文档地址、页面中的后续链接或用户补充的网址；普通聊天限本轮用户提供或搜索结果中的网址。'
+        '只支持公开 HTTP/HTTPS 页面，不访问本机、内网或非法地址。需要阅读确定页面时使用；'
         '不要用它代替关键词搜索。',
     parameters: {
       'type': 'object',

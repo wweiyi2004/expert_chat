@@ -1,4 +1,4 @@
-import 'package:shared_preferences/shared_preferences.dart';
+import '../platform/preferences.dart';
 
 import 'memory_repository.dart';
 

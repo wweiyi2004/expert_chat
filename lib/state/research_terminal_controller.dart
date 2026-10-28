@@ -1,10 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../platform/foundation.dart';
+import 'package:riverpod/riverpod.dart';
 import 'package:uuid/uuid.dart';
-import 'package:xterm/xterm.dart';
+import 'package:xterm/core.dart';
 
 import '../core/providers.dart';
 import '../data/research/research_prefs.dart';
@@ -18,6 +18,7 @@ import '../domain/research/terminal_input_guard.dart';
 import '../domain/research/terminal_transcript_buffer.dart';
 import '../domain/research/tmux_service.dart';
 import 'settings_controller.dart';
+import '../domain/host/terminal_output.dart';
 
 enum ResearchConnectionStatus { disconnected, connecting, connected, error }
 
@@ -134,6 +135,20 @@ final researchTerminalProvider =
     );
 
 class ResearchTerminalController extends Notifier<ResearchTerminalState> {
+  final hostOutput = HostTerminalOutput();
+  void resizeRemote(int columns, int rows) {
+    if (columns < 2 || rows < 2 || columns > 1000 || rows > 1000) return;
+    _client?.resize(cols: columns, rows: rows);
+    terminal.resize(columns, rows);
+    state = state.copyWith(cols: columns, rows: rows);
+  }
+
+  Future<bool> confirmHostKey(
+    ResearchHostKeyInfo info,
+    String? previous,
+  ) async => previous == null
+      ? await _hostKeyTrustHandler?.call(info) ?? false
+      : await _hostKeyMismatchHandler?.call(info, previous) ?? false;
   Future<ResearchWorkspaceSession> openWorkSession(
     String profileId,
     String directory,
@@ -417,7 +432,15 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
     }
   }
 
-  Future<void> connect(SshProfile profile) async {
+  Future<void> connect(SshProfile profile) => connectWithHostKey(profile);
+
+  /// An individual client can handle its own trust prompt without replacing
+  /// the shared GUI handlers or accepting a key for another connection.
+  Future<void> connectWithHostKey(
+    SshProfile profile, {
+    HostKeyTrustHandler? onTrust,
+    HostKeyMismatchHandler? onMismatch,
+  }) async {
     if (kIsWeb) {
       state = state.copyWith(
         status: ResearchConnectionStatus.error,
@@ -466,12 +489,12 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
         onHostKeyTrust: (info) async {
           // UI layer should have set a handler via pending dialog; default deny
           // if no callback wired — controller stores last request for UI.
-          final handler = _hostKeyTrustHandler;
+          final handler = onTrust ?? _hostKeyTrustHandler;
           if (handler == null) return false;
           return handler(info);
         },
         onHostKeyMismatch: (info, prev) async {
-          final handler = _hostKeyMismatchHandler;
+          final handler = onMismatch ?? _hostKeyMismatchHandler;
           if (handler == null) return false;
           return handler(info, prev);
         },
@@ -511,6 +534,7 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
       terminal.buffer.clear();
       terminal.buffer.setCursor(0, 0);
       transcript.clear();
+      hostOutput.reset();
 
       _subs.add(
         client.stdout.transform(const Utf8Decoder(allowMalformed: true)).listen(
@@ -518,6 +542,7 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
             if (!identical(_client, client)) return;
             terminal.write(text);
             transcript.append(text);
+            hostOutput.add(text);
           },
         ),
       );
@@ -527,6 +552,7 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
             if (!identical(_client, client)) return;
             terminal.write(text);
             transcript.append(text);
+            hostOutput.add(text);
           },
         ),
       );
@@ -940,5 +966,6 @@ class ResearchTerminalController extends Notifier<ResearchTerminalState> {
       a.host != b.host ||
       a.port != b.port ||
       a.username != b.username ||
-      a.authType != b.authType;
+      a.authType != b.authType ||
+      a.remoteForwardText != b.remoteForwardText;
 }

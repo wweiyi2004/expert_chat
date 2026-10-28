@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
+import '../../../platform/paths.dart';
 import 'package:uuid/uuid.dart';
 
 import 'work_file_change.dart';

@@ -1,3 +1,4 @@
+import '../../core/runtime_listenable.dart';
 import 'package:expert_chat/core/app_toast.dart';
 import '../../core/line_icon.dart';
 import '../../core/application_surface.dart';
@@ -9,6 +10,7 @@ import '../../core/prototype_widgets.dart';
 import '../../core/desktop_providers.dart';
 import '../../data/db/app_database.dart' show Project;
 import '../../domain/desktop/workspace_host.dart';
+import '../../domain/desktop/workspace_identity.dart';
 import '../../state/conversation_workspace_bindings.dart';
 import '../../state/conversation_previews.dart';
 import '../../state/session_policy.dart';
@@ -235,8 +237,8 @@ class _ChatWorkspaceSidebarState extends ConsumerState<ChatWorkspaceSidebar> {
           ref.read(conversationRepositoryProvider).searchMessages(query),
     )..addListener(_onHistoryChanged);
     _activityEvents = Listenable.merge([
-      ref.read(workAgentsProvider),
-      ref.read(workProcessesProvider),
+      runtimeListenable(ref.read(workAgentsProvider)),
+      runtimeListenable(ref.read(workProcessesProvider)),
     ]);
     _activityEvents.addListener(_onHistoryChanged);
   }
@@ -465,22 +467,12 @@ class _ChatWorkspaceSidebarState extends ConsumerState<ChatWorkspaceSidebar> {
                             ),
                             const SizedBox(width: 6),
                             if (type != null) ...[
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 5,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: proto.surface,
-                                  borderRadius: BorderRadius.circular(4),
-                                ),
-                                child: Text(
-                                  type.split(' · ').first,
-                                  style: TextStyle(
-                                    fontSize: 10.5,
-                                    height: 1.5,
-                                    color: proto.muted,
-                                  ),
-                                ),
+                              Icon(
+                                type.startsWith('SSH')
+                                    ? Icons.cloud_outlined
+                                    : Icons.folder_outlined,
+                                size: 15,
+                                color: proto.muted,
                               ),
                               const SizedBox(width: 6),
                             ],
@@ -490,7 +482,7 @@ class _ChatWorkspaceSidebarState extends ConsumerState<ChatWorkspaceSidebar> {
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
-                                  fontSize: 12,
+                                  fontSize: 13,
                                   fontWeight: FontWeight.w500,
                                   color: proto.muted,
                                 ),
@@ -513,7 +505,7 @@ class _ChatWorkspaceSidebarState extends ConsumerState<ChatWorkspaceSidebar> {
           ),
         ),
         if (!collapsed.contains(key)) ...[
-          const SizedBox(height: 10),
+          const SizedBox(height: 4),
           rows(items),
         ],
       ],
@@ -592,24 +584,35 @@ class _ChatWorkspaceSidebarState extends ConsumerState<ChatWorkspaceSidebar> {
       ),
     );
     final workGroups = <String, List<Conversation>>{};
+    final canonical = <String, String>{}, aliases = <String, String>{};
+    for (final space in spaces) {
+      aliases[space.id] = canonical.putIfAbsent(
+        workspaceNavigationIdentity(space),
+        () => space.id,
+      );
+    }
     for (final c in work) {
       final ssh = policies[c.id]?.sshProfileId ?? '';
       final key = ssh.isNotEmpty
           ? 'ssh:$ssh'
-          : bindings[c.id] ?? defaultDesktopWorkspaceId;
+          : aliases[bindings[c.id]] ??
+                bindings[c.id] ??
+                defaultDesktopWorkspaceId;
       (workGroups[key] ??= []).add(c);
     }
-    workGroups.putIfAbsent(defaultDesktopWorkspaceId, () => []);
+    if (workGroups.isEmpty) workGroups[defaultDesktopWorkspaceId] = [];
     final orderedGroups = workGroups.entries.toList()
-      ..sort(
-        (a, b) => b.value.isEmpty
-            ? -1
-            : a.value.isEmpty
-            ? 1
-            : visible
-                  .indexOf(a.value.first)
-                  .compareTo(visible.indexOf(b.value.first)),
-      );
+      ..sort((a, b) {
+        final currentA = a.value.any((c) => c.id == state?.currentId);
+        final currentB = b.value.any((c) => c.id == state?.currentId);
+        if (currentA != currentB) return currentA ? -1 : 1;
+        if (a.value.isEmpty || b.value.isEmpty) {
+          return a.value.length.compareTo(b.value.length);
+        }
+        return visible
+            .indexOf(a.value.first)
+            .compareTo(visible.indexOf(b.value.first));
+      });
     for (final entry in orderedGroups) {
       final ssh = entry.key.startsWith('ssh:');
       final profile = ssh
@@ -628,7 +631,7 @@ class _ChatWorkspaceSidebarState extends ConsumerState<ChatWorkspaceSidebar> {
           entry.value,
           type: ssh
               ? 'SSH · ${profile?.host ?? '配置不可用'} · ${entry.value.isEmpty ? '' : policies[entry.value.first.id]?.remoteRoot ?? ''}'
-              : '本机',
+              : '本机 · ${space?.root ?? ''}',
           onNew: () => _newProjectChat(
             workspaceId: ssh ? null : entry.key,
             workMode: true,
@@ -862,7 +865,7 @@ class _ChatWorkspaceSidebarState extends ConsumerState<ChatWorkspaceSidebar> {
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       ListenableBuilder(
-                        listenable: hooks,
+                        listenable: runtimeListenable(hooks),
                         builder: (_, _) => _SidebarDestination(
                           key: const ValueKey('sidebar-automation'),
                           label: '自动化',

@@ -34,6 +34,7 @@ ContextPrefs effectiveContextPrefs(SettingsState settings, LlmConfig config) {
   }
   window = window.clamp(4096, 2000000);
   var output = defaults.maxOutputTokens;
+  if (output == 0) output = limits?.maxOutputTokens ?? 0;
   if (limits?.maxOutputTokens != null && output > limits!.maxOutputTokens!) {
     output = limits.maxOutputTokens!;
   }
@@ -74,9 +75,12 @@ LlmConfig applyReportedModelCapabilities(
 ) {
   final metadata = reportedModelLimits(settings, config);
   return config.copyWith(
+    apiFormat:config.apiFormat==LlmApiFormat.auto&&metadata?.apiFormat!=null?LlmApiFormat.fromWire(metadata!.apiFormat):null,
     capabilities: ModelCapabilities.resolve(config.model).withReasoning(
       efforts: metadata?.reasoningEfforts,
       canDisable: metadata?.reasoningCanBeDisabled,
+      tools:metadata?.supportsTools,
+      vision:metadata?.supportsVision,
     ),
   );
 }

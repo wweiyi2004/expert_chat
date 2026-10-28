@@ -1,4 +1,5 @@
 import 'package:expert_chat/core/app_toast.dart';
+import '../../../domain/host/host_client.dart';
 import 'dart:convert';
 import '../../../core/prototype_widgets.dart';
 import 'package:crypto/crypto.dart';
@@ -60,7 +61,7 @@ class _WorkChangesPageState extends ConsumerState<WorkChangesPage> {
     try {
       final notifier = ref.read(workChangesProvider.notifier);
       await widget.restore(change);
-      await notifier.markReverted(change);
+      if (HostClient.current == null) await notifier.markReverted(change);
       if (mounted) {
         AppToastMessenger.of(context).showSnackBar(
           SnackBar(
@@ -80,19 +81,21 @@ class _WorkChangesPageState extends ConsumerState<WorkChangesPage> {
     try {
       final request = change.requestNewFileRecreation();
       await widget.restore(request);
-      await ref
-          .read(workChangesProvider.notifier)
-          .record(
-            conversationId: change.conversationId,
-            assistantId: change.assistantId,
-            roundId: 'recovery:${DateTime.now().microsecondsSinceEpoch}',
-            target: change.target,
-            scope: change.scope,
-            path: change.path,
-            before: null,
-            after: change.after,
-            afterHash: sha256.convert(utf8.encode(change.after!)).toString(),
-          );
+      if (HostClient.current == null) {
+        await ref
+            .read(workChangesProvider.notifier)
+            .record(
+              conversationId: change.conversationId,
+              assistantId: change.assistantId,
+              roundId: 'recovery:${DateTime.now().microsecondsSinceEpoch}',
+              target: change.target,
+              scope: change.scope,
+              path: change.path,
+              before: null,
+              after: change.after,
+              afterHash: sha256.convert(utf8.encode(change.after!)).toString(),
+            );
+      }
       if (mounted) {
         final latest = ref
             .read(workChangesProvider)
@@ -152,7 +155,9 @@ class _WorkChangesPageState extends ConsumerState<WorkChangesPage> {
     try {
       for (final change in entries) {
         await widget.restore(change);
-        await ref.read(workChangesProvider.notifier).markReverted(change);
+        if (HostClient.current == null) {
+          await ref.read(workChangesProvider.notifier).markReverted(change);
+        }
       }
     } catch (error) {
       if (mounted) setState(() => _error = '已停止回退，保留剩余文件：$error');
@@ -179,20 +184,22 @@ class _WorkChangesPageState extends ConsumerState<WorkChangesPage> {
     setState(() => _restoringId = change.id);
     try {
       await widget.restore(request);
-      await ref
-          .read(workChangesProvider.notifier)
-          .record(
-            conversationId: change.conversationId,
-            assistantId: change.assistantId,
-            roundId: 'review:${DateTime.now().microsecondsSinceEpoch}',
-            target: change.target,
-            scope: change.scope,
-            path: change.path,
-            before: change.after,
-            after: content,
-            beforeHash: change.afterHash,
-            afterHash: sha256.convert(utf8.encode(content)).toString(),
-          );
+      if (HostClient.current == null) {
+        await ref
+            .read(workChangesProvider.notifier)
+            .record(
+              conversationId: change.conversationId,
+              assistantId: change.assistantId,
+              roundId: 'review:${DateTime.now().microsecondsSinceEpoch}',
+              target: change.target,
+              scope: change.scope,
+              path: change.path,
+              before: change.after,
+              after: content,
+              beforeHash: change.afterHash,
+              afterHash: sha256.convert(utf8.encode(content)).toString(),
+            );
+      }
     } catch (error) {
       if (mounted) setState(() => _error = '$error');
     } finally {

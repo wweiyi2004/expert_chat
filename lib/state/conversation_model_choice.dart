@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:riverpod/riverpod.dart';
 import '../core/providers.dart';
 import '../domain/llm/llm_provider.dart';
 import 'settings_controller.dart';
@@ -7,6 +7,7 @@ import 'model_service_routing.dart';
 import 'model_route_groups.dart';
 import 'model_context.dart';
 import 'model_service_credentials.dart';
+import 'session_policy.dart';
 import '../domain/llm/model_credentials_unavailable.dart';
 
 const autoModelChoice = '__auto__';
@@ -49,6 +50,45 @@ class ConversationModelChoice extends Notifier<Map<String, String>> {
 }
 
 Future<LlmConfig> resolveConversationModel(
+  Ref ref,
+  String conversation,
+  LlmConfig fallback, {
+  required bool work,
+  required bool images,
+  required bool thinking,
+  String? choiceOverride,
+  bool useChoiceOverride = false,
+  SettingsState? settingsOverride,
+  Map<String, List<String>>? servicePrioritiesOverride,
+}) async {
+  final config = await _resolveConversationModel(
+    ref,
+    conversation,
+    fallback,
+    work: work,
+    images: images,
+    thinking: thinking,
+    choiceOverride: choiceOverride,
+    useChoiceOverride: useChoiceOverride,
+    settingsOverride: settingsOverride,
+    servicePrioritiesOverride: servicePrioritiesOverride,
+  );
+  return applyFastMode(ref.read(sessionPolicyProvider)[conversation], config);
+}
+
+/// Fast mode only touches configs whose provider documents priority processing.
+/// Returns [config] itself when nothing changes, so callers keep its identity.
+LlmConfig applyFastMode(SessionPolicy? policy, LlmConfig config) {
+  final tier = policy?.fast == true && config.supportsPriorityTier
+      ? 'priority'
+      : null;
+  if (tier == config.serviceTier) return config;
+  return tier == null
+      ? config.copyWith(clearServiceTier: true)
+      : config.copyWith(serviceTier: tier);
+}
+
+Future<LlmConfig> _resolveConversationModel(
   Ref ref,
   String conversation,
   LlmConfig fallback, {

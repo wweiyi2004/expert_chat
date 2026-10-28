@@ -5,7 +5,7 @@ import 'package:characters/characters.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
-import 'package:path_provider/path_provider.dart';
+import '../../platform/paths.dart';
 
 import '../../data/media_api_config.dart';
 import '../media/openai_compatible_media_provider.dart';

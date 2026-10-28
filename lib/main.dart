@@ -1,28 +1,27 @@
+import 'platform/theme_mode.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-
-import 'core/providers.dart';
 import 'core/theme.dart';
-import 'data/db/app_database.dart';
-import 'data/atomic_windows_preferences.dart';
-import 'data/backup_journal.dart';
-import 'data/full_backup_service.dart';
-import 'data/library_file_store.dart';
-import 'data/memory_file_store.dart';
-import 'data/drift_conversation_repository.dart';
-import 'data/legacy_conversation_migration.dart';
-import 'data/study_repository.dart';
 import 'data/ui_prefs.dart';
 import 'features/shell/app_shell.dart';
 import 'features/shell/conversation_return_scope.dart';
 import 'features/shell/startup_error_app.dart';
 import 'state/settings_controller.dart';
 import 'features/tui_bridge/bridge_host.dart';
+import 'core/host_client_bootstrap.dart';
+import 'core/embedded_runtime_scope.dart';
+import 'domain/runtime/embedded_runtime.dart';
+import 'features/shell/host_connection_banner.dart';
 
-Future<void> main(List<String> args) async {
+Future<void> main(List<String> args) => launchApp(args);
+
+/// Embedded execution is retained for mobile and explicit native test harnesses.
+Future<void> launchApp(
+  List<String> args, {
+  bool embeddedTestRuntime = false,
+}) async {
   if (!kIsWeb &&
       defaultTargetPlatform == TargetPlatform.windows &&
       !const bool.fromEnvironment('EXPERT_CHAT_WINDOWS_SEMANTICS')) {
@@ -48,32 +47,17 @@ Future<void> main(List<String> args) async {
   // from AppShell instead.
 
   try {
-    // Prefs I/O overlaps DB open; migration and study load are independent
-    // of each other. Both still finish before runApp so controllers never
-    // see a half-migrated store.
-    await installAtomicWindowsPreferences();
-    final prefsFuture = SharedPreferences.getInstance();
-    final db = AppDatabase();
-    final prefs = await prefsFuture;
-    await FullBackupService(
-      db,
-      LibraryFileStore(),
-      MemoryFileStore(prefs),
-      prefs,
-      BackupJournal(),
-    ).recoverPending();
-    final driftRepo = DriftConversationRepository(db);
-    await Future.wait([
-      migrateLegacyJsonToDrift(driftRepo),
-      StudyRepository(db, prefs).ensureMigrated(),
-    ]);
-
+    if (!embeddedTestRuntime &&
+        !kIsWeb &&
+        defaultTargetPlatform == TargetPlatform.windows) {
+      final host = await HostClientBootstrap.open();
+      runApp(host.wrap(const ExpertChatApp()));
+      return;
+    }
+    final runtime = await EmbeddedRuntime.open();
     runApp(
-      ProviderScope(
-        overrides: [
-          sharedPrefsProvider.overrideWithValue(prefs),
-          appDatabaseProvider.overrideWithValue(db),
-        ],
+      EmbeddedRuntimeScope(
+        runtime: runtime,
         child: TuiBridgeHost(
           enabled: args.contains('--tui-bridge'),
           child: const ExpertChatApp(),
@@ -112,7 +96,7 @@ class _ExpertChatAppState extends ConsumerState<ExpertChatApp> {
     final (themeMode, ui) = ref.watch(
       settingsControllerProvider.select(
         (settings) => (
-          settings.value?.themeMode ?? ThemeMode.system,
+          settings.value?.themeMode ?? ThemePreference.system,
           settings.value?.ui ?? const UiPrefs(),
         ),
       ),
@@ -150,15 +134,17 @@ class _ExpertChatAppState extends ConsumerState<ExpertChatApp> {
       debugShowCheckedModeBanner: false,
       theme: _lightTheme,
       darkTheme: _darkTheme,
-      themeMode: themeMode,
+      themeMode: ThemeMode.values[themeMode.index],
       builder: (context, child) {
         final mq = MediaQuery.of(context);
         return MediaQuery(
           data: mq.copyWith(textScaler: TextScaler.linear(ui.textScale.scale)),
-          child: ConversationReturnScope(
-            navigatorKey: _navigatorKey,
-            observer: _routeObserver,
-            child: child ?? const SizedBox.shrink(),
+          child: HostConnectionBanner(
+            child: ConversationReturnScope(
+              navigatorKey: _navigatorKey,
+              observer: _routeObserver,
+              child: child ?? const SizedBox.shrink(),
+            ),
           ),
         );
       },

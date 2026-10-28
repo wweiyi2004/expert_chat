@@ -31,7 +31,7 @@ class CliDesktopWorkspaceHost implements DesktopWorkspaceHost {
         p.join(p.dirname(Platform.resolvedExecutable), 'expert-desktop.exe');
     if (!await File(program).exists()) {
       throw const WorkspaceHostException(
-        '此版本未包含电脑执行端，请更新桌面应用或重新构建 Windows 版本。',
+        '运行包缺少 expert-desktop.exe 文件服务，请使用完整运行包；工作区操作无需启动 GUI。',
       );
     }
     return program;

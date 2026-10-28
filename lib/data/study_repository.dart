@@ -1,7 +1,7 @@
 import 'dart:convert';
 
 import 'package:drift/drift.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import '../platform/preferences.dart';
 
 import '../domain/study/study_prompt_assembler.dart';
 import '../domain/study/tutor_style.dart';

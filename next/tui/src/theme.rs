@@ -10,6 +10,15 @@ pub const SKINS: &[(&str, &str)] = &[
     ("ink", "墨黑"),
     ("paper", "月白"),
     ("snow", "纸白"),
+    ("graphite", "石墨"),
+    ("mist", "雾紫"),
+    ("amber", "琥珀"),
+    ("coffee", "咖啡"),
+    ("glacier", "冰川"),
+    ("matcha", "抹茶"),
+    ("parchment", "羊皮纸"),
+    ("rose", "玫瑰灰"),
+    ("explosion", "爆裂红"),
 ];
 pub const CODE_STYLES: &[(&str, &str)] = &[
     ("auto", "跟随皮肤"),
@@ -19,6 +28,7 @@ pub const CODE_STYLES: &[(&str, &str)] = &[
 ];
 #[derive(Clone, Copy, Default)]
 pub struct SkinColors {
+    pub user_background: Option<Color>,
     pub background: Option<Color>,
     pub foreground: Option<Color>,
     pub accent: Option<Color>,
@@ -45,7 +55,7 @@ pub fn parse_color(value: &str) -> Option<Color> {
 }
 pub fn skin_is_light(skin: &str) -> Option<bool> {
     match skin {
-        "paper" | "snow" => Some(true),
+        "paper" | "snow" | "glacier" | "matcha" | "parchment" | "rose" => Some(true),
         "terminal" => None,
         _ => Some(false),
     }
@@ -74,18 +84,34 @@ pub fn skin_colors(skin: &str, _light: bool) -> SkinColors {
         "ink" => (0x101214, 0xe5e7ea, 0x8bb9df, 0x939ca6),
         "paper" => (0xf3f0e7, 0x353b3c, 0x426e7a, 0x727d7a),
         "snow" => (0xfafafa, 0x24292f, 0x0969da, 0x627180),
+        "graphite" => (0x1c2026, 0xe3e8ef, 0x9eb8d4, 0x98a3b1),
+        "mist" => (0x24212e, 0xe9e4f0, 0xbda7e5, 0xa99eb8),
+        "amber" => (0x211c16, 0xf2e7d8, 0xefb366, 0xae9c83),
+        "coffee" => (0x241c18, 0xefe4d9, 0xd7b18b, 0xb09b88),
+        "glacier" => (0xeaf0f5, 0x293b4a, 0x316b96, 0x627b8e),
+        "matcha" => (0xecf0e7, 0x334337, 0x497350, 0x6b7c65),
+        "parchment" => (0xf3e8cf, 0x4a3d2d, 0x8b5d36, 0x85745d),
+        "rose" => (0xf3e9ed, 0x4c3843, 0x9c4e6c, 0x8a6c7c),
+        "explosion" => (0x241416, 0xf2e6dd, 0xffb454, 0xb69a9c),
         _ => return SkinColors::default(),
     };
     let rgb = |v: u32| Color::Rgb((v >> 16) as u8, (v >> 8) as u8, v as u8);
     let light = skin_is_light(skin) == Some(true);
     SkinColors {
+        user_background: (skin == "explosion").then(|| rgb(0x352024)),
         background: Some(rgb(bg)),
         foreground: Some(rgb(fg)),
         accent: Some(rgb(accent)),
         muted: Some(rgb(muted)),
         good: Some(rgb(if light { 0x28734c } else { 0x8fcca8 })),
         warn: Some(rgb(if light { 0x87591a } else { 0xe3bc72 })),
-        bad: Some(rgb(if light { 0xa83e48 } else { 0xeaa1a8 })),
+        bad: Some(rgb(if skin == "explosion" {
+            0xff8585
+        } else if light {
+            0xa83e48
+        } else {
+            0xeaa1a8
+        })),
     }
 }
 pub fn code_colors(style: &str, light: bool) -> CodeColors {

@@ -1,3 +1,4 @@
+import '../../../core/runtime_listenable.dart';
 import 'package:expert_chat/core/app_toast.dart';
 import '../workbench_split_view.dart';
 import 'package:flutter/material.dart';
@@ -23,7 +24,10 @@ class _WorkProcessesPanelState extends ConsumerState<WorkProcessesPanel> {
     final runtime = ref.watch(workProcessesProvider),
         hooks = ref.watch(workHooksProvider);
     return ListenableBuilder(
-      listenable: Listenable.merge([runtime, hooks]),
+      listenable: Listenable.merge([
+        runtimeListenable(runtime),
+        runtimeListenable(hooks),
+      ]),
       builder: (context, _) {
         return DefaultTabController(
           initialIndex: widget.initialTab.clamp(0, 2),

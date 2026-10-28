@@ -1,4 +1,4 @@
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:expert_chat/platform/preferences.dart';
 import 'dart:async';
 import 'dart:convert';
 

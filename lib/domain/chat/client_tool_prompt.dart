@@ -32,7 +32,11 @@ abstract final class ClientToolPrompt {
       );
     }
     if (useFetchUrlTool) {
-      hint.write('用户在本轮消息中给出的链接，以及本轮搜索结果中的链接，可用 DeepSeek 官方 fetch_url 读取。');
+      hint.write(
+        workMode
+            ? '可用 fetch_url 读取任务所需的公开 HTTP(S) 网页，不要求链接先出现在用户消息或搜索结果中。'
+            : '用户在本轮消息中给出的链接，以及本轮搜索结果中的链接，可用 fetch_url 读取。',
+      );
     }
     if (useImageGenTool) {
       if (imageCharacter != null) {

@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'package:flutter/foundation.dart';
+import '../../../platform/foundation.dart';
 import 'work_process_runtime.dart';
 import 'workspace_change_feed.dart';
 
@@ -62,8 +62,9 @@ class WorkHookRecord {
 }
 
 class _HookBinding {
-  _HookBinding(this.root, this.launch);
+  _HookBinding(this.root, this.launch, this.changeFeed);
   final String root;
+  final Stream<String> Function(String root)? changeFeed;
   final Future<String> Function(WorkHookDefinition definition) launch;
 }
 
@@ -71,6 +72,28 @@ class _HookBinding {
 /// into a shell command. Changes during a hook and its settle interval are
 /// intentionally dropped, preventing build output from triggering itself.
 class WorkHookRuntime extends ChangeNotifier {
+  void applyHostProjection(List<Map<String, dynamic>> rows) {
+    for (final old in _records.values) {
+      old.debounce?.cancel();
+      unawaited(old.watcher?.cancel());
+    }
+    _records.clear();
+    for (final row in rows) {
+      final definition = WorkHookDefinition.fromJson(
+        Map<String, dynamic>.from(row['definition'] as Map),
+      );
+      _records[definition.id] = WorkHookRecord(definition)
+        ..status = row['status'] as String? ?? ''
+        ..error = row['error'] as String? ?? ''
+        ..processId = row['processId'] as String?
+        ..lastTriggeredAt = DateTime.tryParse(
+          row['lastTriggeredAt'] as String? ?? '',
+        )
+        ..launching = row['launching'] == true;
+    }
+    notifyListeners();
+  }
+
   WorkHookRuntime({
     required this.processes,
     required List<WorkHookDefinition> definitions,
@@ -177,8 +200,9 @@ class WorkHookRuntime extends ChangeNotifier {
     required String conversationId,
     required String root,
     required Future<String> Function(WorkHookDefinition definition) launch,
+    Stream<String> Function(String root)? changeFeed,
   }) {
-    _bindings[conversationId] = _HookBinding(root, launch);
+    _bindings[conversationId] = _HookBinding(root, launch, changeFeed);
     for (final r in _records.values.where(
       (r) => r.definition.conversationId == conversationId,
     )) {
@@ -215,7 +239,7 @@ class WorkHookRuntime extends ChangeNotifier {
     }
     r.status = r.processId == null ? '监控中' : '执行中 · 变化暂不触发';
     r.error = '';
-    r.watcher = _changeFeed(d.root).listen(
+    r.watcher = (binding.changeFeed ?? _changeFeed)(d.root).listen(
       (path) {
         if (_disposed ||
             !r.definition.enabled ||

@@ -112,7 +112,7 @@ class RepositoryContextLoader {
       return depth != 0 ? depth : a.compareTo(b);
     });
     for (final dir in dirs) {
-      for (final name in ['AGENTS.md', 'CLAUDE.md']) {
+      for (final name in ['AGENT.md', 'AGENTS.md', 'CLAUDE.md']) {
         final path = p.join(dir, name), content = await read(p.join(dir, name));
         if (content != null) {
           sources.add(

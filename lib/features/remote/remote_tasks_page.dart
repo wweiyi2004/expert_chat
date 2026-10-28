@@ -3,7 +3,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import '../../platform/credentials.dart';
 import 'package:uuid/uuid.dart';
 import 'remote_automation_panel.dart';
 import 'remote_workspace_panel.dart';

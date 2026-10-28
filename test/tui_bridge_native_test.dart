@@ -19,16 +19,17 @@ import 'package:expert_chat/features/tui_bridge/discovery.dart';
 import 'package:expert_chat/state/chat_controller.dart';
 import 'package:expert_chat/state/settings_controller.dart';
 import 'package:expert_chat/state/work_approvals.dart';
+import 'package:expert_chat/state/task_plans.dart';
 import 'package:expert_chat/state/work_agents.dart';
 import 'package:expert_chat/state/work_changes.dart';
 import 'package:expert_chat/state/work_runtime_logs.dart';
 import 'package:expert_chat/state/work_task_steering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:expert_chat/platform/credentials.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:expert_chat/platform/preferences.dart';
 import 'widget_test.dart' show FakeSettings, InMemoryLibraryFileStore;
 
 class _Settings extends FakeSettings {
@@ -437,6 +438,12 @@ void main() {
       );
       await llm.finish(1);
       await until(
+        () =>
+            container.read(taskPlansProvider)[id]?.status ==
+            TaskPlanStatus.awaitingApproval,
+      );
+      await call('task.stop');
+      await until(
         () => !container
             .read(chatControllerProvider.notifier)
             .isConversationRunning(id),
@@ -470,6 +477,12 @@ void main() {
         false,
       );
       await llm.finish(1);
+      await until(
+        () =>
+            container.read(taskPlansProvider)[id]?.status ==
+            TaskPlanStatus.awaitingApproval,
+      );
+      await call('task.stop');
       await until(
         () => !container
             .read(chatControllerProvider.notifier)

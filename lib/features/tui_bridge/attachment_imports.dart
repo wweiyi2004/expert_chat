@@ -2,14 +2,13 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:dio/dio.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:riverpod/riverpod.dart';
 import 'package:path/path.dart' as p;
 import 'package:uuid/uuid.dart';
 import '../../core/providers.dart';
 import '../../data/models.dart';
 import '../../domain/tools/attachment_ingestor.dart';
 import '../../domain/tools/file_parser.dart';
-import '../../state/settings_controller.dart';
 import 'protocol.dart';
 
 class TuiAttachmentImports {
@@ -26,97 +25,6 @@ class TuiAttachmentImports {
         })
       >{};
   final _pending = <String, Set<CancelToken>>{};
-  static const sourceExtensions = {
-    'py',
-    'rs',
-    'dart',
-    'js',
-    'ts',
-    'tsx',
-    'jsx',
-    'go',
-    'c',
-    'cc',
-    'cpp',
-    'cxx',
-    'h',
-    'hpp',
-    'cs',
-    'java',
-    'kt',
-    'kts',
-    'swift',
-    'sh',
-    'bash',
-    'zsh',
-    'ps1',
-    'bat',
-    'cmd',
-    'html',
-    'htm',
-    'css',
-    'scss',
-    'sass',
-    'less',
-    'vue',
-    'svelte',
-    'sql',
-    'yaml',
-    'yml',
-    'toml',
-    'ini',
-    'conf',
-    'cfg',
-    'xml',
-    'log',
-    'tex',
-    'ipynb',
-    'r',
-    'rb',
-    'php',
-    'lua',
-    'm',
-    'mm',
-    'pl',
-    'pm',
-    'cmake',
-    'gradle',
-    'properties',
-    'proto',
-    'graphql',
-    'gql',
-    'gitignore',
-    'gitattributes',
-    'editorconfig',
-    'dockerignore',
-    'env',
-    'lock',
-  };
-  static const sourceNames = {
-    'dockerfile',
-    'makefile',
-    'gnumakefile',
-    'cmakelists.txt',
-    'readme',
-    'license',
-    'licence',
-    'copying',
-    'notice',
-    'procfile',
-    'gemfile',
-    'rakefile',
-    'justfile',
-    '.gitignore',
-    '.gitattributes',
-    '.editorconfig',
-    '.dockerignore',
-    '.env',
-    '.npmrc',
-    '.yarnrc',
-    '.bashrc',
-    '.zshrc',
-    '.profile',
-  };
   static const audio = {
     'wav': 'audio/wav',
     'mp3': 'audio/mpeg',
@@ -125,6 +33,9 @@ class TuiAttachmentImports {
     'ogg': 'audio/ogg',
     'flac': 'audio/flac',
     'opus': 'audio/opus',
+    'amr': 'audio/amr',
+    'weba': 'audio/webm',
+    'wma': 'audio/x-ms-wma',
   };
   static const video = {
     'mp4': 'video/mp4',
@@ -132,6 +43,8 @@ class TuiAttachmentImports {
     'webm': 'video/webm',
     'mkv': 'video/x-matroska',
     'avi': 'video/x-msvideo',
+    'm4v': 'video/x-m4v',
+    '3gp': 'video/3gpp',
   };
   String _key(String scope, String session) => jsonEncode([scope, session]);
   void cancel(String scope, String session) {
@@ -141,6 +54,16 @@ class TuiAttachmentImports {
   }
 
   void release(String scope) {
+    for (final file in _previewFiles.remove(scope) ?? <File>[]) {
+      unawaited(
+        Future<void>(() async {
+          try {
+            await file.delete();
+            await file.parent.delete();
+          } catch (_) {}
+        }),
+      );
+    }
     _items.removeWhere((_, item) => item.scope == scope);
     for (final entry in _pending.entries) {
       if ((jsonDecode(entry.key) as List).first == scope) {
@@ -198,7 +121,11 @@ class TuiAttachmentImports {
     }
     final file = File(await File(path).resolveSymbolicLinks());
     final stat = await file.stat();
-    final name = p.basename(file.path),
+    // A library file is stored under a UUID; its cosmetic display name is kept.
+    final display = params['display_name'];
+    final name = display is String && display.trim().isNotEmpty
+            ? String.fromCharCodes(p.basename(display.trim()).runes.take(200))
+            : p.basename(file.path),
         ext = p.extension(file.path).replaceFirst('.', '').toLowerCase();
     final image = AttachmentIngestor.imageExtensions.contains(ext);
     final kind = audio.containsKey(ext)
@@ -208,31 +135,24 @@ class TuiAttachmentImports {
         : image
         ? 'image'
         : 'file';
-    final lowerName = name.toLowerCase();
-    final sourceText =
-        sourceExtensions.contains(ext) ||
-        sourceNames.contains(lowerName) ||
-        lowerName.startsWith('dockerfile.') ||
-        lowerName.startsWith('makefile.');
-    if (kind == 'file' &&
-        !AttachmentIngestor.documentExtensions.contains(ext) &&
-        !sourceText) {
-      throw const BridgeFailure(
-        'unsupported',
-        '支持源码/配置文本、PDF、Office、常见图片、音频及视频；不支持可执行文件和未知二进制',
-      );
+    // Non-image labels represent an address, never eagerly read file contents.
+    // In particular, do not parse documents, transcribe audio or extract frames.
+    if (!image) {
+      return {
+        'name': name,
+        'path': file.path,
+        'reference': true,
+        'mime': audio[ext] ?? video[ext] ?? AttachmentIngestor.mimeFor(ext),
+        'size': stat.size,
+        'kind': kind,
+        'preview': file.path,
+        'warnings': <String>[],
+        'attachments_count': 0,
+      };
     }
-    final limit = switch (kind) {
-      'audio' => 25 * 1024 * 1024,
-      'video' => 100 * 1024 * 1024,
-      'image' => 5 * 1024 * 1024,
-      _ => 10 * 1024 * 1024,
-    };
+    const limit = 5 * 1024 * 1024;
     if (stat.size <= 0 || stat.size > limit) {
-      throw BridgeFailure(
-        'too_large',
-        '$kind 文件必须非空且不超过 ${limit ~/ 1024 ~/ 1024} MiB',
-      );
+      throw const BridgeFailure('too_large', '图片文件必须非空且不超过 5 MiB');
     }
     final key = _key(scope, session);
     final token = CancelToken();
@@ -240,75 +160,33 @@ class TuiAttachmentImports {
     final warnings = <String>[];
     final values = <Attachment>[];
     try {
-      if (kind == 'audio') {
-        final settings = await container.read(
-          settingsControllerProvider.future,
-        );
-        if (!settings.asrConfigured) {
-          throw const BridgeFailure(
-            'configuration_required',
-            '尚未配置语音识别接口；请先配置共享 ASR 服务再导入音频',
+      final result =
+          await AttachmentIngestor(
+            parser: container.read(fileParserProvider),
+          ).ingest(
+            [
+              FileIngestSource(
+                name: name,
+                path: file.path,
+                extension: ext,
+                reportedSize: stat.size,
+              ),
+            ],
+            slots: 1,
+            existingBytes: 0,
+            isCurrent: () => !token.isCancelled,
           );
-        }
-        final bytes = await FileParser.readBytesWithLimit(
-          file.openRead(),
-          maxBytes: limit,
-        );
-        if (token.isCancelled) throw token.cancelError!;
-        final text = await container
-            .read(mediaApiProvider)
-            .transcribeSpeech(
-              config: settings.asrApi,
-              apiKey: settings.asrApiKey,
-              audioBytes: bytes,
-              mimeType: audio[ext]!,
-              filename: name,
-              cancelToken: token,
-            );
-        if (text.trim().isEmpty) {
-          throw const BridgeFailure('parse_failed', '语音识别未返回可用文本，未附加空音频');
-        }
-        values.add(
-          Attachment(
-            name: name,
-            mimeType: audio[ext]!,
-            sizeBytes: stat.size,
-            text: '【音频识别文本】\n$text',
-          ),
-        );
-      } else if (kind == 'video') {
-        values.addAll(await _video(file, name, video[ext]!, stat.size, token));
-        warnings.add('已离线提取前60秒最多3个关键帧；未识别音轨，不代表完整视频内容。');
-      } else {
-        final result =
-            await AttachmentIngestor(
-              parser: container.read(fileParserProvider),
-            ).ingest(
-              [
-                FileIngestSource(
-                  name: name,
-                  path: file.path,
-                  extension: ext,
-                  reportedSize: stat.size,
-                ),
-              ],
-              slots: 1,
-              existingBytes: 0,
-              isCurrent: () => !token.isCancelled,
-            );
-        if (result.attachments.isEmpty) {
-          throw const BridgeFailure('parse_failed', '无法解析此附件或超过支持的大小限制');
-        }
-        final attachment = result.attachments.single;
-        if (attachment.parseError != null) {
-          throw BridgeFailure('parse_failed', attachment.parseError!);
-        }
-        if (!attachment.hasImageData && attachment.text.trim().isEmpty) {
-          throw const BridgeFailure('parse_failed', '文件没有可读取的文本或图像内容，未添加空标签');
-        }
-        values.add(attachment);
-        if (attachment.truncated) warnings.add('提取文本超过60000字符，已按共享解析器限制截断。');
+      if (result.attachments.isEmpty) {
+        throw const BridgeFailure('parse_failed', '无法解析此附件或超过支持的大小限制');
       }
+      final attachment = result.attachments.single;
+      if (attachment.parseError != null) {
+        throw BridgeFailure('parse_failed', attachment.parseError!);
+      }
+      if (!attachment.hasImageData && attachment.text.trim().isEmpty) {
+        throw const BridgeFailure('parse_failed', '文件没有可读取的文本或图像内容，未添加空标签');
+      }
+      values.add(attachment);
       if (token.isCancelled) throw token.cancelError!;
       _items.removeWhere((_, item) => item.expires.isBefore(DateTime.now()));
       if (_items.values.where((item) => item.scope == scope).length >= 16) {
@@ -338,11 +216,7 @@ class TuiAttachmentImports {
       return {
         'token': id,
         'name': name,
-        'mime': kind == 'video'
-            ? video[ext]
-            : kind == 'audio'
-            ? audio[ext]
-            : values.first.mimeType,
+        'mime': values.first.mimeType,
         'size': stat.size,
         'kind': kind,
         'preview': preview.runes.length > 300
@@ -359,129 +233,45 @@ class TuiAttachmentImports {
       if (CancelToken.isCancel(error)) {
         throw const BridgeFailure('cancelled', '附件导入已取消');
       }
-      throw const BridgeFailure('import_failed', '附件处理服务失败，请核对 ASR 配置与服务状态');
+      throw const BridgeFailure('import_failed', '图片导入失败，请重试');
     } finally {
       _pending[key]?.remove(token);
       if (_pending[key]?.isEmpty == true) _pending.remove(key);
     }
   }
 
-  Future<List<Attachment>> _video(
-    File file,
-    String name,
-    String mime,
-    int size,
-    CancelToken token,
-  ) async {
+  final _previewFiles = <String, List<File>>{};
+  Future<void> preview(String scope, String session, String token) async {
+    final values = resolve(scope, session, token);
+    final image = values.where((a) => a.hasImageData).firstOrNull;
+    if (image == null) throw const BridgeFailure('not_found', '图片数据不可用');
+    final extension = switch (image.mimeType) {
+      'image/jpeg' => 'jpg',
+      'image/gif' => 'gif',
+      'image/webp' => 'webp',
+      'image/bmp' => 'bmp',
+      _ => 'png',
+    };
     final directory = await Directory.systemTemp.createTemp(
-      'expert-tui-video-',
+      'expert-attachment-preview-',
     );
-    Process? process;
-    Timer? timer;
-    try {
+    final file = File(p.join(directory.path, 'preview.$extension'));
+    await file.writeAsBytes(base64Decode(image.imageBase64!), flush: true);
+    final files = _previewFiles.putIfAbsent(scope, () => []);
+    files.add(file);
+    if (files.length > 16) {
+      final old = files.removeAt(0);
       try {
-        process = await Process.start('ffmpeg', [
-          '-nostdin',
-          '-hide_banner',
-          '-loglevel',
-          'error',
-          '-protocol_whitelist',
-          'file,pipe',
-          '-f',
-          switch (p.extension(file.path).toLowerCase()) {
-            '.avi' => 'avi',
-            '.mkv' || '.webm' => 'matroska',
-            _ => 'mov',
-          },
-          '-i',
-          file.path,
-          '-t',
-          '60',
-          '-vf',
-          'fps=fps=1/20:start_time=0,scale=w=640:h=640:force_original_aspect_ratio=decrease',
-          '-frames:v',
-          '3',
-          '-q:v',
-          '5',
-          p.join(directory.path, 'frame-%02d.jpg'),
-        ], runInShell: false);
-      } on ProcessException {
-        throw const BridgeFailure(
-          'dependency_missing',
-          '未找到 ffmpeg。请安装并加入 PATH 后重新启动应用，再导入视频。',
-        );
-      }
-      final current = process;
-      unawaited(token.whenCancel.then((_) => current.kill()));
-      timer = Timer(const Duration(seconds: 30), () => current.kill());
-      final output = current.stdout.drain<void>(),
-          errors = current.stderr.drain<void>();
-      final code = await current.exitCode.timeout(
-        const Duration(seconds: 35),
-        onTimeout: () {
-          current.kill();
-          return -1;
-        },
-      );
-      await Future.wait([output, errors]);
-      if (token.isCancelled) throw const BridgeFailure('cancelled', '视频导入已取消');
-      if (code != 0) {
-        throw const BridgeFailure(
-          'parse_failed',
-          '视频抽帧失败或超过30秒处理时限，请检查文件格式或裁剪视频',
-        );
-      }
-      final frames = await directory
-          .list()
-          .where((entry) => entry is File && p.extension(entry.path) == '.jpg')
-          .cast<File>()
-          .toList();
-      frames.sort((a, b) => a.path.compareTo(b.path));
-      if (frames.isEmpty) {
-        throw const BridgeFailure('parse_failed', '视频没有可提取的图像帧');
-      }
-      final attachments = <Attachment>[
-        Attachment(
-          name: name,
-          mimeType: mime,
-          sizeBytes: size,
-          text: '视频 $name：离线提取前60秒最多3帧，以下图像按时间顺序提供；未读取音轨。',
-        ),
-      ];
-      final ingested =
-          await AttachmentIngestor(
-            parser: container.read(fileParserProvider),
-          ).ingest(
-            [
-              for (final frame in frames.take(3))
-                FileIngestSource(
-                  name: '$name#${p.basename(frame.path)}',
-                  extension: 'jpg',
-                  path: frame.path,
-                ),
-            ],
-            slots: 3,
-            existingBytes: 0,
-            isCurrent: () => !token.isCancelled,
-          );
-      if (ingested.attachments.isEmpty) {
-        throw const BridgeFailure('parse_failed', '视频帧无法解码');
-      }
-      attachments.addAll(ingested.attachments);
-      return attachments;
-    } finally {
-      timer?.cancel();
-      process?.kill();
-      try {
-        final absolute = await directory.resolveSymbolicLinks(),
-            base = await Directory.systemTemp.resolveSymbolicLinks();
-        if (p.isWithin(base, absolute) &&
-            p.basename(absolute).startsWith('expert-tui-video-')) {
-          await directory.delete(recursive: true);
-        }
-      } catch (_) {
-        /* Only best-effort cleanup of this import's own directory. */
-      }
+        await old.delete();
+        await old.parent.delete();
+      } catch (_) {}
     }
+    final path = file.path;
+    if (!Platform.isWindows) {
+      throw const BridgeFailure('unsupported', '当前平台请使用文字预览');
+    }
+    await Process.start('explorer.exe', [
+      path,
+    ], mode: ProcessStartMode.detached);
   }
 }

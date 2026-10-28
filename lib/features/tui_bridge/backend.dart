@@ -1,16 +1,21 @@
+import '../../domain/llm/stream_token_meter.dart';
+import '../../domain/chat/task_window.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:dio/dio.dart';
-import 'package:flutter/services.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:riverpod/riverpod.dart';
 import 'package:path/path.dart' as p;
-import 'package:package_info_plus/package_info_plus.dart';
 import 'package:uuid/uuid.dart';
+import 'package:archive/archive.dart';
+import '../../domain/update/update_downloader.dart';
 import '../../core/desktop_providers.dart';
 import '../../data/models.dart';
 import '../../domain/desktop/workspace_host.dart';
+import '../../domain/desktop/workspace_identity.dart';
 import '../../domain/desktop/workspace_tools.dart';
+import '../../domain/host/terminal_output.dart';
 import '../../domain/llm/llm_provider.dart';
 import '../../domain/workbench/changes/line_diff.dart';
 import '../../state/chat_controller.dart';
@@ -21,6 +26,8 @@ import '../../state/model_service_credentials.dart';
 import '../../state/session_policy.dart';
 import '../../state/settings_controller.dart';
 import '../../state/task_acceptance_provider.dart';
+import '../../state/task_plans.dart';
+import '../../state/task_overview.dart';
 import '../../state/work_agents.dart';
 import '../../state/work_approvals.dart';
 import '../../state/work_changes.dart';
@@ -30,22 +37,109 @@ import '../../state/work_task_steering.dart';
 import '../../state/work_session_insights.dart';
 import '../../state/research_terminal_controller.dart';
 import '../../state/work_task_runtime.dart';
-import '../shell/shell_tab.dart';
-import '../library/resources_page.dart';
 import 'protocol.dart';
-import 'gui_navigation.dart';
+import 'gui_actions.dart';
 import 'snapshot_evidence.dart';
 import 'settings_bridge.dart';
+import 'terminal_management.dart';
 import 'attachment_imports.dart';
+import '../../domain/host/checkpoint_service.dart';
+import '../../domain/host/external_sessions.dart';
+import '../../core/providers.dart';
+import '../../data/library_paths.dart';
+import '../../state/model_context.dart';
+import '../../state/model_pricing.dart';
+import '../../state/work_memory.dart';
+import '../../state/work_processes.dart';
+import '../../data/context_prefs.dart';
+import '../../state/context_selection.dart';
+import '../../domain/context/context_window_manager.dart';
+import '../../data/chat_skill.dart';
+import 'package:crypto/crypto.dart';
 
-class ControllerBridgeBackend implements BridgeBackend, BridgeClientLifecycle {
-  ControllerBridgeBackend(this.container);
+part 'terminal_commands.dart';
+part 'context_search_commands.dart';
+part 'external_session_commands.dart';
+part 'terminal_shell.dart';
+part 'terminal_workbench.dart';
+
+class ControllerBridgeBackend
+    implements BridgeBackend, BridgeClientLifecycle, WindowTaskLifecycle {
+  ControllerBridgeBackend(this.container) {
+    Future<void>.microtask(() async {
+      try {
+        final values =
+            jsonDecode(
+                  container
+                          .read(sharedPrefsProvider)
+                          .getString('tuiSchedules.v1') ??
+                      '[]',
+                )
+                as List;
+        var migrated = false;
+        for (final value in values) {
+          if (value['owner_scope'] != null) {
+            value['enabled'] = false;
+            value['last_error'] = '原窗口已退出，定时任务已停用';
+            migrated = true;
+          }
+          if (value['workspace_id'] is! String || value['cwd'] is! String) {
+            value['enabled'] = false;
+            value['last_error'] = '旧任务未绑定工作目录，请重新保存后启用';
+            migrated = true;
+          }
+        }
+        if (migrated) {
+          await container
+              .read(sharedPrefsProvider)
+              .setString('tuiSchedules.v1', jsonEncode(values));
+        }
+        for (final value in values) {
+          if (value['enabled'] == true) {
+            _armSchedule(Map<String, dynamic>.from(value as Map));
+          }
+        }
+      } catch (_) {}
+    });
+  }
   final ProviderContainer container;
+  final _shellJobs = <String, _ShellJob>{};
+  final _wbJobs = <String, _WorkbenchJob>{};
+  final _wbTimers = <String, Timer>{};
+  final _wbRemotes = <String, Map<String, dynamic>>{};
+  final _voiceCaptures = <String, (Process, String)>{};
+  bool get hasTerminalSchedules => _wbTimers.isNotEmpty;
+  bool get hasWorkbenchJobs =>
+      _voiceCaptures.isNotEmpty || _wbJobs.values.any((job) => !job.done);
+  void closeWorkbench() {
+    for (final timer in _wbTimers.values) {
+      timer.cancel();
+    }
+    for (final v in _voiceCaptures.values) {
+      v.$1.kill();
+    }
+    for (final job in _wbJobs.values) {
+      job.token.cancel();
+    }
+  }
+
+  final _externalSessions = ExternalSessionService();
+  bool get hasActiveShell =>
+      _shellJobs.values.any((job) => !job.done) ||
+      _wbJobs.values.any((job) => !job.done);
+  Future<Map<String, Object?>> terminalBackup(
+    Map<String, dynamic> args,
+  ) async => throw const BridgeFailure('unsupported', '需要独立 Host');
+  bool get hasPendingLogin => _settingsBridge.loginActive;
   late final _settingsBridge = TuiSettingsBridge(
     container,
     rememberSecrets: _profileSecrets.addAll,
   );
   late final _attachmentImports = TuiAttachmentImports(container);
+  late final _management = TuiManagementService(
+    container,
+    rememberSecrets: _profileSecrets.addAll,
+  );
   Future<List<DesktopWorkspace>>? _workspaceCache;
   DateTime _workspaceRead = DateTime.fromMillisecondsSinceEpoch(0);
   final _profileSecrets = <String>{};
@@ -62,6 +156,31 @@ class ControllerBridgeBackend implements BridgeBackend, BridgeClientLifecycle {
   final _draftProtected = <String, int>{};
   final _clientSessions = <String, String>{};
   final _releasedScopes = <String>{};
+  final _taskWindows = <String, TaskWindow>{};
+
+  @override
+  void registerWindowClient(String scope) {
+    _taskWindows.putIfAbsent(scope, () => TaskWindow(scope));
+  }
+
+  @override
+  Future<Map<String, Object?>> snapshotForWindow(
+    String scope,
+    String? session,
+  ) => runForWindow(scope, () => snapshot(session));
+
+  void cancelWindowScope(String scope) => _taskWindows[scope]?.close();
+
+  Future<T> runForWindow<T>(String? scope, Future<T> Function() action) {
+    if (scope != null && _releasedScopes.contains(scope)) {
+      throw const BridgeFailure('disconnected', '窗口已关闭，未接受新操作');
+    }
+    final window = _taskWindows[scope];
+    if (window == null) return action();
+    window.ensureOpen();
+    return window.run(action);
+  }
+
   final _scopeCreations = <String, Set<Future<void>>>{};
   final _draftReferences = <String, Set<String>>{};
   Future<void> _draftCleanupTail = Future<void>.value();
@@ -159,17 +278,59 @@ class ControllerBridgeBackend implements BridgeBackend, BridgeClientLifecycle {
         (_draftReferences[session] ??= <String>{}).add(scope);
       }
     }
+    if (this is PersistentBridgeHost) {
+      controller.reportHostVisibleSessions(_clientSessions.values.toSet());
+    }
     await _cleanupOwnedDrafts(scope);
   }
 
   @override
   Future<void> releaseClient(String scope) async {
+    final window = _taskWindows[scope];
+    window?.close();
+    for (final job in _shellJobs.values.where(
+      (job) => job.scope == scope && !job.done,
+    )) {
+      job.token.cancel('命令客户端已断开');
+    }
+    _management.release(scope);
+    _settingsBridge.releaseLogins(scope);
     _releasedScopes.add(scope);
     _clientSessions.remove(scope);
+    if (this is PersistentBridgeHost) {
+      controller.reportHostVisibleSessions(_clientSessions.values.toSet());
+    }
     for (final references in _draftReferences.values) {
       references.remove(scope);
     }
+    for (final job in _wbJobs.values.where((j) => j.scope == scope)) {
+      job.token.cancel('终端已关闭');
+    }
+    _wbRemotes.removeWhere((_, value) => value['scope'] == scope);
+    for (final key
+        in _voiceCaptures.keys.where((k) => k.startsWith('$scope:')).toList()) {
+      _voiceCaptures.remove(key)?.$1.kill();
+    }
     _attachmentImports.release(scope);
+    if (window != null) {
+      final prefs = container.read(sharedPrefsProvider);
+      final schedules =
+          jsonDecode(prefs.getString('tuiSchedules.v1') ?? '[]') as List;
+      var changed = false;
+      for (final schedule in schedules) {
+        if (schedule['owner_scope'] == scope) {
+          _wbTimers.remove(schedule['id'])?.cancel();
+          schedule['enabled'] = false;
+          schedule['last_error'] = '创建窗口已关闭，定时任务已停用';
+          changed = true;
+        }
+      }
+      if (changed) {
+        await prefs.setString('tuiSchedules.v1', jsonEncode(schedules));
+      }
+      await controller.stopWindowTasks(window);
+      _taskWindows.remove(scope);
+    }
     await Future.wait(_scopeCreations[scope]?.toList() ?? <Future<void>>[]);
     await _cleanupOwnedDrafts(scope);
   }
@@ -181,6 +342,28 @@ class ControllerBridgeBackend implements BridgeBackend, BridgeClientLifecycle {
   @override
   List<String> get capabilities => const [
     ...TuiSettingsBridge.methods,
+    'terminal.query',
+    'terminal.action',
+    'context.model_limits',
+    'usage.dashboard',
+    'subscriptions.v1',
+    'subscriptions.accounts.v1',
+    'terminal.shell.v1',
+    'terminal.sessions.v1',
+    'terminal.provider-scan.v2',
+    'terminal.session-scan.v2',
+    'terminal.workspace-identity.v1',
+    'terminal.workspace-permissions.v1',
+    'terminal.todo.v1',
+    'terminal.ssh-output.v1',
+    'terminal.steering-status.v1',
+    'terminal.workbench.v1',
+    'terminal.workbench-files.v2',
+    'terminal.shared-agent-prompts.v1',
+    'terminal.workbench-receipts.v2',
+    'terminal.public-fetch.v1',
+    'terminal.ssh-forward.v1',
+    'llm.history.nonempty',
     'mcp.bind',
     'attachment.import',
     'attachment.cancel',
@@ -207,6 +390,13 @@ class ControllerBridgeBackend implements BridgeBackend, BridgeClientLifecycle {
     'changes.diff',
     'task.accept',
     'task.revise',
+    'plan.get',
+    'plan.comment',
+    'plan.approve',
+    'plan.cancel',
+    'checkpoint.list',
+    'checkpoint.preview',
+    'checkpoint.restore',
     'agents.list',
     'agent.message',
     'agent.stop',
@@ -216,9 +406,6 @@ class ControllerBridgeBackend implements BridgeBackend, BridgeClientLifecycle {
   Conversation _session(String id) {
     final value = state.conversations.where((c) => c.id == id).firstOrNull;
     if (value == null) throw const BridgeFailure('not_found', '会话不存在');
-    if (!value.workMode) {
-      throw const BridgeFailure('unsupported', '请在 GUI 打开非工作会话');
-    }
     return value;
   }
 
@@ -284,12 +471,17 @@ class ControllerBridgeBackend implements BridgeBackend, BridgeClientLifecycle {
         profile.chatModel,
         profile.reasonerModel,
       }.where((m) => m.isNotEmpty)) {
-        final config = settings.config.copyWith(
-          model: model,
-          profileId: profile.id,
-          baseUrl: profile.baseUrl,
-          apiFormat: profile.apiFormat,
-          authMode: profile.authMode,
+        // settings.config carries the active model's explicit capabilities;
+        // re-derive them so each model lists its own reported/catalog efforts.
+        final config = applyReportedModelCapabilities(
+          settings,
+          settings.config.copyWith(
+            model: model,
+            profileId: profile.id,
+            baseUrl: profile.baseUrl,
+            apiFormat: profile.apiFormat,
+            authMode: profile.authMode,
+          ),
         );
         final caps = config.capabilities;
         if (!caps.supportsTools) continue;
@@ -300,6 +492,7 @@ class ControllerBridgeBackend implements BridgeBackend, BridgeClientLifecycle {
           'source': profile.name,
           'source_host': Uri.tryParse(profile.baseUrl)?.host,
           'efforts': reasoningEffortsFor(config).map((e) => e.wire).toList(),
+          'fast_supported': config.supportsPriorityTier,
           'thinking_supported':
               caps.supportsReasoningEffort ||
               caps.sendThinkingField ||
@@ -370,6 +563,11 @@ class ControllerBridgeBackend implements BridgeBackend, BridgeClientLifecycle {
           'depth': a.depth,
           'model': a.model,
           'status': a.status.name,
+          'rounds': a.rounds,
+          'input_tokens': a.inputTokens,
+          'output_tokens': a.outputTokens,
+          'read_only': a.readOnly,
+          if (a.manualEffort != null) 'effort': a.manualEffort!.name,
           'activity': a.activity,
           'elapsed_ms': a.terminal
               ? null
@@ -496,19 +694,21 @@ class ControllerBridgeBackend implements BridgeBackend, BridgeClientLifecycle {
       taskAcceptanceProvider,
     )[controller.taskSnapshotFor(c.id)?['rootId']];
     return switch (acceptance?.status) {
-      TaskAcceptanceStatus.accepted => 'accepted',
-      TaskAcceptanceStatus.waitingAcceptance => 'waiting_acceptance',
+      TaskAcceptanceStatus.accepted => 'completed',
+      TaskAcceptanceStatus.waitingAcceptance => 'completed',
       TaskAcceptanceStatus.failed => 'failed',
       _ => 'idle',
     };
   }
 
   List<Map<String, Object?>> _sessions() => [
-    for (final c in state.conversations.where((c) => c.workMode))
+    for (final c in state.conversations)
       {
         'id': c.id,
         'title': c.title,
         'status': _status(c),
+        'conversation_mode': c.mode.wire,
+        'work_mode': c.workMode,
         'empty': c.messagesLoaded ? !c.hasUserActivity : null,
         'workspace_id': _policy(c.id).sshProfileId.isNotEmpty
             ? 'ssh:${_policy(c.id).sshProfileId}'
@@ -532,9 +732,7 @@ class ControllerBridgeBackend implements BridgeBackend, BridgeClientLifecycle {
     )[session];
     final workspace = workspaces.where((w) => w.id == binding).firstOrNull;
     final git = workspace == null ? <String, Object?>{} : await _git(workspace);
-    final version = await (_version ??= PackageInfo.fromPlatform()
-        .then<String?>((info) => info.version)
-        .catchError((Object _) => null));
+    final version = await (_version ??= bridgeAppVersion());
     // A key may rotate while workspace or package metadata is loading.
     await _refreshSecrets();
     if (binding !=
@@ -571,13 +769,32 @@ class ControllerBridgeBackend implements BridgeBackend, BridgeClientLifecycle {
           ..sort((a, b) => b.startedAt.compareTo(a.startedAt));
     final runtime = records.firstOrNull;
     final path = c?.activePath ?? <ChatMessage>[];
+    final steering = session == null
+        ? <Map<String, dynamic>>[]
+        : container.read(workTaskSteeringProvider).snapshot(session);
+    final steeringById = {for (final entry in steering) entry['id']: entry};
+    final steeringByHeader = {
+      for (final entry in steering) '【运行中补充 #${entry['id']}】': entry,
+    };
     final evidence = TuiSnapshotEvidence(
       conversationId: session,
       messages: path,
       changes: container.read(workChangesProvider),
     );
     final today = DateTime.now();
+    final plan = container.read(taskPlansProvider)[session];
     final data = <String, Object?>{
+      'tasks': container
+          .read(taskOverviewProvider)
+          .map((t) => t.toJson())
+          .toList(),
+      'plan': plan == null
+          ? null
+          : {
+              ...plan.toJson(),
+              'content_hash': plan.contentHash,
+              'is_current': plan.taskId == core?['rootId'],
+            },
       'session': c == null
           ? null
           : {
@@ -594,7 +811,13 @@ class ControllerBridgeBackend implements BridgeBackend, BridgeClientLifecycle {
                   : (runtime.finishedAt ?? DateTime.now())
                         .difference(runtime.startedAt)
                         .inMilliseconds,
-              'mode': policy.planOnly ? 'plan' : 'work',
+              'mode': c.isStoryLike || c.isStudy
+                  ? c.mode.wire
+                  : policy.planOnly
+                  ? 'plan'
+                  : c.workMode
+                  ? 'work'
+                  : 'chat',
               'permission': policy.approval.name,
               'model': _modelLabel(choice, settings?.model),
               'model_choice': choice,
@@ -602,17 +825,35 @@ class ControllerBridgeBackend implements BridgeBackend, BridgeClientLifecycle {
                   parseModelSourceChoice(choice ?? '')?.profile ??
                   (choice == null ? settings?.activeProfileId : null),
               'thinking': controller.thinkingForSession(c.id),
+              'fast': policy.fast,
+              'fast_supported': _fastSupported(c.id),
               'request_count':
                   container
                       .read(workSessionInsightsProvider)[c.id]
                       ?.requests
                       .length ??
                   0,
+              'task_request_count':
+                  container
+                      .read(workSessionInsightsProvider)[c.id]
+                      ?.countRequests(WorkRequestKind.task) ??
+                  0,
+              'title_request_count':
+                  container
+                      .read(workSessionInsightsProvider)[c.id]
+                      ?.countRequests(WorkRequestKind.title) ??
+                  0,
+              'auxiliary_request_count':
+                  container
+                      .read(workSessionInsightsProvider)[c.id]
+                      ?.countRequests(WorkRequestKind.auxiliary) ??
+                  0,
               'effort': controller.effortForSession(c.id).wire,
               'workspace_id': remote ? 'ssh:${policy.sshProfileId}' : binding,
               'workspace_label': workspaceLabel,
               'workspace_path': workspacePath,
               'branch': remote ? null : git['branch'],
+              'usage': _terminalUsage(c.id),
               'context_percent': report == null || report.inputBudgetTokens <= 0
                   ? null
                   : report.fraction * 100,
@@ -640,13 +881,30 @@ class ControllerBridgeBackend implements BridgeBackend, BridgeClientLifecycle {
             'id': m.id,
             'role': m.role.name,
             'text': m.content,
+            if (m.role == MessageRole.user &&
+                (steeringById.containsKey(m.id) ||
+                    steeringByHeader.containsKey(m.content.split('\n').first)))
+              'steering':
+                  steeringById[m.id] ??
+                  steeringByHeader[m.content.split('\n').first],
             'thinking': m.reasoning,
             'thinking_elapsed_ms': m.thinkingMillis > 0
                 ? m.thinkingMillis
                 : null,
             'attachments': [
               for (final a in m.attachments)
-                {'name': a.name, 'mime': a.mimeType, 'size': a.sizeBytes},
+                {
+                  'id': a.id,
+                  if (a.referenceTag != null) '_tag': a.referenceTag,
+                  'name': a.name,
+                  'mime': a.mimeType,
+                  'size': a.sizeBytes,
+                  if (a.isFileReference) ...{
+                    'reference': true,
+                    'path': a.referencePath,
+                    '_tag': a.referenceTag,
+                  },
+                },
             ],
           },
       ],
@@ -657,6 +915,7 @@ class ControllerBridgeBackend implements BridgeBackend, BridgeClientLifecycle {
               'id': a.id,
               'message_id': m.id,
               'round_id': a.roundId,
+              if (a.contentOffset != null) 'content_offset': a.contentOffset,
               'verb': _verb(a.toolName),
               'object': TuiSnapshotEvidence.stepObject(a),
               'status': a.interrupted
@@ -720,13 +979,8 @@ class ControllerBridgeBackend implements BridgeBackend, BridgeClientLifecycle {
       ],
       'changes': session == null ? [] : _changes(session),
       'agents': session == null ? [] : _agents(session),
-      'queued': session == null
-          ? []
-          : container
-                .read(workTaskSteeringProvider)
-                .snapshot(session)
-                .where((e) => e['status'] == 'queued')
-                .toList(),
+      'steering': steering,
+      'queued': steering.where((e) => e['status'] == 'queued').toList(),
       'models': _models(),
       'workspaces': [...workspaces.map(_workspace), ..._remoteWorkspaces()],
       'sessions': _sessions(),
@@ -745,11 +999,15 @@ class ControllerBridgeBackend implements BridgeBackend, BridgeClientLifecycle {
 
   String _verb(String? name) => switch (name) {
     'coding_read_file' || 'coding_list_directory' => '读取',
-    'coding_write_file' => '编辑',
+    'coding_write_file' || 'coding_edit_file' => '编辑',
     'coding_create_directory' => '新建',
     'work_run_command' => '运行',
     'web_search' => '搜索',
     'fetch_url' => '浏览',
+    'work_spawn_agent' => '委派子任务',
+    'work_list_agents' || 'work_agent_status' => '查看子任务',
+    'work_followup_agent' => '补充子任务',
+    'work_cancel_agent' => '停止子任务',
     _ => '工具',
   };
   Map<String, Object?> _redact(Map<String, Object?> data) {
@@ -778,7 +1036,23 @@ class ControllerBridgeBackend implements BridgeBackend, BridgeClientLifecycle {
   Future<Map<String, Object?>> invoke(
     String method,
     Map<String, dynamic> params,
+  ) => runForWindow(
+    params['_bridge_client_scope'] as String?,
+    () => _invokeClient(method, params),
+  );
+
+  Future<Map<String, Object?>> _invokeClient(
+    String method,
+    Map<String, dynamic> params,
   ) async {
+    final wb = params[method == 'terminal.query' ? 'topic' : 'action'];
+    if ((method == 'terminal.query' || method == 'terminal.action') &&
+        wb is String &&
+        wb.startsWith('wb.')) {
+      await _refreshSecrets();
+      final result = await _workbench(method, params);
+      return result['editor_file'] == true ? result : _redact(result);
+    }
     final scope = params['_bridge_client_scope'] as String?;
     final id = params['session_id'] as String?;
     final protect =
@@ -827,6 +1101,82 @@ class ControllerBridgeBackend implements BridgeBackend, BridgeClientLifecycle {
     await _refreshSecrets();
     if (!capabilities.contains(method)) {
       throw const BridgeFailure('unsupported', '不支持此操作');
+    }
+    if (method == 'terminal.query' || method == 'terminal.action') {
+      if ((params[method == 'terminal.query' ? 'topic' : 'action'] as String? ??
+              '')
+          .startsWith('shell.')) {
+        return _redact(await _shellCommand(method, params));
+      }
+      if (_management.handles(method, params)) {
+        return _redact(await _management.invoke(method, params));
+      }
+      return _redact(await _terminalCommand(method, params));
+    }
+    if (method.startsWith('checkpoint.')) {
+      final id = requiredString(params, 'session_id');
+      _session(id);
+      final service = CheckpointService(container);
+      if (method == 'checkpoint.list') return _redact(await service.list(id));
+      final message = requiredString(params, 'message_id');
+      if (method == 'checkpoint.preview') {
+        return _redact(await service.preview(id, message));
+      }
+      if (params['confirmed'] != true) {
+        throw const BridgeFailure('confirmation_required', '请先核对检查点和回退范围');
+      }
+      return _redact(
+        await service.restore(
+          id,
+          message,
+          requiredString(params, 'fingerprint'),
+          requiredString(params, 'mode'),
+        ),
+      );
+    }
+    if (method.startsWith('plan.')) {
+      final id = requiredString(params, 'session_id');
+      _session(id);
+      final store = container.read(taskPlansProvider.notifier);
+      if (method == 'plan.get') {
+        final plan = container.read(taskPlansProvider)[id];
+        return _redact({
+          'plan': plan == null
+              ? null
+              : {...plan.toJson(), 'content_hash': plan.contentHash},
+        });
+      }
+      final revision = params['revision'];
+      if (revision is! int || revision < 1) {
+        throw const BridgeFailure('invalid_params', '计划版本无效');
+      }
+      switch (method) {
+        case 'plan.comment':
+          await store.comment(
+            id,
+            revision,
+            requiredString(params, 'text'),
+            stepId: params['step_id'] as String?,
+          );
+        case 'plan.approve':
+          await controller.approveTaskPlan(
+            id,
+            revision,
+            requiredString(params, 'content_hash'),
+          );
+          if (!controller.isConversationRunning(id) &&
+              state.sessionCheckpoints[id]?.resumeRequired == true) {
+            await controller.resumeSessionTask(id);
+          }
+        case 'plan.cancel':
+          if (container.read(taskPlansProvider)[id]?.taskId !=
+              controller.taskSnapshotFor(id)?['rootId']) {
+            throw const BridgeFailure('conflict', '该计划属于历史任务，未停止当前任务');
+          }
+          await store.cancel(id, revision);
+          controller.stop(conversationId: id);
+      }
+      return {'accepted': true};
     }
     if (method == 'mcp.bind') {
       final id = requiredString(params, 'session_id');
@@ -907,7 +1257,9 @@ class ControllerBridgeBackend implements BridgeBackend, BridgeClientLifecycle {
       }
       final path = await Directory(rawPath).resolveSymbolicLinks();
       final existing = (await _workspaces())
-          .where((w) => p.equals(p.normalize(w.root), p.normalize(path)))
+          .where(
+            (w) => workspacePathIdentity(w.root) == workspacePathIdentity(path),
+          )
           .firstOrNull;
       if (existing != null) return {'workspace': _workspace(existing)};
       if (method == 'workspace.prepare') {
@@ -1027,25 +1379,13 @@ class ControllerBridgeBackend implements BridgeBackend, BridgeClientLifecycle {
       }
       if (id != null) {
         _session(id);
-        await controller.selectConversation(id);
       }
-      container.read(shellTabProvider.notifier).set(switch (page) {
-        'settings' => ShellTab.settings,
-        'library' || 'media' => ShellTab.resources,
-        _ => ShellTab.chat,
-      });
-      if (page == 'media') {
-        container.read(resourceTabProvider.notifier).select('gen');
-      }
-      if (page == 'library') {
-        container.read(resourceTabProvider.notifier).select('sets');
-      }
-      await const MethodChannel(
-        'expert_chat/tui_bridge',
-      ).invokeMethod<void>('show');
-      if (change != null) {
-        container.read(tuiGuiNavigationProvider.notifier).openChange(change);
-      }
+      await showBridgeGui(
+        container,
+        page: page as String? ?? 'session',
+        sessionId: id,
+        change: change,
+      );
       return {'accepted': true};
     }
     final id = requiredString(params, 'session_id');
@@ -1092,11 +1432,16 @@ class ControllerBridgeBackend implements BridgeBackend, BridgeClientLifecycle {
               .catchError((Object _) => false),
         );
       case 'queue.add':
+        final receipt = await controller.addWorkRequirement(
+          id,
+          requiredString(params, 'text'),
+        );
         return {
-          'id': await controller.addWorkRequirement(
-            id,
-            requiredString(params, 'text'),
-          ),
+          'id': receipt,
+          'steering': container
+              .read(workTaskSteeringProvider)
+              .snapshot(id)
+              .firstWhere((entry) => entry['id'] == receipt),
         };
       case 'queue.remove':
         return {
@@ -1162,8 +1507,20 @@ class ControllerBridgeBackend implements BridgeBackend, BridgeClientLifecycle {
             .read(sessionPolicyProvider.notifier)
             .save(id, _policy(id).copyWith(approval: permission));
       case 'mode.set':
-        if (!['work', 'plan'].contains(params['mode'])) {
+        if (!['chat', 'work', 'plan'].contains(params['mode'])) {
           throw const BridgeFailure('invalid_params', '无效模式');
+        }
+        final conversation = _session(id);
+        if (conversation.isStoryLike || conversation.isStudy) {
+          throw const BridgeFailure('unsupported', '学习和创作会话保留原模式，可直接继续对话');
+        }
+        final work = params['mode'] != 'chat';
+        if (conversation.workMode != work) {
+          _idle(id);
+          await controller.runHostCall(id, () async {
+            controller.setWorkMode(work);
+            await controller.persistHostSession(id);
+          });
         }
         await container
             .read(sessionPolicyProvider.notifier)
@@ -1379,6 +1736,14 @@ class ControllerBridgeBackend implements BridgeBackend, BridgeClientLifecycle {
   }
 
   Future<Map<String, Object?>> _files(String id, String query) async {
+    final policy = _policy(id);
+    if (policy.sshProfileId.isNotEmpty) {
+      return _management.completeRemote(
+        policy.sshProfileId,
+        policy.remoteRoot,
+        query,
+      );
+    }
     final normalized = query.replaceAll(r'\', '/');
     if (normalized.startsWith('/') ||
         normalized.contains(':') ||
@@ -1438,19 +1803,44 @@ class ControllerBridgeBackend implements BridgeBackend, BridgeClientLifecycle {
     final imported = <Attachment>[];
     final legacy = <Object?>[];
     for (final item in raw) {
-      if (item is Map && item['token'] is String) {
+      if (item is Map && item['reference'] == true) {
+        final path = item['path'];
+        final tag = item['_tag'];
+        if (path is! String ||
+            !p.isAbsolute(path) ||
+            tag is! String ||
+            !RegExp(r'^\[(File|Audio|Video) [1-9][0-9]*\]$').hasMatch(tag)) {
+          throw const BridgeFailure('invalid_params', '文件地址或引用标签无效');
+        }
+        imported.add(
+          Attachment(
+            name: item['name'] as String? ?? p.basename(path),
+            mimeType: item['mime'] as String? ?? 'application/octet-stream',
+            sizeBytes: (item['size'] as num?)?.toInt() ?? 0,
+            referencePath: path,
+            referenceTag: tag,
+          ),
+        );
+      } else if (item is Map && item['token'] is String) {
         if (session == null || scope == null) {
           throw const BridgeFailure('invalid_params', '附件缺少来源会话');
         }
         imported.addAll(
-          _attachmentImports.resolve(scope, session, item['token'] as String),
+          _attachmentImports
+              .resolve(scope, session, item['token'] as String)
+              .map(
+                (a) => Attachment.fromJson({
+                  ...a.toJson(),
+                  if (item['_tag'] is String) 'referenceTag': item['_tag'],
+                }),
+              ),
         );
       } else {
         legacy.add(item);
       }
     }
     if (imported.length + legacy.length > 8) {
-      throw const BridgeFailure('too_large', '视频帧和其他附件合计最多8个，请减少附件');
+      throw const BridgeFailure('too_large', '附件合计最多8个，请减少附件');
     }
     return [
       ...imported,

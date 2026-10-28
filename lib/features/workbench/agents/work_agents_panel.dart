@@ -1,3 +1,4 @@
+import '../../../core/runtime_listenable.dart';
 import 'package:expert_chat/core/app_toast.dart';
 import 'package:flutter/services.dart';
 import '../../../state/chat_controller.dart';
@@ -39,7 +40,7 @@ class _WorkAgentsPanelState extends ConsumerState<WorkAgentsPanel> {
     final runtime = ref.watch(workAgentsProvider);
     final limits = ref.watch(workAgentLimitsProvider);
     return ListenableBuilder(
-      listenable: runtime,
+      listenable: runtimeListenable(runtime),
       builder: (context, _) {
         final all = runtime.records
             .where((r) => r.conversationId == widget.conversationId)
@@ -183,18 +184,28 @@ class _WorkAgentsPanelState extends ConsumerState<WorkAgentsPanel> {
             children: [
               Expanded(
                 child: Text(
-                  '${r.activity}${r.auxiliaryActivity.isEmpty ? '' : ' · 辅助验收：${r.auxiliaryActivity}'}',
+                  r.terminal
+                      ? '任务记录'
+                      : r.external
+                      ? '主代理正在处理'
+                      : r.activity,
                   style: theme.textTheme.titleSmall,
                 ),
               ),
               ExecutionStatusCapsule(
                 status: switch (r.status) {
-                  WorkAgentStatus.running ||
-                  WorkAgentStatus.waiting => ExecutionVisualStatus.running,
+                  WorkAgentStatus.running => ExecutionVisualStatus.running,
+                  WorkAgentStatus.waiting => ExecutionVisualStatus.waiting,
                   WorkAgentStatus.queued => ExecutionVisualStatus.queued,
                   WorkAgentStatus.completed => ExecutionVisualStatus.completed,
                   WorkAgentStatus.failed => ExecutionVisualStatus.failed,
                   _ => ExecutionVisualStatus.paused,
+                },
+                label: switch (r.status) {
+                  WorkAgentStatus.cancelled => '已停止',
+                  WorkAgentStatus.interrupted => '已中断',
+                  WorkAgentStatus.waiting => '等待中',
+                  _ => null,
                 },
               ),
               if (!r.terminal || r.auxiliaryActivity.isNotEmpty)
@@ -227,26 +238,32 @@ class _WorkAgentsPanelState extends ConsumerState<WorkAgentsPanel> {
                     Text(r.roleReason, style: theme.textTheme.bodySmall),
                 ],
                 const SizedBox(height: 8),
-                Text(
-                  '${r.model} · 深度 ${r.depth} · 直属 ${r.childrenCreated}/${r.limits.maxChildren}',
-                  style: theme.textTheme.bodySmall,
+                ExpansionTile(
+                  tilePadding: EdgeInsets.zero,
+                  title: const Text('模型与用量'),
+                  children: [
+                    Text(
+                      '${r.model} · 深度 ${r.depth} · 直属 ${r.childrenCreated}/${r.limits.maxChildren}',
+                      style: theme.textTheme.bodySmall,
+                    ),
+                    Text(
+                      r.restored && r.rounds == 0
+                          ? '旧版记录未保存完整轮次与用量'
+                          : '输入 ${r.inputTokens} / 输出 ${r.outputTokens} token · ${r.rounds} 轮${r.cost == null ? '' : ' · ${r.cost!.toStringAsFixed(4)} ${r.currency ?? ''}'}',
+                      style: theme.textTheme.bodySmall,
+                    ),
+                    if (!r.external && r.contextTokens > 0)
+                      Text(
+                        '当前独立上下文约 ${r.contextTokens} token',
+                        style: theme.textTheme.bodySmall,
+                      ),
+                  ],
                 ),
-                Text(
-                  r.restored && r.rounds == 0
-                      ? '旧版记录未保存完整轮次与用量'
-                      : '输入 ${r.inputTokens} / 输出 ${r.outputTokens} token · ${r.rounds} 轮${r.cost == null ? '' : ' · ${r.cost!.toStringAsFixed(4)} ${r.currency ?? ''}'}',
-                  style: theme.textTheme.bodySmall,
-                ),
-                if (!r.external && r.contextTokens > 0)
-                  Text(
-                    '当前独立上下文约 ${r.contextTokens} token',
-                    style: theme.textTheme.bodySmall,
-                  ),
-                if (r.restored)
+                if (r.restored && r.status == WorkAgentStatus.interrupted)
                   Padding(
                     padding: const EdgeInsets.only(top: 8),
                     child: Text(
-                      '历史记录：尚未恢复执行。请先核验并恢复主任务，再检查此子任务；旧调用不会自动重放。',
+                      '这是中断前保存的记录，确认后可以继续任务。',
                       style: TextStyle(
                         color: theme.colorScheme.onSurfaceVariant,
                       ),

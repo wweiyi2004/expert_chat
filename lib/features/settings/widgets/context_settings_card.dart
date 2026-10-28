@@ -175,7 +175,7 @@ class ContextSettingsCard extends StatelessWidget {
               children: [
                 const Expanded(child: Text('最多携带历史消息')),
                 Text(
-                  '${prefs.maxHistoryMessages} 条',
+                  prefs.maxHistoryMessages == 0 ? '按 Token 自动' : '${prefs.maxHistoryMessages} 条',
                   style: TextStyle(
                     color: scheme.primary,
                     fontWeight: FontWeight.w700,
@@ -185,16 +185,16 @@ class ContextSettingsCard extends StatelessWidget {
             ),
             Slider(
               value: prefs.maxHistoryMessages.toDouble(),
-              min: 4,
-              max: 64,
-              divisions: 15,
-              label: '${prefs.maxHistoryMessages} 条',
+              min: 0,
+              max: prefs.maxHistoryMessages > 64 ? prefs.maxHistoryMessages.toDouble() : 64,
+              divisions: prefs.maxHistoryMessages > 64 ? null : 16,
+              label: prefs.maxHistoryMessages == 0 ? '按 Token 自动' : '${prefs.maxHistoryMessages} 条',
               onChanged: prefs.enabled
                   ? (value) => onChanged(
                       prefs.copyWith(
                         maxHistoryMessages: ((value / 4).round() * 4).clamp(
-                          4,
-                          64,
+                          0,
+                          100000,
                         ),
                       ),
                     )

@@ -171,7 +171,7 @@ class ContextWindowManager {
     var index = units.length - 1;
     for (; index >= 0; index--) {
       final unit = units[index];
-      if (selectedByCount.isNotEmpty &&
+      if (prefs.maxHistoryMessages > 0 && selectedByCount.isNotEmpty &&
           boundedMessageCount + unit.length > prefs.maxHistoryMessages) {
         break;
       }

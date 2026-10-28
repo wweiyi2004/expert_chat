@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import 'package:shared_preferences/shared_preferences.dart';
+import '../../platform/preferences.dart';
 
 import 'llm_provider.dart';
 

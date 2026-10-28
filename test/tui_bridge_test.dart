@@ -20,9 +20,9 @@ import 'package:expert_chat/state/work_approvals.dart';
 import 'package:expert_chat/state/work_task_steering.dart';
 import 'package:expert_chat/state/work_questions.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:expert_chat/platform/credentials.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:expert_chat/platform/preferences.dart';
 import 'package:expert_chat/data/models.dart';
 import 'package:expert_chat/domain/llm/llm_http_errors.dart';
 import 'package:expert_chat/data/research/ssh_profile.dart';
@@ -107,6 +107,7 @@ class _GatedLlm extends FakeLlmProvider {
   _GatedLlm(super.chunks);
   Completer<void>? compactGate;
   int transientFailures = 0, httpAttempts = 0;
+  int titleAttempts = 0;
   final compactEntered = Completer<void>();
   @override
   Stream<ChatChunk> streamChat({
@@ -119,6 +120,9 @@ class _GatedLlm extends FakeLlmProvider {
     CancelToken? cancelToken,
   }) async* {
     httpAttempts++;
+    if (messages.any((m) => m.content.startsWith('根据用户首条要求生成'))) {
+      titleAttempts++;
+    }
     if (transientFailures > 0) {
       transientFailures--;
       throw const LlmHttpException('temporary', statusCode: 503);
@@ -505,6 +509,56 @@ void main() {
       await Future<void>.delayed(Duration.zero);
       await db.close();
     });
+    test('file reference survives sending and snapshot without expanding its label', () async {
+      final id = (await backend.invoke('session.new', {}))['session_id'] as String;
+      final file = File('${Directory.systemTemp.path}${Platform.pathSeparator}tui-address-only.bin');
+      final receipt = {
+        'reference': true, 'path': file.path, '_tag': '[File 1]',
+        'name': 'tui-address-only.bin', 'mime': 'application/octet-stream', 'size': 123,
+      };
+      await backend.invoke('message.send', {
+        'session_id': id, 'text': 'Inspect [File 1]', 'attachments': [receipt],
+      });
+      Map? user;
+      for (var attempt = 0; attempt < 100; attempt++) {
+        final messages = (await backend.snapshot(id))['messages'] as List;
+        user = messages.whereType<Map>().where((m) => m['role'] == 'user').firstOrNull;
+        if (user != null) break;
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+      expect(user, isNotNull);
+      expect(user!['text'], 'Inspect [File 1]');
+      final attachment = (user['attachments'] as List).single as Map;
+      expect(attachment['path'], file.path);
+      expect(attachment['_tag'], '[File 1]');
+      expect(attachment['reference'], true);
+    });
+    test('terminal context accepts explicit sources but rejects automatic routes', () async {
+      final id = (await backend.invoke('session.new', {}))['session_id'] as String;
+      final settings = container.read(settingsControllerProvider).requireValue;
+      final profile = settings.profiles.first;
+      await container.read(conversationModelChoiceProvider.notifier).select(
+        id, modelSourceChoice(profile.id, profile.chatModel),
+      );
+      await backend.invoke('terminal.action', {
+        'session_id': id, 'action': 'context.set', 'window': 64000, 'output': 16000,
+      });
+      final panel = await backend.invoke('terminal.query', {
+        'session_id': id, 'topic': 'context',
+      });
+      expect((panel['context'] as Map)['contextWindowTokens'], 64000);
+      expect((panel['context'] as Map)['maxOutputTokens'], 16000);
+      await backend.invoke('terminal.action', {
+        'session_id': id, 'action': 'price.set', 'input': 1, 'output': 2, 'cached': 0,
+      });
+      for (final choice in [autoModelChoice, '${modelGroupPrefix}test']) {
+        await container.read(conversationModelChoiceProvider.notifier).select(id, choice);
+        await expectLater(backend.invoke('terminal.action', {
+          'session_id': id, 'action': 'context.set', 'window': 32000,
+        }), throwsA(isA<BridgeFailure>().having((e) => e.code, 'code', 'ambiguous_model')));
+      }
+      expect(container.read(settingsControllerProvider).requireValue.modelContexts.values.single.contextWindowTokens, 64000);
+    });
     test(
       'new session accepts selected connected SSH workspace identity',
       () async {
@@ -759,10 +813,13 @@ void main() {
         expect(session['retry']['attempt'], 2);
         expect(session['retry']['retry_after_ms'], greaterThan(0));
         await done;
-        expect(llm.httpAttempts, 2);
+        expect(llm.httpAttempts - llm.titleAttempts, 2);
+        expect(llm.titleAttempts, 1);
         expect(controller.retryForSession(id)?['active'], false);
         final finished = await backend.snapshot(id);
-        expect((finished['session'] as Map)['request_count'], 2);
+        expect((finished['session'] as Map)['request_count'], 3);
+        expect((finished['session'] as Map)['task_request_count'], 2);
+        expect((finished['session'] as Map)['title_request_count'], 1);
         final before = Map<String, Object?>.from(snapshot)
           ..['session'] = {...session, 'retry': null};
         expect(

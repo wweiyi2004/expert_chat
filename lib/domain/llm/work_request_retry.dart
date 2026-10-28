@@ -46,12 +46,12 @@ class WorkRequestRetry {
               : null;
           final denied =
               error is LlmHttpException &&
-              {
+              ({'quota_exhausted', 'balance_exhausted', 'subscription_expired', 'authentication', 'permission'}.contains(error.category) || {
                 'invalid_api_key',
                 'authentication_error',
                 'permission_error',
                 'insufficient_quota',
-              }.contains(error.apiCode);
+              }.contains(error.apiCode));
           final transient =
               !denied &&
               ({429, 502, 503, 504}.contains(status) ||
@@ -68,6 +68,13 @@ class WorkRequestRetry {
             rethrow;
           }
           var delay = baseDelay * attempt;
+          if (error is LlmHttpException && error.retryAfterSeconds != null) {
+            final requested = Duration(seconds: error.retryAfterSeconds!);
+            // Do not retry ahead of the service's limit window. Long waits stay
+            // explicit user actions instead of silently keeping a task pending.
+            if (requested > const Duration(seconds: 30)) rethrow;
+            if (requested > delay) delay = requested;
+          }
           if (error is DioException) {
             final header = error.response?.headers.value('retry-after');
             final seconds = int.tryParse(header ?? '');

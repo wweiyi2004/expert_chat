@@ -6,7 +6,7 @@ import 'dart:io';
 import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:expert_chat/platform/preferences.dart';
 import 'package:expert_chat/data/backup_codec.dart';
 import 'package:expert_chat/data/backup_migrations.dart';
 import 'package:expert_chat/features/settings/widgets/backup_compatibility_notice.dart';
@@ -171,6 +171,15 @@ void main() {
       goal: 'preserve task goal',
     );
     core.agentTaskId = 'a';
+    core.budget = {
+      'workSeconds': 0,
+      'timeLimitEnabled': false,
+      'maxSearches': 1073741824,
+      'maxToolCalls': 1073741824,
+      'elapsedMs': 1200,
+      'searches': 2,
+      'toolCalls': 3,
+    };
     core.agentRootId = 'machine-child';
     core.lineage.add('a');
     core.target = {

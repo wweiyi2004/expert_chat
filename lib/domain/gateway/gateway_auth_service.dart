@@ -3,7 +3,7 @@ import 'dart:math';
 
 import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
-import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
+import '../../platform/web_auth.dart';
 
 import '../../data/gateway_config.dart';
 

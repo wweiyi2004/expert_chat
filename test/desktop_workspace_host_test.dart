@@ -22,7 +22,7 @@ void main() {
         isA<WorkspaceHostException>().having(
           (e) => e.message,
           'message',
-          contains('未包含电脑执行端'),
+          contains('expert-desktop.exe'),
         ),
       ),
     );

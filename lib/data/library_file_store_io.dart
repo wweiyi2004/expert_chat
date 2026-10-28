@@ -1,9 +1,8 @@
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart'
-    show TargetPlatform, defaultTargetPlatform;
-import 'package:path_provider/path_provider.dart';
+import '../platform/foundation.dart' show TargetPlatform, defaultTargetPlatform;
+import '../platform/paths.dart';
 import 'library_paths.dart';
 
 /// App-owned library folder: `ExpertChat/素材/{images|files}/`.

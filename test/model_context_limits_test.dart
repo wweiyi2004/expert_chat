@@ -67,7 +67,8 @@ void main() {
       expect(prefs('a').contextWindowTokens, 128000);
       expect(prefs('a').maxOutputTokens, 16000);
       expect(prefs('b').contextWindowTokens, 1000000);
-      expect(prefs('b').maxOutputTokens, 0);
+      // Zero output means "use the model's reported maximum", not "unset".
+      expect(prefs('b').maxOutputTokens, 64000);
     },
   );
 

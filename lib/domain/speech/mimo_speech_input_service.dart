@@ -3,7 +3,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
-import 'package:path_provider/path_provider.dart';
+import '../../platform/paths.dart';
 import 'package:record/record.dart';
 
 import '../../data/media_api_config.dart';

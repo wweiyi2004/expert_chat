@@ -1,3 +1,5 @@
+import '../../platform/theme_mode.dart';
+import '../../core/gui_providers.dart';
 import 'package:expert_chat/core/app_toast.dart';
 import 'widgets/model_context_settings.dart';
 import 'widgets/tool_registry_panel.dart';
@@ -797,20 +799,20 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                     ),
                               ),
                               const SizedBox(height: 8),
-                              _PrototypeSettingsSegments<ThemeMode>(
+                              _PrototypeSettingsSegments<ThemePreference>(
                                 segments: const [
                                   ButtonSegment(
-                                    value: ThemeMode.system,
+                                    value: ThemePreference.system,
                                     label: Text('跟随'),
                                     icon: Icon(Icons.brightness_auto, size: 18),
                                   ),
                                   ButtonSegment(
-                                    value: ThemeMode.light,
+                                    value: ThemePreference.light,
                                     label: Text('浅色'),
                                     icon: Icon(Icons.light_mode, size: 18),
                                   ),
                                   ButtonSegment(
-                                    value: ThemeMode.dark,
+                                    value: ThemePreference.dark,
                                     label: Text('深色'),
                                     icon: Icon(Icons.dark_mode, size: 18),
                                   ),

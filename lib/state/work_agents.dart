@@ -1,6 +1,6 @@
 import 'dart:convert';
 import 'dart:async';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:riverpod/riverpod.dart';
 import '../core/providers.dart';
 import '../domain/workbench/agents/work_agent_runtime.dart';
 export '../domain/workbench/agents/work_agent_runtime.dart';

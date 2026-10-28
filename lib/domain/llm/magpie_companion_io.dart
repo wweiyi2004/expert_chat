@@ -169,7 +169,6 @@ class MagpieCompanion {
           .whereType<String>()
           .where((id) => id.trim().isNotEmpty)
           .toSet()
-          .take(1000)
           .toList()
         ..sort();
     } finally {

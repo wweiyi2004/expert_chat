@@ -3,6 +3,13 @@ use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartupPhase {
+    Connecting,
+    Workspace,
+    Session,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Draft {
     pub text: String,
@@ -42,7 +49,7 @@ impl TextSelection {
         }
         let cell = &self.buffer[(x, y)];
         let width = match cell.diff_option {
-            ratatui::buffer::CellDiffOption::ForcedWidth(w) => u16::from(w.get()),
+            ratatui::buffer::CellDiffOption::ForcedWidth(w) => w.get(),
             _ => cell.symbol().width().max(1) as u16,
         };
         (y, x.saturating_add(width.saturating_sub(1))) >= (a.1, a.0) && (y, x) <= (b.1, b.0)
@@ -84,11 +91,29 @@ impl TextSelection {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormKind {
+    Workbench,
+    ImportSessions,
+    ImportReview,
+    ContextContents,
+    SearchAll,
+    Management,
+    Quota,
     Settings,
     Provider,
     Mcp,
     Skin,
     Asr,
+    Context,
+    Memory,
+    Skills,
+    Skill,
+    Hooks,
+    Hook,
+    AddDir,
+    WorkspacePermissions,
+    WorkspaceScope,
+    Login,
+    LoginProgress,
 }
 #[derive(Clone)]
 pub struct FormField {
@@ -97,6 +122,8 @@ pub struct FormField {
     pub value: String,
     pub secret: bool,
     pub editable: bool,
+    /// Closed option sets render as a selector and cycle with ←/→ or Space.
+    pub choices: &'static [(&'static str, &'static str)],
 }
 impl std::fmt::Debug for FormField {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -111,6 +138,8 @@ pub struct TerminalForm {
     pub kind: FormKind,
     pub title: String,
     pub fields: Vec<FormField>,
+    pub original_fields: Vec<FormField>,
+    pub cursor: usize,
     pub selected: usize,
     pub editing: bool,
     pub notice: String,
@@ -123,6 +152,17 @@ pub struct CommandSpec {
     pub description: &'static str,
     pub usage: &'static str,
 }
+
+pub const ENABLED_CHOICES: &[(&str, &str)] = &[("true", "开启"), ("false", "关闭")];
+pub const API_FORMAT_CHOICES: &[(&str, &str)] = &[
+    ("auto", "自动"),
+    ("openAiCompatible", "OpenAI 兼容"),
+    ("openAiResponses", "Responses"),
+    ("anthropicMessages", "Anthropic"),
+    ("geminiNative", "Gemini"),
+];
+pub const AUTH_CHOICES: &[(&str, &str)] = &[("apiKey", "API Key"), ("none", "无需认证")];
+pub const TRANSPORT_CHOICES: &[(&str, &str)] = &[("stdio", "本地程序"), ("http", "远程 HTTP")];
 
 pub fn text<'a>(v: &'a Value, key: &str) -> &'a str {
     v[key].as_str().unwrap_or("")
@@ -177,17 +217,83 @@ pub enum View {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Drawer {
+    Shell,
+    Editor,
+    ToolDetail,
+    Info,
+    Usage,
+    Diff,
+    Attachments,
+    Steps,
+    Rounds,
+    Plan,
+    Tasks,
+    Checkpoints,
+    CheckpointReview,
     Model,
     Permissions,
     Sessions,
     Workspace,
     Help,
     History,
+    Messages,
     Login,
+    Effort,
+    Library,
+}
+#[derive(Debug, Clone)]
+pub struct ReadingAnchor {
+    pub message_id: Option<String>,
+    pub line: usize,
 }
 #[derive(Debug)]
 pub struct App {
+    pub side_panel: Option<crate::workbench::SidePanel>,
+    pub side_cache: HashMap<String,crate::workbench::SidePanel>,
+    pub wb_job: Option<String>,
+    pub wb_poll_pending: bool,
+    pub wb_epoch: u64,
+    pub wb_action_pending: Option<u64>,
+    pub shell_state: Value,
+    pub shell_output: String,
+    pub shell_start: Option<Command>,
+    pub shell_poll_pending: bool,
+    pub shell_follow: bool,
+    pub search_target: Option<Value>,
+    pub native_editor: Option<crate::native_editor::NativeEditor>,
+    pub tool_detail: Value,
+    pub tool_section: usize,
+    pub settings_page: u8,
+    /// Library contents from the host, the active tab, and a pending delete.
+    pub library: Value,
+    pub library_sets: bool,
+    pub library_confirm: Option<String>,
+    /// First-visit folder awaiting a trust decision; nothing else renders.
+    pub trust_prompt: Option<String>,
+    pub trust_choice: usize,
+    /// Transient startup state; never persisted in a session snapshot.
+    pub startup_phase: Option<StartupPhase>,
+    /// Workspace still being checked or registered.
+    pub workspace_pending: bool,
+    /// Settings list kept visible behind a stacked add/edit dialog.
+    pub form_backdrop: Option<TerminalForm>,
+    pub connect_after_save: bool,
+    pub info_title: String,
+    pub info_lines: Vec<String>,
+    pub usage_detail: Value,
+    pub usage_expanded: bool,
+    pub diff_detail: Value,
+    pub extra_generation: u64,
+    pub failures_only: bool,
+    pub expanded_steps: HashSet<String>,
+    pub steps_message: Option<String>,
+    pub steps_round: Option<String>,
     pub snapshot: Value,
+    pub snapshot_cursor: u64,
+    pub thinking_updated_at: Option<(String, Instant)>,
+    pub reviewed_plan: Value,
+    pub checkpoint_points: Vec<Value>,
+    pub checkpoint_review: Value,
     pub input: String,
     pub notice: String,
     pub drawer: Option<Drawer>,
@@ -197,6 +303,8 @@ pub struct App {
     pub expanded: bool,
     pub sidebar: bool,
     pub approval_collapsed: bool,
+    pub approval_focus: Option<(String, usize)>,
+    pub approval_pending: Option<String>,
     pub rejection: bool,
     pub exit: bool,
     pub history: Vec<String>,
@@ -217,14 +325,16 @@ pub struct App {
     pub completion_closed: bool,
     pub files: Vec<String>,
     pub search: String,
+    pub model_source_filter: Option<String>,
+    pub login_provider_editor: bool,
     pub effort_index: usize,
     pub thinking: bool,
-    pub model_effort_focus: bool,
     pub retry: Option<Value>,
     pub tick: u64,
     pub clipboard_requested: bool,
     pub attachments: Vec<Value>,
     pub question_index: usize,
+    pub question_ui: crate::questions::QuestionUi,
     pub question_answers: serde_json::Map<String, Value>,
     pub pending_draft: Option<(String, Vec<Value>)>,
     pub welcome_seen: bool,
@@ -257,6 +367,7 @@ pub struct App {
     pub outbox: Vec<Command>,
     pub attachment_targets: Vec<(Command, Option<String>)>,
     pub file_picker_requested: bool,
+    pub editor_requested: bool,
     pub skin: String,
     pub background: Option<String>,
     pub accent: Option<String>,
@@ -264,6 +375,10 @@ pub struct App {
     pub form_confirm: Option<String>,
     pub form_revision: u64,
     pub pending_form: Option<(u64, Command)>,
+    pub pending_form_values: Vec<FormField>,
+    pub login_job: Option<String>,
+    pub login_poll_pending: bool,
+    pub uncertain_form_revision: Option<u64>,
     pub selection: Option<TextSelection>,
     pub selection_revision: u64,
     pub copy_requested: Option<String>,
@@ -271,11 +386,50 @@ pub struct App {
     pub send_after_binding: bool,
     pub deferred_paths: Vec<std::path::PathBuf>,
     pub cancel_attachments_requested: bool,
+    pub reading_anchor: Option<ReadingAnchor>,
+    pub unseen_output: bool,
+    pub transcript_query: String,
+    pub transcript_match: Option<String>,
 }
 impl Default for App {
     fn default() -> Self {
         Self {
+            side_panel: None, side_cache: HashMap::new(), wb_job: None, wb_poll_pending: false, wb_epoch: 0, wb_action_pending: None,
+            shell_state: Value::Null,
+            shell_output: String::new(),
+            shell_start: None,
+            shell_poll_pending: false,
+            shell_follow: true,
+            search_target: None,
+            native_editor: None,
+            tool_detail: Value::Null,
+            tool_section: 0,
+            settings_page: 0,
+            library: Value::Null,
+            library_sets: false,
+            library_confirm: None,
+            trust_prompt: None,
+            trust_choice: 0,
+            startup_phase: None,
+            workspace_pending: false,
+            form_backdrop: None,
+            connect_after_save: false,
+            info_title: String::new(),
+            info_lines: vec![],
+            extra_generation: 0,
+            failures_only: false,
+            expanded_steps: HashSet::new(),
+            steps_message: None,
+            steps_round: None,
+            usage_detail: Value::Null,
+            usage_expanded: false,
+            diff_detail: Value::Null,
             snapshot: json!({}),
+            snapshot_cursor: 0,
+            thinking_updated_at: None,
+            reviewed_plan: Value::Null,
+            checkpoint_points: vec![],
+            checkpoint_review: Value::Null,
             input: String::new(),
             notice: String::new(),
             drawer: None,
@@ -285,6 +439,8 @@ impl Default for App {
             expanded: false,
             sidebar: false,
             approval_collapsed: false,
+            approval_focus: None,
+            approval_pending: None,
             rejection: false,
             exit: false,
             history: vec![],
@@ -305,14 +461,16 @@ impl Default for App {
             completion_closed: false,
             files: vec![],
             search: String::new(),
+            model_source_filter: None,
+            login_provider_editor: false,
             effort_index: 0,
             thinking: true,
-            model_effort_focus: false,
             retry: None,
             tick: 0,
             clipboard_requested: false,
             attachments: vec![],
             question_index: 0,
+            question_ui: crate::questions::QuestionUi::default(),
             question_answers: serde_json::Map::new(),
             pending_draft: None,
             welcome_seen: false,
@@ -345,10 +503,15 @@ impl Default for App {
             outbox: vec![],
             attachment_targets: vec![],
             file_picker_requested: false,
+            editor_requested: false,
             skin: "terminal".into(),
             form_confirm: None,
             form_revision: 0,
             pending_form: None,
+            pending_form_values: vec![],
+            login_job: None,
+            login_poll_pending: false,
+            uncertain_form_revision: None,
             selection: None,
             selection_revision: 0,
             copy_requested: None,
@@ -356,6 +519,10 @@ impl Default for App {
             send_after_binding: false,
             deferred_paths: vec![],
             cancel_attachments_requested: false,
+            reading_anchor: None,
+            unseen_output: false,
+            transcript_query: String::new(),
+            transcript_match: None,
             background: None,
             accent: None,
             code_style: "auto".into(),
@@ -457,9 +624,8 @@ impl App {
         for path in paths {
             match crate::attachment::import_params(&path) {
                 Ok(params) => {
-                    let c = self.command("attachment.import", params);
-                    self.attachment_targets
-                        .push((c.clone(), self.agent_message_id.clone()));
+                    let mut c = self.command("attachment.import", params);
+                    self.begin_attachment_import(&mut c, self.agent_message_id.clone());
                     commands.push(c);
                 }
                 Err(error) => self.notice = format!("无法附加文件：{error}"),
@@ -470,13 +636,31 @@ impl App {
         }
         commands
     }
-    fn field(key: &str, label: &str, value: &str, secret: bool, editable: bool) -> FormField {
+    pub(crate) fn field(
+        key: &str,
+        label: &str,
+        value: &str,
+        secret: bool,
+        editable: bool,
+    ) -> FormField {
         FormField {
             key: key.into(),
             label: label.into(),
             value: value.into(),
             secret,
             editable,
+            choices: &[],
+        }
+    }
+    pub(crate) fn choice(
+        key: &str,
+        label: &str,
+        value: &str,
+        choices: &'static [(&'static str, &'static str)],
+    ) -> FormField {
+        FormField {
+            choices,
+            ..Self::field(key, label, value, false, true)
         }
     }
     pub fn panel_rows(&self) -> Vec<String> {
@@ -486,12 +670,13 @@ impl App {
             .unwrap_or_default()
     }
     pub fn open_settings(&mut self) -> Vec<Command> {
+        self.settings_page = 0;
         self.drawer = None;
         self.view = View::Chat;
         self.rebuild_settings();
         vec![self.command("settings.get", json!({}))]
     }
-    fn rebuild_settings(&mut self) {
+    pub(crate) fn rebuild_settings(&mut self) {
         let mut fields = vec![Self::field(
             "provider.new",
             "＋ 添加模型来源",
@@ -499,33 +684,82 @@ impl App {
             false,
             false,
         )];
+        fields.insert(
+            0,
+            Self::field(
+                "subscriptions",
+                "订阅服务 · 登录账号或连接套餐 Key",
+                "",
+                false,
+                false,
+            ),
+        );
         for (i, p) in items(&self.snapshot["settings"], "providers")
             .iter()
             .enumerate()
         {
+            let models = items(p, "models").len();
+            let state = if p["enabled"] == false {
+                "已停用".to_owned()
+            } else if models > 0 {
+                format!("{models} 个模型")
+            } else {
+                "未发现模型".to_owned()
+            };
             fields.push(Self::field(
                 &format!("provider.{i}"),
                 &format!("模型来源 · {}", text(p, "name")),
-                "",
+                &state,
                 false,
                 false,
             ));
         }
         fields.push(Self::field("mcp.new", "＋ 添加 MCP 服务", "", false, false));
         for (i, m) in items(&self.snapshot["settings"], "mcp").iter().enumerate() {
+            let state = if m["enabled"] == false {
+                "已停用".to_owned()
+            } else {
+                let tools = items(m, "tools").len();
+                let transport = if text(m, "transport") == "http" {
+                    "HTTP"
+                } else {
+                    "stdio"
+                };
+                if tools > 0 {
+                    format!("{transport} · {tools} 个工具")
+                } else {
+                    transport.to_owned()
+                }
+            };
             fields.push(Self::field(
                 &format!("mcp.{i}"),
                 &format!("MCP · {}", text(m, "name")),
-                "",
+                &state,
                 false,
                 false,
             ));
         }
-        fields.push(Self::field("skin", "终端皮肤", "", false, false));
+        let skin = crate::theme::SKINS
+            .iter()
+            .find(|(id, _)| *id == self.skin)
+            .map_or(self.skin.as_str(), |(_, label)| label);
+        fields.push(Self::field("skin", "终端皮肤", skin, false, false));
+        fields.push(Self::field(
+            "context",
+            "模型上下文窗口与输出预算",
+            "当前模型",
+            false,
+            false,
+        ));
+        let asr = &self.snapshot["settings"]["asr"];
         fields.push(Self::field(
             "asr",
             "语音识别 · 音频附件转写",
-            "",
+            if asr["enabled"] == true {
+                text(asr, "model")
+            } else {
+                "未启用"
+            },
             false,
             false,
         ));
@@ -537,39 +771,53 @@ impl App {
             false,
         ));
         self.form_revision = self.form_revision.wrapping_add(1);
+        self.form_backdrop = None;
+        if self.settings_page == 1 {
+            fields.retain(|f| f.key.starts_with("provider."));
+        }
+        if self.settings_page == 2 {
+            fields.retain(|f| f.key.starts_with("mcp."));
+        }
         self.form = Some(TerminalForm {
             kind: FormKind::Settings,
-            title: "终端设置".into(),
+            title: match self.settings_page {
+                1 => "连接提供商",
+                2 => "MCP 服务",
+                _ => "终端设置",
+            }
+            .into(),
+            original_fields: fields.clone(),
+            cursor: fields.first().map_or(0, |field| field.value.len()),
             fields,
             selected: 0,
             editing: false,
-            notice: "↑↓ 选择 · Enter 打开 · Esc 返回".into(),
+            notice: String::new(),
             items: vec![],
             item_selected: 0,
         });
     }
-    fn edit_provider(&mut self, item: Value) {
+    pub(crate) fn edit_provider(&mut self, item: Value) {
+        self.login_provider_editor = false;
+        self.connect_after_save = self.settings_page == 1 && text(&item, "id").is_empty();
         let models = items(&item, "models")
             .iter()
             .filter_map(Value::as_str)
             .collect::<Vec<_>>()
             .join(",");
-        let fields = vec![
+        let mut fields = vec![
             Self::field("id", "来源 ID", text(&item, "id"), false, false),
             Self::field("name", "名称", text(&item, "name"), false, true),
-            Self::field(
+            Self::choice(
                 "api_format",
-                "协议 auto/openAiCompatible/openAiResponses/anthropicMessages/geminiNative",
+                "协议",
                 item["api_format"].as_str().unwrap_or("auto"),
-                false,
-                true,
+                API_FORMAT_CHOICES,
             ),
-            Self::field(
+            Self::choice(
                 "auth_mode",
-                "认证 apiKey/none",
+                "认证",
                 item["auth_mode"].as_str().unwrap_or("apiKey"),
-                false,
-                true,
+                AUTH_CHOICES,
             ),
             Self::field("base_url", "API 地址", text(&item, "base_url"), false, true),
             Self::field("models", "模型 ID（逗号分隔）", &models, false, true),
@@ -587,35 +835,56 @@ impl App {
                 false,
                 true,
             ),
-            Self::field("api_key", "API Key（留空保留原密钥）", "", true, true),
-            Self::field(
+            Self::field("api_key", "API Key", "", true, true),
+            Self::choice(
                 "enabled",
-                "启用 true/false",
+                "启用",
                 if item["enabled"] == false {
                     "false"
                 } else {
                     "true"
                 },
-                false,
-                true,
+                ENABLED_CHOICES,
             ),
             Self::field("__save", "保存来源", "", false, false),
             Self::field("__scan", "发现模型（保存后可用）", "", false, false),
             Self::field("__remove", "删除来源（需二次确认）", "", false, false),
         ];
+        if matches!(text(&item, "auth_mode"), "chatgpt" | "kimiCode") {
+            for field in &mut fields {
+                if ["auth_mode", "base_url", "api_key", "clear_key"].contains(&field.key.as_str()) {
+                    field.editable = false;
+                    field.choices = &[];
+                    if field.key == "api_key" {
+                        field.label = "账号授权（无需填写 Key）".into();
+                    }
+                }
+            }
+        }
+        let new = text(&item, "id").is_empty();
+        self.stack_dialog();
         self.form_revision = self.form_revision.wrapping_add(1);
         self.form = Some(TerminalForm {
             kind: FormKind::Provider,
-            title: "模型来源".into(),
+            title: if self.connect_after_save {
+                "连接新提供商"
+            } else if new {
+                "添加模型来源"
+            } else {
+                "编辑模型来源"
+            }
+            .into(),
+            original_fields: fields.clone(),
+            cursor: fields.get(1).map_or(0, |field| field.value.len()),
             fields,
             selected: 1,
             editing: true,
-            notice: "Tab/↑↓ 切字段 · Ctrl+U 清字段 · Enter 下一项/执行 · Esc 返回".into(),
+            notice: String::new(),
             items: vec![item],
             item_selected: 0,
         });
     }
-    fn edit_mcp(&mut self, item: Value) {
+    pub(crate) fn edit_mcp(&mut self, item: Value) {
         let args = items(&item, "args")
             .iter()
             .filter_map(Value::as_str)
@@ -624,12 +893,11 @@ impl App {
         let fields = vec![
             Self::field("id", "服务 ID", text(&item, "id"), false, false),
             Self::field("name", "名称", text(&item, "name"), false, true),
-            Self::field(
+            Self::choice(
                 "transport",
-                "传输 stdio/http",
+                "传输",
                 item["transport"].as_str().unwrap_or("stdio"),
-                false,
-                true,
+                TRANSPORT_CHOICES,
             ),
             Self::field("command", "程序", text(&item, "command"), false, true),
             Self::field("args", "参数（每行一个）", &args, false, true),
@@ -647,47 +915,65 @@ impl App {
                 false,
                 true,
             ),
-            Self::field("env", "环境变量 JSON（留空保留）", "", true, true),
-            Self::field("headers", "HTTP 头 JSON（留空保留）", "", true, true),
-            Self::field("token", "访问令牌（留空保留）", "", true, true),
-            Self::field(
+            Self::field("env", "环境变量 JSON", "", true, true),
+            Self::field("headers", "HTTP 头 JSON", "", true, true),
+            Self::field("token", "访问令牌", "", true, true),
+            Self::choice(
                 "enabled",
-                "启用 true/false",
+                "启用",
                 if item["enabled"] == false {
                     "false"
                 } else {
                     "true"
                 },
-                false,
-                true,
+                ENABLED_CHOICES,
             ),
             Self::field("__save", "保存 MCP 服务", "", false, false),
-            Self::field(
+            Self::field("__connect", "连接并发现工具（需确认）", "", false, false),
+            Self::field("__disconnect", "断开并停用（需确认）", "", false, false),
+            Self::field("__tools", "查看已发现工具", "", false, false),
+            Self::choice(
                 "selected",
-                "本会话使用 true/false",
+                "本会话使用",
                 if item["selected"] == true {
                     "true"
                 } else {
                     "false"
                 },
-                false,
-                true,
+                ENABLED_CHOICES,
             ),
             Self::field("__bind", "应用本会话选用（需确认）", "", false, false),
             Self::field("__scan", "连接并发现工具（需确认）", "", false, false),
             Self::field("__remove", "删除 MCP 服务（需二次确认）", "", false, false),
         ];
+        let new = text(&item, "id").is_empty();
+        self.stack_dialog();
         self.form_revision = self.form_revision.wrapping_add(1);
         self.form = Some(TerminalForm {
             kind: FormKind::Mcp,
-            title: "MCP 服务".into(),
+            title: if new {
+                "添加 MCP 服务"
+            } else {
+                "编辑 MCP 服务"
+            }
+            .into(),
+            original_fields: fields.clone(),
+            cursor: fields.get(1).map_or(0, |field| field.value.len()),
             fields,
             selected: 1,
             editing: true,
-            notice: "Tab/↑↓ 切字段 · Ctrl+U 清字段 · Enter 下一项/执行 · Esc 返回".into(),
+            notice: String::new(),
             items: vec![item],
             item_selected: 0,
         });
+    }
+    /// Opening an editor from the settings list layers it above that list.
+    fn stack_dialog(&mut self) {
+        match self.form.take() {
+            Some(form) if form.kind == FormKind::Settings => self.form_backdrop = Some(form),
+            None => self.form_backdrop = None,
+            Some(_) => {}
+        }
     }
     pub fn open_skin(&mut self) {
         self.drawer = None;
@@ -707,10 +993,15 @@ impl App {
         self.form = Some(TerminalForm {
             kind: FormKind::Skin,
             title: "终端皮肤".into(),
+            original_fields: fields.clone(),
+            cursor: fields.first().map_or(0, |field| field.value.len()),
             fields,
-            selected: 0,
+            selected: crate::theme::SKINS
+                .iter()
+                .position(|(id, _)| *id == self.skin)
+                .unwrap_or(0),
             editing: false,
-            notice: "↑↓ 选择 · Enter 应用并保存 · Esc 返回".into(),
+            notice: "方向键或点击预览 · Enter 应用并保存 · Esc 返回".into(),
             items: vec![],
             item_selected: 0,
         });
@@ -732,28 +1023,30 @@ impl App {
                 false,
                 true,
             ),
-            Self::field("api_key", "API Key（留空保留）", "", true, true),
-            Self::field(
+            Self::field("api_key", "API Key", "", true, true),
+            Self::choice(
                 "enabled",
-                "启用 true/false",
+                "启用",
                 if item["enabled"] == true {
                     "true"
                 } else {
                     "false"
                 },
-                false,
-                true,
+                ENABLED_CHOICES,
             ),
             Self::field("__save", "保存语音识别配置", "", false, false),
         ];
+        self.stack_dialog();
         self.form_revision = self.form_revision.wrapping_add(1);
         self.form = Some(TerminalForm {
             kind: FormKind::Asr,
             title: "语音识别".into(),
+            original_fields: fields.clone(),
+            cursor: fields.first().map_or(0, |field| field.value.len()),
             fields,
             selected: 0,
             editing: true,
-            notice: "支持 OpenAI 转写与 MiMo 音频识别 · Tab 切字段 · Enter 下一项/保存".into(),
+            notice: "支持 OpenAI 转写与 MiMo 音频识别".into(),
             items: vec![],
             item_selected: 0,
         });
@@ -774,6 +1067,10 @@ impl App {
         self.redraw_requested = true;
     }
     fn apply_skin(&mut self, name: &str) {
+        let name = crate::theme::SKINS
+            .iter()
+            .find(|(id, label)| *id == name || *label == name)
+            .map_or(name, |(id, _)| *id);
         match crate::config::save_skin(name) {
             Ok(config) => {
                 self.sync_appearance(config);
@@ -789,11 +1086,54 @@ impl App {
         }
     }
     pub fn close_popup(&mut self) {
+        if self.drawer == Some(Drawer::Editor) {
+            let commands = self.finish_native_editor(false);
+            self.outbox.extend(commands);
+            return;
+        }
+        if self
+            .form
+            .as_ref()
+            .is_some_and(|f| f.kind == FormKind::Management)
+        {
+            let commands = self.management_cancel();
+            self.outbox.extend(commands);
+        }
+        if self.question_popup_visible() {
+            self.hide_questions();
+            return;
+        }
+        if self.form.is_some() && !self.confirm_form_close() {
+            return;
+        }
         self.form = None;
+        self.form_backdrop = None;
         self.drawer = None;
         self.form_confirm = None;
         self.full_confirm = false;
         self.form_revision = self.form_revision.wrapping_add(1);
+    }
+    fn confirm_form_close(&mut self) -> bool {
+        let Some(form) = &mut self.form else {
+            return true;
+        };
+        let dirty = form.fields.iter().any(|field| {
+            field.editable
+                && form
+                    .original_fields
+                    .iter()
+                    .find(|v| v.key == field.key)
+                    .is_none_or(|original| original.value != field.value)
+        });
+        if dirty {
+            let marker = format!("discard:{}", self.form_revision);
+            if self.form_confirm.as_ref() != Some(&marker) {
+                self.form_confirm = Some(marker);
+                form.notice = "有未保存修改；再次关闭或按 Esc 放弃，继续编辑则保留。".into();
+                return false;
+            }
+        }
+        true
     }
     pub fn click_form_field(&mut self, index: usize) -> Vec<Command> {
         let Some(form) = self.form.as_mut() else {
@@ -807,23 +1147,84 @@ impl App {
         }
         form.selected = index;
         form.editing = field.editable;
-        if field.editable {
+        form.cursor = field.value.len();
+        if field.editable && !field.choices.is_empty() {
+            self.form_key(KeyEvent::from(KeyCode::Right))
+        } else if field.editable {
             vec![]
         } else {
             self.form_activate()
         }
     }
     fn form_key(&mut self, key: KeyEvent) -> Vec<Command> {
+        if crate::palette::is_picker(self) && key.modifiers.is_empty() {
+            let cols = crate::palette::layout(self, self.viewport.0, self.viewport.1).columns;
+            let form = self.form.as_mut().unwrap();
+            let count = form.fields.len();
+            match key.code {
+                KeyCode::Left => form.selected = form.selected.saturating_sub(1),
+                KeyCode::Right | KeyCode::Tab => form.selected = (form.selected + 1) % count,
+                KeyCode::Up => form.selected = form.selected.saturating_sub(cols),
+                KeyCode::Down => form.selected = (form.selected + cols).min(count - 1),
+                KeyCode::Home => form.selected = 0,
+                KeyCode::End => form.selected = count - 1,
+                KeyCode::Enter => return self.form_activate(),
+                KeyCode::Esc => {
+                    self.form = None;
+                    return vec![];
+                }
+                _ => return vec![],
+            }
+            return vec![];
+        }
+        if key.code == KeyCode::Esc
+            && self
+                .form
+                .as_ref()
+                .is_some_and(|f| f.kind == FormKind::Management)
+        {
+            let commands = self.management_cancel();
+            if !commands.is_empty() {
+                self.form = None;
+                self.form_revision = self.form_revision.wrapping_add(1);
+                return commands;
+            }
+        }
+        if key.code == KeyCode::Esc
+            && self
+                .form
+                .as_ref()
+                .is_some_and(|f| f.kind == FormKind::LoginProgress)
+        {
+            let commands = self.cancel_login();
+            self.form = None;
+            self.form_revision = self.form_revision.wrapping_add(1);
+            return commands;
+        }
         if key.code == KeyCode::Esc {
+            if self.form.as_ref().unwrap().editing {
+                self.form.as_mut().unwrap().editing = false;
+                return vec![];
+            }
+            if !self.confirm_form_close() {
+                return vec![];
+            }
             let kind = self.form.as_ref().unwrap().kind;
             self.form = None;
             self.form_confirm = None;
+            if kind == FormKind::Provider && self.login_provider_editor {
+                self.login_provider_editor = false;
+                return self.open_login();
+            }
             if matches!(kind, FormKind::Provider | FormKind::Mcp | FormKind::Asr) {
                 self.rebuild_settings();
             }
             return vec![];
         }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if ctrl && key.code == KeyCode::Char('c') && self.active() {
+            return vec![self.command("task.stop", json!({}))];
+        }
         if key.code == KeyCode::Char('v')
             && key
                 .modifiers
@@ -842,9 +1243,20 @@ impl App {
             if let Some(form) = self.form.as_mut()
                 && let Some(field) = form.fields.get_mut(form.selected)
                 && field.editable
-                && matches!(field.key.as_str(), "args" | "env" | "headers")
+                && matches!(
+                    field.key.as_str(),
+                    "args"
+                        | "env"
+                        | "headers"
+                        | "prompt"
+                        | "user_pins"
+                        | "command"
+                        | "remote_forward"
+                )
             {
-                field.value.push('\n');
+                form.cursor = text_cursor(&field.value, form.cursor);
+                field.value.insert(form.cursor, '\n');
+                form.cursor += 1;
             }
             return vec![];
         }
@@ -857,40 +1269,137 @@ impl App {
         if len == 0 {
             return vec![];
         }
+        let choices = form.fields[form.selected].choices;
+        if !choices.is_empty()
+            && matches!(
+                key.code,
+                KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
+            )
+        {
+            let field = &mut form.fields[form.selected];
+            let current = choices
+                .iter()
+                .position(|(v, _)| *v == field.value)
+                .unwrap_or(0);
+            let next = if key.code == KeyCode::Left {
+                current.checked_sub(1).unwrap_or(choices.len() - 1)
+            } else {
+                (current + 1) % choices.len()
+            };
+            field.value = choices[next].0.into();
+            form.cursor = field.value.len();
+            self.form_confirm = None;
+            // A context preset fills the window field it stands for.
+            if form.kind == FormKind::Context
+                && form.fields[form.selected].key == "preset"
+                && form.fields[form.selected].value != "custom"
+            {
+                let preset = form.fields[form.selected].value.clone();
+                if let Some(window) = form.fields.iter_mut().find(|f| f.key == "window") {
+                    window.value = preset;
+                }
+            }
+            if form.kind == FormKind::Context && form.fields[form.selected].key == "output_mode" {
+                self.sync_context_output();
+            }
+            return vec![];
+        }
+        let typed = choices.is_empty();
         match key.code {
             KeyCode::Tab | KeyCode::Down => {
                 form.selected = (form.selected + 1) % len;
+                form.cursor = form.fields[form.selected].value.len();
+                form.editing = form.fields[form.selected].editable;
                 self.form_confirm = None;
             }
             KeyCode::BackTab | KeyCode::Up => {
                 form.selected = form.selected.checked_sub(1).unwrap_or(len - 1);
+                form.cursor = form.fields[form.selected].value.len();
+                form.editing = form.fields[form.selected].editable;
                 self.form_confirm = None;
             }
             KeyCode::Backspace => {
-                if form.fields[form.selected].editable {
-                    form.fields[form.selected].value.pop();
+                if form.fields[form.selected].editable && typed {
+                    let value = &mut form.fields[form.selected].value;
+                    form.cursor = text_cursor(value, form.cursor);
+                    let previous = value[..form.cursor]
+                        .char_indices()
+                        .next_back()
+                        .map_or(0, |(i, _)| i);
+                    value.drain(previous..form.cursor);
+                    form.cursor = previous;
                 }
             }
-            KeyCode::Char('u') if ctrl => form.fields[form.selected].value.clear(),
+            KeyCode::Left => {
+                let value = &form.fields[form.selected].value;
+                form.cursor = value[..text_cursor(value, form.cursor)]
+                    .char_indices()
+                    .next_back()
+                    .map_or(0, |(i, _)| i);
+            }
+            KeyCode::Right => {
+                let value = &form.fields[form.selected].value;
+                if let Some(c) = value[text_cursor(value, form.cursor)..].chars().next() {
+                    form.cursor += c.len_utf8();
+                }
+            }
+            KeyCode::Home => form.cursor = 0,
+            KeyCode::End => form.cursor = form.fields[form.selected].value.len(),
+            KeyCode::Delete if form.fields[form.selected].editable && typed => {
+                let value = &mut form.fields[form.selected].value;
+                if let Some(c) = value[text_cursor(value, form.cursor)..].chars().next() {
+                    value.drain(form.cursor..form.cursor + c.len_utf8());
+                }
+            }
+            KeyCode::Char('u') if ctrl && form.fields[form.selected].editable && typed => {
+                form.fields[form.selected].value.clear();
+                form.cursor = 0;
+            }
             KeyCode::Char(c) if !ctrl => {
-                if form.fields[form.selected].editable {
-                    form.fields[form.selected].value.push(c);
+                if form.fields[form.selected].editable && typed {
+                    let value = &mut form.fields[form.selected].value;
+                    form.cursor = text_cursor(value, form.cursor);
+                    value.insert(form.cursor, c);
+                    form.cursor += c.len_utf8();
+                    form.editing = true;
+                    self.form_confirm = None;
                 }
             }
             KeyCode::Enter => return self.form_activate(),
             _ => {}
         }
+        if let Some(form) = self.form.as_mut()
+            && form.kind == FormKind::Context
+            && form
+                .fields
+                .get(form.selected)
+                .is_some_and(|f| f.key == "window")
+        {
+            let preset = crate::commands::context_preset(&form.fields[form.selected].value);
+            if let Some(field) = form.fields.iter_mut().find(|f| f.key == "preset") {
+                field.value = preset;
+            }
+        }
         vec![]
     }
     fn form_activate(&mut self) -> Vec<Command> {
+        if let Some(commands) = self.extra_form_action() {
+            return commands;
+        }
         let form = self.form.as_ref().unwrap().clone();
         let field = &form.fields[form.selected];
+        if field.key.starts_with("__") && self.uncertain_form_revision == Some(self.form_revision) {
+            self.form.as_mut().unwrap().notice =
+                "上次操作结果未知；请返回设置，核对最新来源/服务后重新打开。未自动重发。".into();
+            return vec![];
+        }
         if field.key.starts_with("__") && self.pending_form.is_some() {
             self.form.as_mut().unwrap().notice = "上一项操作仍在处理中，请等待响应".into();
             return vec![];
         }
         if form.kind == FormKind::Settings {
             match field.key.as_str() {
+                "subscriptions" => return self.open_login(),
                 "provider.new" => self.edit_provider(json!({})),
                 "mcp.new" => self.edit_mcp(json!({})),
                 "attach" => {
@@ -899,6 +1408,7 @@ impl App {
                     self.clipboard_requested = true;
                 }
                 "skin" => self.open_skin(),
+                "context" => return self.open_context_settings(),
                 "asr" => self.edit_asr(),
                 key if key.starts_with("provider.") => {
                     if let Ok(i) = key[9..].parse::<usize>() {
@@ -949,6 +1459,8 @@ impl App {
                 self.form = Some(TerminalForm {
                     kind: FormKind::Skin,
                     title: "自定义终端外观".into(),
+                    original_fields: fields.clone(),
+                    cursor: fields.first().map_or(0, |field| field.value.len()),
                     fields,
                     selected: 0,
                     editing: true,
@@ -985,7 +1497,14 @@ impl App {
             return vec![];
         }
         if field.editable {
-            self.form.as_mut().unwrap().selected = (form.selected + 1) % form.fields.len();
+            let current = self.form.as_mut().unwrap();
+            if !current.editing {
+                current.editing = true;
+            } else {
+                current.selected = (form.selected + 1) % form.fields.len();
+                current.cursor = current.fields[current.selected].value.len();
+                current.editing = current.fields[current.selected].editable;
+            }
             return vec![];
         }
         let get = |key: &str| {
@@ -1002,7 +1521,13 @@ impl App {
         } else {
             "mcp"
         };
-        let id = get("id");
+        // Identity belongs to the opened object, never to editable field data.
+        let id = form
+            .items
+            .first()
+            .map(|item| text(item, "id"))
+            .unwrap_or("")
+            .to_owned();
         if field.key == "__remove"
             || field.key == "__bind"
             || (field.key == "__scan" && form.kind == FormKind::Mcp)
@@ -1102,12 +1627,8 @@ impl App {
                 params["token"] = json!(get("token"));
             }
         }
-        for field in &mut self.form.as_mut().unwrap().fields {
-            if field.secret {
-                field.value.clear();
-            }
-        }
         self.form.as_mut().unwrap().notice = "正在保存…".into();
+        self.pending_form_values = self.form.as_ref().unwrap().fields.clone();
         let command = self.command(&format!("{prefix}.save"), params);
         self.pending_form = Some((self.form_revision, command.clone()));
         vec![command]
@@ -1115,8 +1636,35 @@ impl App {
     pub fn apply_event(&mut self, envelope: &Value) -> anyhow::Result<()> {
         anyhow::ensure!(envelope["v"] == 1, "unsupported protocol version");
         let d = &envelope["data"];
+        if self.reading_anchor.is_some()
+            && matches!(
+                text(envelope, "event"),
+                "assistant.delta" | "step.started" | "step.updated" | "step.ended"
+            )
+        {
+            self.unseen_output = true;
+        }
         match text(envelope, "event") {
-            "snapshot" => self.apply_snapshot(d.clone()),
+            "snapshot" => {
+                self.apply_snapshot(d.clone());
+                self.snapshot_cursor = envelope["cursor"].as_u64().unwrap_or(0);
+            }
+            "snapshot.patch" => {
+                let next = if d["base"].as_u64() == Some(self.snapshot_cursor)
+                    && self.snapshot_cursor != 0
+                {
+                    crate::snapshot_patch::apply(&self.snapshot, d).ok()
+                } else {
+                    None
+                };
+                if let Some(next) = next {
+                    self.apply_snapshot(next);
+                    self.snapshot_cursor = d["cursor"].as_u64().unwrap_or(0);
+                } else {
+                    self.set_snapshot_error("状态增量不连续，正在重新读取完整快照");
+                    self.outbox.push(self.command("snapshot.get", json!({})));
+                }
+            }
             "assistant.delta" => {
                 let id = text(d, "message_id");
                 if !self.snapshot["messages"].is_array() {
@@ -1132,7 +1680,12 @@ impl App {
             "step.started" | "step.updated" | "step.ended" => self.upsert("steps", d),
             "agent.updated" => self.upsert("agents", d),
             "approval.requested" => {
+                let previous = self.snapshot["approvals"][0]["id"].clone();
                 self.upsert("approvals", d);
+                if previous != self.snapshot["approvals"][0]["id"] {
+                    self.approval_focus = None;
+                    self.approval_pending = None;
+                }
                 self.approval_collapsed = false;
             }
             "changes.updated" => self.snapshot["changes"] = d["changes"].clone(),
@@ -1142,6 +1695,9 @@ impl App {
                         self.snapshot["session"][k] = d[k].clone();
                     }
                 }
+            }
+            "usage.updated" => {
+                self.snapshot["session"]["usage"] = d["usage"].clone();
             }
             "context.updated" => {
                 self.snapshot["session"]["context_percent"] = d["context_percent"].clone()
@@ -1178,8 +1734,34 @@ impl App {
         }
     }
     pub fn apply_snapshot(&mut self, snapshot: Value) {
+        self.before_question_snapshot(&snapshot);
+        let latest = items(&snapshot, "messages").last();
+        if let Some(message) =
+            latest.filter(|m| m["role"] == "assistant" && !text(m, "thinking").is_empty())
+        {
+            let id = text(message, "id");
+            let previous = items(&self.snapshot, "messages").last();
+            if self.snapshot["session"]["id"] != snapshot["session"]["id"]
+                || self
+                    .thinking_updated_at
+                    .as_ref()
+                    .is_none_or(|(old, _)| old != id)
+                || previous.is_none_or(|old| old["thinking"] != message["thinking"])
+            {
+                self.thinking_updated_at = Some((id.to_owned(), Instant::now()));
+            }
+        } else {
+            self.thinking_updated_at = None;
+        }
+        self.snapshot_cursor = 0;
         self.snapshot_stale = false;
         self.snapshot_error = None;
+        if self.reading_anchor.is_some()
+            && (self.snapshot["messages"] != snapshot["messages"]
+                || self.snapshot["steps"] != snapshot["steps"])
+        {
+            self.unseen_output = true;
+        }
         let selected_agent = if self.view == View::Agents {
             let agents = items(&self.snapshot, "agents");
             agents
@@ -1222,6 +1804,10 @@ impl App {
             self.view = View::Chat;
             self.agent_detail_id = None;
             self.scroll = 0;
+            self.reading_anchor = None;
+            self.unseen_output = false;
+            self.transcript_query.clear();
+            self.transcript_match = None;
             self.selected = 0;
             self.esc_at = None;
             self.exit_at = None;
@@ -1274,6 +1860,8 @@ impl App {
             .first()
             .map(|x| x["id"].clone());
         if old != new {
+            self.approval_focus = None;
+            self.approval_pending = None;
             self.cancel_rejection();
             self.approval_collapsed = false;
             self.rejection = false;
@@ -1286,6 +1874,10 @@ impl App {
             self.selected = index;
         }
         self.snapshot = snapshot;
+        if self.notice == "已排队 · 等待工具边界" && items(&self.snapshot, "queued").is_empty() {
+            self.notice.clear();
+        }
+        self.after_question_snapshot();
         self.retry = self.snapshot["session"]["retry"]
             .as_object()
             .filter(|_| {
@@ -1302,6 +1894,7 @@ impl App {
             self.notice = "有失败草稿待恢复；/recover 恢复原文与发送目标".into();
         }
         self.sync_pending_draft();
+        self.finish_archive_search_navigation();
     }
     pub fn session_id(&self) -> Option<&str> {
         self.snapshot["session"]["id"].as_str()
@@ -1331,22 +1924,107 @@ impl App {
         }
     }
     pub fn completion(&self) -> Vec<String> {
-        if self.completion_closed || self.drawer.is_some() {
+        if self.input.trim_start().starts_with('!') {
+            return vec![];
+        }
+        if self.completion_closed || self.drawer.is_some() || self.question_popup_visible() {
             return vec![];
         }
         if self.input.starts_with('/') && !self.input.contains(' ') {
-            return COMMANDS
+            // Dictionary order, so a command is always found in the same place.
+            let mut names: Vec<String> = COMMANDS
                 .iter()
+                .chain(crate::commands::EXTRA_COMMANDS.iter())
+                .filter(|s| crate::commands::is_primary_command(s))
                 .filter(|s| s.starts_with(&self.input))
                 .map(|s| s.to_string())
                 .collect();
+            names.sort();
+            names.dedup();
+            return names;
         }
         if let Some((_, q)) = self.input.rsplit_once('@') {
             return self.files.iter().filter(|s| fuzzy(s, q)).cloned().collect();
         }
         vec![]
     }
+    /// Native library view; contents load from the host.
+    pub fn open_library(&mut self) -> Vec<Command> {
+        let tab = self.library_sets;
+        if self.drawer != Some(Drawer::Library) {
+            self.open(Drawer::Library);
+        }
+        self.library_sets = tab;
+        self.library_confirm = None;
+        self.extra_generation = self.extra_generation.wrapping_add(1);
+        vec![self.command(
+            "terminal.query",
+            json!({"topic":"library","ui_generation":self.extra_generation}),
+        )]
+    }
+    fn attach_library_item(&mut self, item: &Value) -> Vec<Command> {
+        if !self.binding_ready {
+            self.notice = "会话尚未就绪，稍后再加入附件".into();
+            return vec![];
+        }
+        let mut command = self.command(
+            "attachment.import",
+            json!({"path":item["path"],"confirmed":true,"display_name":item["name"]}),
+        );
+        self.begin_attachment_import(&mut command, self.agent_message_id.clone());
+        self.notice = format!("已加入草稿附件：{}", text(item, "name"));
+        vec![command]
+    }
+    /// Drawers whose first row is a live search field.
+    pub fn drawer_has_search(&self) -> bool {
+        matches!(
+            self.drawer,
+            Some(
+                Drawer::Model
+                    | Drawer::Sessions
+                    | Drawer::Workspace
+                    | Drawer::History
+                    | Drawer::Messages
+                    | Drawer::Rounds
+                    | Drawer::Steps
+                    | Drawer::Tasks
+                    | Drawer::Checkpoints
+                    | Drawer::Library
+            )
+        )
+    }
+    pub fn current_model_value(&self) -> Option<Value> {
+        let session = &self.snapshot["session"];
+        items(&self.snapshot, "models")
+            .iter()
+            .find(|m| current_model(m, session))
+            .cloned()
+    }
+    pub(crate) fn current_efforts(&self) -> Vec<Value> {
+        self.current_model_value()
+            .map(|m| items(&m, "efforts").to_vec())
+            .unwrap_or_default()
+    }
+    /// Effort and thinking change on the current model; the choice stays put.
+    pub(crate) fn set_effort(&mut self, effort: Value, thinking: bool) -> Vec<Command> {
+        let Some(model) = self.current_model_value() else {
+            self.notice = "尚未选择模型；先用 /model 选择".into();
+            return vec![];
+        };
+        if self.active() {
+            self.notice = "当前任务结束后才能调整思考强度".into();
+            return vec![];
+        }
+        vec![self.command(
+            "model.set",
+            json!({"choice":model["choice"],"thinking":thinking,"effort":effort}),
+        )]
+    }
     pub fn open(&mut self, d: Drawer) {
+        self.extra_generation = self.extra_generation.wrapping_add(1);
+        if d == Drawer::Plan {
+            self.reviewed_plan = self.snapshot["plan"].clone();
+        }
         self.form = None;
         self.form_confirm = None;
         if self.view != View::Chat {
@@ -1358,8 +2036,17 @@ impl App {
         self.selected = 0;
         self.search.clear();
         self.search_cursor = 0;
+        self.model_source_filter = None;
         self.full_confirm = false;
-        self.model_effort_focus = false;
+        if d == Drawer::Effort {
+            let current = &self.snapshot["session"]["effort"];
+            self.effort_index = self
+                .current_efforts()
+                .iter()
+                .position(|e| e == current)
+                .unwrap_or(0);
+            self.thinking = self.snapshot["session"]["thinking"] != false;
+        }
         if d == Drawer::Model {
             let models = self.drawer_items();
             let session = &self.snapshot["session"];
@@ -1388,10 +2075,32 @@ impl App {
         }
     }
     pub fn key(&mut self, key: KeyEvent, now: Instant, width: u16) -> Vec<Command> {
+        if let Some(commands)=self.side_key(key){return commands;}
+        if self.drawer == Some(Drawer::Shell) {
+            return self.shell_key(key);
+        }
+        if self.drawer == Some(Drawer::Editor) {
+            self.viewport.0 = width;
+            return self.native_editor_key(key);
+        }
+        if self.drawer == Some(Drawer::ToolDetail) {
+            return self.tool_detail_key(key);
+        }
+        if key.modifiers.contains(KeyModifiers::ALT)
+            && key.code == KeyCode::Char('e')
+            && self.form.is_none()
+            && self.drawer.is_none()
+        {
+            self.open_native_editor();
+            return vec![];
+        }
         self.viewport.0 = width;
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        if ctrl && key.code == KeyCode::Char('c') && self.selection.is_some() {
-            let text = self.selection.as_ref().unwrap().text();
+        if ctrl
+            && key.code == KeyCode::Char('c')
+            && let Some(selection) = &self.selection
+        {
+            let text = selection.text();
             if !text.is_empty() {
                 self.copy_requested = Some(text);
             } else {
@@ -1403,6 +2112,16 @@ impl App {
         if self.form.is_some() {
             return self.form_key(key);
         }
+        if self.drawer.is_none()
+            && key.modifiers.contains(KeyModifiers::ALT)
+            && matches!(key.code, KeyCode::Up | KeyCode::Down)
+        {
+            crate::ui::jump_user_turn(self, if key.code == KeyCode::Up { -1 } else { 1 });
+            return vec![];
+        }
+        if let Some(commands) = self.question_key(key) {
+            return commands;
+        }
         if key.modifiers.contains(KeyModifiers::ALT) && key.code == KeyCode::Char('v') {
             self.clipboard_requested = true;
             return vec![];
@@ -1413,6 +2132,10 @@ impl App {
         }
         if matches!(key.code, KeyCode::Char('\n' | '\r')) && !ctrl {
             self.insert("\n");
+            return vec![];
+        }
+        if ctrl && key.code == KeyCode::End && self.drawer.is_none() {
+            self.latest_output();
             return vec![];
         }
         if !(ctrl && key.code == KeyCode::Char('c')) {
@@ -1427,6 +2150,9 @@ impl App {
             }
             if self.drawer.take().is_some() {
                 self.full_confirm = false;
+                if self.notice == "完全访问：再次按 enter 确认" {
+                    self.notice.clear();
+                }
                 return vec![];
             }
             if self.agent_detail_id.take().is_some() {
@@ -1585,25 +2311,31 @@ impl App {
             return vec![];
         }
         if self.status() == "approval" && !self.approval_collapsed && !self.rejection {
-            if let KeyCode::Char(c) = key.code {
-                if c == 'e' {
-                    self.rejection_draft = Some(self.current_draft());
-                    self.rejection = true;
-                    self.input.clear();
-                    self.cursor = 0;
-                    self.attachments.clear();
-                    self.paste_collapsed = false;
-                } else if let Some(decision) = match c {
-                    'y' => Some("once"),
-                    'a' => Some("session"),
-                    'n' => Some("reject"),
-                    _ => None,
-                } {
-                    return vec![self.command(
-                        "approval.decide",
-                        json!({"id":self.snapshot["approvals"][0]["id"],"decision":decision}),
-                    )];
+            let id = text(&self.snapshot["approvals"][0], "id").to_owned();
+            match key.code {
+                KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::BackTab => {
+                    let backwards = matches!(key.code, KeyCode::Left | KeyCode::BackTab);
+                    let previous = self
+                        .approval_focus
+                        .as_ref()
+                        .filter(|(v, _)| v == &id)
+                        .map(|(_, i)| *i);
+                    let choice = previous.map_or(if backwards { 3 } else { 0 }, |i| {
+                        if backwards { (i + 3) % 4 } else { (i + 1) % 4 }
+                    });
+                    self.approval_focus = Some((id, choice));
                 }
+                KeyCode::Enter => {
+                    if let Some((expected, index)) = self.approval_focus.clone() {
+                        return self.choose_approval(&expected, index);
+                    }
+                }
+                KeyCode::Char(c) => {
+                    if let Some(index) = ['y', 'a', 'n', 'e'].iter().position(|v| *v == c) {
+                        return self.choose_approval(&id, index);
+                    }
+                }
+                _ => {}
             }
             return vec![];
         }
@@ -1629,7 +2361,7 @@ impl App {
                     return self.activate_recent();
                 }
                 let completion = self.completion();
-                if !completion.is_empty() {
+                if !completion.is_empty() && !Self::is_control_command(&self.input) {
                     let value = completion[self.selected % completion.len()].clone();
                     if self.input.starts_with('/') {
                         self.input = value;
@@ -1643,9 +2375,17 @@ impl App {
                     self.completion_closed = true;
                 }
                 if self.rejection {
+                    let id = text(&self.snapshot["approvals"][0], "id").to_owned();
+                    if self.approval_pending.as_deref() == Some(&id) {
+                        return vec![];
+                    }
+                    self.approval_pending = Some(id);
                     let c=self.command("approval.decide",json!({"id":self.snapshot["approvals"][0]["id"],"decision":"reject_reason","reason":self.input}));
                     self.cancel_rejection();
                     return vec![c];
+                }
+                if self.input.trim_start().starts_with('!') {
+                    return self.submit();
                 }
                 if self.input.trim_start().starts_with('/')
                     && (items(&self.snapshot, "questions").is_empty()
@@ -1779,7 +2519,12 @@ impl App {
             self.long_input_expanded = false;
         }
         self.preferred_column = None;
-        self.cursor = self.cursor.min(self.input.len());
+        self.cursor = text_cursor(&self.input, self.cursor);
+        if let Some((start, end)) = self.mark_at(self.cursor, false)
+            && self.cursor > start
+        {
+            self.cursor = end;
+        }
         self.input.insert_str(self.cursor, s);
         self.cursor += s.len();
         // Windows terminals can deliver a paste as ordinary character events.
@@ -1791,11 +2536,34 @@ impl App {
         }
     }
     pub fn paste(&mut self, s: &str) {
+        if let Some(p)=self.side_panel.as_mut().filter(|p|p.focused){p.input.insert_str(p.cursor,s);p.cursor+=s.len();return;}
+
+        if self.drawer == Some(Drawer::Editor) {
+            if let Some(editor) = self.native_editor.as_mut() {
+                editor.insert(&s.replace("\r\n", "\n").replace('\r', "\n"));
+            }
+            return;
+        }
+        if self.question_popup_visible() {
+            if self.question_pending() && !s.trim_start().starts_with('/') {
+                self.notice = "答案已提交，等待服务器确认".into();
+                return;
+            }
+            self.question_ui.editing = true;
+            self.insert(&s.replace("\r\n", "\n").replace('\r', "\n"));
+            self.paste_collapsed = false;
+            return;
+        }
         if let Some(form) = self.form.as_mut() {
             if let Some(field) = form.fields.get_mut(form.selected)
                 && field.editable
             {
-                field.value.push_str(s.trim_end_matches(['\r', '\n']));
+                form.cursor = text_cursor(&field.value, form.cursor);
+                let pasted = s.trim_end_matches(['\r', '\n']);
+                field.value.insert_str(form.cursor, pasted);
+                form.cursor += pasted.len();
+                form.editing = true;
+                self.form_confirm = None;
             }
             return;
         }
@@ -1806,11 +2574,19 @@ impl App {
         if self.drawer.is_some() {
             if !matches!(
                 self.drawer,
-                Some(Drawer::Model | Drawer::Sessions | Drawer::Workspace | Drawer::History)
+                Some(
+                    Drawer::Model
+                        | Drawer::Sessions
+                        | Drawer::Workspace
+                        | Drawer::History
+                        | Drawer::Messages
+                        | Drawer::Rounds
+                        | Drawer::Steps
+                )
             ) {
                 return;
             }
-            self.search_cursor = self.search_cursor.min(self.search.len());
+            self.search_cursor = text_cursor(&self.search, self.search_cursor);
             let query = s.replace('\n', " ");
             self.search.insert_str(self.search_cursor, &query);
             self.search_cursor += query.len();
@@ -1836,7 +2612,7 @@ impl App {
             .find('\n')
             .map_or(self.input.len(), |i| self.cursor + i)
     }
-    fn edit_key(&mut self, key: KeyEvent) -> bool {
+    pub(crate) fn edit_key(&mut self, key: KeyEvent) -> bool {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Left => self.left(),
@@ -1873,6 +2649,7 @@ impl App {
         self.paste_collapsed = false;
         self.preferred_column = None;
         self.long_input_expanded = true;
+        self.sync_attachment_marks();
         true
     }
     fn vertical(&mut self, direction: i32, terminal_width: u16) {
@@ -1930,6 +2707,10 @@ impl App {
         }
     }
     pub fn scroll_by(&mut self, lines: i32) {
+        if self.view == View::Chat && !crate::ui::welcome(self) {
+            crate::ui::scroll_transcript(self, lines);
+            return;
+        }
         let forward = if self.view == View::Chat && !crate::ui::welcome(self) {
             -lines
         } else {
@@ -1961,14 +2742,44 @@ impl App {
             collapsed: self.paste_collapsed,
         }
     }
-    fn load_draft(&mut self, draft: Draft) {
+    pub(crate) fn load_draft(&mut self, draft: Draft) {
         self.preferred_column = None;
         self.input = draft.text;
-        self.cursor = draft.cursor.min(self.input.len());
+        self.cursor = text_cursor(&self.input, draft.cursor);
         self.attachments = draft.attachments;
+        self.restore_attachment_marks();
         self.agent_message_id = draft.agent_id;
         self.paste_collapsed = draft.collapsed;
         self.long_input_expanded = !draft.collapsed && self.input.chars().count() > 300;
+    }
+    pub fn choose_approval(&mut self, expected: &str, index: usize) -> Vec<Command> {
+        let id = text(&self.snapshot["approvals"][0], "id").to_owned();
+        if id.is_empty()
+            || id != expected
+            || self.status() != "approval"
+            || self.snapshot_stale
+            || self.approval_collapsed
+            || self.rejection
+            || self.approval_pending.as_deref() == Some(&id)
+            || index > 3
+        {
+            return vec![];
+        }
+        self.approval_focus = Some((id.clone(), index));
+        if index == 3 {
+            self.rejection_draft = Some(self.current_draft());
+            self.rejection = true;
+            self.input.clear();
+            self.cursor = 0;
+            self.attachments.clear();
+            self.paste_collapsed = false;
+            return vec![];
+        }
+        self.approval_pending = Some(id.clone());
+        vec![self.command(
+            "approval.decide",
+            json!({"id":id,"decision":(["once","session","reject"][index])}),
+        )]
     }
     fn cancel_rejection(&mut self) {
         if let Some(draft) = self.rejection_draft.take() {
@@ -1987,12 +2798,15 @@ impl App {
             .find(|p| p.command.params["session_id"] == self.snapshot["session"]["id"])
             .map(|p| (p.draft.text.clone(), p.draft.attachments.clone()));
     }
-    fn track_input(
+    pub(crate) fn track_input(
         &mut self,
         command: Command,
         draft: Draft,
         question_state: Option<(usize, serde_json::Map<String, Value>)>,
     ) -> Vec<Command> {
+        if command.method == "queue.add" {
+            self.notice = "正在提交补充要求…".into();
+        }
         self.pending_inputs.push(PendingInput {
             command: command.clone(),
             draft,
@@ -2136,6 +2950,75 @@ impl App {
         self.notice = "已恢复草稿与原发送目标；其他草稿可再次 /recover 切换".into();
     }
     pub fn command_response(&mut self, command: &Command, result: &Value) {
+        if self.workbench_response(command,result) { return; }
+        if self.shell_response(command, result) {
+            return;
+        }
+        if self.session_import_response(command, result) {
+            return;
+        }
+        if self.quota_response(command, result) {
+            return;
+        }
+        if self.context_search_response(command, result) {
+            return;
+        }
+        if self.management_response(command, result) {
+            return;
+        }
+        if self.tool_detail_response(command, result) {
+            return;
+        }
+        if self.login_response(command, result) {
+            return;
+        }
+        if self.extra_response(command, result) {
+            return;
+        }
+        if command.method == "permission.set" {
+            self.full_confirm = false;
+            if self.notice == "完全访问：再次按 enter 确认" {
+                self.notice.clear();
+            }
+        }
+        if command.method.starts_with("checkpoint.") {
+            if command.params["session_id"] != self.snapshot["session"]["id"] {
+                return;
+            }
+            match command.method.as_str() {
+                "checkpoint.list" => {
+                    self.checkpoint_points =
+                        items(result, "checkpoints").iter().rev().cloned().collect();
+                    self.open(Drawer::Checkpoints);
+                }
+                "checkpoint.preview" => {
+                    self.checkpoint_review = result.clone();
+                    self.open(Drawer::CheckpointReview);
+                }
+                "checkpoint.restore" => {
+                    self.checkpoint_review = Value::Null;
+                    self.notice = format!(
+                        "已回退 {} 条文件记录；{} · 命令和外部副作用需另行核对",
+                        items(result, "restored_files").len(),
+                        if result["complete"] != true {
+                            "部分回退未完成，请查看改动面板"
+                        } else if result["conversation_restored"] == true {
+                            "会话位置已恢复"
+                        } else {
+                            "会话位置保持不变"
+                        }
+                    );
+                    if result["branch_created"] == true {
+                        self.outbox.push(Command {
+                            method: "session.open".into(),
+                            params: json!({"session_id":result["session_id"]}),
+                        });
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
         let form_origin = self
             .pending_form
             .as_ref()
@@ -2179,6 +3062,30 @@ impl App {
         {
             if let Some(form) = self.form.as_mut() {
                 form.notice = "已保存；设置已更新".into();
+                if command.method.ends_with(".save") {
+                    form.original_fields = self.pending_form_values.clone();
+                    for field in &mut form.original_fields {
+                        if field.secret {
+                            field.value.clear();
+                        }
+                    }
+                    for field in &mut form.fields {
+                        // Do not erase a newer edit while an earlier save was pending.
+                        let submitted = command.params.get(&field.key);
+                        if field.secret
+                            && submitted.is_some_and(|value| {
+                                value.as_str() == Some(field.value.as_str())
+                                    || (value.is_object()
+                                        && serde_json::from_str::<Value>(&field.value)
+                                            .ok()
+                                            .as_ref()
+                                            == Some(value))
+                            })
+                        {
+                            field.value.clear();
+                        }
+                    }
+                }
             }
             if command.method.ends_with(".save")
                 && let Some(id) = result["id"].as_str()
@@ -2186,16 +3093,45 @@ impl App {
                 && let Some(field) = form.fields.iter_mut().find(|f| f.key == "id")
             {
                 field.value = id.into();
+                if form.items.is_empty() {
+                    form.items.push(json!({"id":id}));
+                } else {
+                    form.items[0]["id"] = json!(id);
+                }
+            }
+            if command.method == "provider.save" && form_origin {
+                let saved = items(result, "providers")
+                    .iter()
+                    .find(|p| p["id"] == result["id"]);
+                if let (Some(saved), Some(form)) = (saved, self.form.as_mut()) {
+                    if let Some(field) = form.fields.iter_mut().find(|f| f.key == "base_url")
+                        && command.params["base_url"].as_str() == Some(field.value.as_str())
+                    {
+                        field.value = text(saved, "base_url").to_owned();
+                    }
+                    for field in &mut form.original_fields {
+                        if field.key == "base_url" {
+                            field.value = text(saved, "base_url").to_owned();
+                        }
+                    }
+                }
+            }
+            if command.method == "provider.save" && form_origin && self.connect_after_save {
+                self.connect_after_save = false;
+                let scan = self.command("provider.scan", json!({"id":result["id"]}));
+                self.pending_form = Some((self.form_revision, scan.clone()));
+                self.outbox.push(scan);
             }
             self.outbox.push(self.command("settings.get", json!({})));
             self.outbox.push(self.command("models.list", json!({})));
-            if let Some(item) = result.get("provider") {
-                self.edit_provider(item.clone());
-            } else if let Some(item) = result.get("mcp") {
-                self.edit_mcp(item.clone());
-            }
             if command.method.ends_with(".remove") {
-                self.rebuild_settings();
+                if command.method == "provider.remove" && self.login_provider_editor {
+                    self.login_provider_editor = false;
+                    let commands = self.open_login();
+                    self.outbox.extend(commands);
+                } else {
+                    self.rebuild_settings();
+                }
             }
         }
         if command.method == "provider.scan" && form_origin {
@@ -2208,17 +3144,35 @@ impl App {
                 if let Some(field) = form.fields.iter_mut().find(|f| f.key == "models") {
                     field.value = models;
                 }
-                form.notice = "已发现并保存共享模型列表".into();
+                let selected = items(result, "providers")
+                    .iter()
+                    .find(|p| p["id"] == command.params["id"]);
+                if let Some(provider) = selected {
+                    for key in ["chat_model", "reasoner_model"] {
+                        if let Some(field) = form.fields.iter_mut().find(|f| f.key == key) {
+                            field.value = text(provider, key).into();
+                        }
+                    }
+                    form.items = vec![provider.clone()];
+                }
+                form.original_fields = form.fields.clone();
+                form.notice = format!("已完整获取并保存 {} 个模型", items(result, "models").len());
+                self.outbox.push(self.command("models.list", json!({})));
             }
         }
-        if command.method == "mcp.bind" && form_origin {
-            if let Some(form) = self.form.as_mut() {
-                form.notice = "本会话 MCP 工具选用已更新".into();
-            }
+        if command.method == "mcp.bind"
+            && form_origin
+            && let Some(form) = self.form.as_mut()
+        {
+            form.notice = "本会话 MCP 工具选用已更新".into();
         }
-        if command.method == "mcp.scan" && form_origin {
-            if let Some(form) = self.form.as_mut() {
-                form.notice = format!("已连接 · 发现 {} 个工具", items(result, "tools").len());
+        if command.method == "mcp.scan"
+            && form_origin
+            && let Some(form) = self.form.as_mut()
+        {
+            form.notice = format!("已连接 · 发现 {} 个工具", items(result, "tools").len());
+            if let Some(item) = form.items.first_mut() {
+                item["tools"] = result["tools"].clone();
             }
         }
         if command.method == "attachment.import"
@@ -2234,11 +3188,13 @@ impl App {
                 .filter_map(Value::as_str)
                 .collect::<Vec<_>>()
                 .join("；");
-            self.add_attachment(
-                command.params["session_id"].as_str(),
-                agent.as_deref(),
-                attachment,
-            );
+            if !self.finish_attachment_import(command, Some(attachment.clone()), "") {
+                self.add_attachment(
+                    command.params["session_id"].as_str(),
+                    agent.as_deref(),
+                    attachment,
+                );
+            }
             if !warnings.is_empty() {
                 self.notice = format!("{} · {warnings}", self.notice);
             }
@@ -2268,7 +3224,18 @@ impl App {
                 ));
             }
             if command.params["session_id"] == self.snapshot["session"]["id"] {
-                self.notice.clear();
+                if command.method == "queue.add" {
+                    let receipt = items(&self.snapshot, "steering").iter()
+                        .find(|entry| entry["id"] == result["id"])
+                        .unwrap_or(&result["steering"]);
+                    self.notice = if receipt.is_object() {
+                        crate::ui::steering_label(receipt)
+                    } else {
+                        "已排队 · 等待工具边界".into()
+                    };
+                } else {
+                    self.notice.clear();
+                }
             }
         }
         if command.method == "queue.remove"
@@ -2296,7 +3263,47 @@ impl App {
             self.notice = "有失败草稿待恢复；/recover 恢复原文与发送目标".into();
         }
     }
+    pub fn command_unknown(&mut self, command: &Command, message: &str) {
+        let origin = self
+            .pending_form
+            .as_ref()
+            .is_some_and(|(revision, pending)| {
+                *revision == self.form_revision && pending == command
+            });
+        self.command_error(command, message);
+        if origin {
+            self.uncertain_form_revision = Some(self.form_revision);
+            if let Some(form) = self.form.as_mut() {
+                form.notice = "操作结果未知；请返回设置核对后重开，未自动重发。".into();
+            }
+            self.outbox.push(self.command("settings.get", json!({})));
+        }
+    }
     pub fn command_error(&mut self, command: &Command, message: &str) {
+        if self.workbench_error(command,message) { return; }
+        if self.session_import_error(command, message) {
+            return;
+        }
+        if command.method == "approval.decide"
+            && self.approval_pending.as_deref() == command.params["id"].as_str()
+        {
+            self.approval_pending = None;
+        }
+        if self.shell_error(command, message) {
+            return;
+        }
+        if command.method == "attachment.import" {
+            self.finish_attachment_import(command, None, message);
+        }
+        if command.method.starts_with("provider.login.") {
+            self.login_poll_pending = false;
+            if command.method == "provider.login.status" {
+                self.login_job = None;
+            }
+            if let Some(form) = self.form.as_mut() {
+                form.notice = message.into();
+            }
+        }
         let form_origin = self
             .pending_form
             .as_ref()
@@ -2321,6 +3328,8 @@ impl App {
                 | "mcp.scan"
                 | "mcp.bind"
                 | "settings.get"
+                | "terminal.action"
+                | "terminal.query"
         ) && (form_origin || command.method == "settings.get")
             && let Some(form) = self.form.as_mut()
         {
@@ -2372,7 +3381,7 @@ impl App {
             self.recent_selected = None;
             self.recent_confirm = None;
             let name = text(&attachment, "name").to_owned();
-            self.attachments.push(attachment);
+            self.insert_attachment_mark(attachment);
             self.notice = format!("已添加附件：{name}");
         } else if let Some(session) = session {
             self.recovered_inputs.push(PendingInput {
@@ -2391,12 +3400,20 @@ impl App {
         }
     }
     fn left(&mut self) {
+        if let Some((start, _)) = self.mark_at(self.cursor, true) {
+            self.cursor = start;
+            return;
+        }
         self.cursor = self.input[..self.cursor]
             .char_indices()
             .next_back()
             .map_or(0, |(i, _)| i);
     }
     fn right(&mut self) {
+        if let Some((_, end)) = self.mark_at(self.cursor, false) {
+            self.cursor = end;
+            return;
+        }
         if let Some(c) = self.input[self.cursor..].chars().next() {
             self.cursor += c.len_utf8();
         }
@@ -2407,79 +3424,19 @@ impl App {
         self.input.drain(self.cursor..end);
     }
     fn delete(&mut self) {
+        if let Some((start, end)) = self.mark_at(self.cursor, false) {
+            self.input.drain(start..end);
+            self.cursor = start;
+            return;
+        }
         if let Some(c) = self.input[self.cursor..].chars().next() {
             self.input.drain(self.cursor..self.cursor + c.len_utf8());
         }
     }
-    fn answer_question(&mut self) -> Vec<Command> {
-        let request = &self.snapshot["questions"][0];
-        let request_id = text(request, "id").to_owned();
-        if self
-            .answered_questions
-            .contains(&(self.session_id().unwrap_or("").into(), request_id.clone()))
-            || self.pending_inputs.iter().any(|p| {
-                p.command.method == "question.answer"
-                    && p.command.params["session_id"] == self.snapshot["session"]["id"]
-                    && p.command.params["id"] == request_id
-            })
-        {
-            self.notice = "答案已提交，等待服务器确认".into();
-            return vec![];
+    pub(crate) fn submit(&mut self) -> Vec<Command> {
+        if let Some(commands) = self.try_shell_submit() {
+            return commands;
         }
-        let questions = items(request, "questions");
-        let Some(q) = questions.get(self.question_index) else {
-            return vec![];
-        };
-        let input = self.input.trim();
-        let options = items(q, "options");
-        let tokens: Vec<&str> = input.split(',').map(str::trim).collect();
-        let has_numeric = !options.is_empty() && tokens.iter().any(|n| n.parse::<usize>().is_ok());
-        let mut selected = vec![];
-        if has_numeric {
-            for token in tokens {
-                let option = token
-                    .parse::<usize>()
-                    .ok()
-                    .and_then(|n| n.checked_sub(1))
-                    .and_then(|i| options.get(i));
-                let Some(option) = option else {
-                    self.notice = "选项编号无效；请只输入有效编号，或直接填写文字说明".into();
-                    return vec![];
-                };
-                if !selected.contains(option) {
-                    selected.push(option.clone());
-                }
-            }
-        }
-        if q["multiple"] != true && selected.len() > 1 {
-            self.notice = "请选择一个选项".into();
-            return vec![];
-        }
-        let free_text = if selected.is_empty() { input } else { "" };
-        if q["required"] == true && selected.is_empty() && free_text.is_empty() {
-            self.notice = "请回答此必答问题".into();
-            return vec![];
-        }
-        let draft = self.current_draft();
-        self.question_answers.insert(
-            text(q, "id").into(),
-            json!({"selected":selected,"text":free_text}),
-        );
-        self.input.clear();
-        self.cursor = 0;
-        self.paste_collapsed = false;
-        self.question_index += 1;
-        if self.question_index < questions.len() {
-            return vec![];
-        }
-        let command = self.command(
-            "question.answer",
-            json!({"id":request_id,"answers":self.question_answers}),
-        );
-        let state = (self.question_index - 1, self.question_answers.clone());
-        self.track_input(command, draft, Some(state))
-    }
-    fn submit(&mut self) -> Vec<Command> {
         let trimmed = self.input.trim();
         if trimmed.starts_with('/') && !self.paste_collapsed {
             if !Self::is_control_command(trimmed) {
@@ -2495,11 +3452,122 @@ impl App {
             self.cursor = 0;
             self.completion_closed = true;
             match cmd.as_str() {
+                value if crate::commands::EXTRA_COMMANDS.contains(&value) => {
+                    return self.extra_command(&cmd, &arg);
+                }
                 "/model" => self.open(Drawer::Model),
+                "/questions" => {
+                    self.open_questions();
+                    if items(&self.snapshot, "questions").is_empty() {
+                        self.notice = "当前没有待回答的问题".into();
+                    }
+                }
                 "/permissions" => self.open(Drawer::Permissions),
                 "/workspace" => self.open(Drawer::Workspace),
-                "/sessions" => self.open(Drawer::Sessions),
+                "/sessions" | "/session" => {
+                    self.open(Drawer::Sessions);
+                    // The snapshot list can be stale; titles and times come from the host.
+                    let refresh = self.command("session.list", json!({}));
+                    self.outbox.push(refresh);
+                }
+                "/help" if arg == "commands" => {
+                    self.show_info("主入口与快捷命令", crate::commands::command_help_lines())
+                }
                 "/help" => self.open(Drawer::Help),
+                "/editor" => {
+                    if arg == "external" {
+                        self.editor_requested = true;
+                    } else {
+                        self.open_native_editor();
+                        if !arg.is_empty()
+                            && let Some(editor) = self.native_editor.as_mut()
+                        {
+                            editor.language = if arg == "code" {
+                                "rust".into()
+                            } else {
+                                arg.to_lowercase()
+                            };
+                        }
+                    }
+                }
+                "/tasks" => self.open(Drawer::Tasks),
+                "/rewind" => {
+                    if arg.is_empty() {
+                        return vec![self.command("checkpoint.list", json!({}))];
+                    }
+                    if ["conversation", "files", "both", "branch"].contains(&arg.as_str()) {
+                        let review = &self.checkpoint_review;
+                        if self.snapshot_stale
+                            || review.is_null()
+                            || review["session_id"] != self.snapshot["session"]["id"]
+                        {
+                            self.notice = "先 /rewind 选择并查看检查点，连接恢复后再操作".into();
+                        } else {
+                            return vec![self.command("checkpoint.restore",json!({
+                                "message_id":review["message_id"],"fingerprint":review["fingerprint"],"mode":arg,"confirmed":true}))];
+                        }
+                    } else {
+                        return vec![self.command("checkpoint.preview", json!({"message_id":arg}))];
+                    }
+                }
+                "/plan" | "/todo" => {
+                    if arg.is_empty() {
+                        self.open(Drawer::Plan);
+                    } else {
+                        let mut words = arg.splitn(3, ' ');
+                        let action = words.next().unwrap_or("");
+                        let revision = words.next().and_then(|v| v.parse::<u64>().ok());
+                        let comment = words.next().unwrap_or("");
+                        let plan = &self.snapshot["plan"];
+                        if plan.is_null() || revision != plan["revision"].as_u64() {
+                            self.notice =
+                                "计划不存在或版本已改变；请先 /plan 查看，再指定版本".into();
+                        } else if action == "approve" {
+                            if self.reviewed_plan["id"] != plan["id"]
+                                || self.reviewed_plan["revision"] != plan["revision"]
+                                || self.reviewed_plan["content_hash"] != plan["content_hash"]
+                            {
+                                self.notice = "请先 /plan 查看当前版本，再批准".into();
+                            } else {
+                                return vec![self.command(
+                                    "plan.approve",
+                                    json!({
+                                    "revision":revision,"content_hash":plan["content_hash"]}),
+                                )];
+                            }
+                        } else if action == "cancel" {
+                            return vec![self.command("plan.cancel", json!({"revision":revision}))];
+                        } else if action == "comment" && !comment.trim().is_empty() {
+                            return vec![self.command(
+                                "plan.comment",
+                                json!({"revision":revision,"text":comment}),
+                            )];
+                        } else {
+                            self.notice =
+                                "用法：/plan [approve 版本|cancel 版本|comment 版本 意见]".into();
+                        }
+                    }
+                }
+                "/find" => {
+                    if arg.is_empty() {
+                        self.notice =
+                            "用法：/find 关键词；/next 下一处，/prev 上一处，/latest 返回最新"
+                                .into();
+                    } else {
+                        self.transcript_query = arg;
+                        self.transcript_match = None;
+                        crate::ui::find_transcript(self, false);
+                    }
+                }
+                "/next" => crate::ui::find_transcript(self, false),
+                "/prev" => crate::ui::find_transcript(self, true),
+                "/latest" => {
+                    self.scroll = 0;
+                    self.reading_anchor = None;
+                    self.unseen_output = false;
+                    self.notice.clear();
+                }
+                "/jump" => crate::ui::jump_transcript(self, &arg),
                 "/resume" => {
                     if !arg.is_empty() {
                         return vec![Command {
@@ -2536,6 +3604,7 @@ impl App {
                 }
                 "/mode" => {
                     let mode = match arg.as_str() {
+                        "chat" => "chat",
                         "work" => "work",
                         "plan" => "plan",
                         "" => {
@@ -2552,7 +3621,10 @@ impl App {
                     };
                     return vec![self.command("mode.set", json!({"mode":mode}))];
                 }
-                "/accept" => return vec![self.command("task.accept", json!({}))],
+                "/accept" => {
+                    self.notice = "已取消手动验收步骤；任务正常结束后直接完成".into();
+                    return vec![];
+                }
                 "/stop" => return vec![self.command("task.stop", json!({}))],
                 "/new" => {
                     return vec![Command {
@@ -2561,12 +3633,19 @@ impl App {
                     }];
                 }
                 "/quit" | "/exit" => self.exit = true,
+                "/settings" if arg == "context" => return self.open_context_settings(),
                 "/login" | "/settings" | "/doctor" | "/mcp" | "/provider" => {
                     return self.open_settings();
                 }
                 "/attach" => {
                     if arg == "cancel" {
                         self.cancel_attachments_requested = true;
+                        for attachment in &mut self.attachments {
+                            if attachment["_state"] == "loading" {
+                                attachment["_state"] = json!("error");
+                                attachment["_error"] = json!("已取消导入");
+                            }
+                        }
                         self.deferred_paths.clear();
                         let session = self.snapshot["session"]["id"].clone();
                         self.attachment_targets
@@ -2585,7 +3664,9 @@ impl App {
                 }
                 "/copy" => {
                     let messages = items(&self.snapshot, "messages");
-                    let content = if arg == "all" {
+                    let content = if arg == "session" {
+                        self.session_id().unwrap_or("").to_owned()
+                    } else if arg == "all" {
                         messages
                             .iter()
                             .filter(|m| matches!(text(m, "role"), "user" | "assistant"))
@@ -2624,7 +3705,7 @@ impl App {
                         && i > 0
                         && i <= self.attachments.len()
                     {
-                        self.attachments.remove(i - 1);
+                        self.remove_attachment(i - 1);
                     } else {
                         self.notice = "用法：/detach [编号|all]".into();
                     }
@@ -2636,7 +3717,13 @@ impl App {
                         self.apply_skin(&arg);
                     }
                 }
-                "/library" => return vec![self.command("gui.open", json!({"page":"library"}))],
+                "/library" => {
+                    return if arg == "manage" {
+                        self.open_management("library")
+                    } else {
+                        self.open_library()
+                    };
+                }
                 "/media" => return vec![self.command("gui.open", json!({"page":"media"}))],
                 "/gui" => return vec![self.command("gui.open", json!({"page":"session"}))],
                 "/bridge" if arg == "off" => return vec![self.command("bridge.stop", json!({}))],
@@ -2660,6 +3747,10 @@ impl App {
             }
             return vec![];
         }
+        if self.snapshot["session"]["mode"]=="chat" {
+            self.notice="历史对话仅供查看；/mode work 转为工作会话，或 /new 新建".into();
+            return vec![];
+        }
         if !self.binding_ready {
             self.send_after_binding = true;
             self.notice = "正在创建工作会话，就绪后发送此草稿".into();
@@ -2671,6 +3762,13 @@ impl App {
             .any(|(command, _)| command.params["session_id"] == self.snapshot["session"]["id"])
         {
             self.notice = "附件正在处理；可 /attach cancel".into();
+            return vec![];
+        }
+        if self.attachments.iter().any(|a| {
+            a["token"].is_null()
+                && !(a["reference"] == true && !text(a, "path").is_empty())
+        }) {
+            self.notice = "附件尚未就绪或导入失败；/attachments 查看状态、Delete 移除".into();
             return vec![];
         }
         if self.pending_draft.is_some()
@@ -2698,8 +3796,7 @@ impl App {
             };
         }
         if self.agent_message_id.is_none() && items(&self.snapshot, "models").is_empty() {
-            self.open(Drawer::Login);
-            return vec![];
+            return self.open_login();
         }
         let draft = self.current_draft();
         let command = if let Some(id) = &self.agent_message_id {
@@ -2726,9 +3823,11 @@ impl App {
         self.completion_closed = true;
         self.track_input(command, draft, None)
     }
-    fn is_control_command(input: &str) -> bool {
+    pub(crate) fn is_control_command(input: &str) -> bool {
         let command = input.split_whitespace().next().unwrap_or("");
-        COMMANDS.contains(&command) || matches!(command, "/exit" | "/settings")
+        COMMANDS.contains(&command)
+            || crate::commands::EXTRA_COMMANDS.contains(&command)
+            || matches!(command, "/exit" | "/settings" | "/session")
     }
     pub fn restore_draft(&mut self) {
         if let Some(index) = self
@@ -2812,10 +3911,10 @@ impl App {
             KeyCode::Enter | KeyCode::Char('o') if self.view == View::Changes => {
                 let list = items(&self.snapshot, "changes");
                 if !list.is_empty() {
-                    out.push(self.command(
-                        "gui.open",
-                        json!({"change_id":list[self.selected%list.len()]["id"]}),
-                    ));
+                    let id = text(&list[self.selected % list.len()], "id").to_owned();
+                    self.view = View::Chat;
+                    self.open_diff_card(&id);
+                    out.push(self.command("changes.diff", json!({"id":id})));
                 }
             }
             KeyCode::Char('x') if self.view == View::Agents => {
@@ -2831,14 +3930,8 @@ impl App {
                 let list = items(&self.snapshot, "agents");
                 if !list.is_empty() {
                     let agent = &list[self.selected % list.len()];
-                    self.agent_detail_id = Some(text(agent, "id").into());
-                    self.scroll = 0;
-                    let task = text(agent, "task");
-                    self.notice = if task.is_empty() {
-                        text(agent, "output").into()
-                    } else {
-                        format!("{task}\n{}", text(agent, "output"))
-                    };
+                    let id=text(agent,"id").to_owned();
+                    return self.open_agent_window(&id);
                 }
             }
             KeyCode::Char('m') if self.view == View::Agents => {
@@ -2866,19 +3959,50 @@ impl App {
     }
     pub fn drawer_items(&self) -> Vec<Value> {
         match self.drawer {
+            Some(Drawer::Messages) => items(&self.snapshot, "messages").iter()
+                .filter(|m| text(m,"role") == "user")
+                .enumerate()
+                .map(|(i,m)| {
+                    let body = text(m,"text").split_whitespace().collect::<Vec<_>>().join(" ");
+                    json!({"id":m["id"],"title":format!("{}. {}",i+1,if body.is_empty(){"[附件消息]"}else{&body})})
+                })
+                .filter(|m| fuzzy(text(m,"title"), &self.search)).collect(),
+            Some(Drawer::Attachments) => self.attachments.iter().enumerate().map(|(i,v)|json!({"index":i,"title":format!("{} {} · {} · {} bytes",i+1,text(v,"_tag"),text(v,"name"),v["size"])})).collect(),
+            Some(Drawer::Steps) => self.tool_step_items(),
+            Some(Drawer::Rounds) => self.round_items(),
+            Some(Drawer::Tasks) => items(&self.snapshot, "tasks")
+                .iter()
+                .filter(|t| {
+                    fuzzy(
+                        &format!(
+                            "{} {} {}",
+                            text(t, "title"),
+                            text(t, "execution"),
+                            text(t, "acceptance")
+                        ),
+                        &self.search,
+                    )
+                })
+                .cloned()
+                .collect(),
+            Some(Drawer::Checkpoints) => self
+                .checkpoint_points
+                .iter()
+                .filter(|p| fuzzy(text(p, "title"), &self.search))
+                .cloned()
+                .collect(),
             Some(Drawer::Model) => {
                 let mut list: Vec<Value> = items(&self.snapshot, "models")
                     .iter()
+                    .filter(|m| self.model_source_filter.as_deref().is_none_or(|id| text(m, "source_id") == id))
                     .filter(|m| {
-                        fuzzy(
-                            &format!(
+                        format!(
                                 "{} {} {}",
                                 text(m, "id"),
                                 text(m, "source"),
                                 text(m, "source_host")
-                            ),
-                            &self.search,
                         )
+                        .to_lowercase().contains(&self.search.trim().to_lowercase())
                     })
                     .cloned()
                     .collect();
@@ -2897,20 +4021,37 @@ impl App {
                 });
                 list
             }
-            Some(Drawer::Sessions) => items(&self.snapshot, "sessions")
-                .iter()
-                .filter(|m| fuzzy(text(m, "title"), &self.search))
-                .cloned()
-                .collect(),
-            Some(Drawer::Workspace) => items(&self.snapshot, "workspaces")
-                .iter()
+            Some(Drawer::Library) => {
+                let key = if self.library_sets { "sets" } else { "assets" };
+                let mut list: Vec<(u8, Value)> = items(&self.library, key)
+                    .iter()
+                    .filter_map(|m| search_rank(text(m, "name"), &self.search).map(|r| (r, m.clone())))
+                    .collect();
+                list.sort_by_key(|(rank, _)| *rank);
+                list.into_iter().map(|(_, m)| m).collect()
+            }
+            Some(Drawer::Sessions) => {
+                let mut list: Vec<(u8, Value)> = items(&self.snapshot, "sessions")
+                    .iter()
+                    .filter_map(|m| {
+                        search_rank(&format!("{} {}", text(m, "title"), text(m, "id")), &self.search)
+                            .map(|rank| (rank, m.clone()))
+                    })
+                    .collect();
+                // Best match first, then most recently updated (ISO-8601 sorts as text).
+                list.sort_by(|(ra, a), (rb, b)| {
+                    ra.cmp(rb).then_with(|| text(b, "updated_at").cmp(text(a, "updated_at")))
+                });
+                list.into_iter().map(|(_, m)| m).collect()
+            }
+            Some(Drawer::Workspace) => crate::workspaces::unique(self)
+                .into_iter()
                 .filter(|w| {
                     fuzzy(
                         &format!("{} {}", text(w, "name"), text(w, "path")),
                         &self.search,
                     )
                 })
-                .cloned()
                 .collect(),
             Some(Drawer::History) => self
                 .history
@@ -2923,6 +4064,54 @@ impl App {
     }
     fn drawer_key(&mut self, key: KeyEvent) -> Vec<Command> {
         let mut out = vec![];
+        if self.drawer == Some(Drawer::Diff) {
+            if let Some(bar) = crate::ui::diff_scrollbar(self, self.viewport.0, self.viewport.1) {
+                self.selected = match key.code {
+                    KeyCode::Up => bar.position.saturating_sub(1),
+                    KeyCode::Down => bar.position.saturating_add(1).min(bar.maximum),
+                    KeyCode::Left | KeyCode::PageUp => bar.position.saturating_sub(bar.page),
+                    KeyCode::Right | KeyCode::PageDown => {
+                        bar.position.saturating_add(bar.page).min(bar.maximum)
+                    }
+                    KeyCode::Home => 0,
+                    KeyCode::End => bar.maximum,
+                    KeyCode::Enter | KeyCode::Esc => {
+                        self.drawer = None;
+                        return out;
+                    }
+                    _ => bar.position,
+                };
+            }
+            return out;
+        }
+        if self.drawer == Some(Drawer::Usage)
+            && matches!(key.code, KeyCode::Enter | KeyCode::Char('d'))
+        {
+            self.usage_expanded = !self.usage_expanded;
+            self.selected = 0;
+            return out;
+        }
+        if matches!(
+            self.drawer,
+            Some(
+                Drawer::Plan
+                    | Drawer::CheckpointReview
+                    | Drawer::Info
+                    | Drawer::Usage
+                    | Drawer::Diff
+            )
+        ) {
+            match key.code {
+                KeyCode::Down => self.selected = self.selected.saturating_add(1),
+                KeyCode::Up => self.selected = self.selected.saturating_sub(1),
+                KeyCode::PageDown => self.selected = self.selected.saturating_add(10),
+                KeyCode::PageUp => self.selected = self.selected.saturating_sub(10),
+                KeyCode::Home => self.selected = 0,
+                KeyCode::Enter | KeyCode::Esc => self.drawer = None,
+                _ => {}
+            }
+            return out;
+        }
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
                 KeyCode::Char('n') => {
@@ -2943,7 +4132,7 @@ impl App {
                     let cursor = self.cursor;
                     let collapsed = self.paste_collapsed;
                     self.input = std::mem::take(&mut self.search);
-                    self.cursor = self.search_cursor.min(self.input.len());
+                    self.cursor = text_cursor(&self.input, self.search_cursor);
                     self.edit_key(key);
                     self.search = std::mem::replace(&mut self.input, input);
                     self.search_cursor = self.cursor;
@@ -2955,26 +4144,123 @@ impl App {
             return out;
         }
         let list = self.drawer_items();
+        if key.code != KeyCode::Delete && self.library_confirm.take().is_some() {
+            self.notice.clear();
+        }
+        if self.drawer == Some(Drawer::Attachments)
+            && matches!(key.code, KeyCode::Delete)
+            && !list.is_empty()
+        {
+            self.remove_attachment(self.selected % list.len());
+            return vec![];
+        }
         match key.code {
+            KeyCode::Up | KeyCode::Left if self.drawer == Some(Drawer::Effort) => {
+                let n = self.current_efforts().len().max(1);
+                self.effort_index = (self.effort_index % n + n - 1) % n;
+            }
+            KeyCode::Down | KeyCode::Right if self.drawer == Some(Drawer::Effort) => {
+                let n = self.current_efforts().len().max(1);
+                self.effort_index = (self.effort_index % n + 1) % n;
+            }
+            KeyCode::Char(' ') | KeyCode::Tab if self.drawer == Some(Drawer::Effort) => {
+                self.thinking = !self.thinking
+            }
+            KeyCode::Tab if self.drawer == Some(Drawer::Library) => {
+                self.library_sets = !self.library_sets;
+                self.selected = 0;
+                self.library_confirm = None;
+            }
+            KeyCode::F(2) if self.drawer == Some(Drawer::Library) => {
+                return self.open_management("library");
+            }
+            KeyCode::F(2) if self.drawer == Some(Drawer::Workspace) => {
+                return self.open_workspace_permissions();
+            }
+            KeyCode::Delete if self.drawer == Some(Drawer::Library) => {
+                if self.library_sets || list.is_empty() {
+                    return out;
+                }
+                let item = &list[self.selected % list.len()];
+                let id = text(item, "id").to_owned();
+                if self.library_confirm.as_deref() != Some(id.as_str()) {
+                    self.library_confirm = Some(id);
+                    self.notice = format!(
+                        "再按 Delete 从资料库删除「{}」；其他键取消",
+                        text(item, "name")
+                    );
+                    return out;
+                }
+                self.library_confirm = None;
+                let delete = self.command(
+                    "terminal.action",
+                    json!({"action":"library.delete","item_id":id,"confirmed":true}),
+                );
+                out.push(delete);
+                out.extend(self.open_library());
+                return out;
+            }
+            KeyCode::Left if self.drawer_has_search() => {
+                let at = text_cursor(&self.search, self.search_cursor);
+                self.search_cursor = self.search[..at]
+                    .char_indices()
+                    .next_back()
+                    .map_or(0, |(i, _)| i);
+            }
+            KeyCode::Right if self.drawer_has_search() => {
+                let at = text_cursor(&self.search, self.search_cursor);
+                if let Some(c) = self.search[at..].chars().next() {
+                    self.search_cursor = at + c.len_utf8();
+                }
+            }
+            KeyCode::Home if self.drawer_has_search() => self.search_cursor = 0,
+            KeyCode::End if self.drawer_has_search() => self.search_cursor = self.search.len(),
+            KeyCode::Delete if self.drawer_has_search() => {
+                let at = text_cursor(&self.search, self.search_cursor);
+                if let Some(c) = self.search[at..].chars().next() {
+                    self.search.drain(at..at + c.len_utf8());
+                    self.selected = 0;
+                }
+            }
             KeyCode::Up => self.selected = self.selected.saturating_sub(1),
             KeyCode::Down => {
                 self.selected = self.selected.saturating_add(1);
                 self.full_confirm = false;
             }
-            KeyCode::Tab if self.drawer == Some(Drawer::Model) => {
-                self.model_effort_focus = !self.model_effort_focus
-            }
-            KeyCode::Left if self.drawer == Some(Drawer::Model) => {
-                self.effort_index = self.effort_index.saturating_sub(1)
-            }
-            KeyCode::Right if self.drawer == Some(Drawer::Model) => {
-                self.effort_index = self.effort_index.saturating_add(1)
-            }
-            KeyCode::Char(' ') if self.drawer == Some(Drawer::Model) && self.model_effort_focus => {
-                self.thinking = !self.thinking
-            }
             KeyCode::Enter => {
                 match self.drawer {
+                    Some(Drawer::Rounds) if !list.is_empty() => {
+                        self.steps_round =
+                            Some(text(&list[self.selected % list.len()], "id").into());
+                        self.open(Drawer::Steps);
+                        return vec![];
+                    }
+                    Some(Drawer::Attachments) if !list.is_empty() => {
+                        return self.preview_attachment(
+                            list[self.selected % list.len()]["index"]
+                                .as_u64()
+                                .unwrap_or(0) as usize,
+                        );
+                    }
+                    Some(Drawer::Steps) if !list.is_empty() => {
+                        let i = list[self.selected % list.len()]["index"]
+                            .as_u64()
+                            .unwrap_or(0) as usize;
+                        let value = items(&self.snapshot, "steps")[i].clone();
+                        return self.open_tool_detail(value);
+                    }
+                    Some(Drawer::Checkpoints) if !list.is_empty() => {
+                        out.push(self.command(
+                            "checkpoint.preview",
+                            json!({"message_id":list[self.selected%list.len()]["id"]}),
+                        ));
+                    }
+                    Some(Drawer::Tasks) if !list.is_empty() => {
+                        out.push(Command {
+                            method: "session.open".into(),
+                            params: json!({"session_id":list[self.selected%list.len()]["id"]}),
+                        });
+                    }
                     Some(Drawer::Permissions) => {
                         let p = ["request", "assisted", "full"][self.selected % 3];
                         if p == "full" && !self.full_confirm {
@@ -3008,15 +4294,44 @@ impl App {
                         self.input = text(&list[self.selected % list.len()], "title").into();
                         self.cursor = self.input.len();
                     }
+                    Some(Drawer::Messages) if !list.is_empty() => {
+                        crate::ui::focus_message(
+                            self,
+                            text(&list[self.selected % list.len()], "id"),
+                        );
+                    }
                     Some(Drawer::Login) => {
-                        out.push(self.command("gui.open", json!({"page":"settings"})))
+                        return self.open_login();
+                    }
+                    Some(Drawer::Library) if !list.is_empty() => {
+                        let item = list[self.selected % list.len()].clone();
+                        if self.library_sets {
+                            self.show_info("正在加载…", vec![]);
+                            self.extra_generation = self.extra_generation.wrapping_add(1);
+                            let query = self.command(
+                                "terminal.query",
+                                json!({"topic":"library.set","set_id":item["id"],"ui_generation":self.extra_generation}),
+                            );
+                            out.push(query);
+                            return out;
+                        }
+                        out.extend(self.attach_library_item(&item));
+                    }
+                    Some(Drawer::Effort) => {
+                        let efforts = self.current_efforts();
+                        let effort = efforts
+                            .get(self.effort_index % efforts.len().max(1))
+                            .cloned()
+                            .unwrap_or(Value::Null);
+                        let thinking = self.thinking;
+                        out.extend(self.set_effort(effort, thinking));
                     }
                     _ => {}
                 }
                 self.drawer = None;
             }
             KeyCode::Backspace => {
-                self.search_cursor = self.search_cursor.min(self.search.len());
+                self.search_cursor = text_cursor(&self.search, self.search_cursor);
                 if let Some((index, _)) =
                     self.search[..self.search_cursor].char_indices().next_back()
                 {
@@ -3026,7 +4341,7 @@ impl App {
                 self.selected = 0;
             }
             KeyCode::Char(c) => {
-                self.search_cursor = self.search_cursor.min(self.search.len());
+                self.search_cursor = text_cursor(&self.search, self.search_cursor);
                 self.search.insert(self.search_cursor, c);
                 self.search_cursor += c.len_utf8();
                 self.selected = 0;
@@ -3034,6 +4349,97 @@ impl App {
             _ => {}
         }
         out
+    }
+
+    pub fn click_popup_action(&mut self, action: crate::ui::PopupAction) -> Vec<Command> {
+        use crate::ui::PopupAction;
+        match action {
+            PopupAction::ShellCopy => self.copy_requested = Some(self.shell_output.clone()),
+            PopupAction::ShellCancel => return self.cancel_shell(),
+            PopupAction::ShellRefresh => return self.open_shell(),
+            PopupAction::ToolSection(index) => {
+                self.tool_section = index;
+                self.selected = 0;
+            }
+            PopupAction::ToolCopy => {
+                self.copy_requested = Some(crate::tool_view::detail_text(
+                    &self.tool_detail,
+                    self.tool_section,
+                ))
+            }
+            PopupAction::ToolRefresh => return self.refresh_tool_detail(),
+            PopupAction::LibraryManage => return self.open_management("library"),
+            PopupAction::WorkspacePermissions => return self.open_workspace_permissions(),
+            PopupAction::EditorButton(index) => return self.native_editor_button(index),
+            PopupAction::EditorCursor(x, y) => self.native_editor_click(x, y),
+            PopupAction::UsageDetails => {
+                self.usage_expanded = !self.usage_expanded;
+                self.selected = 0;
+            }
+            PopupAction::SkinSelect(index) => {
+                if let Some(form) = self.form.as_mut() {
+                    form.selected = index;
+                }
+            }
+            PopupAction::SkinApply => return self.form_activate(),
+            PopupAction::SkinCustom => {
+                if let Some(form) = self.form.as_mut() {
+                    form.selected = crate::theme::SKINS.len();
+                }
+                return self.form_activate();
+            }
+            PopupAction::Question(index) => self.switch_question(index),
+            PopupAction::AnswerOption(index) => self.choose_question_option(index),
+            PopupAction::AnswerText => self.question_ui.editing = true,
+            PopupAction::AnswerNext => self.switch_question(
+                (self.question_index + 1).min(
+                    items(&self.snapshot["questions"][0], "questions")
+                        .len()
+                        .saturating_sub(1),
+                ),
+            ),
+            PopupAction::AnswerSubmit => return self.submit_question_answers(),
+            PopupAction::Thinking => self.thinking = !self.thinking,
+            PopupAction::Apply => return self.drawer_key(KeyEvent::from(KeyCode::Enter)),
+            PopupAction::LibraryTab(sets) => {
+                self.library_sets = sets;
+                self.selected = 0;
+                self.library_confirm = None;
+            }
+            PopupAction::Item(index) => {
+                if self.drawer == Some(Drawer::Effort) {
+                    self.effort_index = index;
+                } else {
+                    if self.selected != index {
+                        self.full_confirm = false;
+                    }
+                    self.selected = index;
+                }
+                return self.drawer_key(KeyEvent::from(KeyCode::Enter));
+            }
+        }
+        vec![]
+    }
+
+    pub fn open_message_history(&mut self, id: &str) {
+        self.selection = None;
+        self.open(Drawer::Messages);
+        let list = self.drawer_items();
+        self.selected = list
+            .iter()
+            .position(|m| text(m, "id") == id)
+            .unwrap_or(list.len().saturating_sub(1));
+    }
+    pub fn open_diff_card(&mut self, id: &str) {
+        if let Some(change) = items(&self.snapshot, "changes")
+            .iter()
+            .find(|c| text(c, "id") == id)
+            .cloned()
+        {
+            self.selection = None;
+            self.open(Drawer::Diff);
+            self.diff_detail = change;
+        }
     }
 }
 macro_rules! commands {
@@ -3043,7 +4449,38 @@ macro_rules! commands {
     }
 }
 commands![
-    ("/copy", "复制回复或整段对话正文", "/copy [all]"),
+    ("/todo", "查看任务待办清单", "/todo"),
+    ("/questions", "打开待回答的问题", "/questions"),
+    (
+        "/editor",
+        "终端内编辑草稿（Alt+E）；external 打开外部编辑器",
+        "/editor [external]"
+    ),
+    ("/tasks", "跨会话任务总览", "/tasks"),
+    (
+        "/rewind",
+        "查看检查点并选择回退范围",
+        "/rewind [消息ID|conversation|files|both|branch]"
+    ),
+    (
+        "/plan",
+        "查看、评论或批准指定版本计划",
+        "/plan [approve 版本|cancel 版本|comment 版本 意见]"
+    ),
+    ("/find", "搜索会话正文", "/find 关键词"),
+    ("/next", "下一处正文匹配", "/next"),
+    ("/prev", "上一处正文匹配", "/prev"),
+    ("/latest", "回到最新输出并继续跟随", "/latest"),
+    (
+        "/jump",
+        "跳到上一条用户消息或失败步骤",
+        "/jump user|failure"
+    ),
+    (
+        "/copy",
+        "复制回复、整段正文或会话编号",
+        "/copy [all|session]"
+    ),
     ("/model", "切换模型与思考强度", "/model"),
     ("/mode", "工作或计划模式", "/mode [work|plan]"),
     ("/permissions", "选择工具权限", "/permissions"),
@@ -3059,28 +4496,49 @@ commands![
     ("/skin", "切换终端皮肤", "/skin [皮肤名]"),
     ("/sessions", "选择历史会话", "/sessions"),
     ("/resume", "继续最近或指定会话", "/resume [会话ID]"),
-    ("/workspace", "切换工作区", "/workspace"),
+    ("/workspace", "切换工作区与管理目录权限", "/workspace"),
     ("/new", "新建工作会话", "/new"),
     ("/stop", "立即中断任务", "/stop"),
-    ("/accept", "验收本轮改动", "/accept"),
     ("/compact", "整理公开上下文", "/compact"),
     ("/recover", "恢复失败草稿与发送目标", "/recover"),
     ("/pet", "宠物动作及开关", "/pet [on|off]"),
     ("/login", "添加模型登录来源", "/login"),
     ("/doctor", "查看终端设置与配置", "/doctor"),
-    ("/help", "显示全部快捷键", "/help"),
+    ("/help", "快捷键与命令说明", "/help [commands]"),
     ("/gui", "在图形界面定位当前会话", "/gui"),
-    ("/library", "打开资料库", "/library"),
+    ("/library", "资料库：素材与资料集", "/library"),
     ("/media", "打开媒体工作区", "/media"),
     ("/bridge", "关闭桥接且保留后台任务", "/bridge off"),
     ("/quit", "退出终端，后台任务继续", "/quit")
 ];
 pub fn command_metadata(command: &str) -> (&'static str, &'static str) {
+    if let Some(value) = crate::commands::metadata(command) {
+        return value;
+    }
     COMMAND_SPECS
         .iter()
         .find(|c| c.name == command)
         .map(|c| (c.description, c.usage))
         .unwrap_or(("终端命令", ""))
+}
+/// Search rank, lower is better: prefix, substring, all words, then a loose
+/// subsequence only for ASCII queries (CJK subsequences match nearly anything).
+pub fn search_rank(value: &str, query: &str) -> Option<u8> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return Some(0);
+    }
+    let value = value.to_lowercase();
+    if value.starts_with(&query) {
+        return Some(0);
+    }
+    if value.contains(&query) {
+        return Some(1);
+    }
+    if query.split_whitespace().all(|word| value.contains(word)) {
+        return Some(2);
+    }
+    (query.is_ascii() && fuzzy(&value, &query)).then_some(3)
 }
 fn fuzzy(value: &str, query: &str) -> bool {
     let lower = value.to_lowercase();
@@ -3089,4 +4547,12 @@ fn fuzzy(value: &str, query: &str) -> bool {
         .to_lowercase()
         .chars()
         .all(|q| chars.by_ref().any(|c| c == q))
+}
+
+fn text_cursor(value: &str, cursor: usize) -> usize {
+    let mut cursor = cursor.min(value.len());
+    while !value.is_char_boundary(cursor) {
+        cursor = cursor.saturating_sub(1);
+    }
+    cursor
 }

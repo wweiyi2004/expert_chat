@@ -1,20 +1,38 @@
+import 'dart:async';
+import '../../platform/browser.dart';
 import 'package:dio/dio.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:riverpod/riverpod.dart';
 import 'package:uuid/uuid.dart';
 import '../../core/providers.dart';
 import '../../data/gateway_config.dart';
 import '../../data/media_api_config.dart';
 import '../../data/provider_profile.dart';
+import '../../data/subscription_catalog.dart';
+import '../../domain/llm/auth/kimi_code_auth.dart';
 import '../../domain/llm/llm_provider.dart';
 import '../../domain/llm/model_discovery.dart';
+import '../../domain/llm/llm_endpoint.dart';
+import '../../domain/llm/subscription_usage.dart';
+import '../../state/model_service_credentials.dart'
+    show chatGptAuthProvider, kimiCodeAuthProvider;
 import '../../state/settings_controller.dart';
 import 'protocol.dart';
 
+part 'settings_login.dart';
+
 class TuiSettingsBridge {
+  final _loginJobs = <String, _LoginJob>{};
   TuiSettingsBridge(this.container, {required this.rememberSecrets});
   final ProviderContainer container;
   final void Function(Iterable<String>) rememberSecrets;
   static const methods = [
+    'provider.login.list',
+    'provider.login.account',
+    'provider.login.usage',
+    'provider.login.start',
+    'provider.login.status',
+    'provider.login.cancel',
+    'provider.login.console',
     'settings.get',
     'asr.save',
     'provider.save',
@@ -102,20 +120,22 @@ class TuiSettingsBridge {
     'enabled': s.enabled,
     'has_token': (settings.customMcpTokens[s.id] ?? '').isNotEmpty,
     'tools_count': s.tools.length,
+    'tools': [
+      for (final tool in s.tools)
+        {'name': tool.name, 'description': tool.description},
+    ],
     'last_error': s.lastError,
   };
   Future<Map<String, Object?>> view() async {
     final providers = <Map<String, Object?>>[];
     for (final p in settings.profiles) {
-      var hasKey = false;
-      try {
-        final credential = await controller.readCurrentProfileCredentials(p.id);
-        rememberSecrets([credential.apiKey]);
-        hasKey = credential.apiKey.isNotEmpty;
-      } catch (_) {
-        hasKey = p.id == settings.activeProfileId && settings.apiKey.isNotEmpty;
-      }
-      providers.add(providerView(p, hasKey));
+      final account = await _loginAccountEntry(p);
+      providers.add({
+        ...providerView(p, account['has_key'] == true),
+        'account_label': account['account_label'],
+        'account_status': account['status'],
+        'account_status_label': account['status_label'],
+      });
     }
     return {
       'providers': providers,
@@ -153,6 +173,7 @@ class TuiSettingsBridge {
     if (p.containsKey('enabled') && p['enabled'] is! bool) {
       throw const BridgeFailure('invalid_params', 'enabled 必须为布尔值');
     }
+    if (method.startsWith('provider.login.')) return login(method, p);
     if (method == 'settings.get') return view();
     if (method == 'asr.save') {
       final base = requiredString(p, 'base_url'),
@@ -194,34 +215,64 @@ class TuiSettingsBridge {
       if (method == 'provider.remove') {
         confirmed(p);
         profile(requiredString(p, 'id'));
+        for (final job in _loginJobs.values.where(
+          (j) => j.profileId == p['id'] && !j.done,
+        )) {
+          job.token.cancel('来源已移除');
+        }
         await controller.deleteProfile(p['id'] as String);
         return {'accepted': true, ...await view()};
       }
       if (method == 'provider.scan') {
         final old = profile(requiredString(p, 'id'));
-        if (old.authMode == 'chatgpt') {
-          throw const BridgeFailure(
-            'unsupported',
-            'ChatGPT 订阅请使用既有模型列表，TUI扫描仅支持API端点',
-          );
-        }
         final credentials = await controller.readCurrentProfileCredentials(
           old.id,
         );
+        if (old.authMode == 'chatgpt' &&
+            old.baseUrl.replaceFirst(RegExp(r'/+$'), '') !=
+                'https://api.openai.com/v1') {
+          throw const BridgeFailure('invalid_params', 'GPT 订阅凭据只能发送到官方服务');
+        }
+        if (old.authMode == 'kimiCode' && !KimiCodeAuth.accepts(old.baseUrl)) {
+          throw const BridgeFailure(
+            'invalid_params',
+            'Kimi 登录凭据仅用于官方 Coding 服务',
+          );
+        }
+        final scanKey = old.authMode == 'chatgpt'
+            ? await container.read(chatGptAuthProvider).accessToken(old.id)
+            : old.authMode == 'kimiCode'
+            ? await container.read(kimiCodeAuthProvider).accessToken(old.id)
+            : credentials.apiKey;
+        rememberSecrets([scanKey]);
         final discovery = ModelDiscovery();
-        final models = await discovery.scan(
-          settings.config.copyWith(
-            profileId: old.id,
-            baseUrl: old.baseUrl,
-            apiKey: credentials.apiKey,
-            model: old.chatModel,
-            apiFormat: old.apiFormat,
-            authMode: old.authMode,
-          ),
-          CancelToken(),
-        );
+        late final List<String> models;
+        try {
+          models = await discovery.scan(
+            settings.config.copyWith(
+              profileId: old.id,
+              baseUrl: old.baseUrl,
+              apiKey: scanKey,
+              model: old.chatModel,
+              apiFormat: old.apiFormat,
+              authMode: old.authMode,
+            ),
+            CancelToken(),
+          );
+        } catch (error) {
+          throw BridgeFailure(
+            'provider_scan_failed',
+            describeModelDiscoveryError(error),
+          );
+        }
+        final current = await controller.readCurrentProfileCredentials(old.id);
+        if (current.profile.toJson().toString() != old.toJson().toString() ||
+            current.apiKey != credentials.apiKey) {
+          throw const BridgeFailure('conflict', '扫描期间提供商配置已改变，请重新获取模型');
+        }
         await controller.saveModelService(
           old.copyWith(
+            baseUrl: LlmEndpoint.base(old.baseUrl),
             models: models,
             modelLimits: discovery.limits,
             chatModel: models.contains(old.chatModel)
@@ -233,7 +284,12 @@ class TuiSettingsBridge {
           ),
           credentials.apiKey,
         );
-        return {'models': models, ...await view()};
+        return {
+          'models': models,
+          'model_count': models.length,
+          'complete': true,
+          ...await view(),
+        };
       }
       final id = p['id'] as String?;
       final old = id == null ? null : profile(id);
@@ -273,7 +329,10 @@ class TuiSettingsBridge {
       if (chat.isNotEmpty && !models.contains(chat)) models.add(chat);
       final auth = p['auth_mode'] as String? ?? old?.authMode ?? 'apiKey';
       if (!['apiKey', 'none'].contains(auth) && auth != old?.authMode) {
-        throw const BridgeFailure('unsupported', 'ChatGPT OAuth 登录请使用既有登录流程');
+        throw const BridgeFailure('unsupported', '订阅账号请通过订阅服务入口授权');
+      }
+      if (auth == 'kimiCode' && !KimiCodeAuth.accepts(base)) {
+        throw const BridgeFailure('invalid_params', 'Kimi 授权来源不能改为其他接口地址');
       }
       final suppliedKey = p['api_key'] as String?;
       final key = p['clear_key'] == true
@@ -289,7 +348,7 @@ class TuiSettingsBridge {
       final next = ProviderProfile(
         id: old?.id,
         name: name,
-        baseUrl: base,
+        baseUrl: LlmEndpoint.base(base),
         apiFormat: LlmApiFormat.fromWire(format),
         models: models,
         chatModel: chat,

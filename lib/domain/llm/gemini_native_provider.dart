@@ -73,6 +73,7 @@ class GeminiNativeProvider implements LlmProvider {
               },
             ),
             data: jsonEncode(body),
+            onSendProgress:config.onUploadProgress,
             cancelToken: requestToken,
           )
           .timeout(
@@ -84,7 +85,7 @@ class GeminiNativeProvider implements LlmProvider {
           );
     } on DioException catch (e) {
       if (CancelToken.isCancel(e)) return;
-      throw await humanizeLlmHttpError(e);
+      throw await humanizeLlmHttpError(e, authMode: config.authMode);
     } on TimeoutException {
       if (cancelToken?.isCancelled ?? false) return;
       throw llmResponseTimeout(headerTimeout);
@@ -153,7 +154,7 @@ class GeminiNativeProvider implements LlmProvider {
       }
     } on DioException catch (e) {
       if (CancelToken.isCancel(e)) return;
-      throw await humanizeLlmHttpError(e);
+      throw await humanizeLlmHttpError(e, authMode: config.authMode);
     } on TimeoutException {
       if (cancelToken?.isCancelled ?? false) return;
       throw llmResponseTimeout(_streamIdleTimeout, headers: false);

@@ -1,24 +1,24 @@
-› 让 SVG 预览按窗口大小等比例缩放，保留
-  源码编辑和手动缩放。
+ › 让 SVG 预览按窗口大小等  ↑↓ 提问 1/1
+    已修改 lib/pre…ew.dart +18 -6
+    38 -  final scale = size.width / can
+         vas.width;
+    38 +  final scale = min(
+    + 查看完整差异
+
+    已新建 test/pr…st.dart +24 -0
+     1 +  test('preview scales to contai
+         ner', () {
+     2 +  });
+    + 查看完整差异
 
 ◈ 已完成。预览改为按容器宽高的较小比例
   缩放；手动缩放仍然优先。
 
-  ✓ 4 个步骤 · 1m42s
 
   改动  2 个文件  +42 −6
-    M lib/preview.dart  +18 −6
-    A test/pr…est.dart  +24
-  检查  ✓ flutter test test/preview_test
-
-
-
-
-
-
-
-✓ 检查完成 · 待验收
+    ✓ 任务完成
 ╭──────────────────────────────────────╮
-│ › 描述任务，/ 命令，@ 文件           │
+│ › 描述任务；Alt+J 换行；/ 命令，@ 文 │
 ╰──────────────────────────────────────╯
-  Sol   ◇ 请求批准
+    image-lab  GPT-6 Sol ·  ◇ 请求批准
+    上下文 38%

@@ -1,9 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:dartssh2/dartssh2.dart';
-import 'package:flutter/foundation.dart';
+import '../../platform/foundation.dart';
 import 'package:dio/dio.dart';
 
 import '../../data/research/ssh_profile.dart';
@@ -11,6 +10,8 @@ import 'research_ssh_contract.dart';
 import 'shell_quoting.dart';
 import 'research_files.dart';
 import 'research_files_io.dart';
+import 'command_output_buffer.dart';
+import 'ssh_remote_forwarding.dart';
 import '../workbench/terminal/terminal_connection.dart';
 
 export 'research_ssh_contract.dart';
@@ -60,6 +61,7 @@ class ResearchSshClientIo
 
   SSHClient? _client;
   SSHSession? _shell;
+  SshRemoteForwarding? _forwarding;
   final List<List<int>> _earlyStdout = [];
   final List<List<int>> _earlyStderr = [];
   var _earlyStdoutBytes = 0;
@@ -221,6 +223,27 @@ class ResearchSshClientIo
       throw ResearchSshException('SSH 连接失败');
     }
 
+    if (profile.remoteForwards.isNotEmpty) {
+      final forwarding = SshRemoteForwarding(
+        onError: (message) => _emitStderr(utf8.encode('\r\n$message\r\n')),
+      );
+      _forwarding = forwarding;
+      try {
+        await whileConnecting(
+          forwarding.start(
+            client,
+            profile.remoteForwards,
+            timeout: connectTimeout,
+          ),
+        );
+      } catch (error) {
+        await _teardown(closeStreams: false);
+        if (error is TimeoutException) {
+          throw ResearchSshException('RemoteForward 建立超时');
+        }
+        rethrow;
+      }
+    }
     late final SSHSession shell;
     try {
       shell = await whileConnecting(
@@ -230,11 +253,15 @@ class ResearchSshClientIo
         ),
       ).timeout(connectTimeout);
     } on TimeoutException {
+      await _forwarding?.close();
+      _forwarding = null;
       client.close();
       await socket.close();
       if (identical(_client, client)) _client = null;
       throw ResearchSshException('启动远程 shell 超时');
     } catch (e) {
+      await _forwarding?.close();
+      _forwarding = null;
       client.close();
       await socket.close();
       if (identical(_client, client)) _client = null;
@@ -361,25 +388,31 @@ class ResearchSshClientIo
       throw ResearchSshException('未连接');
     }
     try {
-      final session = await client.execute(command);
-      final out = BytesBuilder(copy: false);
-      final err = BytesBuilder(copy: false);
-      final stdoutSub = session.stdout.listen(out.add);
-      final stderrSub = session.stderr.listen(err.add);
+      final clock = Stopwatch()..start();
+      final session = await _openCommandChannel(client, command, timeout);
+      final out = CommandOutputBuffer(maxChars: 2 * 1024 * 1024);
+      final err = CommandOutputBuffer(maxChars: 2 * 1024 * 1024);
+      final stdoutSub = decodeCommandOutput(
+        session.stdout.cast<List<int>>(),
+      ).listen(out.add);
+      final stderrSub = decodeCommandOutput(
+        session.stderr.cast<List<int>>(),
+      ).listen(err.add);
       try {
         await Future.wait<void>([
           stdoutSub.asFuture<void>(),
           stderrSub.asFuture<void>(),
           session.done,
-        ]).timeout(timeout);
+        ]).timeout(timeout - clock.elapsed);
       } on TimeoutException {
+        throw ResearchSshException('远程命令执行超时');
+      } finally {
+        session.close();
         await stdoutSub.cancel();
         await stderrSub.cancel();
-        session.close();
-        throw ResearchSshException('远程命令执行超时');
       }
-      final stdoutText = utf8.decode(out.takeBytes(), allowMalformed: true);
-      final stderrText = utf8.decode(err.takeBytes(), allowMalformed: true);
+      final stdoutText = out.text;
+      final stderrText = err.text;
       if (session.exitCode != 0) {
         throw ResearchSshExecException(
           exitCode: session.exitCode,
@@ -387,7 +420,12 @@ class ResearchSshClientIo
           stderrText: stderrText,
         );
       }
+      if (out.truncated || err.truncated) {
+        throw ResearchSshException('SSH 查询输出超过 2 MiB，请缩小命令或目录查询范围。');
+      }
       return stdoutText;
+    } on TimeoutException {
+      throw ResearchSshException('SSH 命令通道打开超时；远端执行状态需要核验。');
     } catch (e) {
       if (e is ResearchSshException) rethrow;
       throw ResearchSshException('远程命令执行失败');
@@ -405,24 +443,38 @@ class ResearchSshClientIo
     final client = _client;
     if (client == null || !_connected) throw ResearchSshException('SSH 已断开');
     if (token.isCancelled) throw token.cancelError!;
-    final session = await client.execute(command);
-    final out = StringBuffer(), err = StringBuffer();
-    var truncated = false;
-    void collect(StringBuffer target, String text, bool isStderr) {
-      final count = (64000 - target.length).clamp(0, text.length);
-      target.write(text.substring(0, count));
-      if (count < text.length) truncated = true;
-      onOutput?.call(text, isStderr);
+    final clock = Stopwatch()..start();
+    late final SSHSession session;
+    try {
+      session = await _openCommandChannel(
+        client,
+        command,
+        timeout,
+        token: token,
+      );
+    } on TimeoutException {
+      onComplete?.call(const WorkspaceCommandOutcome(timedOut: true));
+      throw ResearchSshException('SSH 命令通道打开超时；远端执行状态需要核验。');
+    } catch (_) {
+      if (token.isCancelled) {
+        onComplete?.call(const WorkspaceCommandOutcome(cancelled: true));
+      }
+      rethrow;
+    }
+    final out = CommandOutputBuffer(),
+        err = CommandOutputBuffer(maxChars: 8000);
+    final live = CommandOutputBatch(onOutput);
+    void collect(CommandOutputBuffer target, String text, bool isStderr) {
+      target.add(text);
+      live.add(text, isStderr);
     }
 
-    final output = session.stdout
-        .cast<List<int>>()
-        .transform(const Utf8Decoder(allowMalformed: true))
-        .listen((v) => collect(out, v, false));
-    final errors = session.stderr
-        .cast<List<int>>()
-        .transform(const Utf8Decoder(allowMalformed: true))
-        .listen((v) => collect(err, v, true));
+    final output = decodeCommandOutput(
+      session.stdout.cast<List<int>>(),
+    ).listen((v) => collect(out, v, false));
+    final errors = decodeCommandOutput(
+      session.stderr.cast<List<int>>(),
+    ).listen((v) => collect(err, v, true));
     final finished = Future.wait<void>([
       output.asFuture<void>(),
       errors.asFuture<void>(),
@@ -438,8 +490,9 @@ class ResearchSshClientIo
           onComplete?.call(const WorkspaceCommandOutcome(cancelled: true));
           throw ResearchSshException('已取消等待并关闭 SSH 通道；远端子进程状态需要核验。');
         }),
-      ]).timeout(timeout);
-      final text = out.toString(), error = err.toString();
+      ]).timeout(timeout - clock.elapsed);
+      live.flush();
+      final text = out.text, error = err.text;
       onComplete?.call(WorkspaceCommandOutcome(exitCode: session.exitCode));
       if (session.exitCode != 0) {
         throw ResearchSshExecException(
@@ -448,7 +501,7 @@ class ResearchSshClientIo
           stderrText: error,
         );
       }
-      return '退出码：0\n$text${error.isEmpty ? '' : '\n标准错误：\n$error'}${truncated ? '\n输出已截断。' : ''}';
+      return '退出码：0\n$text${error.isEmpty ? '' : '\n标准错误：\n$error'}';
     } on TimeoutException {
       onComplete?.call(const WorkspaceCommandOutcome(timedOut: true));
       throw ResearchSshException('命令超时，已关闭 SSH 通道；远端子进程状态需要核验。');
@@ -457,11 +510,37 @@ class ResearchSshClientIo
       session.close();
       await output.cancel();
       await errors.cancel();
+      live.flush();
     }
   }
 
   @override
   Future<void> disconnect() => _teardown(closeStreams: true);
+
+  Future<SSHSession> _openCommandChannel(
+    SSHClient client,
+    String command,
+    Duration timeout, {
+    CancelToken? token,
+  }) async {
+    var abandoned = false;
+    final opening = client.execute(command);
+    unawaited(
+      opening.then((session) {
+        if (abandoned) session.close();
+      }, onError: (Object _) {}),
+    );
+    try {
+      return await Future.any<SSHSession>([
+        opening,
+        if (token != null)
+          token.whenCancel.then<SSHSession>((error) => throw error),
+      ]).timeout(timeout);
+    } catch (_) {
+      abandoned = true;
+      rethrow;
+    }
+  }
 
   SSHClient _buildClient(
     SSHSocket socket, {
@@ -492,6 +571,9 @@ class ResearchSshClientIo
   Future<void> _teardown({required bool closeStreams}) async {
     _connected = false;
     _interactiveTty = null;
+    final forwarding = _forwarding;
+    _forwarding = null;
+    await forwarding?.close();
     for (final s in _subs) {
       await s.cancel();
     }

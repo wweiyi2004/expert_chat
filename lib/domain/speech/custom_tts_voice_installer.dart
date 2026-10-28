@@ -1,7 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/services.dart';
-import 'package:path_provider/path_provider.dart';
+import '../../platform/paths.dart';
 
 import '../../data/custom_tts_voices.dart';
 import '../../data/media_api_config.dart';

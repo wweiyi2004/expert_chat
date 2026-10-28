@@ -1,7 +1,7 @@
 import 'dart:io';
 import 'dart:convert';
 import 'package:dio/dio.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:expert_chat/platform/credentials.dart';
 import 'dart:ui' as ui;
 import 'package:drift/native.dart';
 import 'package:expert_chat/core/providers.dart';
@@ -30,7 +30,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:expert_chat/platform/preferences.dart';
 import 'widget_test.dart'
     show FakeSettings, FakeLlmProvider, InMemoryRepo, InMemoryLibraryFileStore;
 
@@ -380,6 +380,17 @@ void main() {
         await _pump(tester);
         await _capture(tester, '$tag-chat');
         if (width >= 840) {
+          await tester.tap(find.byKey(const ValueKey('task-open-4')));
+          await _pump(tester);
+          await _capture(tester, '$tag-results');
+          await tester.tap(find.byKey(const ValueKey('workbench-section-0')));
+          await _pump(tester);
+          await _capture(tester, '$tag-workbench');
+          await tester.tap(find.byKey(const ValueKey('workbench-section-2')));
+          await _pump(tester);
+          await _capture(tester, '$tag-agents');
+          await tester.tap(find.byTooltip('收起工作台'));
+          await _pump(tester);
           final label = tester.getRect(
             find.byKey(const ValueKey('sidebar-work-section-label')),
           );
@@ -436,7 +447,7 @@ void main() {
           if (workbench.evaluate().isNotEmpty) {
             await tester.tap(workbench.first);
             await _pump(tester);
-            final changes = find.text('改动').hitTestable();
+            final changes = find.text('文件').hitTestable();
             if (changes.evaluate().isNotEmpty) {
               await tester.tap(changes.first);
               await _pump(tester);
@@ -448,12 +459,6 @@ void main() {
                 find.byKey(const ValueKey('workbench-section-2')),
               );
               await _pump(tester);
-              final agents = find.widgetWithText(ActionChip, '子代理');
-              expect(agents, findsOneWidget);
-              if (agents.evaluate().isNotEmpty) {
-                await tester.tap(agents);
-                await _pump(tester);
-              }
               await _capture(tester, '$tag-agents');
             }
             await tester.binding.handlePopRoute();

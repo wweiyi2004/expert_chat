@@ -70,7 +70,7 @@ class WorkApprovalCard extends ConsumerWidget {
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
               PrototypeChip(
-                label: '需要你批准 · ${pending.tool}',
+                label: '等待你的批准',
                 tone: PrototypeTone.confirmation,
                 maxWidth: 300,
                 tooltip: pending.tool,

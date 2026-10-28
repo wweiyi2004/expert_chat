@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:dio/dio.dart';
-import 'package:url_launcher/url_launcher.dart';
+import '../../../platform/browser.dart';
 
 Future<Map<String, String>> authorizeLoopback(
   Uri Function(String) authorize,

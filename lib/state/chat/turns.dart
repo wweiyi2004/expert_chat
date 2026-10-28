@@ -1,6 +1,47 @@
 part of '../chat_controller.dart';
 
 mixin ChatTurns on ChatMedia {
+  /// Ends the app-owned runtime without changing completed conversation history.
+  Future<void> stopAllLocalTasks() async {
+    for (final token in [..._titleTokens.values, ..._compactionTokens.values]) {
+      token.cancel('应用执行实例已关闭');
+    }
+    for (final run in _sessionRuns.values.toList()) {
+      final plan = ref.read(taskPlansProvider)[run.conversationId];
+      if (run.execution.isActive ||
+          run.awaitingEvents ||
+          plan?.status == TaskPlanStatus.awaitingApproval) {
+        await stopAndWait(conversationId: run.conversationId);
+        if (plan?.status == TaskPlanStatus.awaitingApproval) {
+          await ref
+              .read(taskPlansProvider.notifier)
+              .cancel(run.conversationId, plan!.revision);
+        }
+      }
+    }
+  }
+
+  Future<void> stopWindowTasks(TaskWindow window) async {
+    window.close();
+    await Future.wait([
+      for (final run in _sessionRuns.values.toList())
+        if (identical(run.taskWindow, window))
+          (() async {
+            final root = run.core?.rootId;
+            await stopAndWait(conversationId: run.conversationId);
+            final plan = ref.read(taskPlansProvider)[run.conversationId];
+            if (identical(run.taskWindow, window) &&
+                plan != null &&
+                plan.taskId == root &&
+                plan.status == TaskPlanStatus.awaitingApproval) {
+              await ref
+                  .read(taskPlansProvider.notifier)
+                  .cancel(run.conversationId, plan.revision);
+            }
+          })(),
+    ]);
+  }
+
   void stop({bool persist = true, String? conversationId}) => _withSession(() {
     final stoppingId = conversationId ?? _run?.conversationId ?? _s.currentId;
     _compactionTokens[stoppingId]?.cancel('用户已停止上下文整理');

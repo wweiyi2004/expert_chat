@@ -1,5 +1,5 @@
 import 'package:expert_chat/state/role_evolution.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:expert_chat/platform/credentials.dart';
 import 'dart:async';
 
 import 'package:dio/dio.dart';
@@ -18,7 +18,7 @@ import 'package:expert_chat/state/work_agents.dart';
 import 'package:expert_chat/state/work_processes.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:expert_chat/platform/preferences.dart';
 
 import 'widget_test.dart' show FakeSettings, InMemoryRepo;
 

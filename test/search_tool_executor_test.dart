@@ -46,6 +46,8 @@ Future<SearchToolResult> _run(
   String args = '{"query":"test"}',
   List<Citation> citations = const [],
   Set<String> allowed = const {},
+  bool allowPublicFetch = false,
+  bool networkAllowed = true,
   SearchBackend backend = SearchBackend.duckduckgo,
   CancelToken? token,
   List<SearchActivity>? activities,
@@ -57,11 +59,72 @@ Future<SearchToolResult> _run(
   backend: backend,
   citations: citations,
   allowedFetchUrls: allowed,
+  allowPublicFetch: allowPublicFetch,
+  networkAllowed: networkAllowed,
   cancelToken: token ?? CancelToken(),
   onActivity: (activity) => activities?.add(activity),
 );
 
 void main() {
+  test(
+    'work fetch follows public URLs without a user or search allow-list',
+    () async {
+      final source = _Search();
+      final executor = SearchToolExecutor(
+        createEngine: ({required backend, required apiKey}) =>
+            ToolEngine(source),
+      );
+      for (final url in [
+        'https://docs.example.com/start',
+        'https://docs.example.com/next',
+        'https://other.example.org/reference',
+      ]) {
+        final result = await _run(
+          executor,
+          name: 'fetch_url',
+          args: jsonEncode({'url': url}),
+          allowPublicFetch: true,
+        );
+        expect(result.content, contains('complete page'));
+      }
+      expect(source.fetched, hasLength(3));
+    },
+  );
+  test(
+    'public fetch still rejects disabled network and unsafe targets',
+    () async {
+      final source = _Search();
+      final executor = SearchToolExecutor(
+        createEngine: ({required backend, required apiKey}) =>
+            ToolEngine(source),
+      );
+      final denied = await _run(
+        executor,
+        name: 'fetch_url',
+        args: '{"url":"https://docs.example.com"}',
+        allowPublicFetch: true,
+        networkAllowed: false,
+      );
+      expect(denied.content, contains('禁止联网'));
+      for (final url in [
+        'http://127.0.0.1/',
+        'http://192.168.1.1/',
+        'http://localhost/',
+        'http://[::1]/',
+        'file:///etc/passwd',
+        'https://user:password@example.com/',
+      ]) {
+        final result = await _run(
+          executor,
+          name: 'fetch_url',
+          args: jsonEncode({'url': url}),
+          allowPublicFetch: true,
+        );
+        expect(result.content, startsWith('无效的 URL'));
+      }
+      expect(source.fetched, isEmpty);
+    },
+  );
   test(
     'official fetch can read a page returned by this turn search without widening to arbitrary URLs',
     () async {

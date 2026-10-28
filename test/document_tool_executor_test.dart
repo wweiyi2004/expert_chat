@@ -20,7 +20,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:expert_chat/core/desktop_providers.dart';
 import 'package:expert_chat/domain/desktop/workspace_host_stub.dart'
     as desktop_stub;
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:expert_chat/platform/preferences.dart';
 
 import 'widget_test.dart'
     show FakeSettings, FakeLlmProvider, InMemoryRepo, InMemoryLibraryFileStore;

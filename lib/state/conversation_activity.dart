@@ -1,4 +1,4 @@
-import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:riverpod/riverpod.dart';
 import 'chat_controller.dart';
 import 'work_agents.dart';
 import 'work_processes.dart';

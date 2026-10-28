@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'package:shared_preferences/shared_preferences.dart';
+import '../../platform/preferences.dart';
 
 /// URL templates refer to real published assets, never an assumed mirror.
 class UpdateSource {

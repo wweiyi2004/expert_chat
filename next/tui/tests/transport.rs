@@ -129,7 +129,11 @@ fn live_worker_authenticates_reconnects_without_replaying_and_disconnect_does_no
             hello["params"]["token"],
             "test-private-token-0123456789-abcdef"
         );
-        reply(&mut ws, &hello, json!({"protocol":1,"server_id":"first"}));
+        reply(
+            &mut ws,
+            &hello,
+            json!({"protocol":1,"server_id":"first","execution_host":"dart","host_version":"1"}),
+        );
         let snapshot = read_wire(&mut ws);
         assert_eq!(snapshot["method"], "snapshot.get");
         reply(
@@ -144,7 +148,11 @@ fn live_worker_authenticates_reconnects_without_replaying_and_disconnect_does_no
         tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         let mut ws = tungstenite::accept(tcp).unwrap();
         let hello = read_wire(&mut ws);
-        reply(&mut ws, &hello, json!({"protocol":1,"server_id":"second"}));
+        reply(
+            &mut ws,
+            &hello,
+            json!({"protocol":1,"server_id":"second","execution_host":"dart","host_version":"1"}),
+        );
         let open = read_wire(&mut ws);
         assert_eq!(open["method"], "session.open");
         reply(
@@ -259,7 +267,11 @@ fn failed_open_preserves_the_acknowledged_session_on_reconnect() {
         tcp.set_read_timeout(Some(Duration::from_secs(8))).unwrap();
         let mut ws = tungstenite::accept(tcp).unwrap();
         let hello = read_wire(&mut ws);
-        reply(&mut ws, &hello, json!({"protocol":1}));
+        reply(
+            &mut ws,
+            &hello,
+            json!({"protocol":1,"execution_host":"dart","host_version":"1"}),
+        );
         let initial = read_wire(&mut ws);
         reply(
             &mut ws,
@@ -273,7 +285,11 @@ fn failed_open_preserves_the_acknowledged_session_on_reconnect() {
         let (tcp, _) = listener.accept().unwrap();
         let mut ws = tungstenite::accept(tcp).unwrap();
         let hello = read_wire(&mut ws);
-        reply(&mut ws, &hello, json!({"protocol":1}));
+        reply(
+            &mut ws,
+            &hello,
+            json!({"protocol":1,"execution_host":"dart","host_version":"1"}),
+        );
         let restored = read_wire(&mut ws);
         assert_eq!(restored["method"], "session.open");
         assert_eq!(restored["params"]["session_id"], "acknowledged");
@@ -372,68 +388,76 @@ fn unauthenticated_event_flood_is_bounded_and_never_reaches_the_reducer() {
 
 #[test]
 fn command_failures_preserve_the_destination_and_orphan_snapshot_errors_are_visible() {
-    use expert_tui::source::BridgeSource;
-    use std::{
-        net::TcpListener,
-        thread,
-        time::{Duration, Instant},
-    };
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let (_dir, path) = private_discovery(listener.local_addr().unwrap().port());
-    let server = thread::spawn(move || {
-        let (tcp, _) = listener.accept().unwrap();
-        tcp.set_read_timeout(Some(Duration::from_secs(6))).unwrap();
-        let mut ws = tungstenite::accept(tcp).unwrap();
-        let hello = read_wire(&mut ws);
-        reply(&mut ws, &hello, json!({"protocol":1}));
-        let snapshot = read_wire(&mut ws);
-        reply(
-            &mut ws,
-            &snapshot,
-            json!({"session":{"id":"s","status":"idle"}}),
-        );
-        let message = read_wire(&mut ws);
-        assert_eq!(message["method"], "agent.message");
-        ws.send(tungstenite::Message::Text(json!({"v":1,"id":message["id"],"ok":false,"error":{"code":"busy","message":"try later"}}).to_string().into())).unwrap();
-        ws.send(tungstenite::Message::Text(json!({"v":1,"id":"","ok":false,"error":{"code":"too_large","message":"snapshot unavailable"}}).to_string().into())).unwrap();
-        let _ = ws.read();
-    });
-    let mut source = BridgeSource::new(path);
-    let deadline = Instant::now() + Duration::from_secs(8);
-    let mut sent = false;
-    let mut attributed = false;
-    let mut refresh_error = false;
-    let command = Command {
-        method: "agent.message".into(),
-        params: json!({"session_id":"s","id":"worker","text":"precise target"}),
-    };
-    while Instant::now() < deadline {
-        for event in source.poll() {
-            match event {
-                SourceEvent::Snapshot(_) if !sent => {
-                    source.send(command.clone()).unwrap();
-                    sent = true;
+    for (code, expected_unknown) in [("busy", false), ("operation_failed", true)] {
+        use expert_tui::source::BridgeSource;
+        use std::{
+            net::TcpListener,
+            thread,
+            time::{Duration, Instant},
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let (_dir, path) = private_discovery(listener.local_addr().unwrap().port());
+        let server = thread::spawn(move || {
+            let (tcp, _) = listener.accept().unwrap();
+            tcp.set_read_timeout(Some(Duration::from_secs(6))).unwrap();
+            let mut ws = tungstenite::accept(tcp).unwrap();
+            let hello = read_wire(&mut ws);
+            reply(
+                &mut ws,
+                &hello,
+                json!({"protocol":1,"execution_host":"dart","host_version":"1"}),
+            );
+            let snapshot = read_wire(&mut ws);
+            reply(
+                &mut ws,
+                &snapshot,
+                json!({"session":{"id":"s","status":"idle"}}),
+            );
+            let message = read_wire(&mut ws);
+            assert_eq!(message["method"], "agent.message");
+            ws.send(tungstenite::Message::Text(json!({"v":1,"id":message["id"],"ok":false,"error":{"code":code,"message":"try later"}}).to_string().into())).unwrap();
+            ws.send(tungstenite::Message::Text(json!({"v":1,"id":"","ok":false,"error":{"code":"too_large","message":"snapshot unavailable"}}).to_string().into())).unwrap();
+            let _ = ws.read();
+        });
+        let mut source = BridgeSource::new(path);
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let mut sent = false;
+        let mut attributed = false;
+        let mut refresh_error = false;
+        let command = Command {
+            method: "agent.message".into(),
+            params: json!({"session_id":"s","id":"worker","text":"precise target"}),
+        };
+        while Instant::now() < deadline {
+            for event in source.poll() {
+                match event {
+                    SourceEvent::Snapshot(_) if !sent => {
+                        source.send(command.clone()).unwrap();
+                        sent = true;
+                    }
+                    SourceEvent::CommandError {
+                        command: original,
+                        message,
+                        outcome_unknown,
+                    } => {
+                        assert_eq!(outcome_unknown, expected_unknown);
+                        attributed = original == command && message.contains("try later");
+                    }
+                    SourceEvent::SnapshotError(message) => {
+                        refresh_error = message.contains("snapshot unavailable")
+                    }
+                    _ => {}
                 }
-                SourceEvent::CommandError {
-                    command: original,
-                    message,
-                } => {
-                    attributed = original == command && message.contains("try later");
-                }
-                SourceEvent::SnapshotError(message) => {
-                    refresh_error = message.contains("snapshot unavailable")
-                }
-                _ => {}
             }
+            if attributed && refresh_error {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
         }
-        if attributed && refresh_error {
-            break;
-        }
-        thread::sleep(Duration::from_millis(20));
+        drop(source);
+        server.join().unwrap();
+        assert!(attributed && refresh_error);
     }
-    drop(source);
-    server.join().unwrap();
-    assert!(attributed && refresh_error);
 }
 
 #[test]
@@ -451,7 +475,11 @@ fn delayed_snapshot_and_events_cannot_switch_back_to_the_previous_session() {
         tcp.set_read_timeout(Some(Duration::from_secs(6))).unwrap();
         let mut ws = tungstenite::accept(tcp).unwrap();
         let hello = read_wire(&mut ws);
-        reply(&mut ws, &hello, json!({"protocol":1}));
+        reply(
+            &mut ws,
+            &hello,
+            json!({"protocol":1,"execution_host":"dart","host_version":"1"}),
+        );
         let initial = read_wire(&mut ws);
         reply(
             &mut ws,

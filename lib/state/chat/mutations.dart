@@ -292,6 +292,7 @@ mixin ChatMutations on _ChatControllerBase {
     for (final existing in message.searchActivities) {
       if (existing.id == activity.id) {
         return activity.copyWith(
+          contentOffset: existing.contentOffset,
           reasoningOffset: existing.reasoningOffset,
           roundId: existing.roundId,
           interrupted: activity.interrupted || existing.interrupted,
@@ -307,6 +308,7 @@ mixin ChatMutations on _ChatControllerBase {
       }
     }
     return activity.copyWith(
+      contentOffset: message.content.runes.length,
       reasoningOffset: message.reasoning.length,
       startedAt: activity.startedAt ?? DateTime.now(),
       finishedAt: activity.status == SearchActivityStatus.running

@@ -1382,6 +1382,11 @@ class RemoteHost {
         'Automation contains a host credential; use local references',
       );
     }
+    if (input['delete'] is String) {
+      automations.remove(input['delete']);
+      await _saveConfig();
+      return;
+    }
     final item = Map<String, dynamic>.from(input['item'] as Map);
     final id = item['id'];
     if (id is! String || !RegExp(r'^[a-zA-Z0-9_-]{1,80}$').hasMatch(id)) {

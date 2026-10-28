@@ -5,7 +5,7 @@ import 'dart:typed_data';
 import 'package:archive/archive.dart';
 import 'package:docx_to_text/docx_to_text.dart';
 import 'package:excel/excel.dart';
-import 'package:syncfusion_flutter_pdf/pdf.dart';
+import '../../platform/pdf_text.dart';
 import 'package:xml/xml.dart';
 
 import '../../data/models.dart';
@@ -197,12 +197,7 @@ class FileParser {
   }
 
   String _parsePdf(Uint8List bytes) {
-    final doc = PdfDocument(inputBytes: bytes);
-    try {
-      return PdfTextExtractor(doc).extractText();
-    } finally {
-      doc.dispose();
-    }
+    return extractPdfText(bytes);
   }
 
   String _parseDocx(Uint8List bytes) {

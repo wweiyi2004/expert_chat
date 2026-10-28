@@ -44,6 +44,7 @@ class AnthropicMessagesProvider implements LlmProvider {
     }
 
     for (final msg in messages) {
+      if (msg.isEmptyAssistant) continue;
       if (msg.imageFileIds.isNotEmpty) {
         throw StateError('Anthropic Messages 需要图片字节或 URL，不能使用其他服务的 file_id。');
       }
@@ -63,7 +64,7 @@ class AnthropicMessagesProvider implements LlmProvider {
             final result = results[msg.toolImageCallId];
             if (result == null) throw StateError('工具截图缺少对应的 tool_result');
             (result['content'] as List).addAll(<Map<String, dynamic>>[
-              if (msg.content.isNotEmpty) {'type': 'text', 'text': msg.content},
+              if (msg.content.trim().isNotEmpty) {'type': 'text', 'text': msg.content},
               for (final url in msg.imageDataUrls) _image(url),
             ]);
           } else {
@@ -235,12 +236,14 @@ class AnthropicMessagesProvider implements LlmProvider {
           .post<ResponseBody>(
             LlmEndpoint.action(config.baseUrl, 'messages'),
             data: jsonEncode(body),
+            onSendProgress:config.onUploadProgress,
             cancelToken: token,
             options: Options(
               responseType: ResponseType.stream,
               headers: {
                 ...config.transportHeaders,
                 if (config.authMode != 'none' &&
+                    config.authMode != 'kimiCode' &&
                     config.apiKey.trim().isNotEmpty)
                   'x-api-key': config.apiKey.trim(),
                 if (config.authMode != 'none' &&
@@ -288,7 +291,7 @@ class AnthropicMessagesProvider implements LlmProvider {
       }
     } on DioException catch (e) {
       if (CancelToken.isCancel(e)) return;
-      throw await humanizeLlmHttpError(e);
+      throw await humanizeLlmHttpError(e, authMode: config.authMode);
     } on TimeoutException {
       if (cancelToken?.isCancelled ?? false) return;
       throw llmResponseTimeout(

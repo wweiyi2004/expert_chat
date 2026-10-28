@@ -26,10 +26,11 @@ import 'package:expert_chat/state/chat_controller.dart';
 import 'package:expert_chat/state/settings_controller.dart';
 import 'package:expert_chat/state/work_rounds.dart';
 import 'package:expert_chat/domain/desktop/workspace_host_stub.dart' as stub;
+import 'package:expert_chat/domain/desktop/workspace_host_io.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:expert_chat/platform/preferences.dart';
 import 'widget_test.dart' show FakeSettings, InMemoryRepo;
 
 class _TerminalChat extends ChatController {
@@ -128,7 +129,9 @@ void main() {
             sharedPrefsProvider.overrideWithValue(prefs),
             conversationRepositoryProvider.overrideWithValue(InMemoryRepo()),
             desktopWorkspaceHostProvider.overrideWithValue(
-              stub.createDesktopWorkspaceHost(),
+              CliDesktopWorkspaceHost(
+                executable: 'missing-workspace-fixture.exe',
+              ),
             ),
             settingsControllerProvider.overrideWith(FakeSettings.new),
           ],
@@ -156,6 +159,8 @@ void main() {
       expect(find.byKey(const ValueKey('workbench-section-0')), findsOneWidget);
       expect(find.byKey(const ValueKey('workbench-section-1')), findsOneWidget);
       expect(find.byKey(const ValueKey('workbench-section-2')), findsOneWidget);
+      await tester.tap(find.byTooltip('更多工作工具'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('终端').first);
       await tester.pump(const Duration(milliseconds: 400));
       await tester.tap(find.byTooltip('新建终端'));
@@ -198,8 +203,6 @@ void main() {
       );
       expect(find.byType(WorkTaskPanel), findsOneWidget);
       await tester.tap(find.byKey(const ValueKey('workbench-section-2')));
-      await tester.pump(const Duration(milliseconds: 400));
-      await tester.tap(find.text('子代理'));
       await tester.pump(const Duration(milliseconds: 400));
       expect(
         tester
@@ -445,7 +448,10 @@ void main() {
       await tester.pump(const Duration(milliseconds: 400));
       final panel = find.byType(WorkspaceWorkbenchPage);
       final handle = find.byKey(const ValueKey('workbench-resize-handle'));
-      expect(tester.getSize(panel).width, 560);
+      expect(panel, findsNothing);
+      await tester.tap(find.byKey(const ValueKey('task-open-0')));
+      await tester.pumpAndSettle();
+      expect(tester.getSize(panel).width, closeTo(486.4, .1));
       expect(
         tester
             .getSemantics(handle)
@@ -457,30 +463,30 @@ void main() {
       await tester.pump(const Duration(milliseconds: 400));
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
       await tester.pump();
-      expect(tester.getSize(panel).width, 576);
+      expect(tester.getSize(panel).width, closeTo(502.4, .1));
       await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
       await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
       await tester.pump();
-      expect(tester.getSize(panel).width, 512);
+      expect(tester.getSize(panel).width, closeTo(438.4, .1));
       await tester.sendKeyEvent(LogicalKeyboardKey.home);
       await tester.pump();
       expect(tester.getSize(panel).width, 340);
       await tester.sendKeyEvent(LogicalKeyboardKey.end);
       await tester.pump();
-      expect(tester.getSize(panel).width, 850);
+      expect(tester.getSize(panel).width, 720);
       await tester.tap(handle);
       await tester.pump(const Duration(milliseconds: 50));
       await tester.tap(handle);
       await tester.pump(const Duration(milliseconds: 400));
-      expect(tester.getSize(panel).width, 560);
+      expect(tester.getSize(panel).width, 380);
       await tester.tap(find.byTooltip('放大工作台'));
       await tester.pump();
       expect(tester.getSize(panel).width, 1270);
       await tester.drag(handle, const Offset(30, 0));
       await tester.pump();
       expect(find.byTooltip('放大工作台'), findsOneWidget);
-      expect(tester.getSize(panel).width, lessThanOrEqualTo(850));
+      expect(tester.getSize(panel).width, lessThanOrEqualTo(720));
       await tester.tap(handle);
       await tester.pump(const Duration(milliseconds: 50));
       await tester.tap(handle);
@@ -491,19 +497,19 @@ void main() {
             .requireValue
             .ui
             .workbenchWidth,
-        560,
+        380,
       );
-      expect(jsonDecode(prefs.getString('uiPrefs')!)['workbenchWidth'], 560);
+      expect(jsonDecode(prefs.getString('uiPrefs')!)['workbenchWidth'], 380);
       tester.view.physicalSize = const Size(900, 900);
       await tester.pump();
-      expect(tester.getSize(panel).width, 470);
+      expect(tester.getSize(panel).width, 340);
       expect(
         container
             .read(settingsControllerProvider)
             .requireValue
             .ui
             .workbenchWidth,
-        560,
+        380,
       );
       tester.view.physicalSize = const Size(839, 900);
       await tester.pump();
@@ -511,7 +517,7 @@ void main() {
       await tester.tap(find.byTooltip('打开工作台'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
-      await tester.tap(find.widgetWithText(ListTile, '改动'));
+      await tester.tap(find.widgetWithText(ListTile, '文件'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
       expect(tester.getSize(panel).height, closeTo(900 * .78, 1));
@@ -524,7 +530,7 @@ void main() {
       await tester.tap(find.byTooltip('打开工作台'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
-      await tester.tap(find.widgetWithText(ListTile, '改动'));
+      await tester.tap(find.widgetWithText(ListTile, '文件'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
       expect(tester.getSize(panel).height, closeTo(900 * .78, 1));
@@ -607,7 +613,7 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.byType(WorkspaceWorkbenchPage), findsNothing);
-      await tester.tap(find.byTooltip('打开工作台'));
+      await tester.tap(find.byKey(const ValueKey('task-open-0')));
       await tester.pumpAndSettle();
       expect(find.byType(BottomSheet), findsNothing);
       final panel = find.byType(WorkspaceWorkbenchPage);
@@ -657,7 +663,7 @@ void main() {
       );
       await tester.pumpAndSettle();
       final header = tester.getRect(
-        find.byKey(const ValueKey('html-chat-header')),
+        find.byKey(const ValueKey('desktop-task-header')),
       );
       final mode = tester.getRect(
         find.byKey(const ValueKey('chat-work-mode-switch')),
@@ -665,8 +671,8 @@ void main() {
       final input = tester.getRect(
         find.byKey(const ValueKey('composer-input-box')),
       );
-      expect(header.height, 52);
-      expect(mode.center.dx, closeTo(header.center.dx, 1));
+      expect(header.height, 152);
+      expect(header.contains(mode.center), isTrue);
       expect(input.width, 700);
       expect(input.height, lessThanOrEqualTo(90));
       expect(

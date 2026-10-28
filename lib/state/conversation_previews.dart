@@ -1,6 +1,6 @@
 import 'dart:convert';
 import 'package:characters/characters.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:riverpod/riverpod.dart';
 import '../core/providers.dart';
 
 /// Small, rebuildable sidebar excerpts. Updated once after an answer, never

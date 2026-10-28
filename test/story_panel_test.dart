@@ -1,4 +1,4 @@
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:expert_chat/platform/preferences.dart';
 import 'package:expert_chat/core/providers.dart';
 import 'package:expert_chat/data/character_repository.dart';
 import 'package:expert_chat/data/conversation_repository.dart';

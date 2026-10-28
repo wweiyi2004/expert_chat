@@ -30,12 +30,12 @@ class ModelCapabilities {
   final bool supportsReasoningEffort;
   final List<String>? reasoningEffortValues;
 
-  ModelCapabilities withReasoning({List<String>? efforts, bool? canDisable}) =>
+  ModelCapabilities withReasoning({List<String>? efforts, bool? canDisable,bool? tools,bool? vision}) =>
       ModelCapabilities(
         isReasoner: efforts != null ? true : isReasoner,
-        supportsTools: supportsTools,
+        supportsTools: tools ?? supportsTools,
         sendThinkingField: sendThinkingField,
-        supportsVision: supportsVision,
+        supportsVision: vision ?? supportsVision,
         supportsReasoningEffort: efforts != null || supportsReasoningEffort,
         reasoningCanBeDisabled: canDisable ?? reasoningCanBeDisabled,
         supportsServerWebSearch: supportsServerWebSearch,
@@ -193,6 +193,7 @@ abstract final class ModelCatalog {
     final m = normalizeId(model);
     final deepseekFlash = m == 'deepseek-flash';
     final deepseekV4 = deepseekFlash || m.startsWith('deepseek-v4');
+    final kimiK3=RegExp(r'^k3(?:[.-]|$)').hasMatch(m);
     final nonReasoning = m.contains('non-reasoning');
     final grok43 =
         m == 'grok-4.3' || m.startsWith('grok-4.3-') || m == 'grok-4.3-latest';
@@ -204,6 +205,7 @@ abstract final class ModelCatalog {
     // light up the panel. xAI Grok: `grok-*-reasoning` / mini reasoning paths.
     final configurableGpt = isConfigurableGpt(m);
     final reasoner =
+        kimiK3 ||
         configurableGpt ||
         m.contains('reasoner') ||
         (m.contains('reasoning') && !nonReasoning) ||
@@ -227,7 +229,7 @@ abstract final class ModelCatalog {
     // message into a 400 response, while the controller has deterministic
     // pre-search/pre-fetch fallbacks when tools are unavailable.
     bool tools;
-    if (deepseekV4 ||
+    if (deepseekV4 || kimiK3 ||
         m == 'deepseek-chat' ||
         m.startsWith('grok') ||
         m.startsWith('gpt-') ||
@@ -257,6 +259,7 @@ abstract final class ModelCatalog {
     // Well-known OpenAI-compatible vision models. Conservative: unknown models
     // default to no vision so images are never sent to a text-only endpoint.
     final vision =
+        kimiK3 ||
         (configurableGpt && m.startsWith('gpt-6')) ||
         deepseekFlash ||
         m.contains('vision') ||

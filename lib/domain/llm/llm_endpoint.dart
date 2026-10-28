@@ -16,6 +16,11 @@ abstract final class LlmEndpoint {
         {'api.openai.com', 'api.anthropic.com'}.contains(uri.host)) {
       path = '/v1';
     }
+    if (uri.scheme == 'https' &&
+        uri.host.toLowerCase() == 'openrouter.ai' &&
+        {'', '/api'}.contains(path)) {
+      path = '/api/v1';
+    }
     return uri.replace(path: path).removeFragment().toString();
   }
 

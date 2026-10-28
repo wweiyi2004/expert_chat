@@ -12,6 +12,53 @@ struct Fixture {
 }
 
 #[test]
+fn repeated_directory_registration_keeps_id_and_existing_permissions() {
+    let f = Fixture::new(Access::ReadOnly);
+    f.store
+        .set_scope(
+            "example",
+            "private",
+            &f.project().join("private"),
+            Access::Deny,
+        )
+        .unwrap();
+    let again = f
+        .store
+        .add(
+            "second",
+            "Renamed",
+            &f.project().join("src/.."),
+            Access::ReadWrite,
+        )
+        .unwrap();
+    assert_eq!(again.id, "example");
+    assert_eq!(again.name, "Example");
+    assert_eq!(again.access_at(&again.root), Access::ReadOnly);
+    assert_eq!(again.scopes["private"].access, Access::Deny);
+    assert_eq!(f.store.list().unwrap().len(), 1);
+}
+
+#[test]
+fn concurrent_registrations_of_one_directory_produce_one_workspace() {
+    let f = Fixture::new(Access::ReadOnly);
+    let mut threads = vec![];
+    for i in 0..8 {
+        let store = f.store.clone();
+        let root = f.project();
+        threads.push(std::thread::spawn(move || {
+            store
+                .add(&format!("again-{i}"), "Again", &root, Access::ReadWrite)
+                .unwrap()
+                .id
+        }));
+    }
+    for thread in threads {
+        assert_eq!(thread.join().unwrap(), "example");
+    }
+    assert_eq!(f.store.list().unwrap().len(), 1);
+}
+
+#[test]
 fn default_workspace_is_dedicated_and_preserves_updated_permissions() {
     let temp = TempDir::new().unwrap();
     let store = WorkspaceStore::open(temp.path().join("state")).unwrap();

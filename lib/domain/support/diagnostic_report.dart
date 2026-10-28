@@ -1,4 +1,4 @@
-import 'package:flutter/foundation.dart';
+import '../../platform/foundation.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import '../../data/backup_codec.dart';
 import '../../data/backup_migrations.dart';

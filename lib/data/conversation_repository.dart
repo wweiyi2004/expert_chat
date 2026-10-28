@@ -1,8 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart' show debugPrint;
-import 'package:path_provider/path_provider.dart';
+import '../platform/foundation.dart' show debugPrint;
+import '../platform/paths.dart';
 
 import 'models.dart';
 import 'story_models.dart';

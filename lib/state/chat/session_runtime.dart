@@ -77,7 +77,8 @@ class _SessionConfiguration {
 }
 
 class _SessionEvent {
-  const _SessionEvent(this.id, this.content, this.taskId);
+  const _SessionEvent(this.id, this.content, this.taskId, {this.explicitFollowup=false});
+  final bool explicitFollowup;
   final String id;
   final String content;
   final String? taskId;
@@ -85,12 +86,15 @@ class _SessionEvent {
 
 class _SessionRun {
   _SessionRun(this.conversationId);
+  TaskWindow? taskWindow;
   final String conversationId;
   final execution = GenerationExecution();
   _SessionConfiguration? configuration;
   String? streamingId;
   String? currentRoundId;
   TaskCore? core;
+  String? planId;
+  int? planRevision;
   String? taskId;
   String? agentRootId;
   String? agentTaskId;
@@ -107,6 +111,7 @@ class _SessionRun {
   bool hasLiveContent = false;
   bool userCancelled = false;
   bool awaitingEvents = false;
+  bool finalReplyDelivered=false;
   bool wakeScheduled = false;
   void Function()? flush;
   void Function()? nudge;

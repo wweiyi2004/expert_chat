@@ -3,8 +3,8 @@ import 'dart:math';
 import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 import 'package:jose/jose.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import '../../../platform/credentials.dart';
+import '../../../platform/preferences.dart';
 import 'package:uuid/uuid.dart';
 import 'oauth_callback.dart';
 import 'chatgpt_network.dart';
@@ -141,6 +141,7 @@ class ChatGptAuth {
       'client_id': issued,
       'sub': claims['sub'],
       'email': claims['email'],
+      if (claims['name'] is String) 'name': claims['name'],
       'expires_at': DateTime.now()
           .add(
             Duration(seconds: (tokens['expires_in'] as num?)?.toInt() ?? 3600),

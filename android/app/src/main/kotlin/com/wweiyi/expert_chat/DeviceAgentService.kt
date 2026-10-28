@@ -38,7 +38,7 @@ class DeviceAgentService : AccessibilityService() {
     private val observedTargets = HashMap<String, String>()
     private var lastScreenshotInfo: Map<String, Any?>? = null
     private var lastStopReason: String? = null
-    fun status() = mapOf("enabled" to true, "armed" to armed, "owner" to owner,
+    fun status() = mapOf("enabled" to true, "armed" to armed, "owner" to owner, "sdk" to Build.VERSION.SDK_INT,
         "notificationPresent" to ((getSystemService(NOTIFICATION_SERVICE) as NotificationManager).activeNotifications.any { it.id == 7523 }), "lastStopReason" to lastStopReason)
     private val handler = Handler(Looper.getMainLooper())
     override fun onServiceConnected() { current = this; armed = false }

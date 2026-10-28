@@ -1,10 +1,10 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:dio/dio.dart';
-import 'package:flutter/services.dart';
+import '../../../platform/services.dart';
 import 'math_process.dart';
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
+import '../../../platform/paths.dart';
 
 bool get requiresRemoteMath => Platform.isAndroid || Platform.isIOS;
 

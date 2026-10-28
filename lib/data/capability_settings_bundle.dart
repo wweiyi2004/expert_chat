@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'package:shared_preferences/shared_preferences.dart';
+import '../platform/preferences.dart';
 import 'subagent_role.dart';
 
 /// Inert user configuration only. No login tokens, companion web keys, task

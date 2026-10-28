@@ -1,3 +1,4 @@
+import '../../../core/runtime_listenable.dart';
 import '../../../state/work_rounds.dart';
 import '../../../state/conversation_attention.dart';
 import 'package:flutter/material.dart';
@@ -42,7 +43,10 @@ class _ConversationExecutionIndicatorState
     final agents = ref.watch(workAgentsProvider);
     final processes = ref.watch(workProcessesProvider);
     return ListenableBuilder(
-      listenable: Listenable.merge([agents, processes]),
+      listenable: Listenable.merge([
+        runtimeListenable(agents),
+        runtimeListenable(processes),
+      ]),
       builder: (context, _) {
         final conversation =
             state?.conversations.where((c) => c.id == id).firstOrNull ??

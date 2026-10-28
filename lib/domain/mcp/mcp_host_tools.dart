@@ -91,6 +91,7 @@ abstract final class McpHostTools {
     'coding_list_directory',
     'coding_read_file',
     'coding_write_file',
+    'coding_edit_file',
     'coding_create_directory',
     ...internalNames,
     ...clientAdaptedNames,

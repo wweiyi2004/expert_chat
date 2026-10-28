@@ -162,7 +162,7 @@ class RepositoryContextReaderLoader {
         return depth == 0 ? a.compareTo(b) : depth;
       });
     for (final dir in ordered) {
-      for (final name in ['AGENTS.md', 'CLAUDE.md']) {
+      for (final name in ['AGENT.md', 'AGENTS.md', 'CLAUDE.md']) {
         final path = p.posix.join(dir, name),
             text = await read(p.posix.join(dir, name));
         if (text != null) {

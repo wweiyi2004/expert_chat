@@ -5,7 +5,7 @@ import 'package:expert_chat/domain/tools/file_parser.dart';
 import 'package:expert_chat/domain/tools/upload_directory.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:expert_chat/platform/preferences.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();

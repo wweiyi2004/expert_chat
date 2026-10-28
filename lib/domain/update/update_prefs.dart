@@ -1,4 +1,4 @@
-import 'package:shared_preferences/shared_preferences.dart';
+import '../../platform/preferences.dart';
 
 /// Remembers which full-package release the user chose to skip.
 class UpdatePrefs {

@@ -1,6 +1,11 @@
-import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'dart:async';
+import 'dart:convert';
+import '../core/providers.dart';
+import 'package:riverpod/riverpod.dart';
 import '../domain/llm/llm_provider.dart';
 import 'model_pricing.dart' show modelPricingKey;
+
+enum WorkRequestKind { task, auxiliary, title }
 
 /// Latest request and this app session's usage, isolated by conversation.
 /// Request snapshots stay in memory; credentials and HTTP headers aren't kept.
@@ -12,6 +17,7 @@ class WorkSessionInsights {
     this.requests = const {},
     this.pricingKeys = const {},
     this.contextBudgetTokens,
+    this.requestKinds = const {},
   });
   final List<LlmRequestMessage> messages;
   final List<ToolSpec> tools;
@@ -20,6 +26,10 @@ class WorkSessionInsights {
   // Terminal usage can be repeated in a stream: replace by request id.
   final Map<String, LlmUsage?> requests;
   final Map<String, String> pricingKeys;
+  final Map<String, WorkRequestKind> requestKinds;
+  int countRequests(WorkRequestKind kind) => requests.keys
+      .where((id) => (requestKinds[id] ?? WorkRequestKind.task) == kind)
+      .length;
   int get inputTokens =>
       requests.values.fold(0, (n, u) => n + (u?.inputTokens ?? 0));
   int get outputTokens =>
@@ -65,7 +75,84 @@ class WorkSessionInsights {
 class WorkSessionInsightsController
     extends Notifier<Map<String, WorkSessionInsights>> {
   @override
-  Map<String, WorkSessionInsights> build() => {};
+  Map<String, WorkSessionInsights> build() {
+    final prefs = ref.read(sharedPrefsProvider);
+    var restored = <String, WorkSessionInsights>{};
+    try {
+      final raw =
+          jsonDecode(prefs.getString('sessionUsageLedgerV1') ?? '{}') as Map;
+      restored = raw.map((id, data) {
+        final v = Map<String, dynamic>.from(data as Map);
+        return MapEntry(
+          id.toString(),
+          WorkSessionInsights(
+            requests: (v['requests'] as Map).map(
+              (id, u) => MapEntry(
+                id.toString(),
+                u == null
+                    ? null
+                    : LlmUsage(
+                        inputTokens: (u['input'] as num).toInt(),
+                        outputTokens: (u['output'] as num).toInt(),
+                        cachedInputTokens: (u['cached'] as num?)?.toInt() ?? 0,
+                        cacheReported: u['cacheReported'] == true,
+                        cost: (u['cost'] as num?)?.toDouble(),
+                        currency: u['currency'] as String?,
+                      ),
+              ),
+            ),
+            pricingKeys: Map<String, String>.from(
+              v['pricingKeys'] as Map? ?? {},
+            ),
+            requestKinds: (v['kinds'] as Map? ?? {}).map(
+              (id, kind) => MapEntry(
+                id.toString(),
+                WorkRequestKind.values.firstWhere(
+                  (k) => k.name == kind,
+                  orElse: () => WorkRequestKind.task,
+                ),
+              ),
+            ),
+          ),
+        );
+      });
+    } catch (_) {
+      /* A malformed ledger never prevents opening conversations. */
+    }
+    listenSelf((_, next) {
+      final encoded = jsonEncode(
+        next.map(
+          (id, v) => MapEntry(id, {
+            'requests': v.requests.map(
+              (key, u) => MapEntry(
+                key,
+                u == null
+                    ? null
+                    : {
+                        'input': u.inputTokens,
+                        'output': u.outputTokens,
+                        'cached': u.cachedInputTokens,
+                        'cacheReported': u.cacheReported,
+                        'cost': u.cost,
+                        'currency': u.currency,
+                      },
+              ),
+            ),
+            'pricingKeys': v.pricingKeys,
+            'kinds': v.requestKinds.map((id, k) => MapEntry(id, k.name)),
+          }),
+        ),
+      );
+      _writes = _writes
+          .then((_) async {
+            await prefs.setString('sessionUsageLedgerV1', encoded);
+          })
+          .catchError((Object _, StackTrace _) {});
+    });
+    return restored;
+  }
+
+  Future<void> _writes = Future.value();
 
   void request(
     String conversation,
@@ -85,6 +172,7 @@ class WorkSessionInsightsController
         model: model,
         contextBudgetTokens: contextBudgetTokens ?? old.contextBudgetTokens,
         requests: {...old.requests, id: null},
+        requestKinds: {...old.requestKinds, id: WorkRequestKind.task},
         pricingKeys: {...old.pricingKeys, id: modelPricingKey(endpoint, model)},
       ),
     };
@@ -103,9 +191,14 @@ class WorkSessionInsightsController
       conversation: WorkSessionInsights(
         messages: old.messages,
         tools: old.tools,
-        model: config.model,
+        model:
+            (old.requestKinds[id] ?? WorkRequestKind.task) ==
+                WorkRequestKind.task
+            ? config.model
+            : old.model,
         contextBudgetTokens: contextBudgetTokens ?? old.contextBudgetTokens,
         requests: old.requests,
+        requestKinds: old.requestKinds,
         pricingKeys: {
           ...old.pricingKeys,
           id: modelPricingKey(config.baseUrl, config.model),
@@ -125,12 +218,18 @@ class WorkSessionInsightsController
         model: old.model,
         contextBudgetTokens: old.contextBudgetTokens,
         requests: {...old.requests, id: usage},
+        requestKinds: old.requestKinds,
         pricingKeys: old.pricingKeys,
       ),
     };
   }
 
-  void auxiliaryRequest(String conversation, String id, LlmConfig config) {
+  void auxiliaryRequest(
+    String conversation,
+    String id,
+    LlmConfig config, {
+    WorkRequestKind kind = WorkRequestKind.auxiliary,
+  }) {
     final old = state[conversation] ?? const WorkSessionInsights();
     state = {
       ...state,
@@ -140,6 +239,7 @@ class WorkSessionInsightsController
         model: old.model,
         contextBudgetTokens: old.contextBudgetTokens,
         requests: {...old.requests, id: null},
+        requestKinds: {...old.requestKinds, id: kind},
         pricingKeys: {
           ...old.pricingKeys,
           id: modelPricingKey(config.baseUrl, config.model),

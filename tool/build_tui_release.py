@@ -21,17 +21,22 @@ EXCLUDE = {".git", ".dart_tool", "build", ".gradle", ".cxx", "ephemeral", ".syml
 FLUTTER = ["C:/src/flutter/bin/flutter.bat", "--no-version-check", "--suppress-analytics"]
 ENV = {**os.environ, "FLUTTER_SUPPRESS_ANALYTICS": "true", "CI": "true", "CARGO_BUILD_JOBS": "4"}
 ENV["PATH"] = str(ROOT / ".tools") + os.pathsep + ENV.get("PATH", "")
+ENV["EXPERT_MEDIA_PYTHON"] = str(ROOT / "server/.venv/Scripts/python.exe")
 
 def digest(p):
     return hashlib.sha256(p.read_bytes()).hexdigest()
 
 def snapshot():
     files = []
-    for folder in ["lib", "test", "integration_test", "assets", "third_party", "windows", "android", "next", "design/tui"]:
+    for folder in ["bin", "lib", "test", "integration_test", "assets", "third_party", "windows", "android", "next", "design/tui"]:
         for path in (ROOT / folder).rglob("*"):
             if path.is_file() and not EXCLUDE.intersection(path.relative_to(ROOT).parts) and path.name not in {"local.properties", "key.properties", "BUILD-LOG.md"} and path.suffix.lower() not in {".jks", ".keystore"}:
                 files.append(path)
     for name in ["pubspec.yaml", "pubspec.lock", "analysis_options.yaml", "shorebird.yaml", ".metadata", ".fvmrc", "scripts/expert.cmd", "scripts/expert.ps1", "scripts/EXPERT-TUI.md", "tool/check_tui_contract.py", "tool/test_tui_single_instance.py", "tool/tui_live_smoke.py", "tool/build_tui_release.py"]:
+        if (ROOT / name).is_file():
+            files.append(ROOT / name)
+    files.extend(path for path in (ROOT / "tool").glob("*.dart") if path.is_file())
+    for name in ["tool/build_desktop_host.ps1", "tool/host_e2e.py", "tool/host_ui_fixture.py", "tool/host_load_test.py", "server/desktop_media_worker.py", "server/test_desktop_media_worker.py", "server/pyproject.toml", "server/uv.lock", "docs/SHARED-HOST.md"]:
         if (ROOT / name).is_file():
             files.append(ROOT / name)
     return {p.relative_to(ROOT).as_posix(): {"sha256": digest(p), "bytes": p.stat().st_size} for p in sorted(set(files))}

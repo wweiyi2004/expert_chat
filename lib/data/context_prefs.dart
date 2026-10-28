@@ -1,9 +1,9 @@
 class ContextPrefs {
   const ContextPrefs({
     this.enabled = true,
-    this.contextWindowTokens = 256000,
+    this.contextWindowTokens = 1000000,
     this.reservedOutputTokens = 4096,
-    this.maxHistoryMessages = 24,
+    this.maxHistoryMessages = 0,
     this.maxOutputTokens = 0,
     this.inputLimitTokens,
   });
@@ -17,10 +17,10 @@ class ContextPrefs {
   /// Space kept free for the model's response.
   final int reservedOutputTokens;
 
-  /// Maximum number of non-system messages sent from the active branch.
+  /// Maximum non-system messages; zero selects by token budget only.
   final int maxHistoryMessages;
 
-  /// Zero leaves the response limit to the provider. Separate from local reserve.
+  /// Zero uses the reported model output maximum, or the provider default when unknown.
   final int maxOutputTokens;
 
   int get effectiveOutputReserve {
@@ -69,15 +69,13 @@ class ContextPrefs {
   };
 
   factory ContextPrefs.fromJson(Map<String, dynamic> json) {
-    final window = ((json['contextWindowTokens'] as num?)?.toInt() ?? 256000)
+    final window = ((json['contextWindowTokens'] as num?)?.toInt() ?? 1000000)
         .clamp(4096, 2000000);
     final reserved = ((json['reservedOutputTokens'] as num?)?.toInt() ?? 4096)
         .clamp(512, window - 1024);
-    // Must stay inside the settings Slider's 4..64 range; values outside it
-    // would trip the Slider's value assertion when the page opens.
-    final history = ((json['maxHistoryMessages'] as num?)?.toInt() ?? 24).clamp(
-      4,
-      64,
+    final history = ((json['maxHistoryMessages'] as num?)?.toInt() ?? 0).clamp(
+      0,
+      100000,
     );
     return ContextPrefs(
       enabled: json['enabled'] as bool? ?? true,

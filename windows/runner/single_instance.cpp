@@ -1,7 +1,9 @@
 #include "single_instance.h"
 
 namespace {
-constexpr wchar_t kIdentity[] = L"com.wweiyi.expert_chat";
+// The independent host retains the v1 mutex to prevent older GUI writers.
+// New GUI clients have their own single-window identity and never own execution.
+constexpr wchar_t kIdentity[] = L"com.wweiyi.expert_chat.gui.v2";
 constexpr wchar_t kActivateSuffix[] = L".activate.v1";
 constexpr wchar_t kTuiEnableSuffix[] = L".enable-tui.v1";
 

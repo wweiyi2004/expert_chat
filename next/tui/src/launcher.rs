@@ -29,14 +29,28 @@ impl std::fmt::Debug for Discovery {
     }
 }
 pub fn discovery_path() -> Result<PathBuf> {
+    if let Some(directory) = std::env::var_os("EXPERT_HOST_DISCOVERY") {
+        let path = PathBuf::from(directory);
+        if !path.is_absolute() {
+            bail!("EXPERT_HOST_DISCOVERY must be absolute");
+        }
+        return Ok(path.join("bridge.json"));
+    }
+    if let Some(directory) = std::env::var_os("EXPERT_HOST_DATA_DIR") {
+        let path = PathBuf::from(directory);
+        if !path.is_absolute() {
+            bail!("EXPERT_HOST_DATA_DIR must be absolute");
+        }
+        return Ok(path.join("host/discovery/bridge.json"));
+    }
     let base = std::env::var_os("LOCALAPPDATA")
-        .context("LOCALAPPDATA is unavailable; use --demo or start the desktop GUI")?;
+        .context("LOCALAPPDATA is unavailable; configure EXPERT_HOST_DISCOVERY")?;
     Ok(PathBuf::from(base).join("expert-chat/tui/bridge.json"))
 }
+
 pub fn read_discovery(path: &Path) -> Result<Discovery> {
-    let meta = std::fs::symlink_metadata(path).context(
-        "Bridge discovery missing; start the desktop GUI with --tui-bridge --background",
-    )?;
+    let meta = std::fs::symlink_metadata(path)
+        .context("Host discovery missing; start the bundled expert-host executable")?;
     if meta.file_type().is_symlink() || !meta.is_file() || meta.len() > 8192 {
         bail!("Unsafe bridge discovery file");
     }
@@ -80,45 +94,105 @@ pub fn read_discovery(path: &Path) -> Result<Discovery> {
     }
     Ok(d)
 }
-fn gui_path(options: &LauncherOptions) -> Result<PathBuf> {
-    let candidate = options
-        .gui
-        .clone()
-        .or_else(|| std::env::var_os("EXPERT_CHAT_GUI").map(PathBuf::from))
+fn host_path(options: &LauncherOptions) -> Result<PathBuf> {
+    let candidate = std::env::var_os("EXPERT_CHAT_HOST")
+        .map(PathBuf::from)
+        .or_else(|| {
+            options
+                .gui
+                .as_ref()
+                .and_then(|gui| gui.parent().map(|p| p.join("host/bin/expert-host.exe")))
+        })
+        .or_else(|| {
+            std::env::var_os("EXPERT_CHAT_GUI").and_then(|gui| {
+                PathBuf::from(gui)
+                    .parent()
+                    .map(|p| p.join("host/bin/expert-host.exe"))
+            })
+        })
         .or_else(|| {
             std::env::current_exe()
                 .ok()
-                .and_then(|p| p.parent().map(|p| p.join("expert_chat.exe")))
+                .and_then(|p| p.parent().map(|p| p.join("host/bin/expert-host.exe")))
         });
-    let p = candidate.context(
-        "Desktop GUI not found; supply --gui <absolute expert_chat.exe path> or EXPERT_CHAT_GUI",
-    )?;
+    let p = candidate
+        .context("Independent host not found; use the complete bundle or set EXPERT_CHAT_HOST")?;
     if !p.is_absolute() || !p.is_file() {
-        bail!(
-            "Desktop GUI not found; supply --gui <absolute expert_chat.exe path> or EXPERT_CHAT_GUI"
-        );
+        bail!("Independent host not found; use the complete bundle or set EXPERT_CHAT_HOST");
     }
     Ok(p)
 }
+pub(crate) struct ReadyBridge {
+    pub path: PathBuf,
+    pub discovery: Discovery,
+}
+
 pub fn ensure_bridge(options: &LauncherOptions) -> Result<PathBuf> {
+    Ok(prepare_bridge(options)?.path)
+}
+
+// Hand the validated discovery to the first connection. A reconnect reads and
+// validates again, rather than keeping a process-wide permissions cache.
+pub(crate) fn prepare_bridge(options: &LauncherOptions) -> Result<ReadyBridge> {
     let path = discovery_path()?;
-    if read_discovery(&path).is_ok_and(|d| {
-        std::net::TcpStream::connect_timeout(
+    if let Ok(d) = read_discovery(&path)
+        && std::net::TcpStream::connect_timeout(
             &std::net::SocketAddr::from(([127, 0, 0, 1], d.port)),
             Duration::from_millis(250),
         )
         .is_ok()
-    }) {
-        return Ok(path);
+    {
+        let mut client = crate::headless::HostConnection::from_discovery(&d)?;
+        if client.hello["capabilities"].as_array().is_some_and(|v| {
+            [
+                "terminal.ssh-forward.v1",
+                "terminal.steering-status.v1",
+                "terminal.workbench.v1",
+                "terminal.workbench-files.v2",
+                "terminal.shared-agent-prompts.v1",
+                "terminal.workbench-receipts.v2",
+                "window-lifecycle.v1",
+                "terminal.public-fetch.v1",
+                "terminal.workspace-permissions.v1",
+            ]
+            .iter()
+            .all(|required| v.iter().any(|c| c == required))
+        }) {
+            return Ok(ReadyBridge { path, discovery: d });
+        }
+        if !options.auto_start {
+            bail!("Host 版本较旧，请退出旧版 Host 并从完整新发行包重新启动");
+        }
+        // Verify the replacement exists before requesting a graceful, idle-only upgrade.
+        let _ = host_path(options)?;
+        client
+            .call("host.shutdown", serde_json::json!({"confirmed":true}))
+            .context("旧版 Host 仍有活动任务，暂不能升级；完成任务后重新打开 expert")?;
+        drop(client);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while std::net::TcpStream::connect_timeout(
+            &std::net::SocketAddr::from(([127, 0, 0, 1], d.port)),
+            Duration::from_millis(100),
+        )
+        .is_ok()
+        {
+            if Instant::now() >= deadline {
+                bail!("旧版 Host 尚未退出，未强制终止任何任务");
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
     }
     if !options.auto_start {
-        bail!(
-            "Bridge unavailable; start the GUI with --tui-bridge --background, or use --gui <path>"
-        );
+        bail!("Host unavailable; start expert-host or allow automatic host startup");
     }
-    let gui = gui_path(options)?;
-    let mut command = Command::new(gui);
-    command.args(["--tui-bridge", "--background"]);
+    let host = host_path(options)?;
+    let mut command = Command::new(host);
+    if let Some(directory) = std::env::var_os("EXPERT_HOST_DISCOVERY") {
+        command.arg("--discovery-dir").arg(directory);
+    }
+    if let Some(directory) = std::env::var_os("EXPERT_HOST_DATA_DIR") {
+        command.arg("--data-dir").arg(directory);
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -129,21 +203,21 @@ pub fn ensure_bridge(options: &LauncherOptions) -> Result<PathBuf> {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .context("Cannot start desktop GUI")?;
+        .context("Cannot start independent host")?;
     let deadline = Instant::now() + Duration::from_secs(20);
     while Instant::now() < deadline {
-        if read_discovery(&path).is_ok_and(|d| {
-            std::net::TcpStream::connect_timeout(
+        if let Ok(d) = read_discovery(&path)
+            && std::net::TcpStream::connect_timeout(
                 &std::net::SocketAddr::from(([127, 0, 0, 1], d.port)),
                 Duration::from_millis(100),
             )
             .is_ok()
-        }) {
-            return Ok(path);
+        {
+            return Ok(ReadyBridge { path, discovery: d });
         }
         std::thread::sleep(Duration::from_millis(250));
     }
     bail!(
-        "GUI did not enable the TUI bridge within 20 seconds. Update the desktop GUI and start it with --tui-bridge --background"
+        "Independent host did not become ready within 20 seconds. Check the complete bundle and close any legacy application still owning the data."
     )
 }

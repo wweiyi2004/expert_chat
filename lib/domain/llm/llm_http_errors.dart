@@ -27,11 +27,17 @@ class LlmHttpException implements Exception {
     this.apiMessage,
     this.apiCode,
     this.diagnostic,
+    this.category,
+    this.retryAfterSeconds,
   });
   final String message;
   final int? statusCode;
   final String? apiMessage;
   final String? apiCode;
+
+  /// Stable diagnostic category; quota/auth failures must not be retried as load.
+  final String? category;
+  final int? retryAfterSeconds;
 
   /// Client-generated metadata only; excludes API response bodies and inputs.
   final String? diagnostic;
@@ -70,6 +76,7 @@ class LlmHttpException implements Exception {
 Future<Exception> humanizeLlmHttpError(
   DioException error, {
   String notFoundMessage = '接口未找到（404）：请检查 Base URL 或模型名是否正确。',
+  String authMode = 'apiKey',
 }) async {
   final status = error.response?.statusCode;
   final diagnostics = redactDiagnostics(
@@ -93,24 +100,101 @@ Future<Exception> humanizeLlmHttpError(
     ],
   );
   String? apiCode;
-  final apiMessage = await _extractApiMessage(
+  final rawApiMessage = await _extractApiMessage(
     error.response?.data,
     onCode: (code) => apiCode = code,
   );
-  LlmHttpException failure(String message) => LlmHttpException(
-    message,
-    statusCode: status,
-    apiMessage: apiMessage,
-    apiCode: apiCode,
-    diagnostic: diagnostics,
-  );
+  final secrets = [
+    for (final header in error.requestOptions.headers.entries)
+      if (RegExp(
+        'authorization|api.?key|token',
+        caseSensitive: false,
+      ).hasMatch(header.key))
+        header.value.toString().replaceFirst(
+          RegExp(r'^Bearer\s+', caseSensitive: false),
+          '',
+        ),
+  ];
+  final apiMessage = rawApiMessage == null
+      ? null
+      : redactDiagnostics(rawApiMessage, secrets: secrets);
+  if (apiCode != null) apiCode = redactDiagnostics(apiCode!, secrets: secrets);
+  final rawRetry = error.response?.headers.value('retry-after');
+  final retryAfter = int.tryParse(rawRetry ?? '');
+  LlmHttpException failure(String message, [String? category]) =>
+      LlmHttpException(
+        message,
+        statusCode: status,
+        apiMessage: apiMessage,
+        apiCode: apiCode,
+        diagnostic: diagnostics,
+        category: category,
+        retryAfterSeconds: retryAfter,
+      );
   final detail = apiMessage == null ? '' : '：$apiMessage';
-  if (status == 400) return failure('请求有误（400）$detail');
-  if (status == 401) return failure('鉴权失败（401）：请检查 API Key 是否正确。');
-  if (status == 402) return failure('额度不足（402）：账户余额不足。');
+  final codeAndMessage = '${apiCode ?? ''} ${apiMessage ?? ''}'.toLowerCase();
+  final oauth = authMode == 'chatgpt' || authMode == 'kimiCode';
+  final quota = RegExp(
+    r'insufficient[_ ]quota|quota.{0,35}(exhaust|exceed|deplet)|usage[_ ]limit|reached.{0,40}(weekly|monthly|usage|quota)|weekly.{0,30}limit|monthly.{0,30}limit|credit.{0,20}(exhaust|insufficient)|额度.{0,20}(不足|耗尽|用尽|超)|用量.{0,15}(上限|耗尽)|套餐.{0,15}(用尽|超出)',
+  ).hasMatch(codeAndMessage);
+  final expiredPlan = RegExp(
+    r'(subscription|membership|plan).{0,25}(expired|inactive)|套餐.{0,15}(过期|到期)|会员.{0,15}(过期|到期)',
+  ).hasMatch(codeAndMessage);
+  final balance = RegExp(
+    r'insufficient[_ ](balance|credit|funds)|balance.{0,20}(insufficient|low|exhaust)|余额不足|欠费',
+  ).hasMatch(codeAndMessage);
+  if (expiredPlan) {
+    return failure(
+      '订阅已到期或未激活：请在 /login 查看此账号的套餐，并前往官方控制台处理。$detail',
+      'subscription_expired',
+    );
+  }
+  if (quota) {
+    return failure(
+      '套餐额度已用尽：请在 /login 查看余量和重置时间；可手动选择其他账号，立即重试不会恢复额度。$detail',
+      'quota_exhausted',
+    );
+  }
+  if (status == 402 || balance) {
+    return failure('账户余额或付费额度不足：请核对官方账单及套餐状态。$detail', 'balance_exhausted');
+  }
+  if (status == 401) {
+    return failure(
+      oauth
+          ? '账号授权失效或被撤销（401）：请在 /login 选择此账号并重新登录。'
+          : 'API Key 无效、已过期或已撤销（401）：请在 /login 管理此来源并更新 Key。',
+      'authentication',
+    );
+  }
+  if (status == 403) {
+    return failure('账号无权使用此模型或接口（403）：请核对套餐权益、模型和接入地址。$detail', 'permission');
+  }
+  if (status == 400 || status == 422) {
+    if (RegExp(
+      r'context[_ ]length|maximum context|too many tokens|context.{0,20}(exceed|limit)|上下文.{0,15}(超|长)',
+    ).hasMatch(codeAndMessage)) {
+      return failure(
+        '上下文超过模型限制：用 /context 减少发送内容，或用 /compact 压缩历史。$detail',
+        'context_length',
+      );
+    }
+    if (RegExp(
+      r'assistant.{0,30}(empty|must not)|tool.{0,30}(call|result|id).{0,30}(missing|invalid)|reasoning.{0,30}(required|missing)',
+    ).hasMatch(codeAndMessage)) {
+      return failure(
+        '消息格式与当前模型不兼容（$status）：请保留会话并检查该来源的协议设置。$detail',
+        'message_format',
+      );
+    }
+    return failure('请求参数有误（$status）$detail', 'invalid_request');
+  }
   if (status == 404) return failure('$notFoundMessage$detail');
-  if (status == 422) return failure('参数有误（422）$detail');
-  if (status == 429) return failure('请求过于频繁（429）：稍后重试。');
+  if (status == 429) {
+    return failure(
+      '服务限流（429）：${retryAfter != null && retryAfter > 0 ? '约 $retryAfter 秒后再试' : '请降低并发并稍后重试'}；若持续发生，请查看该账号的套餐额度。$detail',
+      'rate_limit',
+    );
+  }
   if (error.type == DioExceptionType.connectionTimeout) {
     return failure('连接超时：请检查网络或 Base URL。');
   }
@@ -132,7 +216,9 @@ Future<Exception> humanizeLlmHttpError(
         : failure('请求处理异常：请查看技术信息中的底层异常类型，不能据此认定网络中断。');
   }
   if (status != null) return failure('请求失败（$status）$detail');
-  return failure('请求失败：${error.message ?? error.type.name}');
+  return failure(
+    '请求失败：${redactDiagnostics(error.message ?? error.type.name, secrets: secrets)}',
+  );
 }
 
 /// Best-effort extraction; a broken error body must preserve the HTTP failure.
@@ -181,6 +267,8 @@ String? _messageFromMap(
   void Function(String?)? onCode,
 }) {
   final error = map['error'];
+  final topCode = map['code'] ?? map['type'];
+  if (topCode is String) onCode?.call(topCode);
   if (error is Map) {
     final code = error['code'] ?? error['type'];
     if (code is String) onCode?.call(code);

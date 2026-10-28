@@ -4,10 +4,14 @@ class ResearchRemoteFile {
     required this.path,
     required this.directory,
     this.size = 0,
+    this.modifiedTime,
+    this.symbolicLink = false,
   });
   final String name, path;
   final bool directory;
   final int size;
+  final int? modifiedTime;
+  final bool symbolicLink;
 }
 
 class ResearchTransferToken {

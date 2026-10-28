@@ -9,8 +9,9 @@ import 'package:expert_chat/domain/workbench/agents/task_supervisor.dart';
 import 'package:expert_chat/domain/workbench/agents/role_trial_validator.dart';
 import 'package:expert_chat/data/gateway_config.dart';
 import 'package:expert_chat/data/context_prefs.dart';
+import 'package:expert_chat/data/chat_skill.dart';
 import 'package:expert_chat/state/work_memory.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:expert_chat/platform/credentials.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:expert_chat/domain/remote/device_agent.dart';
@@ -27,6 +28,7 @@ import 'package:expert_chat/data/models.dart' show MessageRole, Conversation;
 import 'package:expert_chat/domain/desktop/workspace_host_stub.dart' as stub;
 import 'package:expert_chat/domain/llm/llm_provider.dart';
 import 'package:expert_chat/state/chat_controller.dart';
+import 'package:expert_chat/features/tui_bridge/backend.dart';
 import 'package:expert_chat/state/session_policy.dart';
 import 'package:expert_chat/state/settings_controller.dart';
 import 'package:expert_chat/state/work_questions.dart';
@@ -38,7 +40,7 @@ import 'package:expert_chat/state/work_task_steering.dart';
 import 'package:expert_chat/domain/workbench/agents/agent_instructions.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:expert_chat/platform/preferences.dart';
 
 import 'widget_test.dart' show FakeSettings, InMemoryRepo;
 
@@ -376,6 +378,55 @@ void main() {
   );
 
   test(
+    'steering during a final response continues at the next model boundary',
+    () async {
+      final controller = container.read(chatControllerProvider.notifier);
+      controller.newConversation(workMode: true, forceNew: true);
+      final id = container.read(chatControllerProvider).requireValue.currentId!;
+      final sent = controller.sendMessage('Keep the original scope');
+      await llm.untilRequests(1);
+      final receipt = await controller.addWorkRequirement(
+        id,
+        'Also explain the CSV format',
+      );
+      expect(
+        container.read(workTaskSteeringProvider).snapshot(id).single['status'],
+        'queued',
+      );
+      expect(llm.requests.first.token!.isCancelled, false);
+      llm.requests.first.chunks.add(
+        const ChatChunk(contentDelta: 'First answer', finishReason: 'stop'),
+      );
+      await llm.requests.first.chunks.close();
+      await llm.untilRequests(2).timeout(const Duration(seconds: 10));
+      expect(
+        llm.requests[1].messages.any(
+          (m) => m.content.contains('Also explain the CSV format'),
+        ),
+        true,
+      );
+      expect(
+        llm.requests[1].messages.any((m) => m.content.contains('有新的用户运行中补充要求')),
+        false,
+      );
+      expect(
+        container.read(workTaskSteeringProvider).snapshot(id).single['id'],
+        receipt,
+      );
+      expect(
+        container.read(workTaskSteeringProvider).snapshot(id).single['round'],
+        2,
+      );
+      llm.requests[1].chunks.add(
+        const ChatChunk(contentDelta: 'CSV explanation', finishReason: 'stop'),
+      );
+      await llm.requests[1].chunks.close();
+      expect(await sent, true);
+      expect(llm.requests, hasLength(2));
+    },
+  );
+
+  test(
     'device screenshot becomes model image observation and owned lease is released',
     () async {
       debugDefaultTargetPlatformOverride = TargetPlatform.android;
@@ -383,7 +434,9 @@ void main() {
       final calls = <MethodCall>[];
       final messenger =
           TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-      messenger.setMockMethodCallHandler(DeviceAgent.channel, (call) async {
+      messenger.setMockMethodCallHandler(DeviceAgent.channel as MethodChannel, (
+        call,
+      ) async {
         calls.add(call);
         if (call.method == 'status') return {'armed': true, 'enabled': true};
         if (call.method == 'observe') return {'revision': 1, 'nodes': []};
@@ -397,7 +450,10 @@ void main() {
         return {'ok': true};
       });
       addTearDown(
-        () => messenger.setMockMethodCallHandler(DeviceAgent.channel, null),
+        () => messenger.setMockMethodCallHandler(
+          DeviceAgent.channel as MethodChannel,
+          null,
+        ),
       );
       (container.read(settingsControllerProvider.notifier)
               as _ControllableSettings)
@@ -455,178 +511,173 @@ void main() {
   );
 
   for (final rootVision in [false, true]) {
-    test(
-      'child screenshot capability follows child, rootVision=$rootVision',
-      () async {
-        debugDefaultTargetPlatformOverride = TargetPlatform.android;
-        addTearDown(() => debugDefaultTargetPlatformOverride = null);
-        final messenger =
-            TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-        final nativeCalls = <String>[];
-        messenger.setMockMethodCallHandler(DeviceAgent.channel, (call) async {
-          nativeCalls.add(call.method);
-          if (call.method == 'status') return {'armed': true, 'enabled': true};
-          if (call.method == 'observe') return {'revision': 1, 'nodes': []};
-          if (call.method == 'screenshot') {
-            return Uint8List.fromList(
-              base64Decode(
-                'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jZuoAAAAASUVORK5CYII=',
-              ),
-            );
-          }
-          return {'ok': true};
-        });
-        addTearDown(
-          () => messenger.setMockMethodCallHandler(DeviceAgent.channel, null),
-        );
-        final rootModel = rootVision ? 'gpt-4o' : 'deepseek-chat';
-        final childModel = rootVision ? 'deepseek-chat' : 'gpt-4o';
-        (container.read(settingsControllerProvider.notifier)
-                as _ControllableSettings)
-            .useModels(rootModel, const ['gpt-4o', 'deepseek-chat']);
-        final profile = container
-            .read(settingsControllerProvider)
-            .requireValue
-            .active!;
-        await container
-            .read(secureStorageProvider)
-            .write(
-              key: providerApiKeyStorageKey(profile.id),
-              value: 'fixture-key',
-            );
-        await container.read(workAgentModelPoolProvider.notifier).save(const [
-          WorkAgentModelOption('gpt-4o'),
-          WorkAgentModelOption('deepseek-chat'),
-        ]);
-        final controller = container.read(chatControllerProvider.notifier);
-        controller.newConversation(workMode: true, forceNew: true);
-        final id = container
-            .read(chatControllerProvider)
-            .requireValue
-            .currentId!;
-        await container
-            .read(sessionPolicyProvider.notifier)
-            .save(id, const SessionPolicy(approval: WorkApprovalMode.full));
-        final sent = controller.sendMessage('root device task');
-        await llm.untilRequests(1);
-        final runtime = container.read(workAgentsProvider);
-        final root = runtime.records.singleWhere((r) => r.external);
-        final inherited = root.environment;
-        // Keep the real host executor/preparation; remove only the role-selection
-        // model request so this fixture isolates per-child vision ownership.
-        root.environment = WorkAgentEnvironment(
-          provider: inherited.provider,
-          config: inherited.config,
-          tools: inherited.tools,
-          executeTool: inherited.executeTool,
-          resolveModel: inherited.resolveModel,
-          modelPool: inherited.modelPool,
-          prepareMessages: inherited.prepareMessages,
-          prepareTools: inherited.prepareTools,
-          beforeRound: inherited.beforeRound,
-          takeToolObservations: inherited.takeToolObservations,
-          onRuntimeLog: inherited.onRuntimeLog,
-        );
-        final child = runtime.spawn(
-          parentId: root.id,
-          task: 'child screenshot task',
-          model: childModel,
-          readOnly: true,
-        );
-        await llm
-            .untilRequests(2)
-            .timeout(
-              const Duration(seconds: 3),
-              onTimeout: () => throw StateError(
-                'child status ${runtime.record(child)!.status}: ${runtime.record(child)!.output}',
-              ),
-            );
-        expect(llm.requests[1].config.model, childModel);
-        llm.requests[1].chunks.add(
-          const ChatChunk(
-            toolCalls: [
-              ToolCall(
-                index: 0,
-                id: 'observe-child',
-                name: 'device_observe',
-                argumentsJson: '{}',
-              ),
-              ToolCall(
-                index: 1,
-                id: 'screen-child',
-                name: 'device_action',
-                argumentsJson: '{"action":"screenshot","revision":1}',
-              ),
-              ToolCall(
-                index: 2,
-                id: 'forbidden-click',
-                name: 'device_action',
-                argumentsJson:
-                    '{"action":"tap","revision":1,"target":"button"}',
-              ),
-              ToolCall(
-                index: 3,
-                id: 'forbidden-document',
-                name: 'edit_document',
-                argumentsJson: '{}',
-              ),
-              ToolCall(
-                index: 4,
-                id: 'forbidden-external',
-                name: 'external_mutation',
-                argumentsJson: '{}',
-              ),
-            ],
-            finishReason: 'tool_calls',
-          ),
-        );
-        await llm.requests[1].chunks.close();
-        await llm.untilRequests(3);
-        final images = llm.requests[2].messages
-            .where((m) => m.isToolImageObservation)
-            .toList();
-        expect(images.length, rootVision ? 0 : 1);
-        expect(nativeCalls, isNot(contains('tap')));
-        for (final denied in [
-          'forbidden-click',
-          'forbidden-document',
-          'forbidden-external',
-        ]) {
-          expect(
-            llm.requests[2].messages
-                .singleWhere((m) => m.toolCallId == denied)
-                .content,
-            contains('只读职责'),
-          );
-        }
-        if (images.isNotEmpty) {
-          expect(
-            llm.requests[2].messages.indexOf(images.single),
-            greaterThan(
-              llm.requests[2].messages.lastIndexWhere(
-                (m) => m.role == MessageRole.tool,
-              ),
+    test('child screenshot capability follows child, rootVision=$rootVision', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      final nativeCalls = <String>[];
+      messenger.setMockMethodCallHandler(DeviceAgent.channel as MethodChannel, (
+        call,
+      ) async {
+        nativeCalls.add(call.method);
+        if (call.method == 'status') return {'armed': true, 'enabled': true};
+        if (call.method == 'observe') return {'revision': 1, 'nodes': []};
+        if (call.method == 'screenshot') {
+          return Uint8List.fromList(
+            base64Decode(
+              'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jZuoAAAAASUVORK5CYII=',
             ),
           );
         }
-        if (images.isNotEmpty) {
-          expect(images.single.toolImageCallId, 'screen-child');
-        }
-        llm.requests[2].chunks.add(
-          const ChatChunk(
-            contentDelta: 'child inspected',
-            finishReason: 'stop',
+        return {'ok': true};
+      });
+      addTearDown(
+        () => messenger.setMockMethodCallHandler(
+          DeviceAgent.channel as MethodChannel,
+          null,
+        ),
+      );
+      final rootModel = rootVision ? 'gpt-4o' : 'deepseek-chat';
+      final childModel = rootVision ? 'deepseek-chat' : 'gpt-4o';
+      (container.read(settingsControllerProvider.notifier)
+              as _ControllableSettings)
+          .useModels(rootModel, const ['gpt-4o', 'deepseek-chat']);
+      final profile = container
+          .read(settingsControllerProvider)
+          .requireValue
+          .active!;
+      await container
+          .read(secureStorageProvider)
+          .write(
+            key: providerApiKeyStorageKey(profile.id),
+            value: 'fixture-key',
+          );
+      await container.read(workAgentModelPoolProvider.notifier).save(const [
+        WorkAgentModelOption('gpt-4o'),
+        WorkAgentModelOption('deepseek-chat'),
+      ]);
+      final controller = container.read(chatControllerProvider.notifier);
+      controller.newConversation(workMode: true, forceNew: true);
+      final id = container.read(chatControllerProvider).requireValue.currentId!;
+      await container
+          .read(sessionPolicyProvider.notifier)
+          .save(id, const SessionPolicy(approval: WorkApprovalMode.full));
+      final sent = controller.sendMessage('root device task');
+      await llm.untilRequests(1);
+      final runtime = container.read(workAgentsProvider);
+      final root = runtime.records.singleWhere((r) => r.external);
+      final inherited = root.environment;
+      // Keep the real host executor/preparation; remove only the role-selection
+      // model request so this fixture isolates per-child vision ownership.
+      root.environment = WorkAgentEnvironment(
+        provider: inherited.provider,
+        config: inherited.config,
+        tools: inherited.tools,
+        executeTool: inherited.executeTool,
+        resolveModel: inherited.resolveModel,
+        modelPool: inherited.modelPool,
+        prepareMessages: inherited.prepareMessages,
+        prepareTools: inherited.prepareTools,
+        beforeRound: inherited.beforeRound,
+        takeToolObservations: inherited.takeToolObservations,
+        onRuntimeLog: inherited.onRuntimeLog,
+      );
+      final child = runtime.spawn(
+        parentId: root.id,
+        task: 'child screenshot task',
+        model: childModel,
+        readOnly: true,
+      );
+      await llm
+          .untilRequests(2)
+          .timeout(
+            const Duration(seconds: 3),
+            onTimeout: () => throw StateError(
+              'child status ${runtime.record(child)!.status}: ${runtime.record(child)!.output}',
+            ),
+          );
+      expect(llm.requests[1].config.model, childModel);
+      llm.requests[1].chunks.add(
+        const ChatChunk(
+          toolCalls: [
+            ToolCall(
+              index: 0,
+              id: 'observe-child',
+              name: 'device_observe',
+              argumentsJson: '{}',
+            ),
+            ToolCall(
+              index: 1,
+              id: 'screen-child',
+              name: 'device_action',
+              argumentsJson: '{"action":"screenshot","revision":1}',
+            ),
+            ToolCall(
+              index: 2,
+              id: 'forbidden-click',
+              name: 'device_action',
+              argumentsJson: '{"action":"tap","revision":1,"target":"button"}',
+            ),
+            ToolCall(
+              index: 3,
+              id: 'forbidden-document',
+              name: 'edit_document',
+              argumentsJson: '{}',
+            ),
+            ToolCall(
+              index: 4,
+              id: 'forbidden-external',
+              name: 'external_mutation',
+              argumentsJson: '{}',
+            ),
+          ],
+          finishReason: 'tool_calls',
+        ),
+      );
+      await llm.requests[1].chunks.close();
+      await llm.untilRequests(3);
+      final images = llm.requests[2].messages
+          .where((m) => m.isToolImageObservation)
+          .toList();
+      expect(images.length, rootVision ? 0 : 1);
+      expect(nativeCalls, isNot(contains('tap')));
+      for (final denied in [
+        'forbidden-click',
+        'forbidden-document',
+        'forbidden-external',
+      ]) {
+        expect(
+          llm.requests[2].messages
+              .singleWhere((m) => m.toolCallId == denied)
+              .content,
+          contains('只读职责'),
+        );
+      }
+      if (images.isNotEmpty) {
+        expect(
+          llm.requests[2].messages.indexOf(images.single),
+          greaterThan(
+            llm.requests[2].messages.lastIndexWhere(
+              (m) => m.role == MessageRole.tool,
+            ),
           ),
         );
-        await llm.requests[2].chunks.close();
-        for (var i = 0; i < 100 && !runtime.record(child)!.terminal; i++) {
-          await Future<void>.delayed(const Duration(milliseconds: 2));
-        }
-        expect(runtime.record(child)!.status, WorkAgentStatus.completed);
-        await controller.stopAndWait(conversationId: id);
-        await sent;
-      },
-    );
+      }
+      if (images.isNotEmpty) {
+        expect(images.single.toolImageCallId, 'screen-child');
+      }
+      llm.requests[2].chunks.add(
+        const ChatChunk(contentDelta: 'child inspected', finishReason: 'stop'),
+      );
+      await llm.requests[2].chunks.close();
+      for (var i = 0; i < 100 && !runtime.record(child)!.terminal; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 2));
+      }
+      expect(runtime.record(child)!.status, WorkAgentStatus.completed);
+      await controller.stopAndWait(conversationId: id);
+      await sent;
+    });
   }
 
   test(
@@ -872,7 +923,14 @@ void main() {
           takeToolObservations: inherited.takeToolObservations,
           onRuntimeLog: inherited.onRuntimeLog,
         );
-        await llm.untilRequests(2).timeout(const Duration(seconds: 3));
+        await llm
+            .untilRequests(2)
+            .timeout(
+              const Duration(seconds: 3),
+              onTimeout: () => fail(
+                'Child request missing: ${child.status} / ${child.activity} / ${child.output}',
+              ),
+            );
         llm.requests[1].chunks.add(
           const ChatChunk(
             contentDelta: '第一点说明；第二点限制；第三点现状。缺口：尚未提供原始资料。',
@@ -888,7 +946,14 @@ void main() {
           const ChatChunk(contentDelta: 'initial report', finishReason: 'stop'),
         );
         await llm.requests[0].chunks.close();
-        await llm.untilRequests(3).timeout(const Duration(seconds: 3));
+        await llm
+            .untilRequests(3)
+            .timeout(
+              const Duration(seconds: 3),
+              onTimeout: () => fail(
+                'Continuation missing: ${root.status} / ${child.status}',
+              ),
+            );
         llm.requests[2].chunks.add(
           const ChatChunk(
             contentDelta: 'consolidated completed report',
@@ -1081,7 +1146,9 @@ void main() {
     () async {
       final messenger =
           TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-      messenger.setMockMethodCallHandler(DeviceAgent.channel, (call) async {
+      messenger.setMockMethodCallHandler(DeviceAgent.channel as MethodChannel, (
+        call,
+      ) async {
         if (call.method == 'status') return {'armed': true, 'enabled': true};
         if (call.method == 'observe') return {'revision': 1};
         if (call.method == 'screenshot') {
@@ -1094,7 +1161,10 @@ void main() {
         return {'ok': true};
       });
       addTearDown(
-        () => messenger.setMockMethodCallHandler(DeviceAgent.channel, null),
+        () => messenger.setMockMethodCallHandler(
+          DeviceAgent.channel as MethodChannel,
+          null,
+        ),
       );
       (container.read(settingsControllerProvider.notifier)
               as _ControllableSettings)
@@ -1420,6 +1490,20 @@ void main() {
         containsAll(['思考', '权限']),
       );
       expect(llm.requests.length, 1);
+      controller.renameConversation(id, 'steering boundary fixture');
+      final bridge = ControllerBridgeBackend(container);
+      final reply = await bridge.invoke('queue.add', {
+        'session_id': id,
+        'text': 'After both tools, inspect the CSV only.',
+      });
+      final receiptId = reply['id'];
+      expect((reply['steering'] as Map)['status'], 'queued');
+      final waitingSnapshot = await bridge.snapshot(id);
+      expect((waitingSnapshot['queued'] as List).single['id'], receiptId);
+      final waitingMessage = (waitingSnapshot['messages'] as List).firstWhere(
+        (m) => m['id'] == receiptId,
+      );
+      expect(waitingMessage['steering']['status'], 'queued');
       expect(
         llm.requests[0].messages.any((m) => m.content.contains('主代理新规则')),
         isFalse,
@@ -1431,11 +1515,28 @@ void main() {
       final second = await secondQuestion;
       expect(controller.pendingSessionConfigFor(id), isNotNull);
       expect(llm.requests.length, 1);
+      expect(
+        container.read(workTaskSteeringProvider).snapshot(id).single['status'],
+        'queued',
+      );
       container.read(workQuestionsProvider.notifier).answer(second.id, {
         'q1': {'text': 'answer 1'},
       });
       await llm.untilRequests(2);
       expect(llm.requests[1].thinking, isTrue);
+      expect(
+        llm.requests[1].messages.any(
+          (m) => m.content.contains('After both tools, inspect the CSV only.'),
+        ),
+        isTrue,
+      );
+      final preparedSnapshot = await bridge.snapshot(id);
+      expect(preparedSnapshot['queued'], isEmpty);
+      final preparedMessage = (preparedSnapshot['messages'] as List).firstWhere(
+        (m) => m['id'] == receiptId,
+      );
+      expect(preparedMessage['steering']['status'], 'context_prepared');
+      expect(preparedMessage['steering']['round'], 2);
       expect(llm.requests[1].effort, ReasoningEffort.low);
       expect(llm.requests[1].config.reasoningGuardEnabled, false);
       expect(
@@ -1784,6 +1885,9 @@ void main() {
     'main and child instruction settings persist and remain independent',
     () async {
       final settings = container.read(settingsControllerProvider.notifier);
+      await settings.setChatSkills(
+        ChatSkillCatalog.factory(generalPrompt: 'CORE: speak naturally'),
+      );
       await settings.setWorkAgentInstructions('MAIN: plan and summarize');
       await settings.setSubagentInstructions(
         'CHILD: inspect and report evidence',
@@ -1824,6 +1928,10 @@ void main() {
         'child-context',
       );
       expect(child.any((m) => m.content.contains('CHILD:')), isTrue);
+      expect(
+        child.any((m) => m.content.contains('CORE: speak naturally')),
+        isTrue,
+      );
       expect(child.any((m) => m.content.contains('MAIN:')), isFalse);
       await settings.setWorkAgentInstructions('');
       expect(

@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import '../../platform/preferences.dart';
 import '../../domain/update/update_sources.dart';
 
 class UpdateSourcesPage extends StatefulWidget {

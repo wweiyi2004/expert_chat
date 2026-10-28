@@ -1,6 +1,6 @@
 import 'dart:convert';
 import 'package:dio/dio.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import '../../platform/credentials.dart';
 
 /// Each call snapshots a selected paired host; changing the selector cannot
 /// redirect a request already in flight to a different computer.

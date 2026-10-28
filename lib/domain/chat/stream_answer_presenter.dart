@@ -24,6 +24,8 @@ class StreamAnswerPresenter {
     required this.onCheckpoint,
     double cacheHitRate = 0,
     DateTime Function()? now,
+    this.publishAllChannels = false,
+    this.maximumDelay,
   }) : _focusOf = focusOf,
        _now = now ?? DateTime.now,
        _lastCheckpointAt = (now ?? DateTime.now)(),
@@ -37,6 +39,8 @@ class StreamAnswerPresenter {
   static const checkpointChars = 8192;
 
   final StreamAnswerBuffer buffer;
+  final bool publishAllChannels;
+  final Duration? Function()? maximumDelay;
   final void Function(StreamAnswerSnapshot) onPublish;
   final void Function() onCheckpoint;
   final StreamUiFocus Function() _focusOf;
@@ -72,16 +76,18 @@ class StreamAnswerPresenter {
     _dirty = false;
     final focus = _focusOf();
     if (publishAll ||
+        publishAllChannels ||
         focus == StreamUiFocus.away ||
         focus == StreamUiFocus.reasoning) {
       _publishedReasoning = buffer.reasoning;
     }
     if (publishAll ||
+        publishAllChannels ||
         focus == StreamUiFocus.away ||
         focus == StreamUiFocus.content) {
       _publishedContent = buffer.content;
     }
-    _coalescer.markFlushed(all: publishAll);
+    _coalescer.markFlushed(all: publishAll || publishAllChannels);
     onPublish(
       StreamAnswerSnapshot(
         content: _publishedContent,
@@ -109,10 +115,15 @@ class StreamAnswerPresenter {
       flush();
       return;
     }
-    if (_focusOf() != StreamUiFocus.away && !_coalescer.focusedHasPending) {
+    if (!publishAllChannels &&
+        _focusOf() != StreamUiFocus.away &&
+        !_coalescer.focusedHasPending) {
       return;
     }
-    final delay = _coalescer.delay;
+    final maximum = maximumDelay?.call();
+    final delay = maximum != null && _coalescer.delay > maximum
+        ? maximum
+        : _coalescer.delay;
     // Answer tokens may need a shorter delay than an existing thinking timer.
     if (_flushTimer != null && _flushDelay != null && delay >= _flushDelay!) {
       return;

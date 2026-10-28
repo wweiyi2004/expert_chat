@@ -18,7 +18,10 @@ dependencies = [
 
 [dependency-groups]
 dev = ["pytest==9.1.1", "pytest-subtests==0.15.0", "pip-audit>=2.10,<3", "ruff>=0.15,<0.16"]
-packaging = ["pyinstaller==6.22.3"]
+packaging = [
+    "pyinstaller==6.22.3",
+    "zstandard==0.25.0",
+]
 
 [tool.uv]
 package = false

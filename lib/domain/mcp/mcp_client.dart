@@ -110,6 +110,15 @@ class McpClient {
     _localOwners.clear();
     await Future.wait(transports.map((transport) => transport.close()));
   }
+  Future<void> disconnectConnection(GatewayConnection connection) async {
+    final identity=connection.localProcess?.identity;
+    if(identity==null)return; // HTTP transports are request-scoped.
+    final keys=_local.keys.where((key){
+      if(key==identity)return true;
+      try{final value=jsonDecode(key);return value is List && value.firstOrNull==identity;}catch(_){return false;}
+    }).toList();
+    for(final key in keys){_localOwners.remove(key);await _local.remove(key)?.close();}
+  }
 
   /// Stop only this conversation's owned browser/agent processes. Other active
   /// conversations keep their page state and pending tool requests.

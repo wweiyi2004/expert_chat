@@ -816,6 +816,7 @@ class HttpSearchProvider implements SearchProvider {
 
     final host = uri.host.toLowerCase();
     if (uri.host.isEmpty ||
+        uri.userInfo.isNotEmpty ||
         (uri.scheme != 'http' && uri.scheme != 'https') ||
         host.endsWith('.') ||
         host == 'localhost' ||

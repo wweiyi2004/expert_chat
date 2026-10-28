@@ -2,8 +2,8 @@ import 'model_context.dart';
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../platform/theme_mode.dart';
+import 'package:riverpod/riverpod.dart';
 
 import '../core/providers.dart';
 import '../data/chat_skill.dart';
@@ -25,7 +25,7 @@ import 'tool_registry_settings.dart';
 import 'supervisor_settings.dart';
 import 'role_evolution.dart';
 import 'role_validation_settings.dart';
-import 'model_service_credentials.dart' show explicitCredentialEpochProvider;
+import 'model_service_credentials.dart' show explicitCredentialEpochProvider,kimiCodeAuthProvider;
 import '../data/task_budget_prefs.dart';
 import '../data/ui_prefs.dart';
 import '../domain/llm/llm_provider.dart';
@@ -51,6 +51,7 @@ class SettingsController extends AsyncNotifier<SettingsState> {
 
   @override
   Future<SettingsState> build() => _storage.load();
+  Future<String> freshGatewayTokenForHost() => _freshGatewayToken();
 
   Future<void> setMemoryEnabled(bool enabled) async {
     final next = _current.copyWith(memoryEnabled: enabled);
@@ -97,7 +98,7 @@ class SettingsController extends AsyncNotifier<SettingsState> {
   /// profile default, and passing a value sets it.
   Future<void> apply({
     Object? selectedModel = SettingsState.unchanged,
-    ThemeMode? themeMode,
+    ThemePreference? themeMode,
   }) async {
     final next = _current.copyWith(
       selectedModel: selectedModel,
@@ -1019,6 +1020,10 @@ class SettingsController extends AsyncNotifier<SettingsState> {
       _queueProfileMutation(() => _saveModelService(profile, apiKey));
 
   Future<void> _saveModelService(ProviderProfile profile, String apiKey) async {
+    final existing=_current.profiles.where((p)=>p.id==profile.id).firstOrNull;
+    if(existing?.authMode=='kimiCode'&&profile.authMode!='kimiCode'&&apiKey.trim().isEmpty){
+      throw StateError('此来源使用 Kimi Code 账号授权，请通过订阅服务管理；切换为 API Key 需要明确填写新的 Key');
+    }
     final profiles = [
       for (final current in _current.profiles)
         if (current.id == profile.id) profile else current,
@@ -1148,6 +1153,7 @@ class SettingsController extends AsyncNotifier<SettingsState> {
     final remaining = _current.profiles.where((p) => p.id != id).toList();
     final secure = ref.read(secureStorageProvider);
     await secure.delete(key: providerApiKeyStorageKey(id));
+    await ref.read(kimiCodeAuthProvider).delete(id);
 
     final prefs = ref.read(sharedPrefsProvider);
     if (remaining.isEmpty) {
@@ -1351,8 +1357,8 @@ class SettingsController extends AsyncNotifier<SettingsState> {
 
     final themeName = json['themeMode']?.toString();
     if (themeName != null) {
-      var mode = ThemeMode.system;
-      for (final value in ThemeMode.values) {
+      var mode = ThemePreference.system;
+      for (final value in ThemePreference.values) {
         if (value.name == themeName) {
           mode = value;
           break;

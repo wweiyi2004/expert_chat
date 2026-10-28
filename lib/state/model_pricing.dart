@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:riverpod/riverpod.dart';
 import '../core/providers.dart';
 import 'work_session_insights.dart';
 
@@ -45,7 +45,8 @@ UsageEstimate? estimateWorkCost(
   for (final request in insight.requests.entries) {
     final usage = request.value;
     if (usage == null) continue;
-    final rate = rates[insight.pricingKeys[request.key]];
+    final key = insight.pricingKeys[request.key];
+    final rate = rates[key] ?? referenceModelRate(key, usage.inputTokens);
     if (rate == null || (currency != null && currency != rate.currency)) {
       return null;
     }
@@ -61,6 +62,31 @@ UsageEstimate? estimateWorkCost(
   return known == 0
       ? null
       : UsageEstimate(total, currency!, known == insight.requests.length);
+}
+
+// Reference USD / million tokens, retrieved 2026-10-27. These are estimates,
+// not reseller invoices. DeepSeek uses peak rates (off-peak is half).
+// https://api-docs.deepseek.com/quick_start/pricing/
+// https://platform.claude.com/docs/en/about-claude/pricing
+// https://developers.openai.com/api/docs/models/gpt-5.4
+ModelRate? referenceModelRate(String? key, int inputTokens) {
+  if(key==null)return null;
+  String model;
+  try {model=(jsonDecode(key) as List).last.toString().toLowerCase().split('/').last;}
+  catch(_){return null;}
+  model=model.replaceFirst(RegExp(r'-\d{4}-\d{2}-\d{2}$'), '').replaceFirst(RegExp(r'-\d{8}$'), '');
+  final rates=<String,(double,double,double)>{
+    'deepseek-flash':(.30,.006,1.20),'deepseek-v4.1-flash':(.30,.006,1.20),
+    'deepseek-v4-flash':(.30,.006,1.20),'deepseek-v4-flash-vision-exp':(.30,.006,1.20),
+    'deepseek-v4-pro':(1.32,.044,3.96),
+    'claude-opus-5-5':(4,.2,20),'claude-sonnet-5-5':(2,.1,10),
+    'claude-opus-4-6':(5,.5,25),'claude-opus-4-5':(5,.5,25),
+    'claude-sonnet-4-6':(3,.3,15),'claude-sonnet-4-5':(3,.3,15),
+    'claude-haiku-4-5':(1,.1,5),
+    'gpt-5.4': inputTokens>272000 ? (5,.5,22.5) : (2.5,.25,15),
+  };
+  final rate=rates[model];
+  return rate==null ? null : ModelRate(input:rate.$1,cached:rate.$2,output:rate.$3,currency:'USD');
 }
 
 final modelPricingProvider =

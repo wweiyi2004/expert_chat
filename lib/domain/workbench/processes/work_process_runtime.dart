@@ -2,11 +2,12 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
-import 'package:flutter/foundation.dart';
+import '../../../platform/foundation.dart';
 
 import '../../desktop/command_runner.dart';
 import '../../desktop/workspace_tools.dart';
 import '../../llm/llm_provider.dart';
+import '../../chat/task_window.dart';
 import '../../research/research_workspace.dart';
 import '../../research/research_ssh_contract.dart'
     show ResearchSshExecException;
@@ -53,12 +54,13 @@ class WorkProcessRecord {
     required this.execute,
     this.ownerAgentId,
     this.hookId,
-  });
+    DateTime? startedAt,
+  }) : startedAt = startedAt ?? DateTime.now();
   final String id, conversationId, taskId, command, target;
   final String? ownerAgentId, hookId;
   final bool service;
   final WorkProcessExecutor execute;
-  final DateTime startedAt = DateTime.now();
+  final DateTime startedAt;
   DateTime? finishedAt;
   WorkProcessStatus status = WorkProcessStatus.starting;
   int? exitCode;
@@ -119,11 +121,18 @@ class WorkProcessRuntime extends ChangeNotifier {
     bool service = false,
     String? ownerAgentId,
     String? hookId,
+    String? requestedId,
   }) {
+    TaskWindow.current?.ensureOpen();
     if (_disposed) throw StateError('进程运行时已关闭');
     if (command.trim().isEmpty) throw const FormatException('命令不能为空');
     final id =
+        requestedId ??
         'process_${DateTime.now().microsecondsSinceEpoch}_${_sequence++}';
+    if (!RegExp(r'^process_[a-zA-Z0-9_-]{1,100}$').hasMatch(id) ||
+        _records.containsKey(id)) {
+      throw StateError('进程请求身份无效或已存在');
+    }
     final r = WorkProcessRecord(
       id: id,
       conversationId: conversationId,
@@ -142,6 +151,7 @@ class WorkProcessRuntime extends ChangeNotifier {
   }
 
   Future<void> _run(WorkProcessRecord r) async {
+    final detachWindow = TaskWindow.current?.attach(r.token);
     try {
       if (r.token.isCancelled) {
         r.status = WorkProcessStatus.cancelled;
@@ -180,6 +190,7 @@ class WorkProcessRuntime extends ChangeNotifier {
           : WorkProcessStatus.failed;
       r.error = '$error';
     } finally {
+      detachWindow?.call();
       r.finishedAt = DateTime.now();
       _notify();
       if (!_disposed) {
@@ -206,7 +217,7 @@ class WorkProcessRuntime extends ChangeNotifier {
     _notify();
   }
 
-  String restart(String id) {
+  String restart(String id, {String? requestedId}) {
     final r = _records[id] ?? (throw StateError('进程不存在'));
     if (r.restored) throw StateError('应用重启后执行连接已释放，请重新批准并启动命令');
     if (r.active) throw StateError('先停止进程并等待退出，再重启');
@@ -219,6 +230,7 @@ class WorkProcessRuntime extends ChangeNotifier {
       service: r.service,
       ownerAgentId: r.ownerAgentId,
       hookId: r.hookId,
+      requestedId: requestedId,
     );
   }
 
@@ -241,14 +253,24 @@ class WorkProcessRuntime extends ChangeNotifier {
       )
       .toList();
 
-  void restoreJournal(List<Map<String, dynamic>> rows) {
+  void applyHostProjection(List<Map<String, dynamic>> rows) {
+    _records.clear();
+    restoreJournal(rows, liveProjection: true);
+    notifyListeners();
+  }
+
+  void restoreJournal(
+    List<Map<String, dynamic>> rows, {
+    bool liveProjection = false,
+  }) {
     for (final j in rows.reversed) {
       try {
         final saved = WorkProcessStatus.values.byName(j['status'] as String);
         final interrupted =
-            saved == WorkProcessStatus.starting ||
-            saved == WorkProcessStatus.running ||
-            saved == WorkProcessStatus.stopping;
+            !liveProjection &&
+            (saved == WorkProcessStatus.starting ||
+                saved == WorkProcessStatus.running ||
+                saved == WorkProcessStatus.stopping);
         final r =
             WorkProcessRecord(
                 id: j['id'] as String,
@@ -259,15 +281,19 @@ class WorkProcessRuntime extends ChangeNotifier {
                 service: j['service'] == true,
                 ownerAgentId: j['ownerAgentId'] as String?,
                 hookId: j['hookId'] as String?,
+                startedAt: DateTime.tryParse(j['started_at'] as String? ?? ''),
                 execute: (_, _) async => throw StateError('历史进程不能自动重放'),
               )
-              ..restored = true
+              ..restored = liveProjection ? j['restored'] == true : true
               ..status = interrupted ? WorkProcessStatus.interrupted : saved
               ..exitCode = (j['exit_code'] as num?)?.toInt()
               ..log = j['log'] as String? ?? ''
               ..error = interrupted
                   ? '应用已重启，进程未重新连接；请先检查本机或 SSH 状态。'
                   : j['error'] as String? ?? '';
+        r.finishedAt = DateTime.tryParse(j['finished_at'] as String? ?? '');
+        r.outputs = (j['outputs'] as List? ?? []).cast<String>();
+        r.logsTruncated = j['logs_truncated'] == true;
         _records[r.id] = r;
       } catch (_) {}
     }

@@ -1,6 +1,6 @@
 import 'dart:convert';
 import 'package:crypto/crypto.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:riverpod/riverpod.dart';
 import '../core/providers.dart';
 
 final workOperationJournalProvider = Provider<WorkOperationJournal>(
@@ -105,11 +105,13 @@ class WorkOperationJournal {
     final identity =
         '$conversation\u0000$task\u0000$agent\u0000$request\u0000$callId';
     final blocked = await _transaction<String?>(() async {
-      if (corrupt || unresolved(conversation).isNotEmpty) {
+      // Unknown outcomes stay listed for review but never gate new calls; only
+      // a corrupt journal blocks, because replay can no longer be ruled out.
+      if (corrupt) {
         return jsonEncode({
           'ok': false,
           'requires_user_resume': true,
-          'error': '操作副作用未确认，请用户核验后明确续接。只读检查仍可使用。',
+          'error': '执行日志损坏，无法排除重复执行，请用户核验后明确续接。只读检查仍可使用。',
         });
       }
       if (entries.any((e) => e['identity'] == identity)) {

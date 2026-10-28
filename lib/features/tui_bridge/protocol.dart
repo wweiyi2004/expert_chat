@@ -3,6 +3,26 @@ class BridgeFailure implements Exception {
   final String code, message;
 }
 
+const terminalWorkbenchQueryTopics = {
+  'wb.jobs',
+  'wb.job',
+  'wb.sessions',
+  'wb.session',
+  'wb.agent.poll',
+  'wb.files',
+  'wb.file.open',
+  'wb.git',
+  'wb.git.diff',
+  'wb.automation',
+  'wb.automation.status',
+  'wb.automation.remote',
+  'wb.backup',
+  'wb.update',
+  'wb.voice',
+  'wb.media',
+  'wb.media.text',
+};
+
 abstract interface class BridgeBackend {
   List<String> get capabilities;
   Future<Map<String, Object?>> invoke(
@@ -15,6 +35,25 @@ abstract interface class BridgeBackend {
 abstract interface class BridgeClientLifecycle {
   Future<void> releaseClient(String scope);
   Future<void> selectClientSession(String scope, String session);
+}
+
+abstract interface class WindowTaskLifecycle {
+  void registerWindowClient(String scope);
+  Future<Map<String, Object?>> snapshotForWindow(String scope, String? session);
+}
+
+/// A persistent execution host survives closing an individual TUI connection.
+abstract interface class PersistentBridgeHost {
+  String get hostVersion;
+}
+
+abstract interface class PrivilegedBridgeBackend {
+  bool isPrivilegedMethod(String method);
+  int get revision;
+}
+
+abstract interface class BridgeGuiLifecycle {
+  void registerGuiClient(String scope);
 }
 
 String requiredString(Map<String, dynamic> params, String name) {

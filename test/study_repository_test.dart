@@ -8,7 +8,7 @@ import 'package:expert_chat/data/study_repository.dart';
 import 'package:expert_chat/domain/study/study_prompt_assembler.dart';
 import 'package:expert_chat/domain/study/tutor_style.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:expert_chat/platform/preferences.dart';
 
 void main() {
   late AppDatabase db;

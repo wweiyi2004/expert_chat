@@ -150,6 +150,7 @@ class RoleEvolutionPanel extends ConsumerWidget {
                               candidate.role.id,
                               candidate.role.copyWith(
                                 instructions: result.trim(),
+                                version: candidate.version,
                               ),
                             );
                       }
@@ -162,7 +163,7 @@ class RoleEvolutionPanel extends ConsumerWidget {
                           .read(roleEvolutionProvider.notifier)
                           .revise(
                             candidate.role.id,
-                            candidate.role,
+                            candidate.role.copyWith(version: candidate.version),
                             disabled: !candidate.disabled,
                           ),
                     ),

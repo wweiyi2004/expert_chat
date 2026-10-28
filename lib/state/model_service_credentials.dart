@@ -1,8 +1,9 @@
-import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:riverpod/riverpod.dart';
 import '../core/providers.dart';
 import '../domain/llm/llm_provider.dart';
 import '../domain/llm/model_credentials_unavailable.dart';
 import '../domain/llm/auth/chatgpt_auth.dart';
+import '../domain/llm/auth/kimi_code_auth.dart';
 import 'settings_controller.dart';
 import 'model_service_routing.dart';
 import 'model_context.dart';
@@ -54,6 +55,7 @@ final chatGptAuthProvider = Provider<ChatGptAuth>(
     ref.read(sharedPrefsProvider),
   ),
 );
+final kimiCodeAuthProvider=Provider<KimiCodeAuth>((ref)=>KimiCodeAuth(ref.read(secureStorageProvider),ref.read(sharedPrefsProvider)));
 Future<LlmConfig> resolveModelCredentials(Ref ref, LlmConfig config) async {
   if (config.profileId != null) {
     final current = await readCoherentModelService(ref, config.profileId!);
@@ -81,6 +83,10 @@ Future<LlmConfig> resolveModelCredentials(Ref ref, LlmConfig config) async {
           .accessToken(config.profileId!),
       apiFormat: LlmApiFormat.openAiResponses,
     );
+  }
+  if(config.authMode=='kimiCode'){
+    if(config.profileId==null||!KimiCodeAuth.accepts(config.baseUrl))throw StateError('Kimi 登录凭据仅用于 Kimi Code 官方服务');
+    return config.copyWith(apiKey:await ref.read(kimiCodeAuthProvider).accessToken(config.profileId!));
   }
   return config.authMode == 'none' ? config.copyWith(apiKey: '') : config;
 }

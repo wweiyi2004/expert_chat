@@ -1,4 +1,5 @@
 import '../../data/context_prefs.dart';
+import '../../data/context_selection.dart';
 import '../../data/models.dart';
 import '../../data/story_models.dart';
 import '../context/context_window_manager.dart';
@@ -78,6 +79,7 @@ class RequestContextBuilder {
     required Conversation conversation,
     required String assistantId,
     required ContextPrefs contextPrefs,
+    ContextSelection selection = const ContextSelection(),
     bool nativeVision = false,
     bool imageToolAvailable = false,
     RequestContextNotes notes = const RequestContextNotes(),
@@ -86,9 +88,18 @@ class RequestContextBuilder {
     String studySystemPrompt = '',
     StoryRequestContext story = const StoryRequestContext(),
   }) {
-    final path = conversation.activePath
+    final originalPath = conversation.activePath
         .where((m) => m.id != assistantId)
         .toList();
+    final sourcePath = originalPath
+        .where(
+          (m) =>
+              !(m.role == MessageRole.assistant &&
+                  m.content.trim().isEmpty &&
+                  m.attachments.isEmpty),
+        )
+        .toList();
+    final path = selection.filter(sourcePath);
     final ensemble = conversation.isEnsemble && story.speakingAs != null;
     final history = <LlmRequestMessage>[
       for (final message in path)
@@ -135,7 +146,12 @@ class RequestContextBuilder {
       proseTask = story.intent?.writesProse ?? true;
       history.insertAll(0, [
         ...prefix.messages,
-        ..._notes([notes.memory, notes.image, notes.vision, notes.tools]),
+        ..._notes([
+          if (selection.includeMemory) notes.memory,
+          notes.image,
+          notes.vision,
+          notes.tools,
+        ]),
       ]);
       history.addAll(prefix.postHistoryMessages);
     } else {
@@ -159,12 +175,21 @@ class RequestContextBuilder {
           notes.vision,
           notes.image,
           preset,
-          notes.memory,
+          if (selection.includeMemory) notes.memory,
           if (conversation.isStudy) studySystemPrompt,
         ]),
       );
     }
-    if (notes.project.isNotEmpty) history.insert(0, _system(notes.project));
+    if (selection.includeProject && notes.project.isNotEmpty) {
+      history.insert(0, _system(notes.project));
+    }
+    final selectedTools = selection.toolReferences(originalPath);
+    if (selectedTools.isNotEmpty) {
+      history.insert(
+        history.isEmpty ? 0 : history.length - 1,
+        LlmRequestMessage(role: MessageRole.user, content: selectedTools),
+      );
+    }
     if (notes.recovery.isNotEmpty) history.add(_system(notes.recovery));
     final latestUser = path.where((m) => m.role == MessageRole.user).lastOrNull;
     if (latestUser != null &&
@@ -209,6 +234,12 @@ class RequestContextBuilder {
     final buffer = StringBuffer();
     final images = <String>[];
     for (final a in m.attachments) {
+      if (a.isFileReference) {
+        buffer.writeln('【文件地址 ${a.referenceTag ?? a.name}】');
+        buffer.writeln(a.referencePath);
+        buffer.writeln();
+        continue;
+      }
       if (a.isImage) {
         if (vision && a.hasImageData) {
           images.add(a.imageDataUrl); // sent through the image channel

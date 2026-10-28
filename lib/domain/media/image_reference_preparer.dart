@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart' show compute;
+import '../../platform/foundation.dart' show compute;
 
 import '../../data/models.dart';
 import 'image_codec_util.dart';

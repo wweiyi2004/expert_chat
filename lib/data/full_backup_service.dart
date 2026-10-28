@@ -4,8 +4,8 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'package:drift/drift.dart';
-import 'package:flutter/foundation.dart' show compute;
-import 'package:shared_preferences/shared_preferences.dart';
+import '../platform/foundation.dart' show compute;
+import '../platform/preferences.dart';
 import 'package:uuid/uuid.dart';
 import '../domain/memory/memory_codec.dart';
 import 'backup_codec.dart';
@@ -16,6 +16,7 @@ import 'library_file_store.dart';
 import 'library_paths.dart';
 import 'learning_plan.dart';
 import 'memory_repository.dart';
+import 'models.dart' show kCheckpointEnd;
 
 /// Restore is additive. Existing database rows/files are never overwritten.
 /// Memory/preferences are covered by a durable undo journal and a SQL commit
@@ -66,6 +67,8 @@ class FullBackupService {
     'subagentRoles.v1',
     'subagentRouterModel',
     'chatSkills',
+    'tuiSchedules.v1',
+    'tuiUpdateManifestUrl',
     'promptPresetsV1',
     'memoryEnabled',
     'studyModeEnabled',
@@ -462,9 +465,11 @@ class FullBackupService {
               final active = jsonDecode(value as String) as Map;
               row[key] = jsonEncode({
                 for (final e in active.entries)
-                  e.key == '' ? e.key : remap(e.key as String): remap(
-                    e.value as String,
-                  ),
+                  e.key == ''
+                      ? e.key
+                      : remap(e.key as String): e.value == kCheckpointEnd
+                      ? kCheckpointEnd
+                      : remap(e.value as String),
               });
             } else {
               row[key] = jsonEncode(

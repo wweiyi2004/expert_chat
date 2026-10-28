@@ -93,22 +93,23 @@ class SessionExecutionCheckpoint {
     'queuedEvents': queuedEvents,
     'taskState': taskState,
   };
-  factory SessionExecutionCheckpoint.fromJson(Map<String, dynamic> json) {
+  factory SessionExecutionCheckpoint.fromJson(
+    Map<String, dynamic> json, {
+    bool liveProjection = false,
+  }) {
     final saved = SessionExecutionStatus.values.byName(
       json['status'] as String,
     );
+    final interrupted =
+        !liveProjection &&
+        (saved == SessionExecutionStatus.running ||
+            saved == SessionExecutionStatus.waiting);
     return SessionExecutionCheckpoint(
       conversationId: json['conversationId'] as String,
       taskId: json['taskId'] as String?,
-      status:
-          saved == SessionExecutionStatus.running ||
-              saved == SessionExecutionStatus.waiting
-          ? SessionExecutionStatus.interrupted
-          : saved,
+      status: interrupted ? SessionExecutionStatus.interrupted : saved,
       updatedAt: DateTime.parse(json['updatedAt'] as String),
-      phase:
-          saved == SessionExecutionStatus.running ||
-              saved == SessionExecutionStatus.waiting
+      phase: interrupted
           ? '应用重启，执行已中断；请检查已有结果和远端状态后继续。未重放命令。'
           : json['phase'] as String? ?? '',
       queuedEvents: (json['queuedEvents'] as num?)?.toInt() ?? 0,

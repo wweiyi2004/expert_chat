@@ -13,6 +13,7 @@ extension ChatContextManagement on ChatTools {
     required List<LlmRequestMessage> activeMessages,
     required List<String> Function() readPublicSources,
     required int publicHistoryCount,
+    bool hasPublicWork = true,
     bool force = false,
   }) async {
     final prefs = effectiveContextPrefs(settings, config);
@@ -43,13 +44,17 @@ extension ChatContextManagement on ChatTools {
         manager.estimateTextTokens(goal) +
         manager.estimateTextTokens(updates);
     // Normalize to the service's fixed 48-message trigger so the user's actual
-    // history cap (24 by default) requests a checkpoint BEFORE local trimming.
-    final historyCount =
-        (publicHistoryCount * 48 / prefs.maxHistoryMessages.clamp(1, 1000000))
-            .ceil();
+    // history cap requests a checkpoint BEFORE local trimming. Zero means no
+    // message cap (token budget only), so it adds no history pressure.
+    final historyCount = prefs.maxHistoryMessages <= 0
+        ? 0
+        : (publicHistoryCount * 48 / prefs.maxHistoryMessages).ceil();
     final budget = agentId == null
         ? '$conversation:$taskId'
         : '$conversation:$taskId:$agentId';
+    // The history cap deliberately pins the goal even on a first round; token
+    // pressure with no public results yet has nothing a checkpoint can shrink.
+    if (!force && !hasPublicWork && historyCount < 48) return null;
     if (!force &&
         !_publicCompactor.shouldCompact(
           taskId: budget,

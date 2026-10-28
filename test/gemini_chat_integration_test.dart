@@ -5,6 +5,7 @@ import 'package:dio/dio.dart';
 import 'package:drift/native.dart';
 import 'package:expert_chat/core/providers.dart';
 import 'package:expert_chat/data/db/app_database.dart';
+import 'package:expert_chat/data/models.dart' show SearchActivityStatus;
 import 'package:expert_chat/data/drift_conversation_repository.dart';
 import 'package:expert_chat/data/provider_profile.dart';
 import 'package:expert_chat/domain/llm/gemini_native_provider.dart';
@@ -17,7 +18,7 @@ import 'package:expert_chat/state/chat_controller.dart';
 import 'package:expert_chat/state/settings_controller.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:expert_chat/platform/preferences.dart';
 
 class _Settings extends SettingsController {
   @override
@@ -194,6 +195,14 @@ void main() {
       expect(state.error, isNull);
       expect(state.current!.messages.last.content, contains('结论已确认'));
       expect(search.queries, ['Gemini native schema', 'Gemini tool responses']);
+      final traces = state.current!.messages.last.searchActivities;
+      expect(traces.where((a) => a.error == '未执行或没有可恢复的步骤记录'), isEmpty);
+      for (final callId in ['native-a', 'native-b']) {
+        final trace = traces.singleWhere((a) => a.toolCallId == callId);
+        expect(trace.status, SearchActivityStatus.done);
+        expect(trace.toolName, 'web_search');
+        expect(trace.resultText, contains('Synthetic documentation'));
+      }
       expect(adapter.bodies, hasLength(2));
       expect(
         adapter.requests.every(

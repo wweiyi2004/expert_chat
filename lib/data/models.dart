@@ -189,6 +189,8 @@ class Attachment {
     this.parseError,
     this.imageBase64,
     this.remoteUrl,
+    this.referencePath,
+    this.referenceTag,
   }) : id = id ?? _uuid.v4();
 
   final String id;
@@ -211,6 +213,11 @@ class Attachment {
   /// preferred because it remains available offline; URLs are retained as a
   /// compatibility fallback for providers that do not return `b64_json`.
   final String? remoteUrl;
+
+  /// A path-only attachment: no file contents are loaded or embedded.
+  final String? referencePath;
+  final String? referenceTag;
+  bool get isFileReference => referencePath?.isNotEmpty == true;
 
   bool get isImage => mimeType.startsWith('image/');
 
@@ -282,6 +289,8 @@ class Attachment {
     remoteUrl: identical(remoteUrl, _attachSentinel)
         ? this.remoteUrl
         : remoteUrl as String?,
+    referencePath: referencePath,
+    referenceTag: referenceTag,
   );
 
   static const _attachSentinel = Object();
@@ -296,6 +305,8 @@ class Attachment {
     if (parseError != null) 'parseError': parseError,
     if (imageBase64 != null) 'imageBase64': imageBase64,
     if (remoteUrl != null) 'remoteUrl': remoteUrl,
+    if (referencePath != null) 'referencePath': referencePath,
+    if (referenceTag != null) 'referenceTag': referenceTag,
   };
 
   factory Attachment.fromJson(Map<String, dynamic> json) => Attachment(
@@ -308,6 +319,8 @@ class Attachment {
     parseError: json['parseError'] as String?,
     imageBase64: json['imageBase64'] as String?,
     remoteUrl: json['remoteUrl'] as String?,
+    referencePath: json['referencePath'] as String?,
+    referenceTag: json['referenceTag'] as String?,
   );
 }
 
@@ -380,6 +393,7 @@ class SearchActivity {
     this.resultCount = 0,
     this.error,
     this.items = const [],
+    this.contentOffset,
     this.reasoningOffset = 0,
     this.reasoningOffsetRecorded = false,
     this.startedAt,
@@ -412,6 +426,7 @@ class SearchActivity {
 
   /// Character offset into the assistant [ChatMessage.reasoning] when this
   /// step started. Used to interleave tool nodes with the thinking text.
+  final int? contentOffset;
   final int reasoningOffset;
 
   /// Distinguishes a live step anchored at zero from unpositioned legacy data.
@@ -439,6 +454,7 @@ class SearchActivity {
     int? resultCount,
     String? error,
     List<SearchActivityItem>? items,
+    int? contentOffset,
     int? reasoningOffset,
     DateTime? startedAt,
     DateTime? finishedAt,
@@ -458,6 +474,7 @@ class SearchActivity {
     resultCount: resultCount ?? this.resultCount,
     error: error ?? this.error,
     items: items ?? this.items,
+    contentOffset: contentOffset ?? this.contentOffset,
     reasoningOffset: reasoningOffset ?? this.reasoningOffset,
     reasoningOffsetRecorded: reasoningOffset != null || reasoningOffsetRecorded,
     startedAt: startedAt ?? this.startedAt,
@@ -490,6 +507,7 @@ class SearchActivity {
     if (roundElapsedMillis != null) 'roundElapsedMillis': roundElapsedMillis,
     if (error != null) 'error': error,
     if (items.isNotEmpty) 'items': [for (final item in items) item.toJson()],
+    if (contentOffset != null) 'contentOffset': contentOffset,
     if (reasoningOffsetRecorded || reasoningOffset > 0)
       'reasoningOffset': reasoningOffset,
   };
@@ -527,6 +545,7 @@ class SearchActivity {
         if (raw is Map)
           SearchActivityItem.fromJson(Map<String, dynamic>.from(raw)),
     ].where((item) => item.title.isNotEmpty || item.url.isNotEmpty).toList(),
+    contentOffset: (json['contentOffset'] as num?)?.toInt(),
     reasoningOffset: (json['reasoningOffset'] as num?)?.toInt() ?? 0,
     reasoningOffsetRecorded: json.containsKey('reasoningOffset'),
   );
@@ -743,6 +762,9 @@ class ChatMessage {
 /// Root-level key for [Conversation.activeChildren] (messages with no parent).
 const String kRootKey = '';
 
+/// Explicit empty tail after a conversation-only checkpoint restore.
+const String kCheckpointEnd = '__expert_checkpoint_stop__';
+
 /// A conversation. [messages] holds ALL nodes across every branch (a tree);
 /// [activeChildren] records, per parent id, which child is currently selected,
 /// so [activePath] yields the linear list of visible messages. Editing or
@@ -905,6 +927,7 @@ class Conversation {
       final children = childrenOf(key);
       if (children.isEmpty) break;
       final activeId = activeChildren[key];
+      if (activeId == kCheckpointEnd) break;
       final next = children.firstWhere(
         (c) => c.id == activeId,
         orElse: () => children.last, // default to the newest branch

@@ -3,7 +3,7 @@ import 'package:expert_chat/domain/llm/llm_provider.dart';
 import 'package:expert_chat/domain/llm/model_usage_store.dart';
 import 'package:expert_chat/domain/llm/usage_tracking_llm_provider.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:expert_chat/platform/preferences.dart';
 
 void main() {
   test('usage accumulates by endpoint and model and persists', () async {

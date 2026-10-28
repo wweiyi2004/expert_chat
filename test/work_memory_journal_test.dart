@@ -71,10 +71,11 @@ void main() {
     },
   );
   test(
-    'restart unknown blocks a new call until deliberate acknowledgment',
+    'restart unknown stays reviewable, never replays, and does not gate new calls',
     () async {
       String? disk = jsonEncode([
         {
+          'identity': 'c\u0000t\u0000root\u0000default\u0000old',
           'conversation': 'c',
           'task': 't',
           'call_id': 'old',
@@ -89,6 +90,41 @@ void main() {
           disk = s;
           return true;
         },
+      );
+      Future<String> run(String callId) => journal.run(
+        conversation: 'c',
+        task: 't',
+        callId: callId,
+        tool: 'send',
+        arguments: '{}',
+        operation: () async {
+          effects++;
+          return 'done';
+        },
+      );
+      expect(journal.unresolved('c'), hasLength(1));
+      expect(jsonDecode(await run('old'))['already_dispatched'], isTrue);
+      expect(effects, 0);
+      expect(await run('new'), 'done');
+      expect(effects, 1);
+      expect(journal.unresolved('c'), hasLength(1));
+      await journal.acknowledge(
+        'c',
+        reviewedIdentities: journal
+            .unresolved('c')
+            .map((e) => e['review_identity'] as String)
+            .toSet(),
+      );
+      expect(journal.unresolved('c'), isEmpty);
+    },
+  );
+  test(
+    'corrupt journal blocks new calls until deliberate acknowledgment',
+    () async {
+      var effects = 0;
+      final journal = WorkOperationJournal(
+        read: () => '{broken',
+        write: (s) async => true,
       );
       Future<String> run() => journal.run(
         conversation: 'c',
@@ -105,10 +141,8 @@ void main() {
       expect(effects, 0);
       await journal.acknowledge(
         'c',
-        reviewedIdentities: journal
-            .unresolved('c')
-            .map((e) => e['review_identity'] as String)
-            .toSet(),
+        reviewedIdentities: {},
+        reviewedCorruptionDigest: journal.corruptionDigest,
       );
       expect(await run(), 'done');
       expect(effects, 1);

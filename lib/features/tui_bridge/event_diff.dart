@@ -85,6 +85,7 @@ List<({String event, Map<String, Object?> data})> bridgeSnapshotEvents(
   if (jsonEncode(before['changes']) != jsonEncode(after['changes'])) {
     emit('changes.updated', {'changes': after['changes']});
   }
+  if(jsonEncode(old['usage'])!=jsonEncode(current['usage']))emit('usage.updated',{'usage':current['usage']});
   if (old['context_percent'] != current['context_percent']) {
     emit('context.updated', {'context_percent': current['context_percent']});
   }

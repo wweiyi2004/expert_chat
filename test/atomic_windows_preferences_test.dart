@@ -6,7 +6,7 @@ import 'package:ffi/ffi.dart';
 import 'package:path/path.dart' as p;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:expert_chat/data/atomic_windows_preferences_io.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:expert_chat/platform/preferences.dart';
 import 'package:shared_preferences_windows/shared_preferences_windows.dart';
 import 'package:shared_preferences_platform_interface/shared_preferences_platform_interface.dart';
 import 'package:shared_preferences_platform_interface/types.dart';

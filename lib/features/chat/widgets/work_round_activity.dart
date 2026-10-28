@@ -86,7 +86,7 @@ class _WorkRoundActivityState extends State<WorkRoundActivity> {
       'coding_workspace_info' => '查看工作区',
       'coding_list_directory' => '查看文件目录',
       'coding_read_file' => '读取文件',
-      'coding_write_file' => '修改文件',
+      'coding_write_file' || 'coding_edit_file' => '修改文件',
       'coding_create_directory' => '创建目录',
       'work_run_command' => '运行命令',
       'work_deliver_files' => '登记交付文件',

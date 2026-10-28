@@ -24,16 +24,30 @@ static NEXT_REQUEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
 pub enum SourceEvent {
     Event(Value),
     Snapshot(Value),
-    Response { method: String, result: Value },
-    CommandResponse { command: Command, result: Value },
-    CommandError { command: Command, message: String },
+    Response {
+        method: String,
+        result: Value,
+    },
+    CommandResponse {
+        command: Command,
+        result: Value,
+    },
+    CommandError {
+        command: Command,
+        message: String,
+        outcome_unknown: bool,
+    },
     SnapshotError(String),
     Error(String),
-    Connection { connected: bool, message: String },
+    Connection {
+        connected: bool,
+        message: String,
+    },
 }
 pub trait DataSource {
     fn poll(&mut self) -> Vec<SourceEvent>;
     fn send(&mut self, command: Command) -> Result<()>;
+    fn close(&mut self) {}
 }
 pub fn fixture_events(name: &str) -> Result<Vec<Value>> {
     let body = match name {
@@ -203,17 +217,17 @@ pub struct BridgeSource {
     events: Receiver<SourceEvent>,
 }
 impl BridgeSource {
-    /// Resolve/start the trusted GUI entirely off the terminal event thread.
+    /// Resolve/start the local host entirely off the terminal event thread.
     pub fn launch(options: crate::launcher::LauncherOptions) -> Self {
         let (tx, rx) = mpsc::sync_channel(64);
         let (etx, erx) = mpsc::sync_channel(1024);
         thread::spawn(move || {
             let _ = etx.send(SourceEvent::Connection {
                 connected: false,
-                message: "Connecting to desktop GUI…".into(),
+                message: "正在连接本地服务…".into(),
             });
-            match crate::launcher::ensure_bridge(&options) {
-                Ok(path) => worker(path, rx, etx),
+            match crate::launcher::prepare_bridge(&options) {
+                Ok(bridge) => worker(bridge.path, rx, etx, Some(bridge.discovery)),
                 Err(error) => {
                     let _ = etx.send(SourceEvent::Error(error.to_string()));
                 }
@@ -227,7 +241,7 @@ impl BridgeSource {
     pub fn new(discovery: PathBuf) -> Self {
         let (tx, rx) = mpsc::sync_channel(64);
         let (etx, erx) = mpsc::sync_channel(1024);
-        thread::spawn(move || worker(discovery, rx, etx));
+        thread::spawn(move || worker(discovery, rx, etx, None));
         Self {
             commands: tx,
             events: erx,
@@ -235,6 +249,27 @@ impl BridgeSource {
     }
 }
 impl DataSource for BridgeSource {
+    fn close(&mut self) {
+        if self
+            .send(Command {
+                method: "window.close".into(),
+                params: json!({}),
+            })
+            .is_err()
+        {
+            return;
+        }
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            if let Ok(SourceEvent::CommandResponse { command, .. }) =
+                self.events.recv_timeout(Duration::from_millis(50))
+            {
+                if command.method == "window.close" {
+                    break;
+                }
+            }
+        }
+    }
     fn poll(&mut self) -> Vec<SourceEvent> {
         self.events.try_iter().take(256).collect()
     }
@@ -281,8 +316,12 @@ fn connect(
     path: &std::path::Path,
     counter: &mut u64,
     pending: &mut HashMap<String, Command>,
+    initial: Option<crate::launcher::Discovery>,
 ) -> Result<WebSocket<TcpStream>> {
-    let d = read_discovery(path)?;
+    let d = match initial {
+        Some(d) => d,
+        None => read_discovery(path)?,
+    };
     let stream = TcpStream::connect_timeout(
         &SocketAddr::from(([127, 0, 0, 1], d.port)),
         Duration::from_secs(2),
@@ -302,7 +341,7 @@ fn connect(
         &mut ws,
         counter,
         "hello",
-        json!({"protocol":1,"token":d.token,"client_id":format!("expert-tui-{}-{}",std::process::id(),*CLIENT_EPOCH)}),
+        json!({"protocol":1,"token":d.token,"features":["snapshot.patch","window-lifecycle.v1"],"client_id":format!("expert-tui-{}-{}",std::process::id(),*CLIENT_EPOCH)}),
         pending,
     )?;
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -318,9 +357,13 @@ fn connect(
                     .as_str()
                     .is_some_and(|id| pending.remove(id).is_some())
                 {
-                    if value["v"] != 1 || value["ok"] != true || value["result"]["protocol"] != 1 {
+                    if value["v"] != 1
+                        || value["ok"] != true
+                        || value["result"]["protocol"] != 1
+                        || value["result"]["execution_host"] != "dart"
+                    {
                         bail!(
-                            "Bridge authentication/version rejected; restart an updated desktop GUI"
+                            "Independent host authentication/version rejected; close the old backend and use the complete updated bundle"
                         );
                     }
                     break;
@@ -334,7 +377,12 @@ fn connect(
         .set_read_timeout(Some(Duration::from_millis(100)))?;
     Ok(ws)
 }
-fn worker(path: PathBuf, commands: Receiver<Command>, events: SyncSender<SourceEvent>) {
+fn worker(
+    path: PathBuf,
+    commands: Receiver<Command>,
+    events: SyncSender<SourceEvent>,
+    mut initial: Option<crate::launcher::Discovery>,
+) {
     let mut counter = 0;
     let mut session: Option<String> = None;
     let mut last_workspace = Value::Null;
@@ -342,14 +390,25 @@ fn worker(path: PathBuf, commands: Receiver<Command>, events: SyncSender<SourceE
     let mut pending = HashMap::new();
     loop {
         pending.clear();
-        let mut ws = match connect(&path, &mut counter, &mut pending) {
+        let mut ws = match connect(&path, &mut counter, &mut pending, initial.take()) {
             Ok(ws) => ws,
             Err(_) => {
-                if events.send(SourceEvent::Connection{connected:false,message:"Bridge unavailable or authentication rejected. Start/update GUI with --tui-bridge --background; reconnecting…".into()}).is_err(){return;}
+                if events
+                    .send(SourceEvent::Connection {
+                        connected: false,
+                        message:
+                            "独立宿主未就绪或版本不兼容；请结束旧版后台，使用完整新包。正在重连…"
+                                .into(),
+                    })
+                    .is_err()
+                {
+                    return;
+                }
                 for _ in 0..10 {
                     match commands.try_recv() {
                         Ok(command) => {
                             let _ = events.send(SourceEvent::CommandError {
+                                outcome_unknown: false,
                                 command,
                                 message: "Disconnected: command not sent; retry after reconnect"
                                     .into(),
@@ -366,7 +425,7 @@ fn worker(path: PathBuf, commands: Receiver<Command>, events: SyncSender<SourceE
         if events
             .send(SourceEvent::Connection {
                 connected: true,
-                message: "Connected to local desktop bridge".into(),
+                message: "已连接本机独立执行宿主".into(),
             })
             .is_err()
         {
@@ -460,6 +519,18 @@ fn worker(path: PathBuf, commands: Receiver<Command>, events: SyncSender<SourceE
                                 .as_array()
                                 .is_some_and(Vec::is_empty);
                         }
+                        if value["event"] == "snapshot.patch" {
+                            if let Some(workspace) =
+                                value["data"]["fields"]["session"].get("workspace_id")
+                            {
+                                last_workspace = workspace.clone();
+                            }
+                            if let Some(order) =
+                                value["data"]["arrays"]["messages"]["order"].as_array()
+                            {
+                                last_empty = order.is_empty();
+                            }
+                        }
                         events.send(SourceEvent::Event(value))?;
                     } else if let Some(command) =
                         value["id"].as_str().and_then(|id| pending.remove(id))
@@ -510,20 +581,22 @@ fn worker(path: PathBuf, commands: Receiver<Command>, events: SyncSender<SourceE
                                 events.send(SourceEvent::Snapshot(result.clone()))?;
                             }
                             if method != "ping" {
+                                let shell_request = command.params["_shell"] == true;
                                 events.send(SourceEvent::CommandResponse { command, result })?;
-                                if ![
-                                    "snapshot.get",
-                                    "session.open",
-                                    "session.list",
-                                    "workspace.prepare",
-                                    "workspace.list",
-                                    "models.list",
-                                    "changes.list",
-                                    "changes.diff",
-                                    "agents.list",
-                                    "files.list",
-                                ]
-                                .contains(&method.as_str())
+                                if !shell_request
+                                    && ![
+                                        "snapshot.get",
+                                        "session.open",
+                                        "session.list",
+                                        "workspace.prepare",
+                                        "workspace.list",
+                                        "models.list",
+                                        "changes.list",
+                                        "changes.diff",
+                                        "agents.list",
+                                        "files.list",
+                                    ]
+                                    .contains(&method.as_str())
                                 {
                                     write_request(
                                         &mut ws,
@@ -565,6 +638,9 @@ fn worker(path: PathBuf, commands: Receiver<Command>, events: SyncSender<SourceE
                                 .take(1024)
                                 .collect();
                             events.send(SourceEvent::CommandError {
+                                // The backend may fail after a partial mutation.
+                                outcome_unknown: code == "operation_failed"
+                                    || code == "unknown_result",
                                 command,
                                 message: format!("{method}: {code}: {message}"),
                             })?;
@@ -602,6 +678,7 @@ fn worker(path: PathBuf, commands: Receiver<Command>, events: SyncSender<SourceE
         if !pending.is_empty() {
             for command in pending.values() {
                 if events.send(SourceEvent::CommandError {
+                    outcome_unknown: true,
                     command: command.clone(),
                     message: "Connection lost: request result is unknown. Inspect refreshed state before retrying; this command was not replayed.".into(),
                 }).is_err() { return; }

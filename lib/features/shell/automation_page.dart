@@ -1,9 +1,10 @@
+import '../../core/runtime_listenable.dart';
 import 'package:expert_chat/core/app_toast.dart';
 import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import '../../platform/credentials.dart';
 import '../../state/chat_controller.dart';
 import '../../core/prototype_widgets.dart';
 import '../../state/work_processes.dart';
@@ -120,7 +121,7 @@ class _AutomationPageState extends ConsumerState<AutomationPage> {
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 900),
           child: ListenableBuilder(
-            listenable: hooks,
+            listenable: runtimeListenable(hooks),
             builder: (context, _) => ListView(
               padding: EdgeInsets.fromLTRB(
                 phone ? 14 : 24,

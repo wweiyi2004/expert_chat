@@ -1,7 +1,7 @@
 import 'dart:async';
 import '../state/model_context.dart';
 
-import 'package:flutter/material.dart';
+import '../platform/theme_mode.dart';
 
 import 'chat_skill.dart';
 import 'subagent_role.dart';
@@ -36,7 +36,7 @@ class SettingsState {
     this.activeProfileId,
     this.apiKey = '',
     this.selectedModel,
-    this.themeMode = ThemeMode.system,
+    this.themeMode = ThemePreference.system,
     this.searchBackend = SearchBackend.deepseek,
     this.searchApiKey = '',
     this.searchBrainModel,
@@ -90,7 +90,7 @@ class SettingsState {
 
   /// Model override within the active profile; null = use profile.chatModel.
   final String? selectedModel;
-  final ThemeMode themeMode;
+  final ThemePreference themeMode;
 
   /// Web-search backend + its key (for the "联网搜索" feature, M5).
   final SearchBackend searchBackend;
@@ -351,7 +351,7 @@ class SettingsState {
     String? activeProfileId,
     String? apiKey,
     Object? selectedModel = unchanged,
-    ThemeMode? themeMode,
+    ThemePreference? themeMode,
     SearchBackend? searchBackend,
     String? searchApiKey,
     Object? searchBrainModel = unchanged,

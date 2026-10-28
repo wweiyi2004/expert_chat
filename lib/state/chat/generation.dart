@@ -33,6 +33,8 @@ mixin ChatGeneration on ChatStreaming {
     // the deleted row both in memory and, via persistById, in the database.
     if (_deletedWhileStartingIds.contains(working.id)) return;
     if (!_requireLoadedConversation(working)) return;
+    final contextSelection=ref.read(contextSelectionsProvider)[working.id]??const ContextSelection();
+    final attachmentConversation=contextSelection.forTools(working);
     settings = await resolveDeepSeekSearchSettings(ref, settings);
     if (!working.isStoryLike && !working.isStudy) {
       config = await resolveConversationModel(
@@ -41,7 +43,7 @@ mixin ChatGeneration on ChatStreaming {
         config,
         work: working.workMode,
         images: _userAttachmentsForTurn(
-          working,
+          attachmentConversation,
           assistantId,
         ).any((a) => a.isImage),
         thinking: thinking,
@@ -61,7 +63,26 @@ mixin ChatGeneration on ChatStreaming {
     );
     final workTaskCore = working.workMode ? _run?.core : null;
     if (workTaskCore case final core?) {
-      if (core.target.isEmpty) core.target = await _taskTarget(working.id);
+      if (core.target.isEmpty) {
+        try {
+          core.target = await _taskTarget(working.id);
+        } catch (error) {
+          // A removed workspace or SSH profile ends this turn visibly; it must
+          // not escape sendMessage or silently redirect to another target.
+          if (!ref.mounted) return;
+          _set(
+            _s.copyWith(
+              conversations: [
+                working,
+                ..._s.conversations.where((c) => c.id != working.id),
+              ],
+            ),
+          );
+          await _persistence.persistSafely(working.id);
+          _setScopedError(describeError(error), convoId: working.id);
+          return;
+        }
+      }
       final acceptance = ref.read(taskAcceptanceProvider.notifier);
       await acceptance.freeze(
         core.rootId,
@@ -116,9 +137,8 @@ mixin ChatGeneration on ChatStreaming {
         searchAllowed &&
         !useProviderSearch &&
         config.capabilities.supportsTools;
-    // Only expose direct page fetching when this turn actually contains a URL.
-    // The executor also restricts calls to this exact allow-list so a model
-    // cannot invent unrelated network targets while "联网" is off.
+    // Work tasks may follow public documentation links under their network
+    // permission. Ordinary chat keeps explicit user/search-source matching.
     final pastedUrls = recoverySource == null
         ? extractHttpUrls(searchQuery)
         : <String>[];
@@ -130,7 +150,7 @@ mixin ChatGeneration on ChatStreaming {
         sessionPolicy.network &&
         directPageFetchAllowed &&
         settings.searchConfigured &&
-        (pastedUrls.isNotEmpty || searchAllowed) &&
+        (working.workMode || pastedUrls.isNotEmpty || searchAllowed) &&
         config.capabilities.supportsTools;
     // Dialogue 配图 (not pure 生图 mode): auto exposes the tool; always also
     // pre-generates one image so force works on tool-less reasoners.
@@ -142,7 +162,7 @@ mixin ChatGeneration on ChatStreaming {
         imageGenConfigured &&
         !working.isStudy;
     // Document edit: Linux service + editable file with retained bytes + tools.
-    final turnUserAttachments = _userAttachmentsForTurn(working, assistantId);
+    final turnUserAttachments = _userAttachmentsForTurn(attachmentConversation, assistantId);
     final editableDocuments = [
       for (final a in turnUserAttachments)
         if (a.isEditableDocument) a,
@@ -167,7 +187,7 @@ mixin ChatGeneration on ChatStreaming {
       for (final a in turnUserAttachments)
         if (a.isImage && a.hasImageData) a,
     ];
-    final historyImages = VisionTools.attachmentsFor(working);
+    final historyImages = VisionTools.attachmentsFor(attachmentConversation);
     final visionSources = [
       ...turnImages,
       for (final a in historyImages)
@@ -593,6 +613,7 @@ mixin ChatGeneration on ChatStreaming {
       );
     } else {
       if (recoverySource == null &&
+          !cur.workMode &&
           cur.mode == ConversationMode.chat &&
           settings.chatSkills.enabled.isNotEmpty) {
         if (!settings.config.isReady) {
@@ -608,7 +629,7 @@ mixin ChatGeneration on ChatStreaming {
             jevClient: ref.read(jevClientProvider),
             userText: parentUser?.content ?? '',
             recent: _recentTurnsBefore(
-              working,
+              attachmentConversation,
               assistantId: assistantId,
               excludeId: parentUser?.id,
             ),
@@ -666,6 +687,7 @@ mixin ChatGeneration on ChatStreaming {
           conversation: cur,
           assistantId: assistantId,
           contextPrefs: settings.context,
+          selection: contextSelection,
           nativeVision: nativeVision,
           imageToolAvailable: useVisionTool,
           chatRoute: skillRoute,

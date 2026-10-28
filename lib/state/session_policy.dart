@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:riverpod/riverpod.dart';
 import '../core/providers.dart';
 import 'work_approvals.dart';
 
@@ -25,6 +25,7 @@ class SessionPolicy {
     this.roundReviewAhead = 2,
     this.autoExtendRounds = true,
     this.planOnly = false,
+    this.fast = false,
   });
   final bool archived, network;
   final WorkApprovalMode approval;
@@ -32,6 +33,9 @@ class SessionPolicy {
   final int toolRounds, roundExtension, roundReviewAhead;
   final bool autoExtendRounds;
   final bool planOnly;
+
+  /// Fast mode: request priority processing where the provider supports it.
+  final bool fast;
   SessionPolicy copyWith({
     bool? archived,
     bool? network,
@@ -44,6 +48,7 @@ class SessionPolicy {
     int? roundReviewAhead,
     bool? autoExtendRounds,
     bool? planOnly,
+    bool? fast,
   }) => SessionPolicy(
     archived: archived ?? this.archived,
     network: network ?? this.network,
@@ -56,6 +61,7 @@ class SessionPolicy {
     roundReviewAhead: roundReviewAhead ?? this.roundReviewAhead,
     autoExtendRounds: autoExtendRounds ?? this.autoExtendRounds,
     planOnly: planOnly ?? this.planOnly,
+    fast: fast ?? this.fast,
   );
   Map<String, dynamic> toJson() => {
     'archived': archived,
@@ -69,6 +75,7 @@ class SessionPolicy {
     'roundReviewAhead': roundReviewAhead,
     'autoExtendRounds': autoExtendRounds,
     'planOnly': planOnly,
+    'fast': fast,
   };
   factory SessionPolicy.fromJson(Map<String, dynamic> j) => SessionPolicy(
     archived: j['archived'] == true,
@@ -92,6 +99,7 @@ class SessionPolicy {
     ),
     autoExtendRounds: j['autoExtendRounds'] != false,
     planOnly: j['planOnly'] == true,
+    fast: j['fast'] == true,
   );
 }
 

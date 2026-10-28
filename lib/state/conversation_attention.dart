@@ -1,4 +1,4 @@
-import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:riverpod/riverpod.dart';
 import '../data/models.dart';
 import '../features/shell/shell_tab.dart';
 import 'chat_controller.dart';

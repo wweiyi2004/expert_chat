@@ -22,6 +22,7 @@ class TaskBudget {
   Duration _priorElapsed = Duration.zero;
   Map<String, dynamic> toJson() => {
     'workSeconds': prefs.workSeconds,
+    'timeLimitEnabled': prefs.workSeconds > 0,
     'maxSearches': prefs.maxSearches,
     'maxToolCalls': prefs.maxToolCalls,
     'elapsedMs': (_priorElapsed + _clock.elapsed).inMilliseconds,
@@ -61,17 +62,18 @@ class TaskBudget {
       onChanged?.call();
       return;
     }
+    _clock.start();
+    _checkpointTimer ??= Timer.periodic(
+      const Duration(seconds: 1),
+      (_) => onChanged?.call(),
+    );
+    if (prefs.workSeconds == 0) return;
     final remaining =
         Duration(seconds: prefs.workSeconds) - _priorElapsed - _clock.elapsed;
     if (remaining <= Duration.zero) {
       requestFinish('任务执行时间已达上限');
       return;
     }
-    _clock.start();
-    _checkpointTimer ??= Timer.periodic(
-      const Duration(seconds: 1),
-      (_) => onChanged?.call(),
-    );
     _timer = Timer(remaining, () => requestFinish('任务执行时间已达上限'));
   }
 

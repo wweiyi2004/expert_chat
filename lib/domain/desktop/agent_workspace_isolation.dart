@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'package:flutter/foundation.dart';
+import '../../platform/foundation.dart';
 import 'package:dio/dio.dart';
 import 'workspace_host.dart';
 import 'workspace_tools.dart';

@@ -24,14 +24,23 @@ fn render(a: &App, w: u16, h: u16) -> (Buffer, (u16, u16)) {
 fn text(a: &App, w: u16, h: u16) -> String {
     ui::buffer_text(&render(a, w, h).0)
 }
+fn input_content_rows(buffer: &Buffer) -> Vec<u16> {
+    let right = buffer.area.right() - 1;
+    (buffer.area.y..buffer.area.bottom())
+        .filter(|&y| {
+            let left = buffer[(0, y)].symbol();
+            (left == "│" || left == "|") && buffer[(right, y)].symbol() == left
+        })
+        .collect()
+}
 #[test]
 fn soft_wrapped_input_cursor_tracks_visual_row() {
     let mut a = app();
     a.input = "A".repeat(80);
     a.cursor = 80;
-    let (_, c) = render(&a, 80, 24);
+    let (b, c) = render(&a, 80, 24);
     assert_eq!(ui::input_visual_position(&a, 80), (1, 5));
-    assert_eq!(c, (9, 21));
+    assert_eq!(c, (9, *input_content_rows(&b).last().unwrap()));
 }
 #[test]
 fn long_input_follows_end_and_then_home() {
@@ -42,7 +51,7 @@ fn long_input_follows_end_and_then_home() {
     assert!(out.contains("END_MARKER"), "{out}");
     a.cursor = 0;
     let (b, c) = render(&a, 80, 24);
-    assert_eq!(c, (4, 16));
+    assert_eq!(c, (4, input_content_rows(&b)[0]));
     assert!(!ui::buffer_text(&b).contains("END_MARKER"));
 }
 #[test]
@@ -53,7 +62,8 @@ fn manual_multiline_is_not_mislabelled_as_paste() {
     assert!(!text(&a, 80, 24).contains("已粘贴"));
     assert!(text(&a, 80, 24).contains("TAIL"));
     a.paste_collapsed = true;
-    assert!(text(&a, 80, 24).contains("已粘贴 7 行"));
+    assert!(text(&a, 80, 24).contains(&format!("[文本 · 7 行 · {} 字]", a.input.chars().count())));
+    assert_eq!(a.input, "a\nb\nc\nd\ne\nf\nTAIL");
 }
 #[test]
 fn long_agent_tree_shows_selection_and_scrollable_detail() {
@@ -79,7 +89,8 @@ fn file_list_follows_selection_at_both_layouts() {
         let a = changes();
         let out = text(&a, w, 24);
         assert!(out.contains("› M FILE_26"), "{w}: {out}");
-        assert!(out.contains("TAIL_DIFF_MARKER"), "{w}: {out}");
+        let unwrapped: String = out.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(unwrapped.contains("TAIL_DIFF_MARKER"), "{w}: {out}");
     }
 }
 #[test]
@@ -90,8 +101,59 @@ fn short_model_drawer_retains_selected_model_and_controls() {
     a.snapshot["models"]=json!((0..3).map(|i|json!({"id":format!("MODEL_{i}"),"choice":format!("choice{i}"),"source":format!("SOURCE_{i}"),"efforts":["low","high"]})).collect::<Vec<_>>());
     for h in [14, 24] {
         let out = text(&a, 80, h);
-        for expected in ["MODEL_2", "思考", "强度", "space"] {
+        // Effort is edited through /effort; the model drawer only points there.
+        for expected in ["MODEL_2", "思考", "/effort"] {
             assert!(out.contains(expected), "{h}: {expected}\n{out}");
+        }
+    }
+}
+
+#[test]
+fn every_selected_model_survives_grouping_and_resize() {
+    let mut a = app();
+    a.open(Drawer::Model);
+    a.snapshot["models"] = json!(
+        (0..24)
+            .map(|i| json!({
+                "id":format!("TARGET_{i:02}"), "choice":format!("c{i}"),
+                "source":format!("source{}", i / 3), "efforts":["low","high"]
+            }))
+            .collect::<Vec<_>>()
+    );
+    for width in [40, 60, 80, 120] {
+        for height in [14, 16, 24, 40] {
+            for selected in 0..24 {
+                a.selected = selected;
+                let output = text(&a, width, height);
+                assert!(
+                    output.contains(&format!("TARGET_{selected:02}")),
+                    "{width}x{height} selected {selected}\n{output}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn modal_errors_and_stale_state_stay_outside_all_popups() {
+    for drawer in [
+        Drawer::Model,
+        Drawer::Permissions,
+        Drawer::Help,
+        Drawer::Sessions,
+        Drawer::Workspace,
+    ] {
+        for (width, height) in [(40, 16), (60, 24), (80, 14), (80, 24), (120, 40)] {
+            let mut a = app();
+            a.open(drawer);
+            a.notice = "ASYNC_ERROR".into();
+            let rect = ui::popup_rect(&a, width, height).unwrap();
+            assert!(rect.bottom() <= height - 2);
+            assert!(text(&a, width, height).contains("ASYNC_ERROR"));
+            a.snapshot_stale = true;
+            assert!(text(&a, width, height).contains("当前为旧快照"));
+            a.open_settings();
+            assert!(text(&a, width, height).contains("当前为旧快照"));
         }
     }
 }
@@ -146,26 +208,31 @@ fn prose_body_is_capped_at_one_hundred_columns() {
 fn status_spinner_is_accent_and_summary_counts_are_semantic() {
     let mut a = app();
     let (b, _) = render(&a, 80, 24);
-    let row = ui::buffer_text(&b)
+    let rendered = ui::buffer_text(&b);
+    let line = rendered.lines().find(|l| l.contains("运行检查")).unwrap();
+    let row = rendered
         .lines()
         .position(|l| l.contains("运行检查"))
         .unwrap() as u16;
-    assert_eq!(b[(0, row)].fg, Color::Cyan);
-    assert_eq!(b[(2, row)].fg, Color::Reset);
+    let spinner = ui::width(&line[..line.find('◌').unwrap()], a.ambiguous_width) as u16;
+    assert_eq!(b[(spinner, row)].fg, Color::Cyan);
+    assert_eq!(b[(spinner + 2, row)].fg, Color::Reset);
     a.snapshot["session"]["status"] = json!("waiting_acceptance");
     a.snapshot["changes"] = json!([{"kind":"M","path":"semantic.rs","added":8,"removed":3}]);
     let (b, _) = render(&a, 80, 24);
-    let row = ui::buffer_text(&b)
+    let rendered = ui::buffer_text(&b);
+    let line = rendered
+        .lines()
+        .find(|l| l.contains("semantic.rs"))
+        .unwrap();
+    let row = rendered
         .lines()
         .position(|l| l.contains("semantic.rs"))
         .unwrap() as u16;
-    assert_eq!(b[(4, row)].fg, Color::Yellow);
-    assert_eq!(b[(6, row)].fg, Color::Reset);
-    let rendered = ui::buffer_text(&b);
-    let line = rendered.lines().nth(row as usize).unwrap();
-    let plus = line.find('+').unwrap() as u16;
+    // Buffer coordinates are display columns, not UTF-8 byte offsets.
+    let plus = ui::width(&line[..line.find("+8").unwrap()], a.ambiguous_width) as u16;
+    let minus = ui::width(&line[..line.find("-3").unwrap()], a.ambiguous_width) as u16;
     assert_eq!(b[(plus, row)].fg, Color::Green);
-    let minus = plus + 3;
     assert_eq!(b[(minus, row)].fg, Color::Red);
 }
 #[test]
@@ -176,21 +243,93 @@ fn pet_hit_rect_matches_sidebar_render_position() {
     a.sidebar = true;
     assert_eq!(
         ui::pet_rect(&a, 140, 36),
-        Some(ratatui::layout::Rect::new(74, 0, 20, 6))
+        Some(ratatui::layout::Rect::new(79, 0, 9, 6))
     );
     a.no_color = true;
     assert_eq!(ui::pet_rect(&a, 140, 36), None);
+}
+
+#[test]
+fn welcome_art_never_paints_into_expanded_composer_or_completion_menu() {
+    for height in [20, 24, 30, 36] {
+        for input in ["/", "first line\nsecond line\nthird line\nfourth line"] {
+            for action in [0, 1, 3] {
+                let mut a = app();
+                a.snapshot["messages"] = json!([]);
+                a.truecolor = true;
+                a.input = input.into();
+                a.cursor = a.input.len();
+                a.viewport = (120, height);
+                a.pet.action = action;
+                a.pet.started = Some(std::time::Instant::now());
+                let (with_pet, _) = render(&a, 120, height);
+                let input_top = input_content_rows(&with_pet)[0] - 1;
+                if let Some(rect) = ui::pet_rect(&a, 120, height) {
+                    assert!(
+                        rect.bottom() <= input_top,
+                        "pet {:?} crossed composer row {input_top}",
+                        rect
+                    );
+                }
+                a.pet.enabled = false;
+                let (without_pet, _) = render(&a, 120, height);
+                for y in input_top..height {
+                    for x in 0..120 {
+                        assert_eq!(
+                            with_pet[(x, y)],
+                            without_pet[(x, y)],
+                            "art changed composer/menu at {x},{y}; height={height}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 #[test]
 fn long_table_cells_and_many_columns_retain_all_data() {
     let mut a = app();
     a.snapshot["steps"] = json!([]);
     a.snapshot["messages"] = json!([{"id":"m","role":"assistant","text":format!("| Key | Value |\n| --- | --- |\n| K | {} TABLE_END_MARKER |","A".repeat(120))}]);
-    assert!(text(&a, 80, 24).contains("TABLE_END_MARKER"));
+    let rendered = text(&a, 80, 24);
+    let cell_content: String = rendered
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
+    assert!(cell_content.contains("TABLE_END_MARKER"));
     a.snapshot["messages"][0]["text"] = json!(
         "| A | B | C | D | E | F | G | H | I | J | K | L |\n| - | - | - | - | - | - | - | - | - | - | - | - |\n| a | b | c | d | e | f | g | h | i | j | k | LAST_COLUMN_MARKER |"
     );
     assert!(text(&a, 40, 24).contains("LAST_COLUMN_MARKER"));
+}
+
+#[test]
+fn markdown_tables_wrap_cells_and_accept_optional_edge_pipes() {
+    for edge in [false, true] {
+        let mut a = app();
+        let rows = [
+            "项目 | 描述".to_owned(),
+            ":--- | ---:".to_owned(),
+            format!("文件 | {}结束", "一段很长的说明".repeat(15)),
+        ];
+        let markdown = rows
+            .iter()
+            .map(|s| if edge { format!("| {s} |") } else { s.clone() })
+            .collect::<Vec<_>>()
+            .join("\n");
+        a.snapshot["messages"] = json!([{"id":"m","role":"assistant","text":markdown}]);
+        a.snapshot["steps"] = json!([]);
+        let output = text(&a, 80, 60);
+        let rendered: Vec<_> = output.lines().collect();
+        assert!(rendered.iter().any(|s| s.contains('┬')));
+        assert!(rendered.iter().any(|s| s.contains("结束")));
+        assert!(!rendered.iter().any(|s| s.contains("描述:")));
+        assert!(
+            rendered
+                .iter()
+                .all(|s| ui::width(s, a.ambiguous_width) <= 80)
+        );
+    }
 }
 #[test]
 fn file_link_rects_only_include_complete_file_objects() {
@@ -222,7 +361,7 @@ fn exact_wrap_boundary_reserves_a_visible_cursor_row() {
     a.cursor = 75;
     let (b, c) = render(&a, 80, 24);
     assert!(ui::buffer_text(&b).contains(&"A".repeat(75)));
-    assert_eq!(c, (4, 21));
+    assert_eq!(c, (4, *input_content_rows(&b).last().unwrap()));
 }
 
 #[test]
@@ -237,7 +376,7 @@ fn indexed_tool_history_preserves_last_round_and_orphan_order() {
     a.snapshot["steps"].as_array_mut().unwrap().extend([json!({"id":"o1","message_id":"missing","verb":"读取","object":"ORPHAN_FIRST","status":"running"}),json!({"id":"o2","message_id":"missing","verb":"读取","object":"ORPHAN_SECOND","status":"running"})]);
     let out = text(&a, 120, 36);
     assert!(out.contains("MESSAGE_999"));
-    assert!(out.contains("10 个步骤"));
+    assert!(out.contains("已完成 10 次工具调用"));
     assert!(out.find("ORPHAN_FIRST").unwrap() < out.find("ORPHAN_SECOND").unwrap());
 }
 
@@ -348,12 +487,13 @@ fn ambiguous_input_preserves_fixed_borders_and_true_cursor_column() {
     a.input = "αb·c".into();
     a.cursor = a.input.len();
     let (b, c) = render(&a, 80, 24);
-    assert_eq!(b[(0, 21)].symbol(), "|");
-    assert_eq!(b[(79, 21)].symbol(), "|");
+    let input_row = input_content_rows(&b)[0];
+    assert_eq!(b[(0, input_row)].symbol(), "|");
+    assert_eq!(b[(79, input_row)].symbol(), "|");
     for (x, symbol) in [(4, "α"), (5, "b"), (6, "·"), (8, "c")] {
-        assert_eq!(b[(x, 21)].symbol(), symbol);
+        assert_eq!(b[(x, input_row)].symbol(), symbol);
     }
-    assert_eq!(c, (9, 21));
+    assert_eq!(c, (9, input_row));
 }
 #[test]
 fn ambiguous_diff_expands_only_inside_its_own_column() {
@@ -368,8 +508,12 @@ fn ambiguous_diff_expands_only_inside_its_own_column() {
     }
     assert_eq!(b[(30, 2)].symbol(), "α");
     assert_eq!(b[(31, 2)].symbol(), "f");
-    for (x, symbol) in [(32, "α"), (33, "b"), (34, "·"), (36, "c")] {
-        assert_eq!(b[(x, 3)].symbol(), symbol);
+    let plus = (0..120).find(|&x| b[(x, 3)].symbol() == "+").unwrap();
+    // The gutter ends in "+ "; the source itself starts with a space.
+    assert_eq!(b[(plus + 2, 3)].symbol(), " ");
+    let start = plus + 3;
+    for (offset, symbol) in [(0, "α"), (1, "b"), (2, "·"), (4, "c")] {
+        assert_eq!(b[(start + offset, 3)].symbol(), symbol);
     }
     let links = ui::file_links_from_buffer(&a, &b);
     let link = links

@@ -1,5 +1,5 @@
 import 'package:dio/dio.dart' show CancelToken;
-import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:riverpod/riverpod.dart';
 
 import '../core/providers.dart';
 import '../data/models.dart';

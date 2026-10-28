@@ -152,6 +152,15 @@ impl WorkspaceStore {
             )]),
         };
         self.locked(|r| {
+            // Registration is idempotent by directory, even across processes.
+            // Keep the existing ID and permission rules used by old sessions.
+            if let Some(existing) = r
+                .workspaces
+                .values()
+                .find(|w| same_path(&w.root, &workspace.root))
+            {
+                return Ok((existing.clone(), false));
+            }
             ensure!(
                 !r.workspaces.contains_key(id),
                 "Workspace ID already exists"

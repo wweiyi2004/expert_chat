@@ -2,13 +2,22 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../state/work_task_runtime.dart';
+import '../../../state/chat_controller.dart';
+import '../../../state/task_overview.dart';
+import '../../../state/work_changes.dart';
+import '../../../data/models.dart' show MessageRole;
 import 'task_control_panel.dart';
 
 /// Fits either the workbench detail pane or a modal sheet on smaller screens.
 class WorkTaskPanel extends ConsumerWidget {
-  const WorkTaskPanel({super.key, required this.conversationId});
+  const WorkTaskPanel({
+    super.key,
+    required this.conversationId,
+    this.onOpenFile,
+  });
 
   final String conversationId;
+  final ValueChanged<WorkFileChange>? onOpenFile;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -16,19 +25,80 @@ class WorkTaskPanel extends ConsumerWidget {
         .watch(workTaskRuntimeProvider)
         .where((r) => r.conversationId == conversationId)
         .toList();
+    final overview = ref
+        .watch(taskOverviewProvider)
+        .where((t) => t.session == conversationId)
+        .firstOrNull;
+    final conversation = ref
+        .watch(chatControllerProvider)
+        .value
+        ?.conversations
+        .where((c) => c.id == conversationId)
+        .firstOrNull;
+    final assistant = conversation?.activePath
+        .where((m) => m.role == MessageRole.assistant)
+        .lastOrNull;
+    final files = assistant == null
+        ? <WorkFileChange>[]
+        : finalDeliveryFiles(
+            ref.watch(workChangesProvider),
+            conversationId,
+            assistant.id,
+          );
+    final checkpoint = ref
+        .watch(chatControllerProvider)
+        .value
+        ?.sessionCheckpoints[conversationId];
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        TaskControlPanel(conversationId: conversationId),
-        if (records.isEmpty)
-          const Padding(
-            padding: EdgeInsets.all(16),
-            child: Text('开始工作后，这里会显示任务状态和命令日志'),
+        Text('成果与检查', style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 8),
+        Text(
+          overview?.execution ?? '还没有开始任务',
+          style: Theme.of(context).textTheme.bodyMedium,
+        ),
+        const SizedBox(height: 20),
+        if (files.isEmpty)
+          Text(
+            '还没有交付文件。完成任务后，最终文件会集中显示在这里。',
+            style: Theme.of(context).textTheme.bodySmall,
+          )
+        else ...[
+          Text(
+            '交付文件 · ${files.length}',
+            style: Theme.of(context).textTheme.titleSmall,
           ),
-        for (final record in records) ...[
-          const SizedBox(height: 12),
-          _TaskCard(record: record),
+          for (final file in files)
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.insert_drive_file_outlined, size: 20),
+              title: Text(file.path),
+              trailing: onOpenFile == null
+                  ? null
+                  : const Icon(Icons.open_in_new, size: 16),
+              onTap: onOpenFile == null ? null : () => onOpenFile!(file),
+            ),
         ],
+        const SizedBox(height: 16),
+        ExpansionTile(
+          tilePadding: EdgeInsets.zero,
+          title: const Text('验收与任务设置'),
+          initiallyExpanded: checkpoint?.resumeRequired == true,
+          children: [TaskControlPanel(conversationId: conversationId)],
+        ),
+        if (records.isNotEmpty)
+          ExpansionTile(
+            tilePadding: EdgeInsets.zero,
+            title: Text('运行记录 · ${records.length}'),
+            children: [
+              for (final record in records.reversed)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: _TaskCard(record: record),
+                ),
+            ],
+          ),
       ],
     );
   }

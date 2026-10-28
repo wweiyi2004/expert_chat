@@ -1,3 +1,4 @@
+import 'package:expert_chat/platform/theme_mode.dart';
 import 'dart:convert';
 import 'package:expert_chat/core/providers.dart';
 import 'package:expert_chat/core/theme.dart';
@@ -10,7 +11,7 @@ import 'package:expert_chat/state/settings_controller.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:expert_chat/platform/preferences.dart';
 
 const _shared = 'opaque-shared-model';
 const _long =
@@ -59,7 +60,7 @@ class _Settings extends SettingsController {
   @override
   Future<void> apply({
     Object? selectedModel = SettingsState.unchanged,
-    ThemeMode? themeMode,
+    ThemePreference? themeMode,
   }) async {
     state = AsyncData(
       state.requireValue.copyWith(

@@ -138,7 +138,7 @@ fn steps_stay_with_their_own_assistant_message_across_turns() {
     ]);
     let output = render(&a, 80, 40);
     let first_tool = output.find("FIRST_TOOL").unwrap();
-    let second_user = output.find("USER_SECOND").unwrap();
+    let second_user = output.rfind("USER_SECOND").unwrap();
     assert!(
         first_tool < second_user,
         "steps separated from their turn:\n{output}"
@@ -160,7 +160,10 @@ fn approval_diff_view_reviews_the_proposal_without_accepting_a_task() {
     assert!(command.is_empty());
     let output = render(&a, 80, 24);
     assert!(output.contains("尚未执行"));
-    assert!(output.contains("+PROPOSED_AFTER"));
+    assert!(
+        output.lines().any(|line| line.contains("+ PROPOSED_AFTER")),
+        "diff prefix and proposed content should remain separate:\n{output}"
+    );
     assert!(!output.contains("OLDER_CHANGE"));
     assert!(
         a.key(

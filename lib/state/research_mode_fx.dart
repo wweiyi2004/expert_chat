@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:riverpod/riverpod.dart';
 
 /// One-shot research-mode enable FX (rainbow ripple from the toggle).
 class ResearchModeFxState {

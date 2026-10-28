@@ -1,13 +1,10 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart' show kIsWeb;
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:riverpod/riverpod.dart';
+import '../platform/credentials.dart';
+import '../platform/preferences.dart';
 
 import '../data/character_repository.dart';
-import '../data/backup_journal.dart';
-import '../data/full_backup_service.dart';
 import '../data/project_repository.dart';
 import '../data/generation_repository.dart';
 import '../data/conversation_repository.dart';
@@ -20,7 +17,6 @@ import '../data/memory_repository.dart';
 import '../data/study_repository.dart';
 import '../data/world_info_repository.dart';
 import '../domain/context/context_window_manager.dart';
-import '../domain/cache/app_cache_service.dart';
 import '../domain/llm/deepseek_balance_client.dart';
 import '../domain/llm/llm_provider.dart';
 import '../domain/llm/jev_client.dart';
@@ -37,15 +33,8 @@ import '../state/model_service_credentials.dart';
 import '../domain/llm/usage_tracking_llm_provider.dart';
 import '../domain/llm/deepseek_reasoning_guard.dart';
 import '../domain/media/openai_compatible_media_provider.dart';
-import '../domain/memory/memory_backup_file.dart';
-import '../domain/settings/settings_bundle_file.dart';
 import '../domain/memory/memory_candidate_service.dart';
 import '../domain/memory/memory_transfer.dart';
-import '../domain/speech/mimo_speech_input_service.dart';
-import '../domain/speech/speech_input_service.dart';
-import '../domain/speech/fallback_text_to_speech_service.dart';
-import '../domain/speech/system_text_to_speech_service.dart';
-import '../domain/speech/text_to_speech_service.dart';
 import '../domain/document/document_service_client.dart';
 import '../domain/tools/file_parser.dart';
 import '../domain/tools/search_provider.dart';
@@ -134,16 +123,6 @@ final generationRepositoryProvider = Provider<GenerationRepository>(
   ),
 );
 
-final fullBackupServiceProvider = Provider<FullBackupService>(
-  (ref) => FullBackupService(
-    ref.read(appDatabaseProvider),
-    ref.read(libraryFileStoreProvider),
-    ref.read(memoryStoreProvider),
-    ref.read(sharedPrefsProvider),
-    BackupJournal(),
-  ),
-);
-
 final modelUsageStoreProvider = Provider<ModelUsageStore>(
   (ref) => ModelUsageStore(ref.read(sharedPrefsProvider)),
 );
@@ -229,14 +208,6 @@ final memoryTransferServiceProvider = Provider<MemoryTransferService>(
   (ref) => const MemoryTransferService(),
 );
 
-final memoryBackupFileServiceProvider = Provider<MemoryBackupFileService>(
-  (ref) => MemoryBackupFileService(),
-);
-
-final settingsBundleFileServiceProvider = Provider<SettingsBundleFileService>(
-  (ref) => SettingsBundleFileService(),
-);
-
 final mediaApiProvider = Provider<OpenAiCompatibleMediaProvider>(
   (ref) => OpenAiCompatibleMediaProvider(),
 );
@@ -251,36 +222,12 @@ final documentServiceClientProvider = Provider<DocumentServiceClient>(
   (ref) => DocumentServiceClient(mcp: ref.read(mcpClientProvider)),
 );
 
-final speechInputServiceProvider = Provider<SpeechInputService>(
-  (ref) => SystemSpeechInputService(),
-);
-
 /// Cloud ASR path used when a MiMo ASR endpoint is configured in settings.
-final mimoSpeechInputServiceProvider = Provider<MimoSpeechInputService>((ref) {
-  final service = MimoSpeechInputService(
-    mediaProvider: ref.read(mediaApiProvider),
-  );
-  ref.onDispose(() => unawaited(service.dispose()));
-  return service;
-});
 
 /// One app-wide speaker: beginning a new message cleanly replaces any older
 /// read-aloud operation, even when the user changes conversations.
 /// Without a configured cloud speech API, native builds fall back to the
 /// device speech engine.
-final textToSpeechServiceProvider = Provider<TextToSpeechService>((ref) {
-  final cloud = ApiTextToSpeechService(
-    mediaProvider: ref.read(mediaApiProvider),
-  );
-  final TextToSpeechService service = kIsWeb
-      ? cloud
-      : FallbackTextToSpeechService(
-          cloud: cloud,
-          system: SystemTextToSpeechService(),
-        );
-  ref.onDispose(() => unawaited(service.dispose()));
-  return service;
-});
 
 typedef ToolEngineFactory =
     ToolEngine Function({
@@ -335,10 +282,6 @@ final toolEngineFactoryProvider = Provider<ToolEngineFactory>((ref) {
   return ({required backend, required apiKey}) =>
       pool.create(backend: backend, apiKey: apiKey);
 });
-
-final appCacheServiceProvider = Provider<AppCacheService>(
-  (ref) => AppCacheService(),
-);
 
 class _ToolEngineConfigKey {
   const _ToolEngineConfigKey(this.backend, this.apiKey);

@@ -13,7 +13,7 @@ import 'package:expert_chat/state/model_service_credentials.dart';
 import 'package:expert_chat/state/settings_controller.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:expert_chat/platform/preferences.dart';
 import 'widget_test.dart' show FakeSettings, InMemoryRepo;
 
 class _NoCredentialAccess extends FakeSettings {

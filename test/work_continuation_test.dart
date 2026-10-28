@@ -13,7 +13,7 @@ import 'package:expert_chat/state/session_policy.dart';
 import 'package:expert_chat/state/work_rounds.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:expert_chat/platform/preferences.dart';
 import 'widget_test.dart' show FakeSettings, InMemoryRepo;
 
 class _NoModel extends SettingsController {

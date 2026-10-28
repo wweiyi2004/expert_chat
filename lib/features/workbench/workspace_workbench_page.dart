@@ -1,3 +1,5 @@
+import '../../core/runtime_listenable.dart';
+import '../../domain/host/host_client.dart';
 import '../../core/application_surface.dart';
 import 'files/work_file_access.dart';
 import '../../core/prototype_widgets.dart';
@@ -23,9 +25,9 @@ import 'agents/work_agents_panel.dart';
 import 'processes/work_processes_panel.dart';
 import 'logs/work_runtime_logs_panel.dart';
 import 'files/delivered_file_tab.dart';
-import '../chat/widgets/work_round_controls.dart';
 import '../chat/widgets/work_approval_card.dart';
 import '../../state/work_changes.dart';
+import '../../data/models.dart' show MessageRole;
 import '../../state/work_processes.dart';
 import '../../state/work_agents.dart';
 import '../chat/widgets/chat_workspace_options.dart';
@@ -89,14 +91,23 @@ class _WorkspaceWorkbenchPageState
     '任务',
     '',
     '子代理',
-    'Services',
+    '后台进程',
     '日志',
     'Git',
-    '主代理',
+    '主代理设置',
   ];
   final _token = CancelToken();
   late final Future<WorkToolSession> _opening = _openSession();
   WorkToolSession? _session;
+  bool get _hasLocalWorkspace =>
+      ref.read(desktopWorkspaceHostProvider).supported;
+  bool get _canBrowseFiles =>
+      _hasLocalWorkspace ||
+      (ref
+              .read(sessionPolicyProvider)[widget.conversationId]
+              ?.sshProfileId
+              .isNotEmpty ??
+          false);
   @override
   void initState() {
     super.initState();
@@ -271,6 +282,15 @@ class _WorkspaceWorkbenchPageState
   }
 
   Future<void> _restore(WorkFileChange change) async {
+    if (HostClient.current case final client?) {
+      await client.call('runtime', 'changes.restore', {
+        'id': change.id,
+        'afterHash': change.afterHash,
+        'change': change.toJson(),
+        'recreate': change.recreateNewFile,
+      });
+      return;
+    }
     if (!change.canRestore && !change.recreateNewFile) {
       throw StateError('该记录不支持撤销');
     }
@@ -313,40 +333,47 @@ class _WorkspaceWorkbenchPageState
       ? value.substring(4)
       : value;
 
-  Widget _files({bool git = false}) => FutureBuilder<WorkToolSession>(
-    future: _opening,
-    builder: (context, snapshot) {
-      if (snapshot.hasError) {
-        return Center(
+  Widget _files({bool git = false}) => !_canBrowseFiles
+      ? const Center(
           child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Text('工作区暂不可用：${snapshot.error}'),
+            padding: EdgeInsets.all(24),
+            child: Text('当前是手机本地任务。需要浏览电脑文件时，请先连接 SSH 或远程电脑。'),
           ),
+        )
+      : FutureBuilder<WorkToolSession>(
+          future: _opening,
+          builder: (context, snapshot) {
+            if (snapshot.hasError) {
+              return Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Text('工作区暂不可用：${snapshot.error}'),
+                ),
+              );
+            }
+            final session = snapshot.data;
+            if (session == null) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            final descriptor = jsonDecode(session.changeTarget) as Map;
+            return GitWorkspacePage(
+              initialView: git ? 1 : 0,
+              compactHeader: true,
+              workspaceName: session.target,
+              rootPath: _path(descriptor['root'] as String),
+              embedded: true,
+              gitAvailable: session is WorkspaceToolSession,
+              onOpenFile: _openFile,
+              callFileTool: (name, args) => session.call(name, args, _token),
+              authorizeGit: (write) async {
+                if (session is! WorkspaceToolSession) {
+                  throw StateError('Git 视图目前仅支持本机');
+                }
+                await _authorizeGit(session, write);
+              },
+            );
+          },
         );
-      }
-      final session = snapshot.data;
-      if (session == null) {
-        return const Center(child: CircularProgressIndicator());
-      }
-      final descriptor = jsonDecode(session.changeTarget) as Map;
-      return GitWorkspacePage(
-        initialView: git ? 1 : 0,
-        compactHeader: true,
-        workspaceName: session.target,
-        rootPath: _path(descriptor['root'] as String),
-        embedded: true,
-        gitAvailable: session is WorkspaceToolSession,
-        onOpenFile: _openFile,
-        callFileTool: (name, args) => session.call(name, args, _token),
-        authorizeGit: (write) async {
-          if (session is! WorkspaceToolSession) {
-            throw StateError('Git 视图目前仅支持本机');
-          }
-          await _authorizeGit(session, write);
-        },
-      );
-    },
-  );
 
   Widget _tabBody(_WorkbenchTab tab, bool active) => switch (tab.kind) {
     5 =>
@@ -425,16 +452,18 @@ class _WorkspaceWorkbenchPageState
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  WorkRoundControls(
-                    conversationId: widget.conversationId,
-                    readOnly: true,
-                  ),
-                  WorkApprovalCard(conversationId: widget.conversationId),
+                  if (!widget.embedded || widget.expanded)
+                    WorkApprovalCard(conversationId: widget.conversationId),
                 ],
               ),
             ),
           ),
-          Expanded(child: WorkTaskPanel(conversationId: widget.conversationId)),
+          Expanded(
+            child: WorkTaskPanel(
+              conversationId: widget.conversationId,
+              onOpenFile: _selectDelivery,
+            ),
+          ),
         ],
       ),
     ),
@@ -473,6 +502,22 @@ class _WorkspaceWorkbenchPageState
         .length;
     final processes = ref.watch(workProcessesProvider);
     final agents = ref.watch(workAgentsProvider);
+    final conversation = ref
+        .watch(chatControllerProvider)
+        .value
+        ?.conversations
+        .where((c) => c.id == widget.conversationId)
+        .firstOrNull;
+    final assistant = conversation?.activePath
+        .where((m) => m.role == MessageRole.assistant)
+        .lastOrNull;
+    final deliveries = assistant == null
+        ? <WorkFileChange>[]
+        : finalDeliveryFiles(
+            ref.watch(workChangesProvider),
+            widget.conversationId,
+            assistant.id,
+          );
     final content = Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -482,14 +527,35 @@ class _WorkspaceWorkbenchPageState
           child: Row(
             children: [
               const SizedBox(width: 16),
-              const Text('工作台', style: TextStyle(fontWeight: FontWeight.w600)),
+              const Text(
+                '任务工作区',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
               const SizedBox(width: 8),
-              Expanded(
-                child: ChatWorkspaceBar(
-                  conversationId: widget.conversationId,
-                  busy: false,
-                  plain: true,
+              if (!widget.embedded)
+                Expanded(
+                  child: ChatWorkspaceBar(
+                    conversationId: widget.conversationId,
+                    busy: false,
+                    plain: true,
+                  ),
                 ),
+              if (widget.embedded) const Spacer(),
+              PopupMenuButton<int>(
+                tooltip: '更多工作工具',
+                icon: const Icon(Icons.more_horiz, size: 20),
+                onSelected: _openTab,
+                itemBuilder: (_) => [
+                  for (final kind in [
+                    if (_canBrowseFiles) 2,
+                    1,
+                    if (_hasLocalWorkspace) 9,
+                    7,
+                    8,
+                    10,
+                  ])
+                    PopupMenuItem(value: kind, child: Text(_labels[kind])),
+                ],
               ),
               if (widget.onToggleExpanded != null)
                 PrototypeIconButton(
@@ -516,18 +582,14 @@ class _WorkspaceWorkbenchPageState
           ),
         ),
         ListenableBuilder(
-          listenable: Listenable.merge([processes, agents]),
+          listenable: Listenable.merge([
+            runtimeListenable(processes),
+            runtimeListenable(agents),
+          ]),
           builder: (context, _) {
             final counts = [
               changes,
-              processes.records
-                  .where(
-                    (r) =>
-                        r.conversationId == widget.conversationId &&
-                        r.active &&
-                        r.service,
-                  )
-                  .length,
+              deliveries.length,
               agents.records
                   .where(
                     (r) =>
@@ -542,7 +604,7 @@ class _WorkspaceWorkbenchPageState
                   PrototypeTab(
                     key: ValueKey('workbench-section-$i'),
                     value: i,
-                    label: const ['改动', '运行', '助手'][i],
+                    label: const ['文件', '成果', '代理'][i],
                     count: counts[i],
                   ),
               ],
@@ -561,54 +623,61 @@ class _WorkspaceWorkbenchPageState
             );
           },
         ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
-          child: Row(
-            children: [
-              Expanded(
-                child: _section == 1
-                    ? Wrap(
-                        key: const ValueKey('workbench-run-entries'),
-                        alignment: WrapAlignment.center,
-                        runAlignment: WrapAlignment.center,
-                        spacing: 6,
-                        runSpacing: 4,
-                        children: [
-                          for (final kind in const [4, 2, 1, 7, 8])
-                            PrototypeChip(
-                              key: ValueKey('workbench-run-$kind'),
-                              label: _labels[kind],
-                              selected: _activeKind == kind,
-                              onPressed: () => _openTab(kind),
-                            ),
-                        ],
-                      )
-                    : SingleChildScrollView(
-                        scrollDirection: Axis.horizontal,
-                        child: PrototypeSegmentedControl<int>(
-                          segments: [
-                            for (final kind in switch (_section) {
-                              0 => [3, 0, 9],
-                              1 => [4, 2, 1, 7, 8],
-                              _ => [10, 6],
-                            })
-                              PrototypeSegment(
-                                value: kind,
-                                label: kind == 3
-                                    ? '本轮改动'
-                                    : kind == 0
-                                    ? '全部文件'
-                                    : _labels[kind],
-                              ),
+        if (_section == 0)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+            child: Row(
+              children: [
+                Expanded(
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: PrototypeSegmentedControl<int>(
+                      segments: [
+                        for (final kind in switch (_section) {
+                          0 => [
+                            3,
+                            if (_canBrowseFiles) 0,
+                            if (_hasLocalWorkspace) 9,
                           ],
-                          value: _activeKind == 5 ? 0 : _activeKind,
-                          onChanged: _openTab,
-                        ),
-                      ),
-              ),
-            ],
+                          1 => [4, 2, 1, 7, 8],
+                          _ => [10, 6],
+                        })
+                          PrototypeSegment(
+                            value: kind,
+                            label: kind == 3
+                                ? '本轮改动'
+                                : kind == 0
+                                ? '全部文件'
+                                : _labels[kind],
+                          ),
+                      ],
+                      value: _activeKind == 5 ? 0 : _activeKind,
+                      onChanged: _openTab,
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
-        ),
+        if ((_section == 1 && _activeKind != 4) ||
+            (_section == 2 && _activeKind == 10))
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            child: Row(
+              children: [
+                TextButton.icon(
+                  onPressed: () => _openTab(_section == 1 ? 4 : 6),
+                  icon: const Icon(Icons.arrow_back, size: 16),
+                  label: Text(_section == 1 ? '返回成果' : '返回代理'),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  _labels[_activeKind],
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
         if (_section == 1 &&
             (ref
                     .watch(sessionPolicyProvider)[widget.conversationId]

@@ -1,3 +1,4 @@
+import '../../core/gui_providers.dart';
 import '../../state/model_service_routing.dart';
 import '../../state/model_route_groups.dart';
 import '../../state/tool_registry_settings.dart';

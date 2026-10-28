@@ -6,7 +6,8 @@ import 'package:expert_chat/domain/llm/llm_provider.dart';
 import 'package:expert_chat/domain/workbench/agents/work_agent_runtime.dart';
 
 class _Provider implements LlmProvider {
-  _Provider(this.respond, {this.onRequest, this.onTools});
+  _Provider(this.respond, {this.onRequest, this.onTools, this.onEffort});
+  final void Function(ReasoningEffort?)? onEffort;
   final Stream<ChatChunk> Function(List<LlmRequestMessage>, CancelToken?)
   respond;
   final void Function(LlmConfig config)? onRequest;
@@ -22,6 +23,7 @@ class _Provider implements LlmProvider {
     CancelToken? cancelToken,
   }) {
     onRequest?.call(config);
+    onEffort?.call(reasoningEffort);
     onTools?.call(tools);
     return respond(messages, cancelToken);
   }
@@ -49,6 +51,62 @@ Future<void> _until(bool Function() condition) async {
 }
 
 void main() {
+  test(
+    'manual subagent uses exact model and effort without role routing or persisted credentials',
+    () async {
+      LlmConfig? observed;
+      ReasoningEffort? effort;
+      final runtime = WorkAgentRuntime();
+      addTearDown(runtime.dispose);
+      final provider = _Provider(
+        (_, _) async* {
+          yield const ChatChunk(contentDelta: 'done', finishReason: 'stop');
+        },
+        onRequest: (c) => observed = c,
+        onEffort: (e) => effort = e,
+      );
+      final root = runtime.registerRoot(
+        conversationId: 'c',
+        taskId: 't',
+        task: 'parent',
+        environment: WorkAgentEnvironment(
+          provider: provider,
+          config: const LlmConfig(
+            baseUrl: 'https://synthetic.invalid',
+            apiKey: '',
+            model: 'parent',
+          ),
+          tools: const [],
+          executeTool: (_, _, _, _) async => 'unused',
+          resolveModel: (_, _) async =>
+              throw StateError('manual model must not be rerouted'),
+        ),
+      );
+      final child = runtime.spawn(
+        parentId: root,
+        task: 'read',
+        readOnly: true,
+        manualConfig: const LlmConfig(
+          baseUrl: 'https://synthetic.invalid',
+          apiKey: 'EXPLICIT_ONLY_KEY',
+          model: 'selected',
+        ),
+        manualEffort: ReasoningEffort.high,
+      );
+      await _until(() => runtime.record(child)!.terminal);
+      expect(observed?.model, 'selected');
+      expect(effort, ReasoningEffort.high);
+      expect(runtime.record(child)!.readOnly, isTrue);
+      expect(
+        jsonEncode(runtime.journal()),
+        isNot(contains('EXPLICIT_ONLY_KEY')),
+      );
+      final restored = WorkAgentRuntime();
+      addTearDown(restored.dispose);
+      restored.restoreJournal(runtime.journal());
+      expect(restored.record(child)!.manualEffort, ReasoningEffort.high);
+    },
+  );
   test(
     'queued Auto child recovery preserves root quota and gates persistence before dispatch',
     () async {
@@ -434,6 +492,8 @@ void main() {
         }),
       );
       expect(created['capacity']['children_remaining'], 0);
+      expect(created['access'], 'read_only');
+      expect(created['access_note'], contains('isolated=true'));
       final exhausted = jsonDecode(
         await runtime.safeCallTool(root, 'work_spawn_agent', {
           'task': 'another audit',
@@ -447,6 +507,43 @@ void main() {
         'Auto',
         'configured-model',
       ]);
+      runtime.cancel(root);
+    },
+  );
+
+  test(
+    'isolated spawn is writable by default; explicit read_only conflicts',
+    () async {
+      final runtime = WorkAgentRuntime();
+      addTearDown(runtime.dispose);
+      final response = StreamController<ChatChunk>.broadcast();
+      addTearDown(response.close);
+      final root = runtime.registerRoot(
+        conversationId: 'c',
+        taskId: 't',
+        task: 'root',
+        environment: _environment(_Provider((_, _) => response.stream)),
+        limits: const WorkAgentLimits(maxChildren: 2),
+      );
+      final conflict = jsonDecode(
+        await runtime.safeCallTool(root, 'work_spawn_agent', {
+          'task': 'build',
+          'isolated': true,
+          'read_only': true,
+        }),
+      );
+      expect(conflict['ok'], false);
+      expect(conflict['error'], contains('去掉 read_only'));
+      final created = jsonDecode(
+        await runtime.safeCallTool(root, 'work_spawn_agent', {
+          'task': 'build',
+          'isolated': true,
+        }),
+      );
+      expect(created['access'], 'isolated_write');
+      final child = runtime.record(created['agent_id'] as String)!;
+      expect(child.readOnly, isFalse);
+      expect(child.isolated, isTrue);
       runtime.cancel(root);
     },
   );

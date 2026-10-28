@@ -17,7 +17,7 @@ import 'package:expert_chat/state/model_pricing.dart';
 import 'package:expert_chat/state/work_session_insights.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:expert_chat/platform/preferences.dart';
 import 'package:path/path.dart' as p;
 import 'widget_test.dart'
     show FakeSettings, FakeLlmProvider, InMemoryRepo, InMemoryLibraryFileStore;
@@ -97,7 +97,14 @@ void main() {
       expect(await running.timeout(const Duration(seconds: 5)), contains('取消'));
     },
   );
-  for (final scenario in ['deny', 'approve', 'assisted', 'full']) {
+  for (final scenario in [
+    'deny',
+    'approve',
+    'assisted',
+    'assisted_truncated',
+    'assisted_tools',
+    'full',
+  ]) {
     test(
       'work writes enforce $scenario before the real file operation',
       () async {
@@ -118,6 +125,7 @@ void main() {
         );
         final model = FakeLlmProvider(
           const [],
+          separateAuxiliary: true,
           scriptedChunks: [
             [
               ChatChunk(
@@ -136,10 +144,23 @@ void main() {
                 ],
               ),
             ],
-            if (scenario == 'assisted')
+            if (scenario.startsWith('assisted'))
               [
-                const ChatChunk(
+                ChatChunk(
                   contentDelta: '{"approve":true,"reason":"符合用户目标"}',
+                  finishReason: scenario == 'assisted_truncated'
+                      ? 'length'
+                      : 'stop',
+                  toolCalls: scenario == 'assisted_tools'
+                      ? const [
+                          ToolCall(
+                            index: 0,
+                            id: 'unexpected',
+                            name: 'coding_write_file',
+                            argumentsJson: '{}',
+                          ),
+                        ]
+                      : null,
                 ),
               ],
             [const ChatChunk(contentDelta: '任务结束。')],
@@ -177,12 +198,14 @@ void main() {
               id,
               SessionPolicy(
                 network: false,
-                approval: scenario == 'assisted'
+                approval: scenario.startsWith('assisted')
                     ? WorkApprovalMode.assisted
                     : scenario == 'full'
                     ? WorkApprovalMode.full
                     : WorkApprovalMode.request,
-                reviewerModel: scenario == 'assisted' ? 'review-model' : '',
+                reviewerModel: scenario.startsWith('assisted')
+                    ? 'review-model'
+                    : '',
               ),
             );
         final workspace = await host.defaultWorkspace();
@@ -193,7 +216,9 @@ void main() {
         });
         addTearDown(subscription.close);
         final sending = ctrl.sendMessage('创建 result.txt');
-        if (scenario == 'deny' || scenario == 'approve') {
+        if (scenario == 'deny' ||
+            scenario == 'approve' ||
+            scenario.startsWith('assisted_')) {
           final request = await pending.future.timeout(
             const Duration(seconds: 10),
           );
@@ -203,8 +228,11 @@ void main() {
               .decide(request.id, scenario == 'approve');
         }
         await sending.timeout(const Duration(seconds: 15));
-        expect(await file.exists(), scenario != 'deny');
-        if (scenario == 'assisted') {
+        expect(
+          await file.exists(),
+          scenario != 'deny' && !scenario.startsWith('assisted_'),
+        );
+        if (scenario.startsWith('assisted')) {
           expect(model.configs[1].model, 'review-model');
           expect(model.toolCalls[1], isNull);
         }

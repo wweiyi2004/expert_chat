@@ -41,17 +41,20 @@ void main() {
     ('responses', (dio) => ResponsesApiProvider(dio: dio)),
   ]) {
     for (final (status, expected) in [
-      (400, '请求有误（400）：synthetic detail'),
-      (401, '鉴权失败（401）：请检查 API Key 是否正确。'),
-      (402, '额度不足（402）：账户余额不足。'),
+      (400, '请求参数有误（400）：synthetic detail'),
+      (401, 'API Key 无效、已过期或已撤销（401）：请在 /login 管理此来源并更新 Key。'),
+      (402, '账户余额或付费额度不足：请核对官方账单及套餐状态。：synthetic detail'),
       (
         404,
         name == 'chat'
             ? '接口未找到（404）：请检查 Base URL 或模型名是否正确。：synthetic detail'
             : '接口未找到（404）：当前 Base URL 可能不支持 Responses API（/responses）。：synthetic detail',
       ),
-      (422, '参数有误（422）：synthetic detail'),
-      (429, '请求过于频繁（429）：稍后重试。'),
+      (422, '请求参数有误（422）：synthetic detail'),
+      (
+        429,
+        '服务限流（429）：请降低并发并稍后重试；若持续发生，请查看该账号的套餐额度。：synthetic detail',
+      ),
       (500, '请求失败（500）：synthetic detail'),
     ]) {
       test('$name preserves user-facing HTTP $status errors', () async {
@@ -116,7 +119,7 @@ void main() {
         final error = await humanizeLlmHttpError(
           _failure(status: 400, data: data),
         );
-        expect(error.toString(), 'Exception: 请求有误（400）：detail');
+        expect(error.toString(), 'Exception: 请求参数有误（400）：detail');
       }
     },
   );

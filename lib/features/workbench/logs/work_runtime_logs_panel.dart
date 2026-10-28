@@ -148,8 +148,10 @@ class _WorkRuntimeLogsPanelState extends ConsumerState<WorkRuntimeLogsPanel> {
                 .unresolved(widget.conversationId)
                 .isNotEmpty)
           MaterialBanner(
-            content: const Text(
-              '上次操作结果未确认，已阻止自动派发。核验目标文件、进程或外部服务后可明确续接；不会重放旧调用。',
+            content: Text(
+              ref.read(workOperationJournalProvider).corrupt
+                  ? '执行日志损坏，已阻止自动派发。核验目标文件、进程或外部服务后可明确续接；不会重放旧调用。'
+                  : '有操作结果未确认，请核验目标文件、进程或外部服务。新调用照常执行，旧调用不会重放。',
             ),
             actions: [
               TextButton(
@@ -174,7 +176,7 @@ class _WorkRuntimeLogsPanelState extends ConsumerState<WorkRuntimeLogsPanel> {
                                 (entry) =>
                                     '${entry['tool']} · ${entry['call_id']} · ${entry['review_identity']}',
                               ),
-                              '仅解除本次列出的记录；之后新出现的未知操作仍会阻止派发。',
+                              '仅标记本次列出的记录为已核验；之后新出现的未知操作会另行列出。',
                             ].join('\n\n'),
                           ),
                         ),
@@ -206,7 +208,11 @@ class _WorkRuntimeLogsPanelState extends ConsumerState<WorkRuntimeLogsPanel> {
                     }
                   }
                 },
-                child: const Text('核验并续接'),
+                child: Text(
+                  ref.read(workOperationJournalProvider).corrupt
+                      ? '核验并续接'
+                      : '标记已核验',
+                ),
               ),
             ],
           ),

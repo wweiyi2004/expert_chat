@@ -67,6 +67,7 @@ class OpenAiCompatibleProvider implements LlmProvider {
       // it (DeepSeek V4 and reasoners); a strict provider that rejects unknown
       // fields could 400 when history holds a previous answer's chain.
       'messages': messages
+          .where((m) => !m.isEmptyAssistant)
           .map(
             (m) => m.toOpenAiJson(
               includeReasoningContent:
@@ -107,6 +108,9 @@ class OpenAiCompatibleProvider implements LlmProvider {
       } else if (config.capabilities.reasoningCanBeDisabled) {
         body['reasoning_effort'] = 'none';
       }
+    }
+    if (config.serviceTier != null && config.supportsPriorityTier) {
+      body['service_tier'] = config.serviceTier;
     }
     // Some legacy reasoner endpoints reject `tools`; callers avoid those paths,
     // but guard here too so a stray tool list can't break the request.
@@ -155,6 +159,7 @@ class OpenAiCompatibleProvider implements LlmProvider {
               },
             ),
             data: jsonEncode(body),
+            onSendProgress:config.onUploadProgress,
             cancelToken: requestToken,
           )
           .timeout(
@@ -167,7 +172,7 @@ class OpenAiCompatibleProvider implements LlmProvider {
     } on DioException catch (e) {
       // Stop pressed during connection setup → end the stream quietly.
       if (CancelToken.isCancel(e)) return;
-      throw await humanizeLlmHttpError(e);
+      throw await humanizeLlmHttpError(e, authMode: config.authMode);
     } on TimeoutException {
       // If cancellation races with the timeout, stopping remains quiet.
       if (cancelToken?.isCancelled ?? false) return;
@@ -251,7 +256,7 @@ class OpenAiCompatibleProvider implements LlmProvider {
     } on DioException catch (e) {
       // Stop pressed mid-stream → end quietly instead of surfacing an error.
       if (CancelToken.isCancel(e)) return;
-      throw await humanizeLlmHttpError(e);
+      throw await humanizeLlmHttpError(e, authMode: config.authMode);
     } on TimeoutException {
       // If cancellation races with the timeout, stopping remains quiet.
       if (cancelToken?.isCancelled ?? false) return;

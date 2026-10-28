@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:expert_chat/platform/theme_mode.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:expert_chat/core/theme.dart';
 import 'package:expert_chat/data/ui_prefs.dart';
@@ -22,7 +23,9 @@ void main() {
                   children: [
                     ColorThemeLivePreview(
                       theme: ColorThemePref.dailan,
-                      themeMode: dark ? ThemeMode.dark : ThemeMode.light,
+                      themeMode: dark
+                          ? ThemePreference.dark
+                          : ThemePreference.light,
                     ),
                     ColorThemePicker(
                       selected: ColorThemePref.minimal,

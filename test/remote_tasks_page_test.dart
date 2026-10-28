@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:expert_chat/platform/credentials.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:expert_chat/features/remote/remote_tasks_page.dart';
 import 'package:expert_chat/features/remote/device_agent_page.dart';

@@ -18,7 +18,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # of the product and file versions while build-number is used as the build suffix.
 # build-number must stay > any prior split-per-abi code (abi*1000 + old build).
 # v3.0.0 arm64 was 2015, x86_64 was 4015 — use 4100+ for clean upgrades.
-version: 3.8.1+4113
+version: 3.8.2+4114
 
 environment:
   sdk: ^3.12.0
@@ -41,13 +41,21 @@ dependencies:
   # Grapheme-cluster-safe string truncation (titles, clipped search text).
   characters: ^1.4.0
   flutter_riverpod: ^3.3.1
+  # The standalone Dart host reuses the same state services without Flutter.
+  riverpod: 3.2.1
+  win32: 5.15.0
+  meta: 1.18.0
+  stream_channel: 2.1.4
+  pointycastle: 4.0.0
   dio: ^5.9.2
   flutter_secure_storage: ^10.3.1
+  flutter_secure_storage_platform_interface: 2.0.1
   shared_preferences: ^2.5.5
   # Application-owned atomic Windows preferences store and test fixtures.
   shared_preferences_platform_interface: 2.4.2
   shared_preferences_windows: 2.4.1
   path_provider: ^2.1.5
+  path_provider_platform_interface: 2.1.2
   path: ^1.9.1
   uuid: ^4.5.3
   gpt_markdown: ^1.1.7
@@ -55,7 +63,8 @@ dependencies:
   # M3 — markdown / links
   url_launcher: ^6.3.2
   # M2 — persistence (drift / SQLite). drift_flutter bundles sqlite3 native libs.
-  drift: ^2.33.0
+  drift: 2.33.0
+  sqlite3: 3.3.2
   drift_flutter: ^0.3.0
   # M4 — file parsing (pure-Dart). Keep archive 3.x / xml 6.x — newer majors
   # break syncfusion/excel/docx_to_text resolution.
@@ -125,10 +134,6 @@ dev_dependencies:
     sdk: flutter
   # Pure Dart host/protocol fixtures run without Flutter UI bindings.
   test: 1.31.0
-  # Tests install the package's fake platform implementation directly.
-  flutter_secure_storage_platform_interface: ^2.0.1
-  # Tests install the package's fake platform implementation directly.
-  path_provider_platform_interface: ^2.1.2
   # TTS playback tests fake the just_audio platform via this interface.
   just_audio_platform_interface: ^4.6.0
   # M2 — drift codegen (keep drift_dev on the same minor as drift)

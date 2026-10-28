@@ -1414,6 +1414,7 @@ class _ProfileEditDialogState extends State<_ProfileEditDialog> {
   late final TextEditingController _password;
   late final TextEditingController _privateKey;
   late final TextEditingController _passphrase;
+  late final TextEditingController _remoteForward;
   late SshAuthType _auth;
   final _form = GlobalKey<FormState>();
   bool _testing = false;
@@ -1430,6 +1431,7 @@ class _ProfileEditDialogState extends State<_ProfileEditDialog> {
     _password = TextEditingController();
     _privateKey = TextEditingController();
     _passphrase = TextEditingController();
+    _remoteForward = TextEditingController(text: e?.remoteForwardText ?? '');
     _auth = e?.authType ?? SshAuthType.password;
   }
 
@@ -1442,6 +1444,7 @@ class _ProfileEditDialogState extends State<_ProfileEditDialog> {
     _password.dispose();
     _privateKey.dispose();
     _passphrase.dispose();
+    _remoteForward.dispose();
     super.dispose();
   }
 
@@ -1453,6 +1456,7 @@ class _ProfileEditDialogState extends State<_ProfileEditDialog> {
       port: int.parse(_port.text.trim()),
       username: _user.text.trim(),
       authType: _auth,
+      remoteForwards: SshRemoteForward.parseLines(_remoteForward.text),
       trustedHostKeyFingerprint:
           _testedFingerprint ?? widget.existing?.trustedHostKeyFingerprint,
       lastUsedAt: widget.existing?.lastUsedAt,
@@ -1478,6 +1482,12 @@ class _ProfileEditDialogState extends State<_ProfileEditDialog> {
     final port = int.tryParse(_port.text.trim());
     if (port == null || port < 1 || port > 65535) {
       setState(() => _testMessage = '请在高级选项中填写 1–65535 范围内的端口');
+      return false;
+    }
+    try {
+      SshRemoteForward.parseLines(_remoteForward.text);
+    } on FormatException catch (error) {
+      setState(() => _testMessage = error.message);
       return false;
     }
     return true;
@@ -1618,8 +1628,9 @@ class _ProfileEditDialogState extends State<_ProfileEditDialog> {
                   tilePadding: EdgeInsets.zero,
                   title: const Text('高级选项'),
                   initiallyExpanded:
-                      widget.existing?.port != null &&
-                      widget.existing!.port != 22,
+                      (widget.existing?.port != null &&
+                          widget.existing!.port != 22) ||
+                      (widget.existing?.remoteForwards.isNotEmpty ?? false),
                   children: [
                     TextField(
                       controller: _name,
@@ -1641,6 +1652,27 @@ class _ProfileEditDialogState extends State<_ProfileEditDialog> {
                       decoration: const InputDecoration(
                         labelText: '端口',
                         hintText: '22',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: _remoteForward,
+                      enabled: !_testing,
+                      minLines: 1,
+                      maxLines: 3,
+                      autocorrect: false,
+                      validator: (value) {
+                        try {
+                          SshRemoteForward.parseLines(value ?? '');
+                          return null;
+                        } on FormatException catch (error) {
+                          return error.message;
+                        }
+                      },
+                      decoration: const InputDecoration(
+                        labelText: 'RemoteForward（可选）',
+                        hintText: '10808 127.0.0.1:7890',
+                        helperText: '留空关闭；每行一条：远端监听端口 本机目标地址:端口',
                       ),
                     ),
                   ],

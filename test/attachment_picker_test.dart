@@ -11,7 +11,7 @@ import 'package:expert_chat/data/library_repository.dart';
 import 'package:expert_chat/data/models.dart';
 import 'package:expert_chat/domain/tools/file_parser.dart';
 import 'package:expert_chat/domain/tools/upload_directory.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:expert_chat/platform/preferences.dart';
 import 'package:expert_chat/features/chat/widgets/attachment_picker.dart';
 import 'package:expert_chat/features/projects/project_document_page.dart';
 import 'package:file_picker/file_picker.dart';

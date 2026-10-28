@@ -1,14 +1,71 @@
+import 'package:expert_chat/core/providers.dart';
 import 'package:expert_chat/data/models.dart';
 import 'package:expert_chat/domain/llm/llm_provider.dart';
+import 'package:expert_chat/platform/preferences.dart';
 import 'package:expert_chat/state/work_session_insights.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  late SharedPreferences prefs;
+  setUp(() async {
+    SharedPreferences.setMockInitialValues({});
+    prefs = await SharedPreferences.getInstance();
+  });
+
+  test(
+    'request categories retain auxiliary usage without changing the task model',
+    () {
+      final container = ProviderContainer(
+        overrides: [sharedPrefsProvider.overrideWithValue(prefs)],
+      );
+      addTearDown(container.dispose);
+      final controller = container.read(workSessionInsightsProvider.notifier);
+      const auxiliary = LlmConfig(
+        baseUrl: 'https://synthetic.invalid',
+        apiKey: '',
+        model: 'title-model',
+      );
+      controller.request('a', 'main', 'task-model', [], []);
+      controller.auxiliaryRequest(
+        'a',
+        'title',
+        auxiliary,
+        kind: WorkRequestKind.title,
+      );
+      controller.auxiliaryRequest('a', 'review', auxiliary);
+      controller.auxiliaryRequest(
+        'a',
+        'retry',
+        auxiliary,
+        kind: WorkRequestKind.task,
+      );
+      controller.route('a', 'title', auxiliary);
+      const usage = LlmUsage(
+        inputTokens: 10,
+        outputTokens: 2,
+        cost: .01,
+        currency: 'USD',
+      );
+      for (final id in ['main', 'title', 'review', 'retry']) {
+        controller.usage('a', id, usage);
+      }
+      final state = container.read(workSessionInsightsProvider)['a']!;
+      expect(state.model, 'task-model');
+      expect(state.countRequests(WorkRequestKind.task), 2);
+      expect(state.countRequests(WorkRequestKind.title), 1);
+      expect(state.countRequests(WorkRequestKind.auxiliary), 1);
+      expect(state.inputTokens, 40);
+      expect(state.cost, closeTo(.04, .000001));
+    },
+  );
   test(
     'usage is isolated per conversation, duplicate terminal chunks replace and missing usage stays unknown',
     () {
-      final container = ProviderContainer();
+      final container = ProviderContainer(
+        overrides: [sharedPrefsProvider.overrideWithValue(prefs)],
+      );
       addTearDown(container.dispose);
       final controller = container.read(workSessionInsightsProvider.notifier);
       final messages = [

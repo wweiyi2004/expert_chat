@@ -12,13 +12,13 @@ import 'package:expert_chat/data/ui_prefs.dart';
 import 'package:expert_chat/data/task_budget_prefs.dart';
 import 'package:expert_chat/domain/llm/llm_provider.dart';
 import 'package:expert_chat/state/settings_controller.dart';
-import 'package:flutter/material.dart';
+import 'package:expert_chat/platform/theme_mode.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:expert_chat/platform/credentials.dart';
 import 'package:flutter_secure_storage/test/test_flutter_secure_storage_platform.dart';
 import 'package:flutter_secure_storage_platform_interface/flutter_secure_storage_platform_interface.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:expert_chat/platform/preferences.dart';
 // ignore: depend_on_referenced_packages - test-only transitive platform dep
 import 'package:shared_preferences_platform_interface/shared_preferences_platform_interface.dart';
 
@@ -604,7 +604,7 @@ void main() {
     addTearDown(container.dispose);
 
     final state = await container.read(settingsControllerProvider.future);
-    expect(state.themeMode, ThemeMode.system);
+    expect(state.themeMode, ThemePreference.system);
   });
 
   test('negative themeMode value falls back to system', () async {
@@ -628,7 +628,7 @@ void main() {
     addTearDown(container.dispose);
 
     final state = await container.read(settingsControllerProvider.future);
-    expect(state.themeMode, ThemeMode.system);
+    expect(state.themeMode, ThemePreference.system);
   });
 
   test('wrong-typed uiPrefs field does not wipe the other UI prefs', () async {
@@ -680,7 +680,7 @@ void main() {
     addTearDown(container.dispose);
 
     final state = await container.read(settingsControllerProvider.future);
-    expect(state.themeMode, ThemeMode.dark);
+    expect(state.themeMode, ThemePreference.dark);
   });
 
   test('legacy systemPrompt migrates into the general chat skill', () async {

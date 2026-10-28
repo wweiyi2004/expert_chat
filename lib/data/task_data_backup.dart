@@ -1,11 +1,63 @@
 import 'dart:convert';
 import 'backup_codec.dart';
+import '../domain/task_core/task_plan.dart';
 
 /// Portable business records, never endpoint bindings or execution authority.
 abstract final class TaskDataBackup {
   static const sessionKey = 'chatSessionJournal.v1',
-      acceptanceKey = 'taskAcceptance.v1';
-  static const keys = {sessionKey, acceptanceKey};
+      acceptanceKey = 'taskAcceptance.v1',
+      planKey = 'taskPlans.v1';
+  static const keys = {sessionKey, acceptanceKey, planKey};
+  static Map<String, TaskPlan> plans(Object? raw) {
+    final decoded = _decode(raw);
+    if (decoded == null) return {};
+    if (decoded is! Map<String, dynamic>) _bad();
+    final result = <String, TaskPlan>{};
+    for (final entry in (decoded as Map<String, dynamic>).entries) {
+      final plan = TaskPlan.fromJson(
+        Map<String, dynamic>.from(entry.value as Map),
+      );
+      if (plan.conversationId != entry.key) _bad();
+      result[entry.key] = plan;
+    }
+    return result;
+  }
+
+  static Map<String, dynamic> _portablePlan(
+    TaskPlan plan,
+    String Function(String) remap,
+  ) => {
+    ...plan.toJson(),
+    'id': remap(plan.id),
+    'conversationId': remap(plan.conversationId),
+    'taskId': plan.taskId == null ? null : remap(plan.taskId!),
+    'target': <String, dynamic>{},
+    'status': 'cancelled',
+    'requiresReview': true,
+    'approvedRevision': null,
+    'approvedBy': null,
+    'steps': [
+      for (final step in plan.steps)
+        {
+          ...step.toJson(),
+          'id': remap(step.id),
+          'verified': false,
+          'evidence': <String>[],
+        },
+    ],
+    'comments': [
+      for (final c in plan.comments)
+        {
+          ...c,
+          'id': remap(c['id'] as String),
+          'stepId': c['stepId'] == null ? null : remap(c['stepId'] as String),
+        },
+    ],
+    'history': [
+      for (final old in plan.history)
+        {'revision': old['revision'], 'body': old['body']},
+    ],
+  };
   static const limit = 100000;
   static void _bad() => throw const FormatException('任务备份记录格式不合法或含未知字段。');
   static Map<String, dynamic> _map(Object? value, Set<String> fields) {
@@ -262,6 +314,7 @@ abstract final class TaskDataBackup {
             k == 'budget'
                 ? {
                     'workSeconds',
+                    'timeLimitEnabled',
                     'maxSearches',
                     'maxToolCalls',
                     'elapsedMs',
@@ -270,8 +323,12 @@ abstract final class TaskDataBackup {
                   }
                 : {'used', 'limit'},
           );
-          for (final v in data.values) {
-            _integer(v);
+          for (final entry in data.entries) {
+            if (entry.key == 'timeLimitEnabled') {
+              _bool(entry.value);
+            } else {
+              _integer(entry.value);
+            }
           }
         }
         final sources = core['repositorySources'] ?? {};
@@ -398,6 +455,12 @@ abstract final class TaskDataBackup {
     ).where((j) => conversations.contains(j['conversationId'])).toList();
     final a = acceptance(raw[acceptanceKey]);
     return {
+      if (raw[planKey] != null)
+        planKey: jsonEncode({
+          for (final entry in plans(raw[planKey]).entries)
+            if (conversations.contains(entry.key))
+              entry.key: _portablePlan(entry.value, (id) => id),
+        }),
       if (raw[sessionKey] != null) sessionKey: jsonEncode(rows),
       if (raw[acceptanceKey] != null)
         acceptanceKey: jsonEncode({
@@ -419,6 +482,7 @@ abstract final class TaskDataBackup {
     Map<String, dynamic> prefs,
     Set<Object?> conversations,
   ) {
+    if (!plans(prefs[planKey]).keys.every(conversations.contains)) _bad();
     if (sessions(
       prefs[sessionKey],
     ).any((j) => !conversations.contains(j['conversationId']))) {
@@ -442,6 +506,14 @@ abstract final class TaskDataBackup {
     String Function(String) remap,
   ) {
     final result = <String, String>{};
+    if (imported.containsKey(planKey)) {
+      result[planKey] = jsonEncode({
+        for (final entry in plans(local[planKey]).entries)
+          entry.key: entry.value.toJson(),
+        for (final entry in plans(imported[planKey]).entries)
+          remap(entry.key): _portablePlan(entry.value, remap),
+      });
+    }
     if (imported.containsKey(sessionKey)) {
       final merged = sessions(local[sessionKey]);
       for (final row in sessions(imported[sessionKey])) {

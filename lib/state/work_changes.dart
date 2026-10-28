@@ -1,6 +1,6 @@
 import '../domain/workbench/changes/review_path_identity.dart';
 import 'package:path/path.dart' as p;
-import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:riverpod/riverpod.dart';
 import 'package:uuid/uuid.dart';
 
 import '../domain/workbench/changes/work_change_store.dart';
@@ -39,6 +39,7 @@ final workChangesProvider = NotifierProvider<WorkChanges, List<WorkFileChange>>(
 /// Device-local review history. Recording occurs after a successful file tool
 /// write; raw terminal commands are outside this snapshot mechanism.
 class WorkChanges extends Notifier<List<WorkFileChange>> {
+  Future<void> flush() => _pending;
   Future<void> _pending = Future.value();
   late Future<void> ready;
   final _readSnapshots = <(String, String, String, String, String), String>{};

@@ -11,6 +11,10 @@ impl Art {
         serde_json::from_str(include_str!("../../../design/tui/pet/megumin.json"))
             .expect("bundled pet JSON validated")
     }
+    pub fn dimensions(&self) -> (usize, usize) {
+        let frame = &self.frames["idle"];
+        (frame[0].len(), frame.len())
+    }
 }
 #[derive(Debug)]
 pub struct Pet {
@@ -24,6 +28,8 @@ pub struct Pet {
     pub visible: bool,
     pub blink_at: Option<Instant>,
     pub blink_seed: u64,
+    idle_started: Instant,
+    reduced: bool,
 }
 impl Default for Pet {
     fn default() -> Self {
@@ -38,6 +44,8 @@ impl Default for Pet {
             visible: false,
             blink_at: None,
             blink_seed: 17,
+            idle_started: Instant::now(),
+            reduced: false,
         }
     }
 }
@@ -67,6 +75,7 @@ impl Pet {
         }
     }
     pub fn tick(&mut self, now: Instant, reduced: bool) {
+        self.reduced = reduced;
         if !self.visible {
             return;
         }
@@ -99,7 +108,17 @@ impl Pet {
     }
     pub fn frame(&self, now: Instant) -> &str {
         match self.action {
-            1 => "pose",
+            1 => {
+                if !self.reduced
+                    && self
+                        .started
+                        .is_some_and(|start| (now.duration_since(start).as_millis() / 240) % 2 == 1)
+                {
+                    "pose_closed"
+                } else {
+                    "pose"
+                }
+            }
             2 => {
                 let ms = self
                     .started
@@ -122,6 +141,10 @@ impl Pet {
             _ => {
                 if self.blink_at.is_some_and(|t| now >= t) {
                     "blink"
+                } else if !self.reduced
+                    && now.saturating_duration_since(self.idle_started).as_millis() % 1800 > 900
+                {
+                    "idle_breath"
                 } else {
                     "idle"
                 }

@@ -1,3 +1,4 @@
+import 'package:expert_chat/core/gui_providers.dart';
 import 'dart:async';
 import 'dart:convert';
 
@@ -44,20 +45,29 @@ import 'package:expert_chat/features/chat/chat_page.dart';
 import 'package:expert_chat/state/chat_controller.dart';
 import 'package:expert_chat/state/settings_controller.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:expert_chat/platform/credentials.dart';
 import 'package:flutter_secure_storage/test/test_flutter_secure_storage_platform.dart';
 import 'package:flutter_secure_storage_platform_interface/flutter_secure_storage_platform_interface.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:expert_chat/platform/preferences.dart';
 
 /// LLM provider that replays a scripted list of chunks and records the config
-/// it was called with (so tests can assert model routing).
+/// it was called with (so tests can assert model routing). The background
+/// title request is always answered outside the script and the counters; with
+/// [separateAuxiliary], context-checkpoint requests are too. Their timing then
+/// never consumes a script or shifts request indices; see [auxiliaryRequests].
 class FakeLlmProvider implements LlmProvider {
-  FakeLlmProvider(this.chunks, {this.scriptedChunks});
+  FakeLlmProvider(
+    this.chunks, {
+    this.scriptedChunks,
+    this.separateAuxiliary = false,
+  });
 
   final List<ChatChunk> chunks;
   final List<List<ChatChunk>>? scriptedChunks;
+  final bool separateAuxiliary;
   final List<List<LlmRequestMessage>> calls = [];
+  final List<List<LlmRequestMessage>> auxiliaryRequests = [];
   final List<List<ToolSpec>?> toolCalls = [];
   final List<LlmConfig> configs = [];
   LlmConfig? lastConfig;
@@ -78,6 +88,14 @@ class FakeLlmProvider implements LlmProvider {
     String? forceToolName,
     CancelToken? cancelToken,
   }) async* {
+    final title = messages.firstOrNull?.content == automaticTitleInstruction;
+    if (title ||
+        separateAuxiliary &&
+            config.routingSessionId?.contains(':public-checkpoint:') == true) {
+      auxiliaryRequests.add(List<LlmRequestMessage>.of(messages));
+      if (title) yield const ChatChunk(contentDelta: '测试会话');
+      return;
+    }
     final callIndex = callCount++;
     calls.add(List<LlmRequestMessage>.of(messages));
     toolCalls.add(tools == null ? null : List<ToolSpec>.of(tools));
@@ -1801,7 +1819,7 @@ void main() {
     },
   );
 
-  test('caps network work while replying to every model tool call', () async {
+  test('runs every model tool call in a batch with no per-round cap', () async {
     final llm = FakeLlmProvider(
       const [],
       scriptedChunks: const [
@@ -1854,12 +1872,16 @@ void main() {
     await c.read(chatControllerProvider.future);
     await ctrl.sendMessage('search safely');
 
-    expect(search.calls, 3);
+    expect(search.calls, 4);
     final toolMessages = llm.calls[1]
         .where((m) => m.role == MessageRole.tool)
         .toList();
     expect(toolMessages, hasLength(4));
-    expect(toolMessages.last.content, contains('最多执行 3 次'));
+    expect(
+      toolMessages.map((m) => m.toolCallId),
+      ['call_0', 'call_1', 'call_2', 'call_3'],
+    );
+    expect(toolMessages.last.content, isNot(contains('最多执行')));
   });
 
   test(

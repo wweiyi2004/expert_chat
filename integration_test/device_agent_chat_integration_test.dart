@@ -18,12 +18,12 @@ import 'package:expert_chat/state/session_policy.dart';
 import 'package:expert_chat/state/settings_controller.dart';
 import 'package:expert_chat/state/work_changes.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:expert_chat/platform/credentials.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:integration_test/integration_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:expert_chat/platform/preferences.dart';
 import '../test/widget_test.dart' show FakeSettings, InMemoryRepo;
 
 class _NativeFixtureSettings extends FakeSettings {

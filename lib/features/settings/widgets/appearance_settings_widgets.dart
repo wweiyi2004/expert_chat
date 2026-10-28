@@ -1,3 +1,4 @@
+import '../../../platform/theme_mode.dart';
 import 'package:flutter/material.dart';
 
 import '../../../data/ui_prefs.dart';
@@ -14,12 +15,12 @@ class ColorThemeLivePreview extends StatelessWidget {
     required this.themeMode,
   });
   final ColorThemePref theme;
-  final ThemeMode themeMode;
+  final ThemePreference themeMode;
   @override
   Widget build(BuildContext context) {
     final dark =
-        themeMode == ThemeMode.dark ||
-        themeMode == ThemeMode.system &&
+        themeMode == ThemePreference.dark ||
+        themeMode == ThemePreference.system &&
             MediaQuery.platformBrightnessOf(context) == Brightness.dark;
     final colors =
         (dark

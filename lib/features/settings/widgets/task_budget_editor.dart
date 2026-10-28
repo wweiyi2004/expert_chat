@@ -27,7 +27,7 @@ class TaskBudgetEditor extends StatelessWidget {
         '默认 120 秒，适用于工作主代理和子代理的模型请求。这里只控制收到响应头前的等待；连接建立及流式输出空闲超时独立计算。普通聊天仍使用原有等待时间。设置变更在主任务下一完整工具轮生效。',
       ),
       const SizedBox(height: 20),
-      Text('任务执行预算', style: Theme.of(context).textTheme.titleMedium),
+      Text('可选任务限制', style: Theme.of(context).textTheme.titleMedium),
       const SizedBox(height: 8),
       DropdownButtonFormField<TaskBudgetPreset>(
         key: ValueKey(value.preset),
@@ -53,8 +53,9 @@ class TaskBudgetEditor extends StatelessWidget {
       Padding(
         padding: const EdgeInsets.symmetric(vertical: 8),
         child: Text(
-          '同一任务累计规划与工具执行最多 ${value.workSeconds} 秒 · '
-          '${value.maxSearches} 次搜索 · ${value.maxToolCalls} 次工具调用。'
+          '执行时间：${value.workSeconds == 0 ? '不限' : '${value.workSeconds} 秒'} · '
+          '搜索 ${TaskBudgetPrefs.describeCount(value.maxSearches)} 次 · '
+          '工具调用 ${TaskBudgetPrefs.describeCount(value.maxToolCalls)} 次。'
           '\n达到限制后，将尝试根据已有结果整理回答。',
         ),
       ),
@@ -69,9 +70,9 @@ class TaskBudgetEditor extends StatelessWidget {
       ),
       if (value.preset == TaskBudgetPreset.custom) ...[
         _number(
-          '执行时间（秒）',
+          '执行时间（秒，0 为不限）',
           value.workSeconds,
-          30,
+          0,
           3600,
           (n) => TaskBudgetPrefs(
             workSeconds: n,
@@ -80,11 +81,9 @@ class TaskBudgetEditor extends StatelessWidget {
             maxToolCalls: value.maxToolCalls,
           ),
         ),
-        _number(
+        _count(
           '搜索次数',
           value.maxSearches,
-          0,
-          192,
           (n) => TaskBudgetPrefs(
             workSeconds: value.workSeconds,
             workResponseTimeoutSeconds: value.workResponseTimeoutSeconds,
@@ -92,11 +91,9 @@ class TaskBudgetEditor extends StatelessWidget {
             maxToolCalls: value.maxToolCalls,
           ),
         ),
-        _number(
+        _count(
           '工具调用次数',
           value.maxToolCalls,
-          0,
-          192,
           (n) => TaskBudgetPrefs(
             workSeconds: value.workSeconds,
             maxSearches: value.maxSearches,
@@ -127,6 +124,33 @@ class TaskBudgetEditor extends StatelessWidget {
       onFieldSubmitted: (raw) {
         final n = int.tryParse(raw);
         if (n != null) onChanged(update(n.clamp(min, max)));
+      },
+    ),
+  );
+
+  /// Blank means unlimited; explicit counts stay below the legacy 192 cap.
+  Widget _count(
+    String label,
+    int current,
+    TaskBudgetPrefs Function(int) update,
+  ) => Padding(
+    padding: const EdgeInsets.only(bottom: 8),
+    child: TextFormField(
+      key: ValueKey('$label-$current'),
+      initialValue: TaskBudgetPrefs.isUnlimited(current) ? '' : '$current',
+      keyboardType: TextInputType.number,
+      decoration: InputDecoration(
+        labelText: label,
+        hintText: '不限',
+        helperText: '留空为不限；0–${TaskBudgetPrefs.maxCount - 1}，提交后保存',
+      ),
+      onFieldSubmitted: (raw) {
+        if (raw.trim().isEmpty) {
+          onChanged(update(TaskBudgetPrefs.unlimited));
+          return;
+        }
+        final n = int.tryParse(raw.trim());
+        if (n != null) onChanged(update(TaskBudgetPrefs.count(n)));
       },
     ),
   );

@@ -1,9 +1,9 @@
 import '../state/model_context.dart';
 import 'dart:async';
 import 'dart:convert';
-import 'package:flutter/material.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import '../platform/theme_mode.dart';
+import '../platform/credentials.dart';
+import '../platform/preferences.dart';
 import 'chat_skill.dart';
 import 'subagent_role.dart';
 import 'prompt_presets.dart';
@@ -324,7 +324,7 @@ class SettingsStorage {
       taskBudget: taskBudget,
       apiKey: apiKey,
       selectedModel: selectedModel,
-      themeMode: readThemeMode(prefs),
+      themeMode: readThemePreference(prefs),
       searchBackend: SearchBackend.deepseek,
       searchApiKey: searchApiKey ?? '',
       searchBrainModel: prefs.getString(kSettingsSearchBrainModel),
@@ -393,12 +393,14 @@ class SettingsStorage {
 
   /// A stored theme index from a corrupt/older store may fall outside the
   /// enum range; fall back to the default instead of crashing the whole build.
-  static ThemeMode readThemeMode(SharedPreferences prefs) {
+  static ThemePreference readThemePreference(SharedPreferences prefs) {
     final stored = prefs.getInt(kSettingsThemeMode);
-    if (stored == null || stored < 0 || stored >= ThemeMode.values.length) {
-      return ThemeMode.system;
+    if (stored == null ||
+        stored < 0 ||
+        stored >= ThemePreference.values.length) {
+      return ThemePreference.system;
     }
-    return ThemeMode.values[stored];
+    return ThemePreference.values[stored];
   }
 
   static UiPrefs readUiPrefs(SharedPreferences prefs) {

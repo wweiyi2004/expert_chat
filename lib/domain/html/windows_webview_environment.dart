@@ -1,4 +1,4 @@
-import 'package:path_provider/path_provider.dart';
+import '../../platform/paths.dart';
 import 'package:webview_windows/webview_windows.dart';
 
 Future<void>? _environment;

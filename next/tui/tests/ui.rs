@@ -30,6 +30,8 @@ fn scene(name: &str) -> App {
     for e in fixture_events(name).unwrap() {
         app.apply_event(&e).unwrap();
     }
+    // A local clock must not make checked-in terminal snapshots change daily.
+    app.snapshot["startup"]["date"] = json!("2026-10-26");
     app
 }
 fn render(app: &App, w: u16, h: u16) -> ratatui::buffer::Buffer {
@@ -125,13 +127,7 @@ fn full_access_requires_second_enter_and_survives_narrow_footer() {
     app.snapshot["session"]["permission"] = json!("full");
     for w in [80, 60, 40, 20] {
         let b = render(&app, w, 24);
-        assert!(
-            ui::buffer_text(&b)
-                .lines()
-                .last()
-                .unwrap()
-                .contains("完全访问")
-        );
+        assert!(ui::buffer_text(&b).contains("完全访问"));
     }
 }
 #[test]
@@ -150,6 +146,16 @@ fn snapshot_and_delta_use_one_reducer_and_approval_wins() {
     let frame = ui::buffer_text(&render(&app, 80, 24));
     assert!(!frame.contains("00:11 +4"));
     assert!(frame.contains("等待批准"));
+
+    // Pausing for approval must not hide evidence from a failed step.
+    app.snapshot["steps"][0]["status"] = json!("failed");
+    app.snapshot["steps"][0]["exit_code"] = json!(1);
+    app.snapshot["steps"][0]["tail"] = json!(["FAILURE_EVIDENCE"]);
+    let frame = ui::buffer_text(&render(&app, 80, 24));
+    assert!(frame.contains("FAILURE_EVIDENCE"));
+    assert!(frame.contains("退出码 1"));
+    assert!(frame.contains("等待批准"));
+    assert!(!frame.contains("00:11 +4"));
 }
 #[test]
 fn unicode_editing_paste_history_and_pending_draft_preserve_text() {
@@ -167,7 +173,8 @@ fn unicode_editing_paste_history_and_pending_draft_preserve_text() {
     app.input.clear();
     app.cursor = 0;
     app.paste("1\n2\n3\n4\n5\n6");
-    assert!(ui::buffer_text(&render(&app, 40, 24)).contains("[已粘贴 6 行]"));
+    assert!(ui::buffer_text(&render(&app, 40, 24)).contains("[文本 · 6 行 · 11 字]"));
+    assert_eq!(app.input, "1\n2\n3\n4\n5\n6");
 }
 #[test]
 fn control_sequences_are_removed_without_destroying_unicode() {
@@ -252,7 +259,8 @@ fn interleaves_tools_with_the_message_that_caused_them() {
         .unwrap()
         .push(json!({"id":"assistant-2","role":"assistant","text":"LATEST ANSWER"}));
     let rendered = ui::buffer_text(&render(&app, 80, 40));
-    assert!(rendered.find("flutter test").unwrap() < rendered.find("NEXT MESSAGE").unwrap());
+    assert_eq!(rendered.matches("NEXT MESSAGE").count(), 1);
+    assert!(rendered.find("flutter test").unwrap() < rendered.rfind("NEXT MESSAGE").unwrap());
 }
 #[test]
 fn compact_heights_and_fullscreen_views_keep_bounds() {
@@ -290,9 +298,19 @@ fn welcome_remains_in_scrollback_without_repeating_hint() {
     let mut app = scene("welcome");
     app.snapshot["messages"] = json!([{"id":"u","role":"user","text":"FIRST TASK"}]);
     let output = ui::buffer_text(&render(&app, 80, 40));
-    assert!(output.contains("expert  v"));
+    assert!(output.contains("expert v3.8.1 2026-10-26"));
     assert!(output.contains("FIRST TASK"));
     assert!(!output.contains("? 快捷键"));
+}
+
+#[test]
+fn welcome_fixture_covers_recent_sessions_and_default_directory() {
+    let welcome = ui::buffer_text(&render(&scene("welcome"), 80, 24));
+    assert!(welcome.contains("最近会话"));
+    assert!(welcome.contains("自适应图片预览"));
+    let default = ui::buffer_text(&render(&scene("default_workspace"), 80, 24));
+    assert!(default.contains("~/Documents/Expert"));
+    assert!(!default.contains("~/code/image-lab"));
 }
 #[test]
 fn markdown_preserves_content_with_native_terminal_styles() {
@@ -310,13 +328,15 @@ fn markdown_preserves_content_with_native_terminal_styles() {
 #[test]
 fn introduction_quote_outlives_the_pose_and_then_expires() {
     let now = Instant::now();
-    let mut pet = expert_tui::pet::Pet {
-        visible: true,
-        ..Default::default()
-    };
+    let mut pet = expert_tui::pet::Pet::default();
+    pet.visible = true;
     pet.click(now, false);
     pet.tick(now + Duration::from_millis(1600), false);
-    assert_eq!(pet.frame(now + Duration::from_millis(1600)), "idle");
+    assert_eq!(pet.action, 0);
+    assert!(matches!(
+        pet.frame(now + Duration::from_millis(1600)),
+        "idle" | "idle_breath"
+    ));
     assert_eq!(
         pet.quote(now + Duration::from_millis(2000)),
         "「吾名惠惠！」"
@@ -338,7 +358,25 @@ fn palettes_and_transparent_pet_cells_are_native_terminal_styles() {
     assert_eq!(b[(58, 0)].bg, ratatui::style::Color::Reset);
     app.light = false;
     let b = render(&app, 80, 24);
-    assert_eq!(b[(70, 0)].fg, ratatui::style::Color::Rgb(61, 52, 72));
+    // The new silhouette still uses its own native palette, without a solid
+    // rectangular background. Check actual sprite cells rather than a pixel
+    // coordinate tied to the previous artwork.
+    let rect = ui::pet_rect(&app, 80, 24).unwrap();
+    let palette: Vec<_> = app
+        .pet
+        .art
+        .palette
+        .values()
+        .map(|hex| {
+            let rgb = u32::from_str_radix(&hex[1..], 16).unwrap();
+            ratatui::style::Color::Rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
+        })
+        .collect();
+    assert!(
+        (rect.y..rect.bottom()).any(|y| (rect.x..rect.right()).any(|x| {
+            ["▀", "▄"].contains(&b[(x, y)].symbol()) && palette.contains(&b[(x, y)].fg)
+        }))
+    );
     app.truecolor = false;
     let b = render(&app, 80, 24);
     assert!(

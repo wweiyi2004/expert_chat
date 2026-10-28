@@ -4,7 +4,7 @@ import 'package:expert_chat/data/settings_state.dart';
 import 'package:expert_chat/domain/tools/search_provider.dart';
 import 'package:expert_chat/state/deepseek_search.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:expert_chat/platform/credentials.dart';
 import 'package:flutter_secure_storage/test/test_flutter_secure_storage_platform.dart';
 import 'package:flutter_secure_storage_platform_interface/flutter_secure_storage_platform_interface.dart';
 import 'package:flutter_test/flutter_test.dart';

@@ -5,7 +5,7 @@ import 'dart:collection';
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
-import 'package:flutter/foundation.dart';
+import '../../../platform/foundation.dart';
 
 import '../../../data/models.dart';
 import '../../../data/work_runtime_log.dart';
@@ -183,14 +183,15 @@ class WorkAgentRecord {
     required this.environment,
     this.parentId,
     this.external = false,
-  });
+    DateTime? createdAt,
+  }) : createdAt = createdAt ?? DateTime.now();
   final String id, conversationId, taskId, task;
   final String? parentId;
   final int depth;
   final bool external;
   final WorkAgentLimits limits;
   WorkAgentEnvironment environment;
-  final DateTime createdAt = DateTime.now();
+  final DateTime createdAt;
   WorkAgentStatus status = WorkAgentStatus.queued;
   String model = 'Auto', output = '', activity = '排队中';
   final List<String> logs = [], files = [];
@@ -213,6 +214,7 @@ class WorkAgentRecord {
   bool resumeRequiresReconciliation = false;
   CancelToken token = CancelToken();
   LlmConfig? resolvedConfig;
+  ReasoningEffort? manualEffort;
   SubagentRole? role;
   String roleReason = '';
   bool get terminal =>
@@ -227,6 +229,7 @@ class WorkAgentRecord {
     'depth': depth,
     'status': status.name,
     'model': model,
+    if (manualEffort != null) 'manual_effort': manualEffort!.name,
     if (role != null) 'role_id': role!.id,
     if (role != null) 'role_name': role!.name,
     if (roleReason.isNotEmpty) 'role_reason': roleReason,
@@ -701,19 +704,26 @@ class WorkAgentRuntime extends ChangeNotifier {
     bool readOnly = false,
     bool isolated = false,
     bool requireOwnership = false,
+    LlmConfig? manualConfig,
+    ReasoningEffort? manualEffort,
   }) {
     final parent = _require(parentId);
     if (_require(_rootId(parent)).token.isCancelled) {
       throw StateError('根任务已停止，请在会话新建工作，不复用已取消的任务谱系');
     }
     if (isolated && readOnly) {
-      throw StateError('隔离写入任务须明确 read_only=false；只读任务不创建工作树');
+      throw StateError(
+        'isolated=true 用于写入任务，不能同时 read_only=true：写入请去掉 read_only，只读调研请去掉 isolated',
+      );
     }
     if (parent.readOnly && !readOnly) throw StateError('只读子代理不能创建可写后代');
     final normalized = ownedPaths.map(_ownedPath).toSet().toList();
     if (ownedPaths.length > 64) throw const FormatException('文件职责最多 64 项');
     if (requireOwnership && !readOnly && !isolated && normalized.isEmpty) {
-      throw const FormatException('共享写入任务须声明 owned_paths，或请求 isolated=true');
+      throw const FormatException(
+        '共享工作区写入须在 owned_paths 列出该子代理负责的文件，例如 ["lib/a.dart"]；'
+        '或改用 isolated=true 在独立工作树中写入并运行命令',
+      );
     }
     if (!parent.external &&
         !parent.isolated &&
@@ -757,7 +767,8 @@ class WorkAgentRuntime extends ChangeNotifier {
       throw StateError('已达到直属子任务累计上限 ${parent.limits.maxChildren}');
     }
     final requestedModel = model?.trim() ?? '';
-    if (trial == null &&
+    if (manualConfig == null &&
+        trial == null &&
         parent.environment.selectRole != null &&
         !parent.environment.roles.any(
           (r) =>
@@ -770,8 +781,11 @@ class WorkAgentRuntime extends ChangeNotifier {
       throw StateError('没有启用且模型可用的子代理角色，请在设置中配置角色库');
     }
     final pool = parent.environment.allowedModels;
-    if (pool.isEmpty) throw StateError('子代理模型池为空，请在设置 → 助手与技能 → 子代理可用模型中加入模型');
-    if (requestedModel.isNotEmpty &&
+    if (pool.isEmpty && manualConfig == null) {
+      throw StateError('子代理模型池为空，请在设置 → 助手与技能 → 子代理可用模型中加入模型');
+    }
+    if (manualConfig == null &&
+        requestedModel.isNotEmpty &&
         requestedModel.toLowerCase() != 'auto' &&
         !pool.any((m) => m.model == requestedModel)) {
       throw StateError(
@@ -800,6 +814,19 @@ class WorkAgentRuntime extends ChangeNotifier {
       ..roleTrial = trial
       ..ownedPaths = normalized
       ..readOnly = readOnly;
+    if (manualConfig != null) {
+      child.resolvedConfig = manualConfig;
+      child.model = manualConfig.model;
+      child.manualEffort = manualEffort;
+      child.role = SubagentRole(
+        id: 'manual',
+        name: '手动子代理',
+        when: '用户明确指定',
+        instructions: '按用户指定的任务执行，遵守继承的工作区和权限。',
+        model: manualConfig.model,
+      );
+      child.roleReason = '用户明确指定模型与思考强度';
+    }
     if (trial != null) {
       child.role = trial.role;
       child.roleReason = '候选角色试用 v${trial.version}';
@@ -1014,14 +1041,24 @@ class WorkAgentRuntime extends ChangeNotifier {
     followup(r.id, '用户显式恢复。旧工具结果与原生推理未重放；先核验当前状态，避免重复外部副作用。\n$reconciliation');
   }
 
-  void restoreJournal(List<Map<String, dynamic>> rows) {
+  void applyHostProjection(List<Map<String, dynamic>> rows) {
+    _records.clear();
+    restoreJournal(rows, liveProjection: true);
+    notifyListeners();
+  }
+
+  void restoreJournal(
+    List<Map<String, dynamic>> rows, {
+    bool liveProjection = false,
+  }) {
     for (final j in rows.reversed) {
       try {
         final saved = WorkAgentStatus.values.byName(j['status'] as String);
         final interrupted =
-            saved == WorkAgentStatus.running ||
-            saved == WorkAgentStatus.queued ||
-            saved == WorkAgentStatus.waiting;
+            !liveProjection &&
+            (saved == WorkAgentStatus.running ||
+                saved == WorkAgentStatus.queued ||
+                saved == WorkAgentStatus.waiting);
         final r =
             WorkAgentRecord(
                 id: j['id'] as String,
@@ -1031,6 +1068,7 @@ class WorkAgentRuntime extends ChangeNotifier {
                 depth: (j['depth'] as num).toInt(),
                 parentId: j['parent_id'] as String?,
                 external: j['external'] == true,
+                createdAt: DateTime.tryParse(j['created_at'] as String? ?? ''),
                 limits: WorkAgentLimits.fromJson(
                   Map<String, dynamic>.from(j['limits'] as Map),
                 ),
@@ -1047,7 +1085,7 @@ class WorkAgentRuntime extends ChangeNotifier {
                   resolveModel: (_, _) async => throw StateError('历史上下文未恢复'),
                 ),
               )
-              ..restored = true
+              ..restored = liveProjection ? j['restored'] == true : true
               ..status = interrupted ? WorkAgentStatus.interrupted : saved
               ..model = j['model'] as String? ?? ''
               ..output = j['output'] as String? ?? ''
@@ -1060,6 +1098,7 @@ class WorkAgentRuntime extends ChangeNotifier {
               ..inputTokens = (j['input_tokens'] as num?)?.toInt() ?? 0
               ..outputTokens = (j['output_tokens'] as num?)?.toInt() ?? 0;
         r.isolated = j['isolated'] == true;
+        r.auxiliaryActivity = j['auxiliary_activity'] as String? ?? '';
         if (j['isolation_target'] is String && j['artifact_prefix'] is String) {
           r.isolation = WorkAgentIsolation(
             j['isolation_target'] as String,
@@ -1095,6 +1134,9 @@ class WorkAgentRuntime extends ChangeNotifier {
           );
         }
         r.roleReason = j['role_reason'] as String? ?? '';
+        r.manualEffort = ReasoningEffort.values
+            .where((v) => v.name == j['manual_effort'])
+            .firstOrNull;
         r.currency = j['currency'] as String?;
         r.mailbox.addAll((j['mailbox'] as List? ?? []).cast<String>());
         r.files.addAll((j['files'] as List? ?? []).cast<String>());
@@ -1420,7 +1462,7 @@ class WorkAgentRuntime extends ChangeNotifier {
                         ...toolsFor(r.id),
                       ],
             thinking: r.environment.thinking,
-            reasoningEffort: r.environment.reasoningEffort,
+            reasoningEffort: r.manualEffort ?? r.environment.reasoningEffort,
             cancelToken: r.token,
           );
           final retryAllowed =
@@ -1614,7 +1656,9 @@ class WorkAgentRuntime extends ChangeNotifier {
                     r.token,
                     r.id,
                   );
-            if (call.name == 'coding_write_file' && args['path'] is String) {
+            if ((call.name == 'coding_write_file' ||
+                    call.name == 'coding_edit_file') &&
+                args['path'] is String) {
               // A refusal is also a result. Count only a real write receipt.
               try {
                 final receipt = jsonDecode(result);
@@ -1733,7 +1777,8 @@ class WorkAgentRuntime extends ChangeNotifier {
     ToolSpec(
       name: 'work_spawn_agent',
       description:
-          '创建独立后台子代理并立即返回 ID。角色分配模型根据任务选择角色并应用其系统指令；角色绑定模型优先，model 只作为自动选模型时的建议且限用户模型池。子代理可递归分工，完成后自动汇报。继承工作区和权限，不能扩大授权。',
+          '创建独立后台子代理并立即返回 ID 和权限模式。三种模式：缺省只读调研；isolated=true 在独立 Git 工作树中写文件并运行命令（自动可写）；'
+          'read_only=false 加 owned_paths 在共享工作区只写所列文件（不能运行命令）。角色分配模型根据任务选择角色并应用其系统指令；角色绑定模型优先，model 只作为自动选模型时的建议且限用户模型池。子代理可递归分工，完成后自动汇报。继承工作区和权限，不能扩大授权。',
       parameters: {
         'type': 'object',
         'properties': {
@@ -1742,7 +1787,8 @@ class WorkAgentRuntime extends ChangeNotifier {
           'candidate_id': {'type': 'string'},
           'isolated': {
             'type': 'boolean',
-            'description': '为写入/构建任务建立授权根目录下的独立 Git 工作树；创建须经现有批准；不自动合并/推送。',
+            'description':
+                '为写入/构建任务建立授权根目录下的独立 Git 工作树，可运行命令；未给 read_only 时自动可写；创建须经现有批准；不自动合并/推送。',
           },
           'owned_paths': {
             'type': 'array',
@@ -1752,7 +1798,7 @@ class WorkAgentRuntime extends ChangeNotifier {
           'read_only': {
             'type': 'boolean',
             'description':
-                '缺省只读。写入任务须明确 false 并声明无冲突 owned_paths；共享工作区子代理不可运行任意命令。',
+                '缺省只读（isolated=true 时缺省可写）。共享工作区写入须明确 false 并声明无冲突 owned_paths；共享工作区子代理不可运行任意命令。',
           },
         },
         'required': ['task'],
@@ -1806,18 +1852,34 @@ class WorkAgentRuntime extends ChangeNotifier {
           args.containsKey('isolated') && args['isolated'] is! bool) {
         throw const FormatException('read_only/isolated 必须为布尔值');
       }
+      final isolated = args['isolated'] == true;
+      // An isolated worktree exists for writing, so it is writable unless the
+      // caller explicitly asks for read-only (which is then a contradiction).
+      final readOnly = args.containsKey('read_only')
+          ? args['read_only'] != false
+          : !isolated;
       return jsonEncode({
         'agent_id': spawn(
           parentId: callerId,
           task: args['task'] as String,
           model: args['model'] as String?,
           candidateId: args['candidate_id'] as String?,
-          isolated: args['isolated'] == true,
+          isolated: isolated,
           requireOwnership: true,
           ownedPaths: (args['owned_paths'] as List? ?? []).cast<String>(),
-          readOnly: args['read_only'] != false,
+          readOnly: readOnly,
         ),
         'status': 'queued',
+        'access': readOnly
+            ? 'read_only'
+            : isolated
+            ? 'isolated_write'
+            : 'shared_write',
+        'access_note': readOnly
+            ? '只读：可读取和调研，不能修改文件或运行命令。需要写入请另建 isolated=true 或 read_only=false 且带 owned_paths 的子代理。'
+            : isolated
+            ? '独立工作树：可写文件并运行命令；成果需由你核对后用 work_integrate_agent_file 整合。'
+            : '共享工作区：只能写 owned_paths 中的文件，不能运行命令；测试请由你在主代理执行。',
         'capacity': capacity(callerId),
       });
     }

@@ -83,8 +83,9 @@ fn action_selection_uses_the_same_preorder_as_rendering() {
     app.selected = 3;
     let stop = app.key(KeyEvent::from(KeyCode::Char('x')), Instant::now(), 80);
     assert_eq!(stop[0].params["id"], "h");
-    app.key(KeyEvent::from(KeyCode::Enter), Instant::now(), 80);
-    assert_eq!(app.notice, "H_LOG");
+    let open = app.key(KeyEvent::from(KeyCode::Enter), Instant::now(), 80);
+    assert_eq!(open[0].params["topic"], "wb.agent.poll");
+    assert_eq!(open[0].params["agent_id"], "h");
     app.key(KeyEvent::from(KeyCode::Char('m')), Instant::now(), 80);
     assert_eq!(app.agent_message_id.as_deref(), Some("h"));
 }

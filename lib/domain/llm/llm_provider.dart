@@ -21,9 +21,11 @@ class LlmConfig {
     this.maxOutputTokens,
     this.profileId,
     this.routingSessionId,
+    this.onUploadProgress,
     this.lockProfile = false,
     this.authMode = 'apiKey',
     this.modelFallbacks = const [],
+    this.serviceTier,
     // A public param feeding a private backing field (the getter falls back to
     // resolve()); an initializing formal can't keep the public name here.
     // ignore: prefer_initializing_formals
@@ -58,12 +60,24 @@ class LlmConfig {
   final Duration? responseHeaderTimeout;
   final int? maxOutputTokens;
   final String? profileId, routingSessionId;
+  final void Function(int,int)? onUploadProgress;
   final String authMode;
   final bool lockProfile;
 
   /// Explicit user opt-in model group, captured at a full tool boundary.
   /// Same-model channels remain the responsibility of PrioritizedLlmProvider.
   final List<LlmConfig> modelFallbacks;
+
+  /// OpenAI `service_tier` (e.g. `priority` for fast mode); null omits it.
+  final String? serviceTier;
+
+  /// Fast mode maps to OpenAI priority processing, which only the official
+  /// API documents; other providers never receive the field.
+  bool get supportsPriorityTier =>
+      authMode == 'apiKey' &&
+      Uri.tryParse(baseUrl)?.host.toLowerCase() == 'api.openai.com' &&
+      (effectiveApiFormat == LlmApiFormat.openAiCompatible ||
+          effectiveApiFormat == LlmApiFormat.openAiResponses);
 
   ModelCapabilities get capabilities =>
       _capabilities ?? ModelCapabilities.resolve(model);
@@ -72,6 +86,10 @@ class LlmConfig {
   /// learn a different working format; this getter does not perform I/O.
   LlmApiFormat get effectiveApiFormat {
     final host = Uri.tryParse(baseUrl)?.host;
+    if(apiFormat==LlmApiFormat.auto&&{'api.kimi.com','api.kimi.ai'}.contains(host)
+        &&Uri.parse(baseUrl).path.startsWith('/coding')){
+      return LlmApiFormat.openAiResponses;
+    }
     if (apiFormat == LlmApiFormat.auto &&
         host == 'api.openai.com' &&
         ModelCatalog.isConfigurableGpt(model) &&
@@ -82,6 +100,9 @@ class LlmConfig {
   }
 
   Map<String, String> get transportHeaders =>
+      authMode=='kimiCode'
+      ? const {'User-Agent':'ExpertChat/3.8.1','X-Msh-Platform':'expert_chat','X-Msh-Version':'3.8.1'}
+      :
       Uri.tryParse(baseUrl)?.host == 'opencode.ai'
       ? {
           'x-opencode-session':
@@ -134,9 +155,12 @@ class LlmConfig {
     bool clearMaxOutputTokens = false,
     String? profileId,
     String? routingSessionId,
+    void Function(int,int)? onUploadProgress,
     bool? lockProfile,
     String? authMode,
     List<LlmConfig>? modelFallbacks,
+    String? serviceTier,
+    bool clearServiceTier = false,
   }) => LlmConfig(
     baseUrl: baseUrl ?? this.baseUrl,
     apiKey: apiKey ?? this.apiKey,
@@ -157,9 +181,11 @@ class LlmConfig {
         : maxOutputTokens ?? this.maxOutputTokens,
     profileId: profileId ?? this.profileId,
     routingSessionId: routingSessionId ?? this.routingSessionId,
+    onUploadProgress:onUploadProgress ?? this.onUploadProgress,
     lockProfile: lockProfile ?? this.lockProfile,
     authMode: authMode ?? this.authMode,
     modelFallbacks: modelFallbacks ?? this.modelFallbacks,
+    serviceTier: clearServiceTier ? null : serviceTier ?? this.serviceTier,
   );
 }
 
@@ -440,6 +466,12 @@ class LlmRequestMessage {
 
   bool get hasImageParts => imageDataUrls.isNotEmpty || imageFileIds.isNotEmpty;
 
+  /// Empty placeholders can remain after an interrupted/failed turn. Reasoning
+  /// alone is not a public reply; real tool/native continuation payloads survive.
+  bool get isEmptyAssistant => role == MessageRole.assistant &&
+      content.trim().isEmpty && toolCalls.isEmpty && !hasImageParts &&
+      responseOutputItems.isEmpty;
+
   /// Raw provider payload from a prior assistant step: Responses `output`
   /// items or Gemini content `parts`. Kept transient within a request's tool
   /// loop, so changing the conversation's provider never replays another
@@ -477,6 +509,7 @@ class LlmRequestMessage {
     }
     if (toolCalls.isNotEmpty) {
       json['tool_calls'] = toolCalls.map((t) => t.toOpenAiJson()).toList();
+      if(role==MessageRole.assistant&&content.trim().isEmpty&&!hasImageParts){json['content']=null;}
     }
     return json;
   }

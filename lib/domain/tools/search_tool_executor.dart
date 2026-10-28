@@ -43,6 +43,8 @@ class SearchToolExecutor {
     required SearchBackend backend,
     required List<Citation> citations,
     required Set<String> allowedFetchUrls,
+    bool allowPublicFetch = false,
+    bool networkAllowed = true,
     required CancelToken cancelToken,
     required SearchActivityListener onActivity,
   }) async {
@@ -60,8 +62,10 @@ class SearchToolExecutor {
         : _searchQueryFromArgs(call.argumentsJson, fallbackSearchQuery);
 
     if (fetching &&
-        (query == null ||
-            (!allowedFetchUrls.contains(fetchUrlKey(query)) &&
+        (!networkAllowed ||
+            query == null ||
+            (!allowPublicFetch &&
+                !allowedFetchUrls.contains(fetchUrlKey(query)) &&
                 !prior.any((c) => fetchUrlKey(c.url) == fetchUrlKey(query))))) {
       final activity = SearchActivity(
         kind: SearchActivityKind.fetch,
@@ -77,7 +81,9 @@ class SearchToolExecutor {
         ),
       );
       return SearchToolResult(
-        content: query == null
+        content: !networkAllowed
+            ? '本会话已禁止联网检索，未执行。'
+            : query == null
             ? '无效的 URL 参数；请提供完整的 http(s) 网址。'
             : '已拒绝读取：fetch_url 只能访问本轮用户提供或搜索结果中的网址。',
         citations: prior,

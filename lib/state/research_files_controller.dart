@@ -1,4 +1,4 @@
-import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:riverpod/riverpod.dart';
 import 'package:uuid/uuid.dart';
 import '../domain/research/research_files.dart';
 import 'research_terminal_controller.dart';

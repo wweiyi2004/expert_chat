@@ -65,6 +65,8 @@ class SshResearchFiles
             path: p.posix.join(path, e.filename),
             directory: e.attr.isDirectory,
             size: e.attr.size ?? 0,
+            modifiedTime: e.attr.modifyTime,
+            symbolicLink: e.attr.isSymbolicLink,
           ),
     ];
     files.sort(

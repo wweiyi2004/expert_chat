@@ -11,15 +11,65 @@ class DeviceAgentPage extends StatefulWidget {
   State<DeviceAgentPage> createState() => _DeviceAgentPageState();
 }
 
-class _DeviceAgentPageState extends State<DeviceAgentPage> {
+class _DeviceAgentPageState extends State<DeviceAgentPage>
+    with WidgetsBindingObserver {
   final _agent = DeviceAgent();
   Map<String, dynamic> _observation = {};
-  String _status = '先在 Android 系统中启用服务，再明确开启本次控制。';
+  Map<String, dynamic> _deviceStatus = {};
+  String _status = '正在读取设备状态…';
   Uint8List? _screenshot;
   bool _busy = false;
   String? _pendingText;
+  bool get _enabled => _deviceStatus['enabled'] == true;
+  bool get _armed => _deviceStatus['armed'] == true;
+  bool get _taskOwnsDevice =>
+      _deviceStatus['owner'] != null && _deviceStatus['owner'] != 'ui';
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    unawaited(_refreshStatus());
+  }
+
+  Future<void> _refreshStatus({bool explain = true}) async {
+    try {
+      final value = await _agent.invoke('status');
+      if (!mounted) return;
+      setState(() {
+        _deviceStatus = Map<String, dynamic>.from(value as Map);
+        if (!_enabled) {
+          _observation = {};
+        }
+        if (!_enabled || !_armed) {
+          _screenshot = null;
+        }
+        if (explain) {
+          _status = !_enabled
+              ? '请先在系统设置中开启 Expert Chat 无障碍服务。'
+              : !_armed
+              ? '服务已开启。点击“开启本次控制”后，Agent 才能操作手机。'
+              : _taskOwnsDevice
+              ? 'Agent 正在使用手机，可随时点击“立即停止”。'
+              : '本次控制已开启。可返回工作会话提出任务，也可在这里手动查看界面。';
+        }
+      });
+    } catch (error) {
+      if (mounted) setState(() => _status = '$error');
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _observation = {};
+      unawaited(_refreshStatus());
+    }
+  }
+
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     unawaited(_agent.releaseSession('ui').catchError((_) {}));
     super.dispose();
   }
@@ -37,8 +87,20 @@ class _DeviceAgentPageState extends State<DeviceAgentPage> {
           final observation = response['observation'] ?? response;
           _observation = Map<String, dynamic>.from(observation as Map);
         }
-        _status = '$method 已返回；动作被接受不等于任务成功，请核对新界面。';
+        _status = switch (method) {
+          'settings' => '返回应用后会自动更新授权状态。',
+          'arm' => '本次控制已开启，可以返回工作会话提出任务。',
+          'stop' => '已停止本次设备控制。',
+          'revoke' => '已关闭无障碍服务。',
+          'observe' => '界面已更新，请选择要操作的目标。',
+          'screenshot' => '截图已更新。',
+          _ =>
+            response is Map && response['accepted'] == false
+                ? '操作未完成，请刷新界面后重试。'
+                : '操作已发出，下方显示最新界面。',
+        };
       });
+      await _refreshStatus(explain: false);
     } catch (error) {
       if (mounted) setState(() => _status = error.toString());
     } finally {
@@ -51,15 +113,30 @@ class _DeviceAgentPageState extends State<DeviceAgentPage> {
     appBar: AppBar(
       title: const Text('Android 本机控制'),
       actions: [
-        TextButton(onPressed: () => _call('stop'), child: const Text('立即停止')),
+        TextButton(
+          onPressed: _armed ? () => _call('stop') : null,
+          child: const Text('立即停止'),
+        ),
       ],
     ),
     body: ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        const Text(
-          '仅用于你拥有或获准控制的设备。无障碍服务能读取其他应用界面并执行操作；启用后还需在此开启本次控制。Android 11+ 可通过该服务截图，受保护内容会失败。系统权限撤销后不可继续控制。',
+        const Text('开启后，Agent 可以读取和操作其他应用界面。每次控制由你开启，也可以随时停止。'),
+        const SizedBox(height: 12),
+        Wrap(
+          spacing: 8,
+          children: [
+            Chip(label: Text(_enabled ? '系统服务已开启' : '系统服务未开启')),
+            Chip(
+              label: Text(
+                _armed ? (_taskOwnsDevice ? '任务控制中' : '本次控制已开启') : '本次控制未开启',
+              ),
+            ),
+          ],
         ),
+        SelectableText(_status),
+        const SizedBox(height: 12),
         Wrap(
           spacing: 8,
           children: [
@@ -68,19 +145,29 @@ class _DeviceAgentPageState extends State<DeviceAgentPage> {
               child: const Text('系统授权设置'),
             ),
             FilledButton(
-              onPressed: _busy ? null : () => _call('arm'),
+              onPressed: _busy || !_enabled || _armed
+                  ? null
+                  : () => _call('arm'),
               child: const Text('开启本次控制'),
             ),
             OutlinedButton(
-              onPressed: () => _call('observe'),
+              onPressed: _busy || !_enabled || _taskOwnsDevice
+                  ? null
+                  : () => _call('observe'),
               child: const Text('观察界面'),
             ),
             OutlinedButton(
-              onPressed: () => _call('screenshot'),
+              onPressed:
+                  _busy ||
+                      !_armed ||
+                      _taskOwnsDevice ||
+                      (_deviceStatus['sdk'] as num? ?? 0) < 30
+                  ? null
+                  : () => _call('screenshot'),
               child: const Text('截图'),
             ),
             TextButton(
-              onPressed: () => _call('revoke'),
+              onPressed: !_enabled ? null : () => _call('revoke'),
               child: const Text('撤销服务'),
             ),
           ],
@@ -109,14 +196,18 @@ class _DeviceAgentPageState extends State<DeviceAgentPage> {
           child: const Text('准备输入文字'),
         ),
         if (_pendingText != null) const Text('有已准备文字；重新观察后可明确输入到选定字段。'),
-        SelectableText(_status),
         Wrap(
           spacing: 8,
           children: [
             for (final action in ['back', 'home'])
               TextButton(
-                onPressed: () =>
-                    _call(action, {'revision': _observation['revision']}),
+                onPressed:
+                    !_armed ||
+                        _taskOwnsDevice ||
+                        _observation['revision'] == null
+                    ? null
+                    : () =>
+                          _call(action, {'revision': _observation['revision']}),
                 child: Text(action == 'back' ? '返回' : '主屏幕'),
               ),
           ],
@@ -130,7 +221,11 @@ class _DeviceAgentPageState extends State<DeviceAgentPage> {
                 '${node['text'] ?? node['description'] ?? node['viewId'] ?? node['target']}',
               ),
               subtitle: Text('${node['target']} · ${node['bounds']}'),
-              onTap: node['clickable'] == true
+              onTap:
+                  node['clickable'] == true &&
+                      _armed &&
+                      !_taskOwnsDevice &&
+                      !_busy
                   ? () => _call('tap', {
                       'target': node['target'],
                       'revision': _observation['revision'],
@@ -140,7 +235,11 @@ class _DeviceAgentPageState extends State<DeviceAgentPage> {
                   ? IconButton(
                       icon: const Icon(Icons.edit),
                       tooltip: '输入已准备的文字（需要最新观察）',
-                      onPressed: _pendingText == null || _busy
+                      onPressed:
+                          _pendingText == null ||
+                              _busy ||
+                              !_armed ||
+                              _taskOwnsDevice
                           ? null
                           : () => _call('text', {
                               'target': node['target'],
@@ -151,10 +250,12 @@ class _DeviceAgentPageState extends State<DeviceAgentPage> {
                   : node['scrollable'] == true
                   ? IconButton(
                       icon: const Icon(Icons.arrow_downward),
-                      onPressed: () => _call('scroll', {
-                        'target': node['target'],
-                        'revision': _observation['revision'],
-                      }),
+                      onPressed: !_armed || _taskOwnsDevice || _busy
+                          ? null
+                          : () => _call('scroll', {
+                              'target': node['target'],
+                              'revision': _observation['revision'],
+                            }),
                     )
                   : null,
             ),

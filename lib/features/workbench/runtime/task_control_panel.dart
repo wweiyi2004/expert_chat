@@ -6,6 +6,10 @@ import '../../../core/settings_form_style.dart';
 import '../../../state/chat_controller.dart';
 import '../../../state/task_acceptance_provider.dart';
 import '../logs/work_memory_card.dart';
+import '../../../data/task_budget_prefs.dart';
+
+String _budgetCount(Object? count) =>
+    count is num ? TaskBudgetPrefs.describeCount(count.toInt()) : '—';
 
 String acceptanceStatusLabel(TaskAcceptanceStatus status) => switch (status) {
   TaskAcceptanceStatus.running => '执行中',
@@ -217,7 +221,7 @@ class _TaskControlPanelState extends ConsumerState<TaskControlPanel> {
               Padding(
                 padding: const EdgeInsets.only(top: 8),
                 child: Text(
-                  '累计工具 ${budget['toolCalls'] ?? 0}/${budget['maxToolCalls'] ?? '—'} 次 · 搜索 ${budget['searches'] ?? 0}/${budget['maxSearches'] ?? '—'} 次 · 执行 ${((budget['elapsedMs'] as num? ?? 0) / 1000).round()}/${budget['workSeconds'] ?? '—'} 秒',
+                  '累计工具 ${budget['toolCalls'] ?? 0}/${_budgetCount(budget['maxToolCalls'])} 次 · 搜索 ${budget['searches'] ?? 0}/${_budgetCount(budget['maxSearches'])} 次 · 执行 ${((budget['elapsedMs'] as num? ?? 0) / 1000).round()} 秒${budget['workSeconds'] == 0 ? '（不限时）' : '/${budget['workSeconds'] ?? '—'} 秒'}',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
               ),

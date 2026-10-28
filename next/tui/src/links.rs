@@ -112,6 +112,9 @@ pub struct HyperlinkBackend<W: Write> {
     inner: CrosstermBackend<W>,
     state: LinkState,
     previous: Vec<Rect>,
+    cursor_visible: Option<bool>,
+    cursor_position: Option<Position>,
+    cursor_dirty: bool,
 }
 impl<W: Write> HyperlinkBackend<W> {
     pub fn new(writer: W, state: LinkState) -> Self {
@@ -119,6 +122,9 @@ impl<W: Write> HyperlinkBackend<W> {
             inner: CrosstermBackend::new(writer),
             state,
             previous: vec![],
+            cursor_visible: None,
+            cursor_position: None,
+            cursor_dirty: true,
         }
     }
 }
@@ -156,6 +162,7 @@ impl<W: Write> Backend for HyperlinkBackend<W> {
             }
         }
         let cells: Vec<_> = cells.into_iter().collect();
+        self.cursor_dirty |= !cells.is_empty();
         let link_at = |y: u16, x: u16| {
             state
                 .links
@@ -188,19 +195,38 @@ impl<W: Write> Backend for HyperlinkBackend<W> {
         Ok(())
     }
     fn hide_cursor(&mut self) -> io::Result<()> {
-        self.inner.hide_cursor()
+        if self.cursor_visible == Some(false) {
+            return Ok(());
+        }
+        self.inner.hide_cursor()?;
+        self.cursor_visible = Some(false);
+        Ok(())
     }
     fn show_cursor(&mut self) -> io::Result<()> {
-        self.inner.show_cursor()
+        if self.cursor_visible == Some(true) {
+            return Ok(());
+        }
+        self.inner.show_cursor()?;
+        self.cursor_visible = Some(true);
+        Ok(())
     }
     fn get_cursor_position(&mut self) -> io::Result<Position> {
         self.inner.get_cursor_position()
     }
     fn set_cursor_position<P: Into<Position>>(&mut self, p: P) -> io::Result<()> {
-        self.inner.set_cursor_position(p)
+        let p = p.into();
+        if !self.cursor_dirty && self.cursor_position == Some(p) {
+            return Ok(());
+        }
+        self.inner.set_cursor_position(p)?;
+        self.cursor_position = Some(p);
+        self.cursor_dirty = false;
+        Ok(())
     }
     fn clear(&mut self) -> io::Result<()> {
         self.previous.clear();
+        self.cursor_dirty = true;
+        self.cursor_visible = None;
         self.inner.clear()
     }
     fn clear_region(&mut self, c: ClearType) -> io::Result<()> {

@@ -26,6 +26,19 @@ fn send(a: &mut App, text: &str) -> Vec<Command> {
 fn question(a: &mut App) {
     a.snapshot["questions"] = json!([{"id":"request","questions":[{"id":"q","options":["red","blue"],"required":true,"multiple":true}]}]);
 }
+/// Attach the way the app does: an inline placeholder tag, then the host receipt.
+fn attach(a: &mut App) {
+    a.binding_ready = true;
+    let mut c = a.command(
+        "attachment.import",
+        json!({"path":"/tmp/image.png","confirmed":true}),
+    );
+    a.begin_attachment_import(&mut c, None);
+    a.command_response(
+        &c,
+        &json!({"token":"t1","name":"image.png","mime":"image/png","kind":"image","size":10}),
+    );
+}
 fn agent_mode(a: &mut App) {
     ctrl(a, 't');
     key(a, K::Char('m'));
@@ -82,19 +95,26 @@ fn key02_cross_session_followup_and_late_failure_stay_in_origin_session() {
 fn key03_rejection_cancel_and_submit_restore_main_draft_and_attachment() {
     let mut a = app();
     a.paste("main draft");
-    a.attachments.push(json!({"name":"image.png"}));
+    attach(&mut a);
+    // The draft includes the attachment's inline tag; both must survive untouched.
+    let draft = a.input.clone();
+    assert!(
+        draft.starts_with("main draft") && draft.contains("[Image 1]"),
+        "{draft}"
+    );
     a.snapshot["approvals"] = json!([{"id":"approval"}]);
     key(&mut a, K::Char('e'));
     a.paste("reason");
     key(&mut a, K::Esc);
-    assert_eq!(a.input, "main draft");
+    assert_eq!(a.input, draft);
     assert_eq!(a.attachments.len(), 1);
     ctrl(&mut a, 'y');
     key(&mut a, K::Char('e'));
     a.paste("reason");
     let c = key(&mut a, K::Enter);
     assert_eq!(c[0].params["reason"], "reason");
-    assert_eq!(a.input, "main draft");
+    assert_eq!(a.input, draft);
+    assert_eq!(a.attachments.len(), 1);
 }
 #[test]
 fn key04_workspace_query_filters_visible_results() {
@@ -121,12 +141,12 @@ fn key05_controls_work_while_pending_or_attached() {
 #[test]
 fn key06_agent_attachment_is_explicitly_blocked_and_kept() {
     let mut a = app();
-    a.attachments.push(json!({"name":"image.png"}));
+    attach(&mut a);
     agent_mode(&mut a);
     assert!(send(&mut a, "see image").is_empty());
-    assert_eq!(a.input, "see image");
+    assert!(a.input.contains("see image"), "draft is kept: {}", a.input);
     assert_eq!(a.attachments.len(), 1);
-    assert!(a.notice.contains("不支持附件"));
+    assert!(a.notice.contains("不支持附件"), "{}", a.notice);
 }
 #[test]
 fn key07_history_merges_external_snapshot_without_duplicating_local_send() {
@@ -302,15 +322,18 @@ fn key18_wheel_scroll_method_respects_view_direction() {
 fn agent_detail_is_scrollable_and_escape_returns_to_tree() {
     let mut a = app();
     ctrl(&mut a, 't');
-    key(&mut a, K::Enter);
-    assert_eq!(a.agent_detail_id.as_deref(), Some("worker"));
-    key(&mut a, K::PageDown);
-    assert_eq!(a.scroll, 8);
-    key(&mut a, K::Esc);
-    assert!(a.agent_detail_id.is_none());
-    assert_eq!(a.view, View::Agents);
-    assert_eq!(a.scroll, 0);
+    let c=key(&mut a,K::Enter).remove(0);
+    assert_eq!(c.params["topic"],"wb.agent.poll");
+    assert_eq!(c.params["agent_id"],"worker");
+    a.command_response(&c,&json!({"side":true,"kind":"agent","agent_id":"worker","session_id":"s1","title":"worker","messages":[]}));
+    assert!(a.side_panel.is_some());
+    key(&mut a,K::PageUp);
+    assert_eq!(a.side_panel.as_ref().unwrap().scroll,8);
+    key(&mut a,K::Esc);
+    assert!(a.side_panel.is_none());
+    assert_eq!(a.view,View::Agents);
 }
+
 #[test]
 fn aud02_ctrl_l_requests_real_redraw_without_touching_input() {
     let mut a = app();
@@ -584,4 +607,130 @@ fn recovery_rotation_can_reach_all_preserved_drafts() {
     a.recover_draft();
     assert_eq!(a.input, "current draft");
     assert!(a.attachments.is_empty());
+}
+
+fn attach_path(a: &mut App, path: &str, kind: &str) {
+    a.binding_ready = true;
+    let mut c = a.command("attachment.import", json!({"path":path,"confirmed":true}));
+    a.begin_attachment_import(&mut c, None);
+    a.command_response(
+        &c,
+        &json!({"reference":true,"path":path,"name":"file",
+        "kind":kind,"size":12,"attachments_count":0}),
+    );
+}
+
+#[test]
+fn non_image_labels_stay_compact_when_sent_and_restored() {
+    let mut a = app();
+    attach(&mut a);
+    attach_path(&mut a, "C:/资料 folder/notes.pdf", "file");
+    attach_path(&mut a, "C:/资料 folder/talk.mp3", "audio");
+    attach_path(&mut a, "C:/资料 folder/clip.mp4", "video");
+    let draft = a.input.clone();
+    let c = key(&mut a, K::Enter).remove(0);
+    assert_eq!(c.params["text"], "[Image 1] [File 1] [Audio 1] [Video 1] ");
+    assert_eq!(c.params["attachments"].as_array().unwrap().len(), 4);
+    assert_eq!(c.params["attachments"][0]["token"], "t1");
+    assert_eq!(
+        c.params["attachments"][1]["path"],
+        "C:/资料 folder/notes.pdf"
+    );
+    assert_eq!(a.history.last().unwrap(), &draft);
+    a.command_error(&c, "offline");
+    assert_eq!(a.input, draft);
+    assert_eq!(a.attachments.len(), 4);
+    let retry = key(&mut a, K::Enter).remove(0);
+    assert_eq!(retry.params, c.params);
+}
+
+#[test]
+fn reference_preview_shows_the_address_without_opening_file_contents() {
+    let mut a = app();
+    attach_path(&mut a, "/tmp/data.bin", "file");
+    assert!(a.preview_attachment(0).is_empty());
+    assert_eq!(a.drawer, Some(Drawer::Info));
+}
+
+#[test]
+fn hovering_draft_and_sent_labels_uses_each_messages_own_address() {
+    use expert_tui::ui;
+    use ratatui::{Terminal, backend::TestBackend};
+    let mut a = app();
+    a.snapshot["messages"] = json!([
+        {"id":"u1","role":"user","text":"first [File 1]","attachments":[
+            {"reference":true,"_tag":"[File 1]","path":"C:/first/one.pdf","name":"one.pdf"}]},
+        {"id":"u2","role":"user","text":"second [File 1]","attachments":[
+            {"reference":true,"_tag":"[File 1]","path":"C:/second/two.pdf","name":"two.pdf"}]}
+    ]);
+    attach_path(&mut a, "C:/draft/three.pdf", "file");
+    let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
+    terminal.draw(|f| ui::draw(f, &a)).unwrap();
+    let buffer = terminal.backend().buffer().clone();
+    let mut hits = std::collections::BTreeMap::<String, (u16, u16)>::new();
+    for y in 0..40 {
+        for x in 0..100 {
+            if let Some(path) = ui::attachment_path_at(&a, &buffer, x, y) {
+                hits.insert(path, (x, y));
+            }
+        }
+    }
+    for path in [
+        "C:/first/one.pdf",
+        "C:/second/two.pdf",
+        "C:/draft/three.pdf",
+    ] {
+        let &(x, y) = hits
+            .get(path)
+            .unwrap_or_else(|| panic!("no hover target for {path}"));
+        terminal
+            .draw(|f| {
+                ui::draw(f, &a);
+                ui::draw_attachment_tooltip(f, &a, x, y);
+            })
+            .unwrap();
+        assert!(ui::buffer_text(terminal.backend().buffer()).contains(path));
+    }
+    assert_eq!(ui::attachment_path_at(&a, &buffer, 99, 39), None);
+    a.open(Drawer::Help);
+    let &(x, y) = hits.get("C:/draft/three.pdf").unwrap();
+    assert_eq!(ui::attachment_path_at(&a, &buffer, x, y), None);
+}
+
+#[test]
+fn steering_receipt_distinguishes_submitting_queued_and_context_prepared() {
+    let mut a = app();
+    a.snapshot["session"]["status"] = json!("running");
+    let c = send(&mut a, "只修改登录逻辑").remove(0);
+    assert_eq!(c.method, "queue.add");
+    assert!(a.notice.contains("正在提交"));
+    a.command_response(&c, &json!({"id":"update-1","steering":{"id":"update-1","status":"queued"}}));
+    assert_eq!(a.notice, "已排队 · 等待工具边界");
+    let mut snapshot = a.snapshot.clone();
+    let receipt = json!({"id":"update-1","status":"context_prepared","round":3});
+    snapshot["steering"] = json!([receipt]);
+    snapshot["queued"] = json!([]);
+    snapshot["messages"] = json!([{"id":"update-1","role":"user",
+        "text":"【运行中补充 #update-1】\n只修改登录逻辑","steering":receipt}]);
+    a.apply_snapshot(snapshot);
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+    terminal.draw(|f| expert_tui::ui::draw(f, &a)).unwrap();
+    let screen = expert_tui::ui::buffer_text(terminal.backend().buffer());
+    assert!(screen.contains("只修改登录逻辑"));
+    assert!(screen.contains("已纳入第 3 轮上下文"));
+    assert!(!screen.contains("#update-1"));
+    assert_eq!(expert_tui::ui::steering_label(&json!({"status":"cancelled"})), "已取消 · 未纳入请求");
+    assert_eq!(expert_tui::ui::steering_label(&json!({"status":"withdrawn"})), "已撤回 · 未纳入请求");
+}
+
+#[test]
+fn steering_late_receipt_never_replaces_other_sessions_notice() {
+    let mut a = app();
+    a.snapshot["session"]["status"] = json!("running");
+    let c = send(&mut a, "origin guidance").remove(0);
+    switch(&mut a, "s2");
+    a.notice = "new session notice".into();
+    a.command_response(&c, &json!({"id":"u","steering":{"status":"context_prepared","round":2}}));
+    assert_eq!(a.notice, "new session notice");
+    assert!(a.pending_inputs.is_empty());
 }

@@ -28,7 +28,7 @@ void main() {
       ),
       isFalse,
     );
-    expect(ToolLoopPolicy.maxCallsPerRound(workMode: false), 3);
+    expect(ToolLoopPolicy.maxCallsPerRound(workMode: false), isNull);
   });
 
   test('work mode keeps tools until the safety cap wrap-up', () {
@@ -55,7 +55,7 @@ void main() {
       ),
       isFalse,
     );
-    expect(ToolLoopPolicy.maxCallsPerRound(workMode: true), 8);
+    expect(ToolLoopPolicy.maxCallsPerRound(workMode: true), isNull);
   });
 
   test('conversation workMode round-trips through JSON', () {

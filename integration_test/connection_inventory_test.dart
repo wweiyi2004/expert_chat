@@ -14,10 +14,10 @@ import 'package:expert_chat/data/provider_profile.dart';
 import 'package:expert_chat/data/media_api_config.dart';
 import 'package:expert_chat/data/gateway_config.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:expert_chat/platform/credentials.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:expert_chat/platform/preferences.dart';
 
 // Opt-in only: reads the installed application's connection settings, never
 // its conversations. RUN_LIVE additionally runs bounded synthetic requests;

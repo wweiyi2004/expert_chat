@@ -19,11 +19,19 @@ void main() {
 
     expect(prefs.contextWindowTokens, 4096);
     expect(prefs.reservedOutputTokens, 3072);
-    // The settings Slider renders 4..64; persisted values must land inside.
-    expect(prefs.maxHistoryMessages, 64);
+    // Zero means token-budget only; any other value is bounded to 0..100000.
+    expect(prefs.maxHistoryMessages, 999);
 
     final low = ContextPrefs.fromJson({'maxHistoryMessages': 2});
-    expect(low.maxHistoryMessages, 4);
+    expect(low.maxHistoryMessages, 2);
+    expect(
+      ContextPrefs.fromJson({'maxHistoryMessages': 999999}).maxHistoryMessages,
+      100000,
+    );
+    expect(
+      ContextPrefs.fromJson({'maxHistoryMessages': -5}).maxHistoryMessages,
+      0,
+    );
   });
 
   test('estimateMessageTokens counts reasoning content', () {

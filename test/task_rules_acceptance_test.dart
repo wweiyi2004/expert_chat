@@ -1,7 +1,7 @@
 import 'package:expert_chat/domain/workbench/agents/repository_context_reader.dart';
 import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:expert_chat/platform/preferences.dart';
 import 'package:shared_preferences_platform_interface/shared_preferences_platform_interface.dart';
 import 'package:expert_chat/core/providers.dart';
 import 'package:expert_chat/state/task_acceptance_provider.dart';

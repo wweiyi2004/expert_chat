@@ -6,7 +6,7 @@ import 'package:expert_chat/state/learning_plan_controller.dart';
 import 'package:expert_chat/state/study_controller.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:expert_chat/platform/preferences.dart';
 
 class _Tutor extends StudyController {
   final replies = <String>[];

@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import '../../core/embedded_runtime_scope.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/workspace_layout.dart';
@@ -120,8 +121,10 @@ class _AppShellState extends ConsumerState<AppShell>
         state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden ||
         state == AppLifecycleState.detached;
-    GenerationNotify.setAppBackground(background);
-    ref.read(chatControllerProvider.notifier).reportAppBackground(background);
+    if (EmbeddedRuntimeScope.maybeOf(context) == null) {
+      GenerationNotify.setAppBackground(background);
+      ref.read(chatControllerProvider.notifier).reportAppBackground(background);
+    }
     if (state == AppLifecycleState.resumed) {
       // Continue OTA install if the user just granted unknown-sources permission.
       unawaited(resumePendingApkInstall());
@@ -276,7 +279,7 @@ class _AppShellState extends ConsumerState<AppShell>
                       if (_desktopSidebarExpanded) ...[
                         SizedBox(
                           key: const ValueKey('prototype-sidebar'),
-                          width: 252,
+                          width: 216,
                           child: ChatWorkspaceSidebar(
                             desktopMode: true,
                             onCollapse: () =>

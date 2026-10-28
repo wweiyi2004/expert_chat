@@ -3,17 +3,20 @@
 ## 用户已确定
 
 1A：复用桌面应用的 ChatController，不另建代理循环。2A：自动连接，必要时后台启动桌面应用，保持单实例。3A：入口 `expert`，实际程序 `expert-tui`。
-4A：允许补齐必要后端能力，两端共用，不重构现有内核。5A：关闭终端仅断开客户端，任务继续；显式停止才取消。6A：默认当前目录，首次使用需确认路径和权限，已登记项目沿用权限。
+4A：允许补齐必要后端能力，两端共用，不重构现有内核。5A（2026-10-28 更新）：关闭窗口结束该窗口发起的任务，其他窗口任务继续；短暂断线保留 5 秒重连窗口。6A：默认当前目录，首次使用需确认路径和权限，已登记项目沿用权限。
 
-## 接入方案
+## 当前共享宿主实现（统一验收前）
 
-- Rust workspace 新增 `next/tui`，ratatui/crossterm/unicode-width，WebSocket 使用 tungstenite；依赖通过 Cargo.lock 锁定。`expert` 脚本转发参数、退出码，不注册第二执行引擎。
-- Dart 新增 `lib/features/tui_bridge/`。`main(List<String> args)` 中在与 GUI 相同的 ProviderScope 内启动 bridge host。通过 `ProviderContainer` 读取/监听现有 providers。不复制密钥、不实例化第二 ChatController、不调用 independent RemoteHost 执行模型循环。
-- 默认不监听；`--tui-bridge --background` 开启。正在运行的程序通过原生单实例消息通知开启 bridge；消息不携带任意命令或路径。Dart method channel `expert_chat/tui_bridge` 接收 `enable`，并提供启动参数查询和 `show` 方法。启动请求早于 channel 初始化时保留 pending 标记。
-- Windows `%LOCALAPPDATA%/expert-chat/tui/bridge.json` 为发现文件，包含 v、pid、port、token；目录和文件仅当前用户/SYSTEM 可读写，创建令牌前建立 ACL，拒绝 junction/symlink。令牌 32 随机字节，每次服务启动轮换。127.0.0.1 随机端口 WebSocket `/tui`；无 Origin 浏览器入口，握手必须 token，5 秒认证超时，限制消息长度。其他 OS 使用权限 0700/0600。
-- GUI 路径按明确 `--gui <path>` / `EXPERT_CHAT_GUI` / 同目录 expert_chat.exe / 用户发现文件解析；不执行项目目录或不可信 PATH 中的同名 GUI。连接失败清楚提示，不自动切到 demo。
-- 客户端重连先握手、读取快照；禁止自动重发有副作用请求。请求 id 用于去重；服务重启丢失缓存时报告未知结果，用户核对后决定。
-- 断开任意客户端不停止控制器、子代理或后台进程。服务关闭只关闭通信；任务停止走现有 stop。GUI 托盘退出仍结束整个应用，需要向用户说明。
+本轮将早期“Flutter 后台桥接”迁为独立 Dart Host；下方早期决定中的桌面后台启动语义由本节替代。具体兼容表见 [共享宿主说明](../../docs/SHARED-HOST.md)。新增代码尚未完成本轮统一验证。
+
+- `host/bin/expert-host.exe` 持有原 ChatController 的任务循环和纯 Dart Riverpod 服务容器，不加载 Flutter 引擎。`expert-tui` 与 Flutter GUI 都是客户端；GUI/TUI 关闭会取消各自拥有的任务，Host 可继续服务其他窗口。
+- GUI 的任务控制器变为 RPC / 状态投影；资料库和学习等既有业务通过 Host 的 Drift 数据连接共享同一个 SQLite 实例。每个客户端的事务在断线时清理，不自动重放写入。
+- TUI 启动仅查找明确 `EXPERT_CHAT_HOST`、GUI 路径旁的 `host/bin/expert-host.exe` 或 TUI 所在发行包。不会通过项目目录或不可信 PATH 猜测 Host 程序。
+- `%LOCALAPPDATA%/expert-chat/tui/bridge.json` 保留 v1 私有发现目录；另有仅 GUI 使用的 `gui.json`。握手返回 `execution_host:dart` 与 `host_version:1`。原始偏好、SQL、凭据与内部操作必须持有 GUI token。
+- 生产 Host 持有旧 GUI 的 v1 互斥量与资料目录锁；新 GUI 使用 v2 界面互斥量。首次迁移保存原始资料副本。任务副作用先登记持久化请求回执，崩溃后旧请求不会自动执行。
+- 公共快照协商 `snapshot.patch` 后使用消息/步骤/子代理的增量，基线丢失时读取完整快照。GUI 使用会话游标与运行状态分段版本；状态过期始终可见。
+- `/gui` 通过已连接 GUI 的动作回执定位；没有 GUI 时可启动图形客户端。OAuth 和 SSH 指纹确认由明确的客户端操作完成，断连不会默认为批准。
+- `/bridge off` 和关闭 TUI 会断开调用者并取消其窗口任务。默认无客户端且无活动执行资源时空闲 600 秒退出；显式 Host 退出先停止、等待和保存恢复记录。
 
 ## 已核实的后端映射
 
@@ -52,7 +55,7 @@
 - 项目注册需确认，不能因为 cwd 自动授予读写。运行中拒绝切执行位置。
 - 宠物使用实际 JSON 帧，界面纯终端字符；性能与键位按真实终端验证，未执行的 tmux/平台检查如实记录。
 
-## 分工与边界
+## 早期桥接实施分工（历史记录）
 
 - root：本文件/协议/schema/fixtures、Windows 单实例和后台启动、集成与实测、日志和最终提交。
 - A1：next/tui 界面/组件/键盘/宠物/快照；先建立状态模型与骨架再通知 A2。

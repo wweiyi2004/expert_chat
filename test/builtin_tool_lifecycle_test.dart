@@ -15,9 +15,9 @@ import 'package:expert_chat/state/settings_controller.dart';
 import 'package:expert_chat/state/tool_registry_settings.dart';
 import 'package:expert_chat/state/work_runtime_logs.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:expert_chat/platform/credentials.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:expert_chat/platform/preferences.dart';
 import 'widget_test.dart' show FakeSettings, FakeLlmProvider;
 
 class _Math extends MathToolkit {

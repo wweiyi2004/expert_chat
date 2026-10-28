@@ -22,7 +22,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:expert_chat/platform/preferences.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'widget_test.dart'
     show FakeSettings, InMemoryRepo, InMemoryLibraryFileStore;
@@ -277,13 +277,13 @@ void main() {
         find.byKey(const ValueKey('composer-input-box')),
       );
       expect(
-        workspaceRect.bottom,
-        lessThanOrEqualTo(composerRect.top),
-        reason: '窄工作pane的位置/权限在输入边框上方',
+        composerRect.contains(workspaceRect.center),
+        isTrue,
+        reason: '收起工作区后，宽输入框直接容纳位置与权限',
       );
       expect(
         find.descendant(
-          of: find.byKey(const ValueKey('composer-context-row')),
+          of: find.byKey(const ValueKey('composer-input-box')),
           matching: find.byKey(const ValueKey('chat-workspace-bar')),
         ),
         findsOneWidget,
@@ -293,7 +293,7 @@ void main() {
           of: find.byKey(const ValueKey('composer-input-box')),
           matching: find.byKey(const ValueKey('composer-permission')),
         ),
-        findsNothing,
+        findsOneWidget,
       );
       container.read(workSessionInsightsProvider.notifier).request(
         workConversationId,
@@ -407,7 +407,7 @@ void main() {
           // screenshot, while leaving the live execution spinner running.
           await tester.pump(const Duration(milliseconds: 250));
           await tester.pump();
-          final header = find.byKey(const ValueKey('html-chat-header'));
+          final header = find.byKey(ValueKey(width>=840 ? 'desktop-task-header' : 'html-chat-header'));
           final headerTitle = find.descendant(
             of: header,
             matching: find.text('梳理项目结构'),

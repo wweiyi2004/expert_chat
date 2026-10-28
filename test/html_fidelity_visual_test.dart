@@ -2,7 +2,7 @@ import 'dart:io';
 import 'package:expert_chat/core/prototype_widgets.dart';
 import 'dart:convert';
 import 'package:dio/dio.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:expert_chat/platform/credentials.dart';
 import 'dart:ui' as ui;
 import 'package:drift/native.dart';
 import 'package:expert_chat/core/providers.dart';
@@ -32,7 +32,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:expert_chat/platform/preferences.dart';
 import 'widget_test.dart'
     show FakeSettings, FakeLlmProvider, InMemoryRepo, InMemoryLibraryFileStore;
 
@@ -603,7 +603,9 @@ void main() {
           if (workbench.evaluate().isNotEmpty) {
             await tester.tap(workbench.first);
             await _pump(tester);
-            final destination = find.widgetWithText(ListTile, '改动').hitTestable();
+            final destination = find
+                .widgetWithText(ListTile, '改动')
+                .hitTestable();
             if (destination.evaluate().isNotEmpty) {
               await tester.tap(destination);
               await _pump(tester);

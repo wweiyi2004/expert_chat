@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../platform/foundation.dart';
+import 'package:riverpod/riverpod.dart';
 
 import '../core/providers.dart';
 
@@ -330,6 +330,12 @@ class WorkTaskRuntime extends Notifier<List<WorkTaskRecord>> {
     if (!ref.mounted || _pendingLogs.isEmpty) return;
     state = List.unmodifiable(state.map((r) => _pendingLogs[r.id] ?? r));
     _pendingLogs.clear();
+  }
+
+  Future<void> flush() {
+    _flushOutput();
+    _persist();
+    return _persistence;
   }
 
   void _persist() {

@@ -79,6 +79,7 @@ class ResponsesApiProvider implements LlmProvider {
               },
             ),
             data: jsonEncode(built),
+            onSendProgress:config.onUploadProgress,
             cancelToken: requestToken,
           )
           .timeout(
@@ -92,6 +93,7 @@ class ResponsesApiProvider implements LlmProvider {
       if (CancelToken.isCancel(e)) return;
       throw await humanizeLlmHttpError(
         e,
+        authMode: config.authMode,
         notFoundMessage:
             '接口未找到（404）：当前 Base URL 可能不支持 Responses API（/responses）。',
       );
@@ -200,6 +202,7 @@ class ResponsesApiProvider implements LlmProvider {
       if (CancelToken.isCancel(e)) return;
       throw await humanizeLlmHttpError(
         e,
+        authMode: config.authMode,
         notFoundMessage:
             '接口未找到（404）：当前 Base URL 可能不支持 Responses API（/responses）。',
       );
@@ -253,8 +256,10 @@ class ResponsesApiProvider implements LlmProvider {
     final input = <Map<String, dynamic>>[];
 
     for (final message in messages) {
+      if (message.isEmptyAssistant) continue;
       if (message.responseOutputItems.isNotEmpty) {
         for (final item in message.responseOutputItems) {
+          if (_emptyAssistantItem(item)) continue;
           input.add(Map<String, dynamic>.from(item));
         }
         continue;
@@ -300,7 +305,7 @@ class ResponsesApiProvider implements LlmProvider {
                 'arguments': call.argumentsJson,
               });
             }
-          } else if (message.content.isNotEmpty) {
+          } else if (message.content.trim().isNotEmpty) {
             input.add({
               'type': 'message',
               'role': 'assistant',
@@ -326,6 +331,8 @@ class ResponsesApiProvider implements LlmProvider {
         'max_output_tokens': config.maxOutputTokens,
       if (instructions.isNotEmpty) 'instructions': instructions.toString(),
       if (input.isNotEmpty) 'input': input,
+      if (config.serviceTier != null && config.supportsPriorityTier)
+        'service_tier': config.serviceTier,
     };
 
     if (thinking != null && config.capabilities.supportsReasoningEffort) {
@@ -714,6 +721,22 @@ class ResponsesApiProvider implements LlmProvider {
     }
     return null;
   }
+}
+
+bool _emptyAssistantItem(Map<String,dynamic> item){
+  if(item['type']!='message'||item['role']!='assistant')return false;
+  final content=item['content'];
+  if(content is String)return content.trim().isEmpty;
+  if(content==null)return true;
+  if(content is! List)return false;
+  return content.every((part){
+    if(part is String)return part.trim().isEmpty;
+    if(part is! Map)return part==null;
+    if({'text','input_text','output_text','refusal'}.contains(part['type'])){
+      return (part['text'] as String? ?? part['refusal'] as String? ?? '').trim().isEmpty;
+    }
+    return part.isEmpty;
+  });
 }
 
 class _FunctionCallDraft {

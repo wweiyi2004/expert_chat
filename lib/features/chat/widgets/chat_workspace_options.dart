@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import '../../../core/application_surface.dart';
 import '../../../core/prototype_widgets.dart';
 import 'composer_popover.dart';
@@ -62,6 +63,19 @@ class ChatWorkspaceBar extends ConsumerWidget {
         (value) => value[conversationId],
       ),
     );
+    if (!ref.watch(desktopWorkspaceHostProvider).supported) {
+      return _WorkspaceLocation(
+        plain: plain,
+        label: defaultTargetPlatform == TargetPlatform.android
+            ? '本机 · Android'
+            : '当前设备',
+        tooltip: '在当前设备执行；也可选择 SSH 或连接远程电脑',
+        icon: defaultTargetPlatform == TargetPlatform.android
+            ? Icons.phone_android
+            : Icons.devices,
+        onTap: () => showChatWorkspaceOptions(context, conversationId),
+      );
+    }
     final workspaces = ref.watch(desktopWorkspacesProvider);
     final workspace = workspaces.value
         ?.where((w) => w.id == (selected ?? defaultDesktopWorkspaceId))
@@ -151,6 +165,7 @@ class _WorkspacePickerState extends ConsumerState<_WorkspacePicker> {
         ref.watch(sessionPolicyProvider)[widget.conversationId] ??
         const SessionPolicy();
     final research = ref.watch(researchTerminalProvider);
+    final localWorkspaces = ref.watch(desktopWorkspaceHostProvider).supported;
     return PopScope(
       canPop: !_saving,
       child: ComposerPopoverFrame(
@@ -169,7 +184,11 @@ class _WorkspacePickerState extends ConsumerState<_WorkspacePicker> {
             ),
             const SizedBox(height: 8),
 
-            const Text('未选本机项目时使用默认工作区。目录规则继续约束文件工具；含只读或拒绝规则的工作区不开放任意命令。'),
+            Text(
+              localWorkspaces
+                  ? '未选本机项目时使用默认工作区。目录规则继续约束文件工具；含只读或拒绝规则的工作区不开放任意命令。'
+                  : '在当前设备处理任务。需要电脑文件或命令时，选择 SSH 或连接远程电脑。',
+            ),
             const SizedBox(height: 12),
             if (_saving || spaces.isLoading) const LinearProgressIndicator(),
             if (_error != null)
@@ -189,8 +208,10 @@ class _WorkspacePickerState extends ConsumerState<_WorkspacePicker> {
                     ? Icons.radio_button_checked
                     : Icons.radio_button_off,
               ),
-              title: const Text('默认工作区'),
-              subtitle: const Text('不绑定项目，使用应用专用目录'),
+              title: Text(localWorkspaces ? '默认工作区' : '当前设备'),
+              subtitle: Text(
+                localWorkspaces ? '不绑定项目，使用应用专用目录' : '使用本机模型连接和已开启的设备能力',
+              ),
               onTap: _saving ? null : () => _select(null),
             ),
             for (final workspace in spaces.value ?? <DesktopWorkspace>[])
@@ -293,33 +314,35 @@ class _WorkspacePickerState extends ConsumerState<_WorkspacePicker> {
                 ),
               ),
             ),
-            ListTile(
-              leading: const Icon(Icons.phone_android),
-              title: const Text('Android 本机控制'),
-              subtitle: const Text('在专用页面中使用 · 系统授权与本次控制'),
-              onTap: () => Navigator.of(context).push(
-                MaterialPageRoute<void>(
-                  builder: (_) => const DeviceAgentPage(),
+            if (defaultTargetPlatform == TargetPlatform.android)
+              ListTile(
+                leading: const Icon(Icons.phone_android),
+                title: const Text('Android 本机控制'),
+                subtitle: const Text('在专用页面中使用 · 系统授权与本次控制'),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const DeviceAgentPage(),
+                  ),
                 ),
               ),
-            ),
-            ListTile(
-              leading: const Icon(Icons.folder_copy_outlined),
-              title: const Text('管理工作区和权限'),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: _saving
-                  ? null
-                  : () async {
-                      await Navigator.of(context).push(
-                        applicationSurfaceRoute<void>(
-                          context,
-                          (_) => const DesktopWorkspacesPage(),
-                          title: '管理执行位置',
-                        ),
-                      );
-                      if (mounted) ref.invalidate(desktopWorkspacesProvider);
-                    },
-            ),
+            if (localWorkspaces)
+              ListTile(
+                leading: const Icon(Icons.folder_copy_outlined),
+                title: const Text('管理工作区和权限'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: _saving
+                    ? null
+                    : () async {
+                        await Navigator.of(context).push(
+                          applicationSurfaceRoute<void>(
+                            context,
+                            (_) => const DesktopWorkspacesPage(),
+                            title: '管理执行位置',
+                          ),
+                        );
+                        if (mounted) ref.invalidate(desktopWorkspacesProvider);
+                      },
+              ),
           ],
         ),
       ),

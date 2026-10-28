@@ -1,5 +1,5 @@
 import 'package:expert_chat/core/providers.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:expert_chat/platform/preferences.dart';
 import 'package:expert_chat/data/models.dart';
 import 'package:expert_chat/data/story_models.dart';
 import 'package:expert_chat/data/study_models.dart';
